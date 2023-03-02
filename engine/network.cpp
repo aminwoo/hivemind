@@ -4,7 +4,7 @@ Network::Network() : engine(batchSize) {
     inputPlanes = new float[batchSize * NUM_BUGHOUSE_VALUES()];
     valueOutput = new float[batchSize];
     policyOutput = new float[batchSize * 2 * NUM_POLICY_VALUES];
-    engine.build("/home/ben/Desktop/CoG 2023/debughouse/models/model.onnx", "trt_" + std::to_string(batchSize) + ".engine");
+    engine.build("", "trt_" + std::to_string(batchSize) + ".engine");
     engine.loadNetwork();
     engine.bind_executor_input(NUM_BUGHOUSE_VALUES()); 
     engine.bind_executor_value(1); 
