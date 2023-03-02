@@ -14,15 +14,9 @@ static std::random_device r;
 static std::default_random_engine generator(r());
 
 template <typename T>
-DynamicVector<T> get_dirichlet_noise(size_t length, T alpha) {
-    DynamicVector<T> dirichletNoise(length);
-
-    for (size_t i = 0; i < length; ++i) {
-        std::gamma_distribution<T> distribution(alpha, 1.0f);
-        dirichletNoise[i] = distribution(generator);
-    }
-    dirichletNoise /= sum(dirichletNoise);
-    return  dirichletNoise;
+void append(DynamicVector<T>& vec, T value) {
+    vec.extend(1);
+    vec[vec.size()-1] = value;
 }
 
 template <typename T>
@@ -80,13 +74,6 @@ inline DynamicVector<float> dynamic_vector(float* p, size_t length) {
     DynamicVector<float> v(length);
     for(size_t i = 0; i < length; i++) {
         v[i] = p[i]; 
-    }
-    return v; 
-}
-
-inline DynamicVector<float> greater_than(DynamicVector<float> v, float threshold) {
-    for(size_t i = 0; i < v.size(); i++) {
-        v[i] = v[i] > threshold ? 1 : 0; 
     }
     return v; 
 }

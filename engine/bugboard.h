@@ -26,6 +26,10 @@ class Bugboard {
         Bugboard(const Bugboard& board);
         ~Bugboard(); 
 
+        std::string hash_key() {
+            return std::to_string(pos[0]->key()) + std::to_string(pos[1]->key()); 
+        }
+
         void swap_boards() {
             std::swap(pos[0], pos[1]);
             std::swap(states[0], states[1]);

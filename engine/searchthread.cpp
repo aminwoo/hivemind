@@ -27,10 +27,15 @@ Node* SearchThread::get_root_node() {
     return root; 
 }
 
+void SearchThread::add_trajectory_buffer() {
+    trajectoryBuffers.push_back(std::vector<Node*>()); 
+}
+
 void SearchThread::run_iteration(std::vector<Bugboard>& boards) {
     std::vector<Node*> leafNodes; 
     for (int i = 0; i < network.get_batch_size(); i++) {
-        add_leaf_node(boards[i], leafNodes); 
+        trajectoryBuffers[i].clear();
+        add_leaf_node(boards[i], leafNodes, trajectoryBuffers[i]); 
     }
 
     std::vector<Stockfish::Color> sides; 
@@ -57,91 +62,81 @@ void SearchThread::run_iteration(std::vector<Bugboard>& boards) {
             value = -1;
         }
         else {
-            expand_leaf_node(leafNodes[i], boards[i], actions[i], priors, sides[i]); 
+            expand_leaf_node(leafNodes[i], actions[i], priors, sides[i]); 
         }
-        backup_leaf_node(leafNodes[i], boards[i], value);
+        backup_leaf_node(boards[i], value, trajectoryBuffers[i]);
     }
 }
 
-void SearchThread::backup_leaf_node(Node* leaf, Bugboard& board, float value) {
-    int turnFactor = -1; 
-    Node* curr = leaf;
-    Stockfish::Color prev_action_side = curr->get_action_side(); 
 
-    while (true) {
-        curr->increment_visits(); 
-        if (curr->get_parent() == nullptr) {
-            break; 
-        }
-
-        Stockfish::Color next_action_side = curr->get_parent()->get_action_side(); 
-        curr->add_value(value * turnFactor); 
-        
-        std::pair<int, Stockfish::Move> action = curr->get_action(); 
-        /*if (value == -1) {
-            std::cout << board.uci_move(action.first, action.second) << ' ' << turnFactor << ' ' << prev_action_side << ' ' << next_action_side << ' ' << std::endl; 
-        }*/
-
-        if (prev_action_side != next_action_side) {
-            turnFactor *= -1;
-        }
-
-        prev_action_side = next_action_side; 
-
-        //curr->add_value(value * turnFactor); 
-        curr->remove_virtual_loss(1.0f); 
-        curr = curr->get_parent(); 
-
-        //turnFactor *= -1;
-
-        board.undo_move(action.first); 
-    }
-}
-
-void SearchThread::add_leaf_node(Bugboard& board, std::vector<Node*>& leafNodes) {
+void SearchThread::add_leaf_node(Bugboard& board, std::vector<Node*>& leafNodes, std::vector<Node*>& trajectoryBuffer) {
     Node* curr = root;
     while (true) {
+        trajectoryBuffer.emplace_back(curr); 
         if (!curr->get_expanded()) {
             break; 
         }
-        curr = curr->get_best_child();
-        curr->apply_virtual_loss(1.0f); 
+        Node* bestChild = curr->get_best_child();
+        curr->apply_virtual_loss_to_child(curr->get_idx(), 1.0f); 
+        curr = bestChild; 
         std::pair<int, Stockfish::Move> action = curr->get_action(); 
         board.do_move(action.first, action.second);
     }
-    curr->set_added(true); 
+    if (curr->is_added()) {
+        searchInfo->increment_colllisions(1);
+    }
+    else {
+        curr->set_added(true); 
+    }
     leafNodes.emplace_back(curr); 
 }
 
-void SearchThread::expand_leaf_node(Node* leaf, Bugboard& board, std::vector<std::pair<int, Stockfish::Move>> actions, DynamicVector<float> priors, Stockfish::Color action_side) {
-    if (leaf->get_expanded()) {
-        return; 
+void SearchThread::expand_leaf_node(Node* leaf, std::vector<std::pair<int, Stockfish::Move>> actions, DynamicVector<float> priors, Stockfish::Color actionSide) {
+    if (!leaf->get_expanded()) {
+        size_t num_children = actions.size(); 
+        for (size_t i = 0; i < num_children; i++) {
+            std::shared_ptr<Node> child = std::make_shared<Node>(actionSide);
+            leaf->add_child(child, actions[i], priors[i]); 
+        }
+        if (!actions.empty()) {
+            leaf->set_expanded(true);
+        }
     }
-    size_t num_children = actions.size(); 
-    for (size_t i = 0; i < num_children; i++) {
-        std::shared_ptr<Node> child = std::make_shared<Node>(leaf, action_side);
-        /*if (board.uci_move(actions[i].first, actions[i].second) == "Q@h1") {
-            std::cout << "side " << action_side << std::endl; 
-        }*/
-        //child->set_action_side(action_side);
-        child->set_prior(priors[i]);
-        child->set_action(actions[i]);
-        child->set_depth(leaf->get_depth() + 1);
-        searchInfo->set_max_depth(child->get_depth());
-        leaf->add_child(child); 
-    }
-    if (!actions.empty()) {
-        leaf->set_expanded(true);
+    leaf->get_best_child();
+    leaf->apply_virtual_loss_to_child(leaf->get_idx(), 1.0f); 
+}
+
+void SearchThread::backup_leaf_node(Bugboard& board, float value, std::vector<Node*>& trajectoryBuffer) {
+    for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+        Node* node = *it;
+        if (node->get_expanded()) {
+            Stockfish::Color childActionSide = node->get_child_action_side(); 
+            Stockfish::Color actionSide = node->get_action_side(); 
+            node->revert_virtual_loss_to_child(node->get_idx(), 1.0f); 
+            node->update(node->get_idx(), value, childActionSide, actionSide); 
+            if (actionSide != childActionSide) {
+                value = -value; 
+            }
+        }
+        else {
+            node->update_terminal(value);
+        }
+
+        if (node != root) {
+            std::pair<int, Stockfish::Move> action = node->get_action(); 
+            board.undo_move(action.first);
+        }
     }
 }
 
 void run_search_thread(SearchThread *t, Bugboard& board) {
     std::vector<Bugboard> boards; 
     for (int i = 0; i < t->network.get_batch_size(); i++) {
+        t->add_trajectory_buffer(); 
         boards.emplace_back(board);
     }
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
         t->run_iteration(boards);
         t->get_search_info()->increment_nodes(t->network.get_batch_size()); 
         if (t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() || !t->is_running()) {

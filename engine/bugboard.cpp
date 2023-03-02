@@ -72,10 +72,8 @@ Bugboard::Bugboard(const Bugboard& board) {
 }
 
 void Bugboard::do_move(int board_num, Stockfish::Move move) {
-    //if (side_to_move(0) != side_to_move(1)) {
     clock.remove_time(board_num, side_to_move(board_num), move_time);
     clock.remove_time(1 - board_num, side_to_move(1 - board_num), move_time);
-    //}
 
     states[board_num]->emplace_back();
     pos[board_num]->do_move(move, states[board_num]->back());
@@ -94,10 +92,8 @@ void Bugboard::undo_move(int board_num) {
     pos[board_num]->undo_move(m); 
     states[board_num]->pop_back();
 
-    //if (side_to_move(0) != side_to_move(1)) {
     clock.add_time(board_num, side_to_move(board_num), move_time);
     clock.add_time(1 - board_num, side_to_move(1 - board_num), move_time);
-    //}
 }
 
 std::vector<Stockfish::Move> Bugboard::legal_moves(int board_num) {
@@ -119,7 +115,6 @@ std::vector<std::pair<int, Stockfish::Move>> Bugboard::legal_moves(Stockfish::Co
             moves.emplace_back(0, move);
         }
         if (mated) {
-            //std::cout << fen(0) << std::endl; 
             return {}; 
         }
     }

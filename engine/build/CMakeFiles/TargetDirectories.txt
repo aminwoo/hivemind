@@ -1,0 +1,6 @@
+/home/ben/Desktop/debughouse/engine/build/CMakeFiles/rebuild_cache.dir
+/home/ben/Desktop/debughouse/engine/build/CMakeFiles/edit_cache.dir
+/home/ben/Desktop/debughouse/engine/build/CMakeFiles/debughouse.dir
+/home/ben/Desktop/debughouse/engine/build/Fairy-Stockfish/CMakeFiles/rebuild_cache.dir
+/home/ben/Desktop/debughouse/engine/build/Fairy-Stockfish/CMakeFiles/edit_cache.dir
+/home/ben/Desktop/debughouse/engine/build/Fairy-Stockfish/CMakeFiles/Fairy-Stockfish.dir

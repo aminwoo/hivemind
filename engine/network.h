@@ -8,7 +8,7 @@
 
 class Network {
     private:
-        int batchSize = 16; 
+        int batchSize = 1; 
         Engine engine; 
         float* inputPlanes;
         float* valueOutput;

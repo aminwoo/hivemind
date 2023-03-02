@@ -9,60 +9,49 @@
 #include "constants.h"
 #include "utils.h"
 
-enum NodeType { 
-    TERMINAL, 
-    CAPTURE, 
-    CHECK,
-    NONE
-};
-
 class Node {
     private:
-        Node* parent;
+        DynamicVector<float> childVirtualLoss;
+        DynamicVector<float> childValueSum;
+        DynamicVector<float> childPriors;
+        DynamicVector<int> childVisits; 
         std::vector<std::shared_ptr<Node>> children;  
         std::pair<int, Stockfish::Move> action; 
-        int depth = 0; 
+        int bestChildIdx = -1; 
+        float valueSum = -1.0f; 
         int visits = 0; 
-        float prior = 0.0f; 
-        float total_value = -1.0f; 
         bool added = false; 
         bool expanded = false;
-        Stockfish::Color action_side; 
+        Stockfish::Color actionSide; 
 
     public:
-        Node(Node* parent, Stockfish::Color action_side) : parent(parent), action_side(action_side) {};
-        ~Node(); 
+        Node(Stockfish::Color actionSide) : actionSide(actionSide) {};
+        ~Node() {}; 
 
-        //void set_action_side(Stockfish::Color value) {
-        //    action_side = value; 
-        //}
-
-        Stockfish::Color get_action_side() {
-            return action_side;  
+        void update(size_t childIdx, float value, Stockfish::Color childActionSide, Stockfish::Color actionSide) {
+            childValueSum[childIdx] += value; 
+            childVisits[childIdx]++; 
+            if (actionSide != childActionSide) {
+                value = -value; 
+            }
+            valueSum += value; 
+            visits++; 
         }
 
+        void update_terminal(float value) {
+            valueSum += value; 
+            visits++; 
+        }
 
         std::vector<Node*> get_principle_variation();
         
-        void apply_virtual_loss(float loss);
+        void apply_virtual_loss_to_child(int childIdx, float loss);
 
-        void remove_virtual_loss(float loss); 
+        void revert_virtual_loss_to_child(int childIdx, float loss); 
 
         Node* get_best_child(); 
 
-        Node* get_parent() {
-            return parent; 
-        }
-
-        void set_depth(int value) {
-            depth = value; 
-        }
-
-        int get_depth() {
-            return depth; 
-        }
-
-        bool get_added() {
+        bool is_added() {
             return added; 
         }
 
@@ -70,7 +59,20 @@ class Node {
             added = value; 
         }
 
-        void add_child(std::shared_ptr<Node> child) {
+        int get_idx() {
+            return bestChildIdx; 
+        }
+
+        void set_idx(int value) {
+            bestChildIdx = value; 
+        }
+
+        void add_child(std::shared_ptr<Node> child, std::pair<int, Stockfish::Move> action, float prior) {
+            append(childVirtualLoss, 0.0f);
+            append(childValueSum, -1.0f);
+            append(childPriors, prior);
+            append(childVisits, 0);
+            child->set_action(action); 
             children.emplace_back(child); 
         }
 
@@ -90,6 +92,18 @@ class Node {
             return action; 
         }
 
+        Stockfish::Color get_action_side() {
+            return actionSide;  
+        }
+
+        Stockfish::Color get_child_action_side() {
+            return children[bestChildIdx]->get_action_side(); 
+        }
+
+        void set_action_side(Stockfish::Color value) {
+            actionSide = value;  
+        }
+
         void set_action(std::pair<int, Stockfish::Move> value) {
             action = value; 
         }
@@ -98,29 +112,16 @@ class Node {
             return visits; 
         }
 
-        float get_prior() {
-            return prior; 
-        }
-        float get_total_value() {
-            return total_value; 
-        }
-
         void increment_visits() {
             visits++; 
         }
-        void set_prior(float value) {
-            prior = value; 
-        }
-        void add_value(float value) {
-            total_value += value; 
-        }
-        
-        float Q() {
-            return get_total_value() / (1 + get_visits());
+
+        void decrement_visits() {
+            visits--; 
         }
 
-        float U() {
-            return (sqrt(parent->get_visits()) * get_prior() / (1.0f + get_visits()));
+        float Q() {
+            return valueSum / (1.0f + visits);
         }
 };
 

@@ -14,7 +14,7 @@ set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda)
 find_package(TensorRT REQUIRED)
 find_package(CUDA REQUIRED)
 
-add_executable(${PROJECT_NAME} main.cpp engine.cpp planes.cpp bugboard.cpp network.cpp searchthread.cpp node.cpp agent.cpp clock.cpp uci.cpp)
+add_executable(${PROJECT_NAME} main.cpp engine.cpp planes.cpp bugboard.cpp network.cpp node.cpp clock.cpp searchthread.cpp agent.cpp)
 add_subdirectory(Fairy-Stockfish)
 
 target_include_directories(${PROJECT_NAME} PUBLIC 

@@ -24,7 +24,7 @@ void Agent::run_search(Bugboard& board, int move_time) {
         }
     }  
     
-    Node* root = new Node(nullptr, side);
+    Node* root = new Node(side);
     SearchInfo* searchInfo = new SearchInfo(start, move_time);
     std::thread** threads = new std::thread*[numberOfThreads];
 
@@ -47,11 +47,10 @@ void Agent::run_search(Bugboard& board, int move_time) {
     std::cout << " Q value " << pv[0]->Q();
     std::cout << " nodes " <<  searchInfo->get_nodes_searched();
     std::cout << " nps " <<  searchInfo->get_nodes_searched() / diff.count();
-    std::cout << " depth " << searchInfo->get_max_depth();
+    std::cout << " collisions " << searchInfo->get_collisions();
     std::cout << " pv ";
     for (Node* node : pv) {
         std::pair<int, Stockfish::Move> action = node->get_action(); 
-        //std::cout << action.first << "-" << board.uci_move(action.first, action.second) << " " << node->get_action_side() << ' ' << node->Q() << ' ';
         std::cout << action.first << "-" << board.uci_move(action.first, action.second) << " ";
 
     }
