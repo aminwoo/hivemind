@@ -5,7 +5,7 @@ from downloader import batch_download
 
 
 def get_leaderboard():
-    in_file_path = '../data/leaderboard.txt'
+    in_file_path = 'data/leaderboard.txt'
     in_file = open(in_file_path, 'r')
     players = in_file.readlines()
     players = [p.strip() for p in players]
@@ -14,7 +14,7 @@ def get_leaderboard():
 
 
 def get_player_archive_urls(player):
-    base_dir_path = '../data/archive_urls/'
+    base_dir_path = 'data/archive_urls/'
     base_player_path = base_dir_path + '{0}.json'
     player_path = base_player_path.format(player)
     player_file = open(player_path, 'r')
@@ -30,7 +30,7 @@ def update_archives():
     init_year = 2016
     last_month_index = 12 * init_year + init_month
     base_archive_url = 'https://api.chess.com/pub/player/{0}/games/{1:04d}/{2:02d}'
-    base_player_dir_path = './data/archives/{0}/'
+    base_player_dir_path = 'data/archives/{0}/'
     base_archive_path = base_player_dir_path + '{1:04d}_{2:02d}.json'
 
     num_players = len(players)
@@ -56,7 +56,7 @@ def update_archives():
 
 
 def update_archive_urls(remove_old=False):
-    base_dir_path = '../data/archive_urls/'
+    base_dir_path = 'data/archive_urls/'
     base_player_url = 'https://api.chess.com/pub/player/{0}/games/archives'
     base_player_path = base_dir_path + '{0}.json'
     os.makedirs(base_dir_path, exist_ok=True)

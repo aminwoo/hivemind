@@ -5,16 +5,15 @@ from tqdm import tqdm
 
 
 def get_leaderboard():
-    in_file_path = '../data/leaderboard.txt'
+    in_file_path = 'data/leaderboard.txt'
     in_file = open(in_file_path, 'r')
     players = in_file.readlines()
     players = [p.strip() for p in players]
     in_file.close()
     return players
 
-
 blacklist = []
-with open('../data/blacklist.txt') as f:
+with open('data/blacklist.txt') as f:
     for line in f:
         blacklist.append(line.rstrip('\n'))
 print(blacklist)
@@ -22,7 +21,7 @@ print(blacklist)
 players = get_leaderboard()
 players = list(set(players))
 min_rating = 2300
-player_archive_base_glob = './data/archives/{0}/*.json'
+player_archive_base_glob = 'data/archives/{0}/*.json'
 
 player_candidates = dict()
 
@@ -63,7 +62,7 @@ for p in player_candidates:
         good_players.append(p)
 print(cnt)
 
-out_file_path = '../data/leaderboard.txt'
+out_file_path = 'data/leaderboard.txt'
 out_file = open(out_file_path, 'w')
 for player in good_players:
     out_file.write(player + '\n')

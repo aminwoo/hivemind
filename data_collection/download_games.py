@@ -9,14 +9,14 @@ from aiocfscrape import CloudflareScraper
 
 def retrieve_game_urls():
     players = get_leaderboard()
-    player_archive_base_glob = './data/archives/{0}/*.json'
-    base_games_path = './data/games/{0}.json'
+    player_archive_base_glob = 'data/archives/{0}/*.json'
+    base_games_path = 'data/games/{0}.json'
     total_games = 0
     urls = []
     paths = []
     blacklist = []
 
-    with open('../data/blacklist.txt') as f:
+    with open('data/blacklist.txt') as f:
         for line in f:
             blacklist.append(line.rstrip('\n'))
 
@@ -52,7 +52,7 @@ def retrieve_game_urls():
                             paths.append(path)
 
     print(len(urls))
-    with open('../data/game_urls.json', 'w') as f:
+    with open('data/game_urls.json', 'w') as f:
         json.dump(urls, f)
 
 
@@ -68,10 +68,10 @@ def download_games():
         ids.add(s[1])
     games = {}
 
-    with open('../data/game_urls.json') as f:
+    with open('data/game_urls.json') as f:
         urls = json.load(f)
 
-    checkpoint_step = 1000
+    checkpoint_step = 10000
     for url in tqdm(urls):
         if url.split('/')[-1] in ids:
             continue
@@ -88,7 +88,7 @@ def download_games():
             ids.add(game['b']['id'])
 
             if len(games) % checkpoint_step == 0:
-                with open('./data/games_1.json', 'w') as f:
+                with open('data/games_1.json', 'w') as f:
                     json.dump(games, f)
         except:
             continue
