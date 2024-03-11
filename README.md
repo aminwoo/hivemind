@@ -1,6 +1,11 @@
 # HiveMind
-<<<<<<< HEAD
+
 ## Quickstart
-=======
-## Quickstart
->>>>>>> 0dfcee396517edfffa063fa8323d7e81f948f1ca
+
+First create a leaderboards.txt in /data folder. 
+
+```
+pip install -r requirements.txt
+python archive.py
+python update.py
+```
