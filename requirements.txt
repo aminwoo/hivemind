@@ -3,3 +3,6 @@ pandas
 torch
 onnx
 requests
+tqdm
+aiocfscrape
+chess
