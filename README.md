@@ -1,1 +1,2 @@
-# Hive Mind
+# HiveMind
+## Quickstart
