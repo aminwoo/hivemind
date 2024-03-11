@@ -2,7 +2,7 @@
 
 ## Quickstart
 
-First create a leaderboards.txt in /data folder. 
+First create a leaderboard.txt in /data folder. 
 
 ```
 pip install -r requirements.txt
