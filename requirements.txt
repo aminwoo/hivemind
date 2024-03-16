@@ -7,3 +7,4 @@ tqdm
 aiocfscrape
 chess
 dagster
+dagster-webserver
