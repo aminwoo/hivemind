@@ -101,7 +101,7 @@ def board2planes(board: BughouseBoard, side: chess.Color) -> np.ndarray:
         #boards[BOARD_B].apply_transform(chess.flip_horizontal)
         boards[BOARD_B].apply_transform(chess.flip_vertical)
 
-    return planes
+    return planes.transpose(1, 2, 0)
 
 
 def visualize_planes(planes):
@@ -190,6 +190,7 @@ if __name__ == "__main__":
     board.set_time([[1089, 781], [155, 35]])
     #boards = board.get_boards().copy()
     planes = board2planes(board, chess.WHITE)
+    print(planes[:,:,0])
     #np.set_printoptions(threshold=sys.maxsize)
     #print(planes)
-    visualize_planes(planes)
+    #visualize_planes(planes)

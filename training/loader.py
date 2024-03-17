@@ -17,16 +17,13 @@ class Parser(object):
 
     def __init__(self, game):
         self.result = self.get_game_result(game)
+        self.time_control = self.get_game_time_control(game)
         self.ratings = [
             [game["a"]["white"]["rating"],
              game["a"]["black"]["rating"]],
             [game["b"]["white"]["rating"],
              game["b"]["black"]["rating"]]
         ]
-        self.time_control = self.get_game_time_control(game)
-        if self.time_control not in [1800, 1200]:
-            return None 
-
         moves = [
             self.get_board_moves(game["a"]),
             self.get_board_moves(game["b"]),
@@ -81,7 +78,6 @@ class Parser(object):
 
     @staticmethod
     def get_board_times(board):
-        # Overwrites the first white and black move times to be equal to the time control
         board_times = [int(t) for t in board["time_stamps"].split(",")]
         return board_times
 
@@ -154,7 +150,7 @@ class Parser(object):
 
 
 class BughouseDataset(Dataset):
-    
+
     def __init__(self, path):
         self.path = path
         self.games = []
@@ -172,7 +168,7 @@ class BughouseDataset(Dataset):
         self.num_samples = 0
         self.game_idx = 0
 
-    def load_chunk(self, chunk_size=1024):
+    def load_chunk(self, chunk_size=2048):
         if not self.games:
             self.load() 
 
@@ -183,23 +179,32 @@ class BughouseDataset(Dataset):
         while len(self.board_data) < chunk_size and self.game_idx < len(self.games):
             parser = Parser(self.games[self.game_idx])
             self.game_idx += 1
-            if not parser:
+            if parser.time_control not in [1800, 1200]:
                 continue 
-
+            
             board = BughouseBoard(parser.time_control)
-            for board_num, move, time_left, move_time in parser.moves:
+            for i, (board_num, move, time_left, move_time) in enumerate(parser.moves):
                 board.update_time(board_num, time_left, move_time)
                 boards = board.get_boards()
 
+                # Define move planes (one hot encoding)
                 move_planes = np.zeros((2, len(POLICY_LABELS)))
                 if boards[board_num].turn == chess.WHITE:
                     move_planes[board_num][POLICY_LABELS.index(str(move))] = 1
                 else:
                     move_planes[board_num][POLICY_LABELS.index(mirrorMoveUCI(str(move)))] = 1
 
+                # Move for partner board 
+                if boards[board_num].turn != boards[1 - board_num].turn and i + 1 < len(parser.moves) and parser.moves[i + 1][0] != board_num:
+                    partner_move = parser.moves[i + 1][1]
+                    if boards[1 - board_num].turn == chess.WHITE:
+                        move_planes[1 - board_num][POLICY_LABELS.index(str(partner_move))] = 1
+                    else:
+                        move_planes[1 - board_num][POLICY_LABELS.index(mirrorMoveUCI(str(partner_move)))] = 1
+
                 turn = board.get_turn(board_num)
-                self.board_data.append(board2planes(board, turn if board_num == BOARD_A else not turn).flatten())
-                self.move_data.append(move_planes.flatten())
+                self.board_data.append(board2planes(board, turn if board_num == BOARD_A else not turn))
+                self.move_data.append(move_planes)
                 self.result_data.append(parser.get_result(board_num, turn))
                 board.push(board_num, move)
 
@@ -210,18 +215,21 @@ class BughouseDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        input_planes = torch.tensor(self.board_data[idx].reshape(NUM_BUGHOUSE_CHANNELS, BOARD_HEIGHT, 2 * BOARD_WIDTH), dtype=torch.float)
-        y_value = torch.tensor(self.result_data[idx], dtype=torch.float)
-        y_policy = torch.tensor(self.move_data[idx].reshape(2 * len(POLICY_LABELS)), dtype=torch.float)
-        return input_planes, (y_value, y_policy)
-    
+        return self.board_data[idx], self.move_data[idx], self.result_data[idx]
 
 if __name__ == '__main__':
-    with open("data/games.json") as f:
+    """with open("data/games.json") as f:
         games = json.load(f)
     print(games[0]["a"]["id"])
     parser = Parser(games[0])
     board = BughouseBoard(time_control=parser.time_control)
     for board_num, move, time_left, move_time in parser.moves:
         print(board_num, move, time_left, move_time)
-        board.update_time(board_num, time_left, move_time)
+        board.update_time(board_num, time_left, move_time)"""
+    generator = BughouseDataset("data/games.json")
+    from torch.utils.data import DataLoader
+
+    while generator.load_chunk():
+        train_loader = DataLoader(generator, batch_size=1024, shuffle=True, num_workers=8)
+        for board_planes, (y_policy, y_value) in train_loader:
+            print(board_planes.shape, y_policy.shape, y_value.shape)

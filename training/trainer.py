@@ -24,6 +24,8 @@ import orbax.checkpoint as ocp
 from torch.utils.data import DataLoader
 import chex
 
+from jax import grad, jit, vmap
+
 from constants import (BOARD_HEIGHT, BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS)
 
 class TrainState(train_state.TrainState):
@@ -81,7 +83,7 @@ class TrainerModule:
         self.init_params, self.init_batch_stats = variables['params'], variables['batch_stats']
         self.state = None
 
-    def init_optimizer(self, num_epochs, num_steps_per_epoch):
+    def init_optimizer(self):
         # Initialize learning rate schedule and optimizer
         if self.optimizer_name.lower() == 'adam':
             opt_class = optax.adam
@@ -92,37 +94,27 @@ class TrainerModule:
         else:
             assert False, f'Unknown optimizer "{opt_class}"'
 
-        # We decrease the learning rate by a factor of 0.1 after 60% and 85% of the training
-        lr_schedule = optax.piecewise_constant_schedule(
-            init_value=self.optimizer_hparams.pop('lr'),
-            boundaries_and_scales=
-                {int(num_steps_per_epoch*num_epochs*0.6): 0.1,
-                 int(num_steps_per_epoch*num_epochs*0.85): 0.1}
-        )
-        # Clip gradients at max value, and evt. apply weight decay
-        transf = [optax.clip(1.0)]
-        if opt_class == optax.sgd and 'weight_decay' in self.optimizer_hparams:  # wd is integrated in adamw
-            transf.append(optax.add_decayed_weights(self.optimizer_hparams.pop('weight_decay')))
-        optimizer = optax.chain(
-            *transf,
-            opt_class(lr_schedule, **self.optimizer_hparams)
-        )
         # Initialize training state
         self.state = TrainState.create(apply_fn=self.model.apply,
                                        params=self.init_params if self.state is None else self.state.params,
                                        batch_stats=self.init_batch_stats if self.state is None else self.state.batch_stats,
-                                       tx=optimizer)
+                                       tx=opt_class(**self.optimizer_hparams))
 
 
     def create_functions(self):
         # Function to calculate the classification loss and accuracy for a model
         def calculate_loss(params, batch_stats, batch, train):
             board_planes, policy, value = batch
+            batched_predict = vmap(self.model.apply, in_axes=(None, 0))
+            print(board_planes.shape)
             # Run model. During training, we need to update the BatchNorm statistics.
-            outs = self.model.apply({'params': params, 'batch_stats': batch_stats},
+            out = batched_predict({'params': params, 'batch_stats': batch_stats},
                                     board_planes,
                                     train=train,
                                     mutable=['batch_stats'] if train else False)
+            print(out)
+
+
             logits, new_model_state = outs if train else (outs, None)
             loss = optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
             acc = (logits.argmax(axis=-1) == labels).mean()
@@ -145,6 +137,13 @@ class TrainerModule:
         self.train_step = jax.jit(train_step)
         self.eval_step = jax.jit(eval_step)
 
+    def train_epoch(self, train_set, epoch):
+        # Train model for one epoch, and log avg loss and accuracy
+        while train_set.load_chunk():
+            train_loader = DataLoader(train_set, batch_size=1024, shuffle=True, num_workers=8)
+            for batch in train_loader:
+                self.state, loss, acc = self.train_step(self.state, list(map(lambda x: jnp.float32(x), batch)))
+
     def train_model(self, train_loader, val_loader, num_epochs=200):
         # Train model for defined number of epochs
         # We first need to create optimizer and the scheduler for the given number of epochs
@@ -160,17 +159,6 @@ class TrainerModule:
                     best_eval = eval_acc
                     self.save_model(step=epoch_idx)
                 self.logger.flush()
-
-    def train_epoch(self, train_loader, epoch):
-        # Train model for one epoch, and log avg loss and accuracy
-        metrics = defaultdict(list)
-        for batch in tqdm(train_loader, desc='Training', leave=False):
-            self.state, loss, acc = self.train_step(self.state, batch)
-            metrics['loss'].append(loss)
-            metrics['acc'].append(acc)
-        for key in metrics:
-            avg_val = np.stack(jax.device_get(metrics[key])).mean()
-            self.logger.add_scalar('train/'+key, avg_val, global_step=epoch)
 
     def eval_model(self, val_set):
         # Test model on all images of a data loader and return avg loss
@@ -209,8 +197,19 @@ trainer = TrainerModule(model_name="AZResNet", model_class=AZResnet, model_confi
     policy_channels=4, 
     value_channels=8,
     num_policy_labels=len(POLICY_LABELS)
-), optimizer_name='adam', optimizer_hparams={'lr': 0.0001}, input=jnp.ones((1024, BOARD_HEIGHT, BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS)))
+), optimizer_name='adam', optimizer_hparams={'learning_rate': 0.0001}, input=jnp.ones((BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS)))
 
-trainer.init_optimizer(7, 1)
-trainer.save_checkpoint()
-trainer.load_checkpoint()
+trainer.init_optimizer()
+
+from loader import BughouseDataset
+train_set = BughouseDataset("data/games.json")
+trainer.train_epoch(train_set, 1)
+
+from torch.utils.data import DataLoader
+while generator.load_chunk():
+    train_loader = DataLoader(generator, batch_size=1024, shuffle=True, num_workers=8)
+    for board_planes, (y_policy, y_value) in train_loader:
+        print(jnp.float32(board_planes))
+        #print(board_planes.shape, y_policy.shape, y_value.shape)
+#trainer.save_checkpoint()
+#trainer.load_checkpoint()

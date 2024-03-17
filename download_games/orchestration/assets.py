@@ -62,7 +62,7 @@ def archive() -> None:
                     for data in r:
                         f.write(data)
 
-@asset(dep=[archive])
+@asset(deps=[archive])
 def games(context: AssetExecutionContext):
     with open("data/leaderboard.txt") as f:
         players = [p.strip() for p in f.readlines()]
