@@ -562,4 +562,5 @@ POLICY_LABELS = ['a1b1', 'a1c1', 'a1d1', 'a1e1', 'a1f1', 'a1g1', 'a1h1', 'a1a2',
                  'Q@h8', ]
 
 if __name__ == '__main__':
-    print(BOARD_A)
+    print(len(POLICY_LABELS))
+
