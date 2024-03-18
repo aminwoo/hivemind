@@ -28,7 +28,7 @@ class ResidualBlock(nn.Module):
         y = nn.BatchNorm(use_running_average=not train)(y)
 
         if self.se: 
-            squeeze = jnp.mean(y, axis=(0, 1), keepdims=True)
+            squeeze = jnp.mean(y, axis=(1, 2), keepdims=True)
 
             excitation = nn.Dense(features=self.channels // self.se_ratio, use_bias=True)(squeeze)
             excitation = nn.relu(excitation)
@@ -44,6 +44,8 @@ class AZResnet(nn.Module):
 
     @nn.compact
     def __call__(self, x, train: bool):
+        batch_size = x.shape[0]
+
         x = nn.Conv(features=self.config.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
         x = nn.BatchNorm(use_running_average=not train)(x)
         x = mish(x)
@@ -59,7 +61,7 @@ class AZResnet(nn.Module):
         policy[0] = nn.Conv(features=self.config.policy_channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(policy[0])
         policy[0] = nn.BatchNorm(use_running_average=not train)(policy[0])
         policy[0] = mish(policy[0])
-        policy[0] = policy[0].reshape(-1)
+        policy[0] = policy[0].reshape((batch_size, -1))
         policy[0] = nn.Dense(features=self.config.num_policy_labels)(policy[0])
 
         policy[1] = nn.Conv(features=self.config.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
@@ -68,14 +70,14 @@ class AZResnet(nn.Module):
         policy[1] = nn.Conv(features=self.config.policy_channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(policy[1])
         policy[1] = nn.BatchNorm(use_running_average=not train)(policy[1])
         policy[1] = mish(policy[1])
-        policy[1] = policy[1].reshape(-1)
+        policy[1] = policy[1].reshape((batch_size, -1))
         policy[1] = nn.Dense(features=self.config.num_policy_labels)(policy[1])
 
         # value head
         value = nn.Conv(features=self.config.value_channels, kernel_size=(1, 1), use_bias=False)(x)
         value = nn.BatchNorm(use_running_average=not train)(value)
         value = mish(value)
-        value = value.reshape(-1)
+        value = value.reshape((batch_size, -1))
         value = nn.Dense(features=256)(value)
         value = mish(value)
         value = nn.Dense(features=1)(value)
@@ -91,8 +93,9 @@ if __name__ == '__main__':
         value_channels=8,
         num_policy_labels=2185,
     ))
-    batch = jnp.ones((8, 16, 32))
-    variables = model.init(jax.random.key(0), batch, train=True)
-    out = model.apply(variables, jnp.ones((8, 16, 32)), train=True, mutable=['batch_stats'])
+    x = jnp.ones((1024, 8, 16, 32))
+    variables = model.init(jax.random.key(0), x, train=True)
+    out = model.apply(variables, x, train=True, mutable=['batch_stats'])
     policy, value = out[0]
+    print(out[1])
     print(policy[0].shape, value.shape)

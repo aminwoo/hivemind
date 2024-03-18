@@ -201,11 +201,13 @@ class BughouseDataset(Dataset):
                         move_planes[1 - board_num][POLICY_LABELS.index(str(partner_move))] = 1
                     else:
                         move_planes[1 - board_num][POLICY_LABELS.index(mirrorMoveUCI(str(partner_move)))] = 1
+                else:
+                    move_planes[1 - board_num] = 0 # NO action
 
                 turn = board.get_turn(board_num)
                 self.board_data.append(board2planes(board, turn if board_num == BOARD_A else not turn))
                 self.move_data.append(move_planes)
-                self.result_data.append(parser.get_result(board_num, turn))
+                self.result_data.append(np.array([parser.get_result(board_num, turn)]))
                 board.push(board_num, move)
 
         self.num_samples = len(self.board_data)

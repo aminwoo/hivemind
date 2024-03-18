@@ -8,3 +8,7 @@ aiocfscrape
 chess
 dagster
 dagster-webserver
+jax[cuda12_pip]
+flax[all]
+optax
+wandb
