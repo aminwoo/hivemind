@@ -1,6 +1,6 @@
 import chess
 from chess.variant import CrazyhouseBoard
-from typing import List
+from typing import List, Any
 
 
 class BughouseBoard(object):
@@ -42,7 +42,7 @@ class BughouseBoard(object):
     def get_boards(self):
         return self.boards
 
-    def get_times(self, board_num) -> List[int]:
+    def get_times(self, board_num: int) -> List[int]:
         board = self.boards[board_num]
         other = self.boards[not board_num]
         return [
@@ -52,16 +52,16 @@ class BughouseBoard(object):
             self.times[not board_num][not other.turn],
         ]
 
-    def get_time_diff(self, side):
+    def get_time_diff(self, side: Any) -> int:
         return self.times[0][not side] - self.times[1][not side]
 
-    def update_time(self, board_num, time_left, move_time):
+    def update_time(self, board_num: int, time_left: int, move_time: int) -> None:
         board = self.boards[board_num]
         other = self.boards[not board_num]
         self.times[board_num][board.turn] = time_left
         self.times[not board_num][other.turn] -= move_time
 
-    def push(self, board_num, move):
+    def push(self, board_num: int, move: chess.Move) -> None:
         board = self.boards[board_num]
         other = self.boards[not board_num]
 
@@ -85,7 +85,7 @@ class BughouseBoard(object):
         self.move_history.append(move)
         self.board_order.append(board_num)
 
-    def pop(self):
+    def pop(self) -> None:
         last_move = self.move_history.pop()
         last_board = self.board_order.pop()
 

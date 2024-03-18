@@ -7,6 +7,8 @@ import asyncio
 from aiocfscrape import CloudflareScraper
 from dagster import asset, AssetExecutionContext
 
+from download import batch_download
+
 
 headers = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -23,7 +25,7 @@ def players() -> None:
     r = requests.get("https://api.chess.com/pub/leaderboards", headers=headers)
     players = [user["username"] for user in r.json()["live_bughouse"]]
 
-    with open("../data/leaderboard.txt", "w") as f:
+    with open("../data/leaderboard.txt", "w+") as f:
         f.write("\n".join(players))
 
 @asset(deps=[players])
@@ -31,17 +33,15 @@ def archive_urls() -> None:
     with open("../data/leaderboard.txt") as f:
         players = [p.strip() for p in f.readlines()]
     
-    path = "../data/archive_urls/"
-    os.makedirs(path, exist_ok=True)
+    os.makedirs("../data/archive_urls/", exist_ok=True)
 
+    urls = [] 
+    paths = [] 
     for player in players:
-        url = f"https://api.chess.com/pub/player/{player}/games/archives"
+        urls.append(f"https://api.chess.com/pub/player/{player}/games/archives")
+        paths.append(f"../data/archive_urls/{player}.json")
 
-        r = requests.get(url, headers=headers)
-
-        with open(path + f"{player}.json", "wb") as f:
-            for data in r:
-                f.write(data)
+    batch_download(urls, paths)
 
 @asset(deps=[archive_urls])
 def archive() -> None: 
@@ -49,6 +49,10 @@ def archive() -> None:
         players = [p.strip() for p in f.readlines()]
 
     os.makedirs("../data/archives", exist_ok=True)
+    
+    urls = [] 
+    paths = [] 
+
     for player in players:
         with open(f"../data/archive_urls/{player}.json") as f:
             player_urls = json.load(f)["archives"]
@@ -57,10 +61,10 @@ def archive() -> None:
         for url in player_urls:
             m, y, *_ = url.split('/')[::-1]
             if int(y) >= 2016: 
-                r = requests.get(url, headers=headers)
-                with open(f"../data/archives/{player}/{y}_{m}.json", "wb") as f:
-                    for data in r:
-                        f.write(data)
+                urls.append(url)
+                paths.append(f"../data/archives/{player}/{y}_{m}.json")
+                
+    batch_download(urls, paths)
 
 @asset(deps=[archive])
 def games(context: AssetExecutionContext):
@@ -76,7 +80,6 @@ def games(context: AssetExecutionContext):
         game_ids.add(game["b"]["id"])
 
     player_archive_base_glob = "../data/archives/{0}/*.json"
-    total_games = 0
 
     for player in players:
         player_archive_glob = player_archive_base_glob.format(player)
@@ -97,8 +100,7 @@ def games(context: AssetExecutionContext):
                         w_rating = raw_game["white"]["rating"]
                         b_rating = raw_game["black"]["rating"]
 
-                        if w_rating >= 2000 and b_rating >= 2000:
-                            total_games += 1
+                        if w_rating > 2000 and b_rating > 2000:
                             game_id = raw_game["url"].split("/")[-1]
                             url = "https://www.chess.com/callback/live/game/{0}".format(game_id)
                             if game_id in game_ids:
@@ -107,6 +109,9 @@ def games(context: AssetExecutionContext):
                             obj = json.loads(asyncio.run(download_game(url)))
                             partner_game_url = 'https://www.chess.com/callback/live/game/{0}'.format(obj['game']['partnerGameId'])
                             partner_game = json.loads(asyncio.run(download_game(partner_game_url)))
+                            if partner_game["white"]["rating"] > 2000 and partner_game["black"]["rating"]  > 2000:
+                                continue
+
                             game = {'a': obj['game'], 'b': partner_game['game']}
                             if game['a']['id'] > game['b']['id']:
                                 game['a'], game['b'] = game['b'], game['a']

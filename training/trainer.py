@@ -90,6 +90,8 @@ class TrainerModule:
             opt_class = optax.adamw
         elif self.optimizer_name.lower() == "sgd":
             opt_class = optax.sgd
+        elif self.optimizer_name.lower() == "lion":
+            opt_class = optax.lion
         else:
             assert False, f'Unknown optimizer "{opt_class}"'
 
@@ -115,6 +117,7 @@ class TrainerModule:
                     train=train,
                     mutable=["batch_stats"],
                 )
+                print(policy_logits[0].shape, y_policy[:, 0, :].shape)
                 policy_logits, value_logits = logits
                 policy_loss = optax.softmax_cross_entropy(
                     logits=policy_logits[0], labels=y_policy[:, 0, :]
@@ -151,7 +154,6 @@ class TrainerModule:
             for batch in train_loader:
                 batch = list(map(lambda x: np.array(x), batch))
                 self.state, loss = self.train_step(self.state, batch)
-                print(loss)
 
     def train_model(self, train_loader, val_loader, num_epochs=200):
         # Train model for defined number of epochs

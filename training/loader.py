@@ -3,6 +3,7 @@ import numpy as np
 from tcn import tcn_decode
 from board import BughouseBoard
 import json
+import gzip
 
 import torch
 from torch.utils.data import Dataset
@@ -169,14 +170,14 @@ class BughouseDataset(Dataset):
         self.game_idx = 0
 
     def load(self):
-        with open(self.path) as f:
+        with gzip.open(self.path) as f:
             self.games = json.load(f)
 
     def reset(self):
         self.num_samples = 0
         self.game_idx = 0
 
-    def load_chunk(self, chunk_size=2048):
+    def load_chunk(self, chunk_size=204800):
         if not self.games:
             self.load()
 

@@ -8,6 +8,7 @@ with open('data/games.json') as f:
 print(len(games))
 ids = set()
 
+min_rating = 2100
 ratings = [] 
 new_games = [] 
 good = 0
@@ -16,7 +17,7 @@ for game in games:
     ratings.append(game['a']['black']['rating'])
     ratings.append(game['b']['white']['rating'])
     ratings.append(game['b']['black']['rating'])
-    if game['a']['white']['rating'] > 2000 and game['a']['black']['rating'] > 2000 and game['b']['white']['rating'] > 2000  and game['b']['black']['rating'] > 2000:
+    if game['a']['white']['rating'] > min_rating and game['a']['black']['rating'] > min_rating and game['b']['white']['rating'] > min_rating  and game['b']['black']['rating'] > min_rating:
         good += 1
         new_games.append(game)
     if game['a']['white']['rating'] > 5000 or game['a']['black']['rating'] > 5000 or game['b']['white']['rating'] > 5000  or game['b']['black']['rating'] > 5000:
