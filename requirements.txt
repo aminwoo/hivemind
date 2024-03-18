@@ -12,3 +12,4 @@ jax[cuda12_pip]
 flax[all]
 optax
 wandb
+black

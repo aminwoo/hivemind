@@ -23,15 +23,15 @@ def players() -> None:
     r = requests.get("https://api.chess.com/pub/leaderboards", headers=headers)
     players = [user["username"] for user in r.json()["live_bughouse"]]
 
-    with open("data/leaderboard.txt", "w") as f:
+    with open("../data/leaderboard.txt", "w") as f:
         f.write("\n".join(players))
 
 @asset(deps=[players])
 def archive_urls() -> None:
-    with open("data/leaderboard.txt") as f:
+    with open("../data/leaderboard.txt") as f:
         players = [p.strip() for p in f.readlines()]
     
-    path = "data/archive_urls/"
+    path = "../data/archive_urls/"
     os.makedirs(path, exist_ok=True)
 
     for player in players:
@@ -45,29 +45,29 @@ def archive_urls() -> None:
 
 @asset(deps=[archive_urls])
 def archive() -> None: 
-    with open("data/leaderboard.txt") as f:
+    with open("../data/leaderboard.txt") as f:
         players = [p.strip() for p in f.readlines()]
 
-    os.makedirs("data/archives", exist_ok=True)
+    os.makedirs("../data/archives", exist_ok=True)
     for player in players:
-        with open(f"data/archive_urls/{player}.json") as f:
+        with open(f"../data/archive_urls/{player}.json") as f:
             player_urls = json.load(f)["archives"]
 
-        os.makedirs(f"data/archives/{player}/", exist_ok=True)
+        os.makedirs(f"../data/archives/{player}/", exist_ok=True)
         for url in player_urls:
             m, y, *_ = url.split('/')[::-1]
             if int(y) >= 2016: 
                 r = requests.get(url, headers=headers)
-                with open(f"data/archives/{player}/{y}_{m}.json", "wb") as f:
+                with open(f"../data/archives/{player}/{y}_{m}.json", "wb") as f:
                     for data in r:
                         f.write(data)
 
 @asset(deps=[archive])
 def games(context: AssetExecutionContext):
-    with open("data/leaderboard.txt") as f:
+    with open("../data/leaderboard.txt") as f:
         players = [p.strip() for p in f.readlines()]
 
-    with open("data/games.json") as f:
+    with open("../data/games.json") as f:
         games = json.load(f)
 
     game_ids = set()
@@ -75,7 +75,7 @@ def games(context: AssetExecutionContext):
         game_ids.add(game["a"]["id"])
         game_ids.add(game["b"]["id"])
 
-    player_archive_base_glob = "data/archives/{0}/*.json"
+    player_archive_base_glob = "../data/archives/{0}/*.json"
     total_games = 0
 
     for player in players:
@@ -135,5 +135,5 @@ def games(context: AssetExecutionContext):
                             game_ids.add(game['b']['id'])
 
     context.log(f"Total games: {len(games)}")
-    with open("data/games.json", "w") as f:
+    with open("../data/games.json", "w") as f:
         json.dump(games, f)

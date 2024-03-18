@@ -3,10 +3,10 @@ import chess
 from constants import POLICY_LABELS
 
 
-columns = 'abcdefgh'
-rows = '12345678'
-promotions = 'nrbq'
-drops = 'pnrbq'
+columns = "abcdefgh"
+rows = "12345678"
+promotions = "nrbq"
+drops = "pnrbq"
 
 col_index = {columns[i]: i for i in range(len(columns))}
 row_index = {rows[i]: i for i in range(len(rows))}
@@ -30,8 +30,16 @@ def valid_index(i):
 
 def queen_move(start, direction, steps):
     i = position_to_index(start)
-    dir_vectors = {'N': (0, 1), 'NE': (1, 1), 'E': (1, 0), 'SE': (1, -1),
-                   'S': (0, -1), 'SW': (-1, -1), 'W': (-1, 0), 'NW': (-1, 1)}
+    dir_vectors = {
+        "N": (0, 1),
+        "NE": (1, 1),
+        "E": (1, 0),
+        "SE": (1, -1),
+        "S": (0, -1),
+        "SW": (-1, -1),
+        "W": (-1, 0),
+        "NW": (-1, 1),
+    }
     v = dir_vectors[direction]
     i = i[0] + v[0] * steps, i[1] + v[1] * steps
     if not valid_index(i):
@@ -41,8 +49,16 @@ def queen_move(start, direction, steps):
 
 def knight_move(start, direction, steps):
     i = position_to_index(start)
-    dir_vectors = {'N': (1, 2), 'NE': (2, 1), 'E': (2, -1), 'SE': (1, -2),
-                   'S': (-1, -2), 'SW': (-2, -1), 'W': (-2, 1), 'NW': (-1, 2)}
+    dir_vectors = {
+        "N": (1, 2),
+        "NE": (2, 1),
+        "E": (2, -1),
+        "SE": (1, -2),
+        "S": (-1, -2),
+        "SW": (-2, -1),
+        "W": (-2, 1),
+        "NW": (-1, 2),
+    }
     v = dir_vectors[direction]
     i = i[0] + v[0] * steps, i[1] + v[1] * steps
     if not valid_index(i):
@@ -56,48 +72,52 @@ def mirrorMoveUCI(uci_move):
 
 
 def mirrorMove(move):
-    return chess.Move(chess.square_mirror(move.from_square), chess.square_mirror(move.to_square), move.promotion,
-                      move.drop)
+    return chess.Move(
+        chess.square_mirror(move.from_square),
+        chess.square_mirror(move.to_square),
+        move.promotion,
+        move.drop,
+    )
 
 
-def make_map(kind='matrix'):
+def make_map(kind="matrix"):
     # 56 planes of queen moves
     moves = []
-    for direction in ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']:
+    for direction in ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]:
         for steps in range(1, 8):
             for r0 in rows:
                 for c0 in columns:
                     start = c0 + r0
                     end = queen_move(start, direction, steps)
                     if end is None:
-                        moves.append('illegal')
+                        moves.append("illegal")
                     else:
                         moves.append(start + end)
 
     # 8 planes of knight moves
-    for direction in ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']:
+    for direction in ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]:
         for r0 in rows:
             for c0 in columns:
                 start = c0 + r0
                 end = knight_move(start, direction, 1)
                 if end is None:
-                    moves.append('illegal')
+                    moves.append("illegal")
                 else:
                     moves.append(start + end)
 
     # 12 promotions
-    for direction in ['NW', 'N', 'NE']:
+    for direction in ["NW", "N", "NE"]:
         for promotion in promotions:
             for r0 in rows:
                 for c0 in columns:
                     # Promotion only in the second last rank
-                    if r0 != '7':
-                        moves.append('illegal')
+                    if r0 != "7":
+                        moves.append("illegal")
                         continue
                     start = c0 + r0
                     end = queen_move(start, direction, 1)
                     if end is None:
-                        moves.append('illegal')
+                        moves.append("illegal")
                     else:
                         moves.append(start + end + promotion)
 
@@ -106,27 +126,27 @@ def make_map(kind='matrix'):
         for r0 in rows:
             for c0 in columns:
                 start = c0 + r0
-                #print(r0)
+                # print(r0)
                 if drop == "p" and r0 in ["1", "8"]:
-                    moves.append('illegal')
+                    moves.append("illegal")
                 else:
                     moves.append("{}@{}".format(drop.upper(), start))
 
     for m in POLICY_LABELS:
         if m not in moves:
-            raise ValueError('Missing move: {}'.format(m))
+            raise ValueError("Missing move: {}".format(m))
 
     az_to_lc0 = np.zeros((81 * 8 * 8, len(POLICY_LABELS)), dtype=float)
     indices = []
     legal_moves = 0
     for e, m in enumerate(moves):
-        if m == 'illegal':
+        if m == "illegal":
             indices.append(-1)
             continue
         legal_moves += 1
         # Check for missing moves
         if m not in POLICY_LABELS:
-            raise ValueError('Missing move: {}'.format(m))
+            raise ValueError("Missing move: {}".format(m))
         i = POLICY_LABELS.index(m)
         indices.append(i)
         az_to_lc0[e][i] = 1
@@ -134,15 +154,15 @@ def make_map(kind='matrix'):
     assert legal_moves == len(POLICY_LABELS)
     assert np.sum(az_to_lc0) == legal_moves
 
-    if kind == 'matrix':
+    if kind == "matrix":
         return az_to_lc0
-    elif kind == 'index':
+    elif kind == "index":
         return indices
 
 
 if __name__ == "__main__":
     print(mirrorMoveUCI("e7e5"))
-    #az_to_lc0 = np.ravel(make_map('index'))
-    #print(len(POLICY_LABELS))
-    #print(len(az_to_lc0))
-    #print(np.sum(az_to_lc0 == -1))
+    # az_to_lc0 = np.ravel(make_map('index'))
+    # print(len(POLICY_LABELS))
+    # print(len(az_to_lc0))
+    # print(np.sum(az_to_lc0 == -1))

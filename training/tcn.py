@@ -4,18 +4,26 @@ import chess
 
 def _move_dict_to_obj(move_dict):
     move_obj = chess.Move(
-        from_square=chess.parse_square(move_dict["to_square"])
-        if move_dict["from_square"] is None
-        else chess.parse_square(move_dict["from_square"]),
-        to_square=None
-        if move_dict["to_square"] is None
-        else chess.parse_square(move_dict["to_square"]),
-        drop=None
-        if move_dict["drop"] is None
-        else chess.Piece.from_symbol(move_dict["drop"]).piece_type,
-        promotion=None
-        if move_dict["promotion"] is None
-        else chess.Piece.from_symbol(move_dict["promotion"]).piece_type,
+        from_square=(
+            chess.parse_square(move_dict["to_square"])
+            if move_dict["from_square"] is None
+            else chess.parse_square(move_dict["from_square"])
+        ),
+        to_square=(
+            None
+            if move_dict["to_square"] is None
+            else chess.parse_square(move_dict["to_square"])
+        ),
+        drop=(
+            None
+            if move_dict["drop"] is None
+            else chess.Piece.from_symbol(move_dict["drop"]).piece_type
+        ),
+        promotion=(
+            None
+            if move_dict["promotion"] is None
+            else chess.Piece.from_symbol(move_dict["promotion"]).piece_type
+        ),
     )
     return move_obj
 

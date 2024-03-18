@@ -4,7 +4,9 @@ import jax.numpy as jnp
 import flax.linen as nn
 
 
-def mish(x): return x * jnp.tanh(jax.nn.softplus(x))
+def mish(x):
+    return x * jnp.tanh(jax.nn.softplus(x))
+
 
 @dataclass
 class AZResnetConfig:
@@ -14,6 +16,7 @@ class AZResnetConfig:
     value_channels: int
     num_policy_labels: int
 
+
 class ResidualBlock(nn.Module):
     channels: int
     se: bool
@@ -21,16 +24,22 @@ class ResidualBlock(nn.Module):
 
     @nn.compact
     def __call__(self, x, train: bool):
-        y = nn.Conv(features=self.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
+        y = nn.Conv(
+            features=self.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False
+        )(x)
         y = nn.BatchNorm(use_running_average=not train)(y)
         y = mish(y)
-        y = nn.Conv(features=self.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
+        y = nn.Conv(
+            features=self.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False
+        )(x)
         y = nn.BatchNorm(use_running_average=not train)(y)
 
-        if self.se: 
+        if self.se:
             squeeze = jnp.mean(y, axis=(1, 2), keepdims=True)
 
-            excitation = nn.Dense(features=self.channels // self.se_ratio, use_bias=True)(squeeze)
+            excitation = nn.Dense(
+                features=self.channels // self.se_ratio, use_bias=True
+            )(squeeze)
             excitation = nn.relu(excitation)
             excitation = nn.Dense(features=self.channels, use_bias=True)(excitation)
             excitation = nn.hard_sigmoid(excitation)
@@ -39,6 +48,7 @@ class ResidualBlock(nn.Module):
 
         return mish(x + y)
 
+
 class AZResnet(nn.Module):
     config: AZResnetConfig
 
@@ -46,7 +56,12 @@ class AZResnet(nn.Module):
     def __call__(self, x, train: bool):
         batch_size = x.shape[0]
 
-        x = nn.Conv(features=self.config.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
+        x = nn.Conv(
+            features=self.config.channels,
+            kernel_size=(3, 3),
+            padding=(1, 1),
+            use_bias=False,
+        )(x)
         x = nn.BatchNorm(use_running_average=not train)(x)
         x = mish(x)
 
@@ -55,26 +70,48 @@ class AZResnet(nn.Module):
 
         # policy head
         policy = [None, None]
-        policy[0] = nn.Conv(features=self.config.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
+        policy[0] = nn.Conv(
+            features=self.config.channels,
+            kernel_size=(3, 3),
+            padding=(1, 1),
+            use_bias=False,
+        )(x)
         policy[0] = nn.BatchNorm(use_running_average=not train)(policy[0])
         policy[0] = mish(policy[0])
-        policy[0] = nn.Conv(features=self.config.policy_channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(policy[0])
+        policy[0] = nn.Conv(
+            features=self.config.policy_channels,
+            kernel_size=(3, 3),
+            padding=(1, 1),
+            use_bias=False,
+        )(policy[0])
         policy[0] = nn.BatchNorm(use_running_average=not train)(policy[0])
         policy[0] = mish(policy[0])
         policy[0] = policy[0].reshape((batch_size, -1))
         policy[0] = nn.Dense(features=self.config.num_policy_labels)(policy[0])
 
-        policy[1] = nn.Conv(features=self.config.channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(x)
+        policy[1] = nn.Conv(
+            features=self.config.channels,
+            kernel_size=(3, 3),
+            padding=(1, 1),
+            use_bias=False,
+        )(x)
         policy[1] = nn.BatchNorm(use_running_average=not train)(policy[1])
         policy[1] = mish(policy[1])
-        policy[1] = nn.Conv(features=self.config.policy_channels, kernel_size=(3, 3), padding=(1, 1), use_bias=False)(policy[1])
+        policy[1] = nn.Conv(
+            features=self.config.policy_channels,
+            kernel_size=(3, 3),
+            padding=(1, 1),
+            use_bias=False,
+        )(policy[1])
         policy[1] = nn.BatchNorm(use_running_average=not train)(policy[1])
         policy[1] = mish(policy[1])
         policy[1] = policy[1].reshape((batch_size, -1))
         policy[1] = nn.Dense(features=self.config.num_policy_labels)(policy[1])
 
         # value head
-        value = nn.Conv(features=self.config.value_channels, kernel_size=(1, 1), use_bias=False)(x)
+        value = nn.Conv(
+            features=self.config.value_channels, kernel_size=(1, 1), use_bias=False
+        )(x)
         value = nn.BatchNorm(use_running_average=not train)(value)
         value = mish(value)
         value = value.reshape((batch_size, -1))
@@ -85,17 +122,20 @@ class AZResnet(nn.Module):
 
         return policy, value
 
-if __name__ == '__main__':
-    model = AZResnet(AZResnetConfig(
-        num_blocks=15,
-        channels=256,
-        policy_channels=4, 
-        value_channels=8,
-        num_policy_labels=2185,
-    ))
+
+if __name__ == "__main__":
+    model = AZResnet(
+        AZResnetConfig(
+            num_blocks=15,
+            channels=256,
+            policy_channels=4,
+            value_channels=8,
+            num_policy_labels=2185,
+        )
+    )
     x = jnp.ones((1024, 8, 16, 32))
     variables = model.init(jax.random.key(0), x, train=True)
-    out = model.apply(variables, x, train=True, mutable=['batch_stats'])
+    out = model.apply(variables, x, train=True, mutable=["batch_stats"])
     policy, value = out[0]
     print(out[1])
     print(policy[0].shape, value.shape)

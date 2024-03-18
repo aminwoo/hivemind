@@ -10,7 +10,13 @@ from torch.utils.data import Dataset
 from board2planes import board2planes
 from move2planes import mirrorMoveUCI
 from constants import (
-    POLICY_LABELS, BOARD_HEIGHT, NUM_BUGHOUSE_CHANNELS, BOARD_WIDTH, BOARD_A, BOARD_B)
+    POLICY_LABELS,
+    BOARD_HEIGHT,
+    NUM_BUGHOUSE_CHANNELS,
+    BOARD_WIDTH,
+    BOARD_A,
+    BOARD_B,
+)
 
 
 class Parser(object):
@@ -19,10 +25,8 @@ class Parser(object):
         self.result = self.get_game_result(game)
         self.time_control = self.get_game_time_control(game)
         self.ratings = [
-            [game["a"]["white"]["rating"],
-             game["a"]["black"]["rating"]],
-            [game["b"]["white"]["rating"],
-             game["b"]["black"]["rating"]]
+            [game["a"]["white"]["rating"], game["a"]["black"]["rating"]],
+            [game["b"]["white"]["rating"], game["b"]["black"]["rating"]],
         ]
         moves = [
             self.get_board_moves(game["a"]),
@@ -40,7 +44,9 @@ class Parser(object):
         self.moves = self.verify_move_order(move_order, moves, times, deltas)
 
     def get_result(self, board_num, turn):
-        if (board_num == BOARD_A and turn == chess.WHITE) or (board_num == BOARD_B and turn == chess.BLACK):
+        if (board_num == BOARD_A and turn == chess.WHITE) or (
+            board_num == BOARD_B and turn == chess.BLACK
+        ):
             return self.result
         return -self.result
 
@@ -134,7 +140,9 @@ class Parser(object):
                 turn = board.boards[board_num].turn
                 time_left = times[board_num][0]
                 move_time = deltas[board_num][turn][0]
-                if board_num == stuck_board or (move.drop and pockets[turn].count(move.drop) <= 0):
+                if board_num == stuck_board or (
+                    move.drop and pockets[turn].count(move.drop) <= 0
+                ):
                     stuck_board = board_num
                     continue
                 else:
@@ -170,7 +178,7 @@ class BughouseDataset(Dataset):
 
     def load_chunk(self, chunk_size=2048):
         if not self.games:
-            self.load() 
+            self.load()
 
         self.board_data = []
         self.move_data = []
@@ -180,8 +188,8 @@ class BughouseDataset(Dataset):
             parser = Parser(self.games[self.game_idx])
             self.game_idx += 1
             if parser.time_control not in [1800, 1200]:
-                continue 
-            
+                continue
+
             board = BughouseBoard(parser.time_control)
             for i, (board_num, move, time_left, move_time) in enumerate(parser.moves):
                 board.update_time(board_num, time_left, move_time)
@@ -192,20 +200,32 @@ class BughouseDataset(Dataset):
                 if boards[board_num].turn == chess.WHITE:
                     move_planes[board_num][POLICY_LABELS.index(str(move))] = 1
                 else:
-                    move_planes[board_num][POLICY_LABELS.index(mirrorMoveUCI(str(move)))] = 1
+                    move_planes[board_num][
+                        POLICY_LABELS.index(mirrorMoveUCI(str(move)))
+                    ] = 1
 
-                # Move for partner board 
-                if boards[board_num].turn != boards[1 - board_num].turn and i + 1 < len(parser.moves) and parser.moves[i + 1][0] != board_num:
+                # Move for partner board
+                if (
+                    boards[board_num].turn != boards[1 - board_num].turn
+                    and i + 1 < len(parser.moves)
+                    and parser.moves[i + 1][0] != board_num
+                ):
                     partner_move = parser.moves[i + 1][1]
                     if boards[1 - board_num].turn == chess.WHITE:
-                        move_planes[1 - board_num][POLICY_LABELS.index(str(partner_move))] = 1
+                        move_planes[1 - board_num][
+                            POLICY_LABELS.index(str(partner_move))
+                        ] = 1
                     else:
-                        move_planes[1 - board_num][POLICY_LABELS.index(mirrorMoveUCI(str(partner_move)))] = 1
+                        move_planes[1 - board_num][
+                            POLICY_LABELS.index(mirrorMoveUCI(str(partner_move)))
+                        ] = 1
                 else:
-                    move_planes[1 - board_num] = 0 # NO action
+                    move_planes[1 - board_num] = 0  # NO action
 
                 turn = board.get_turn(board_num)
-                self.board_data.append(board2planes(board, turn if board_num == BOARD_A else not turn))
+                self.board_data.append(
+                    board2planes(board, turn if board_num == BOARD_A else not turn)
+                )
                 self.move_data.append(move_planes)
                 self.result_data.append(np.array([parser.get_result(board_num, turn)]))
                 board.push(board_num, move)
@@ -219,7 +239,8 @@ class BughouseDataset(Dataset):
     def __getitem__(self, idx):
         return self.board_data[idx], self.move_data[idx], self.result_data[idx]
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     """with open("data/games.json") as f:
         games = json.load(f)
     print(games[0]["a"]["id"])
@@ -232,6 +253,8 @@ if __name__ == '__main__':
     from torch.utils.data import DataLoader
 
     while generator.load_chunk():
-        train_loader = DataLoader(generator, batch_size=1024, shuffle=True, num_workers=8)
+        train_loader = DataLoader(
+            generator, batch_size=1024, shuffle=True, num_workers=8
+        )
         for board_planes, (y_policy, y_value) in train_loader:
             print(board_planes.shape, y_policy.shape, y_value.shape)

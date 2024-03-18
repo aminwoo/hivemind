@@ -1,53 +1,56 @@
 import chess
 from chess.variant import CrazyhouseBoard
+from typing import List
 
 
 class BughouseBoard(object):
-    def __init__(self, time_control=1800):
+    def __init__(self, time_control: int = 1800) -> None:
         self.boards = [CrazyhouseBoard(), CrazyhouseBoard()]
         self.times = [[time_control for _ in range(2)] for _ in range(2)]
         self.board_order = []
         self.move_history = []
         self.reset()
 
-    def reset(self):
+    def reset(self) -> None:
         colors = [chess.BLACK, chess.WHITE]
         for board in self.boards:
             board.set_fen(chess.STARTING_FEN)
             for color in colors:
                 board.pockets[color].reset()
 
-    def set_time(self, times):
+    def set_time(self, times: List[int]) -> None:
         self.times = times
 
-    def set_fen(self, fen):
+    def set_fen(self, fen: str) -> None:
         fen = fen.split(" | ")
         self.boards[0].set_fen(fen[0])
         self.boards[1].set_fen(fen[1])
 
-    def get_fens(self):
+    def get_fens(self) -> List[str]:
         return (
             self.boards[0].fen(),
             self.boards[1].fen(),
         )
 
-    def get_turn(self, board_num):
+    def get_turn(self, board_num: int) -> int:
         return self.boards[board_num].turn
 
-    def swap_boards(self):
+    def swap_boards(self) -> None:
         self.boards = self.boards[::-1]
         self.times = self.times[::-1]
-        
+
     def get_boards(self):
         return self.boards
 
-    def get_times(self, board_num):
+    def get_times(self, board_num) -> List[int]:
         board = self.boards[board_num]
         other = self.boards[not board_num]
-        return [self.times[board_num][board.turn],
-                self.times[board_num][not board.turn],
-                self.times[not board_num][other.turn],
-                self.times[not board_num][not other.turn]]
+        return [
+            self.times[board_num][board.turn],
+            self.times[board_num][not board.turn],
+            self.times[not board_num][other.turn],
+            self.times[not board_num][not other.turn],
+        ]
 
     def get_time_diff(self, side):
         return self.times[0][not side] - self.times[1][not side]
@@ -99,13 +102,3 @@ class BughouseBoard(object):
                 captured = chess.PAWN
             partner_pocket = other.pockets[not board.turn]
             partner_pocket.remove(captured)
-
-
-if __name__ == '__main__':
-    board = BughouseBoard()
-    board.push(0, chess.Move.from_uci('e2e4'))
-    board.push(0, chess.Move.from_uci('e7e5'))
-    board.push(0, chess.Move.from_uci('e4e5'))
-    print(board.boards[0].pockets, board.boards[1].pockets)
-    board.pop()
-    print(board.boards[0].pockets, board.boards[1].pockets)
