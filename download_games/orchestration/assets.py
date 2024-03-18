@@ -15,7 +15,7 @@ headers = {
                   "(KHTML, like Gecko) Chrome/109.0.0.0"
 }
 
-async def download_game(url):
+async def download_game(url: str) -> str:
     async with CloudflareScraper() as session:
         async with session.get(url) as resp:
             return await resp.text()
@@ -67,7 +67,7 @@ def archive() -> None:
     batch_download(urls, paths)
 
 @asset(deps=[archive])
-def games(context: AssetExecutionContext):
+def games(context: AssetExecutionContext) -> None:
     with open("../data/leaderboard.txt") as f:
         players = [p.strip() for p in f.readlines()]
 

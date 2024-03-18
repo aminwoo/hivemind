@@ -41,6 +41,7 @@ class Parser(object):
             self.get_board_deltas(times[0]),
             self.get_board_deltas(times[1]),
         ]
+
         move_order = self.get_naive_move_order(deltas)
         self.moves = self.verify_move_order(move_order, moves, times, deltas)
 
@@ -66,6 +67,31 @@ class Parser(object):
             chess.BLACK: black_deltas,
         }
         return board_deltas
+    
+    @staticmethod
+    def get_naive_move_order(deltas):
+        # Get time_deltas
+        a_deltas_w = np.array(deltas[BOARD_A][chess.WHITE])
+        a_deltas_b = np.array(deltas[BOARD_A][chess.BLACK])
+        b_deltas_w = np.array(deltas[BOARD_B][chess.WHITE])
+        b_deltas_b = np.array(deltas[BOARD_B][chess.BLACK])
+
+        # Interleave player time deltas
+        a_deltas = np.empty(a_deltas_w.size + a_deltas_b.size)
+        a_deltas[0::2] = a_deltas_w
+        a_deltas[1::2] = a_deltas_b
+        b_deltas = np.empty(b_deltas_w.size + b_deltas_b.size)
+        b_deltas[0::2] = b_deltas_w
+        b_deltas[1::2] = b_deltas_b
+
+        # Get accumulated player times
+        a_times = np.cumsum(a_deltas)
+        b_times = np.cumsum(b_deltas)
+
+        all_times = np.concatenate((a_times, b_times))
+        all_indices = np.argsort(all_times)
+        move_order = np.digitize(all_indices, [0, a_times.shape[0]]) - 1
+        return move_order
 
     @staticmethod
     def get_game_result(game):
@@ -96,31 +122,6 @@ class Parser(object):
             time_control = 9999
 
         return time_control
-
-    @staticmethod
-    def get_naive_move_order(deltas):
-        # get time_deltas
-        a_deltas_b = np.array(deltas[BOARD_A][chess.BLACK])
-        a_deltas_w = np.array(deltas[BOARD_A][chess.WHITE])
-        b_deltas_b = np.array(deltas[BOARD_B][chess.BLACK])
-        b_deltas_w = np.array(deltas[BOARD_B][chess.WHITE])
-
-        # interleave player time deltas
-        a_deltas = np.empty(a_deltas_w.size + a_deltas_b.size)
-        a_deltas[0::2] = a_deltas_w
-        a_deltas[1::2] = a_deltas_b
-        b_deltas = np.empty(b_deltas_w.size + b_deltas_b.size)
-        b_deltas[0::2] = b_deltas_w
-        b_deltas[1::2] = b_deltas_b
-
-        # get accumulated player times
-        a_times = np.cumsum(a_deltas)
-        b_times = np.cumsum(b_deltas)
-
-        all_times = np.concatenate((a_times, b_times))
-        all_indices = np.argsort(all_times)
-        move_order = np.digitize(all_indices, [0, a_times.shape[0]]) - 1
-        return move_order
 
     @staticmethod
     def verify_move_order(move_order, moves, times, deltas):
