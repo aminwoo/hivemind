@@ -10,11 +10,8 @@ from loader import Parser
 from constants import POLICY_LABELS, BOARD_HEIGHT, BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS, BOARD_A
 
 
-def save_numpy(path, x):
-    with open(path, 'wb') as f:
-        np.save(f, x)
-
-def generate_planes(samples=512000): 
+def generate_planes(samples=409600): 
+    os.makedirs(f"data/training_data", exist_ok=True)
     with open('data/games.json') as f:
         games = json.load(f)
     
@@ -23,8 +20,8 @@ def generate_planes(samples=512000):
     idx = 0 
     checkpoint = 0
     board_planes = np.zeros((samples, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS))
-    move_planes = np.zeros((samples, 2, len(POLICY_LABELS)))
-    value_planes = np.zeros((samples, 1))
+    move_planes = np.zeros((samples, 2))
+    value_planes = np.zeros((samples))
     
     for game in games:
         try:
@@ -39,11 +36,9 @@ def generate_planes(samples=512000):
 
                 # One hot encoding for expected move
                 if boards[board_num].turn == chess.WHITE:
-                    move_planes[idx][board_num][POLICY_LABELS.index(str(move))] = 1
+                    move_planes[idx][board_num] = POLICY_LABELS.index(str(move))
                 else:
-                    move_planes[idx][board_num][
-                        POLICY_LABELS.index(mirrorMoveUCI(str(move)))
-                    ] = 1
+                    move_planes[idx][board_num] = POLICY_LABELS.index(mirrorMoveUCI(str(move)))
 
                 # Move for partner board
                 if (
@@ -53,13 +48,9 @@ def generate_planes(samples=512000):
                 ):
                     partner_move = parser.moves[i + 1][1]
                     if boards[1 - board_num].turn == chess.WHITE:
-                        move_planes[idx][1 - board_num][
-                            POLICY_LABELS.index(str(partner_move))
-                        ] = 1
+                        move_planes[idx][1 - board_num] = POLICY_LABELS.index(str(partner_move))
                     else:
-                        move_planes[idx][1 - board_num][
-                            POLICY_LABELS.index(mirrorMoveUCI(str(partner_move)))
-                        ] = 1
+                        move_planes[idx][1 - board_num] = POLICY_LABELS.index(mirrorMoveUCI(str(partner_move)))
                 else:
                     move_planes[idx][1 - board_num] = 0  # NO action
 
@@ -69,13 +60,10 @@ def generate_planes(samples=512000):
 
                 idx += 1
                 if idx >= samples: 
-                    os.makedirs(f"data/training_data/checkpoint{checkpoint}", exist_ok=True)
-                    save_numpy(f"data/training_data/checkpoint{checkpoint}/board_planes.npy", board_planes)
-                    save_numpy(f"data/training_data/checkpoint{checkpoint}/move_planes.npy", move_planes)
-                    save_numpy(f"data/training_data/checkpoint{checkpoint}/value_planes.npy", value_planes)
+                    np.savez_compressed(f'data/training_data/checkpoint{checkpoint}', board_planes=board_planes, move_planes=move_planes, value_planes=value_planes)
                     board_planes = np.zeros((samples, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS))
-                    move_planes = np.zeros((samples, 2, len(POLICY_LABELS)))
-                    value_planes = np.zeros((samples, 1))
+                    move_planes = np.zeros((samples, 2))
+                    value_planes = np.zeros((samples))
                     checkpoint += 1
                     idx = 0
 

@@ -25,6 +25,9 @@ for game in games:
 print(good)
 print(min(ratings), max(ratings))
 
+with open('data/games.json', 'w') as f:
+    json.dump(new_games, f)
+
 '''for i in range(len(games)):
     #if not games[i]['a']['winner']:
         #print(games[i]['a']['id'])

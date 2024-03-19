@@ -85,6 +85,31 @@ class BughouseBoard(object):
         self.move_history.append(move)
         self.board_order.append(board_num)
 
+    def push_san(self, board_num: int, move_str: str) -> None:
+        move = self.boards[board_num].parse_san(move_str)
+        board = self.boards[board_num]
+        other = self.boards[not board_num]
+
+        is_capture = False if move.drop else board.is_capture(move)
+        captured = None
+        if is_capture:
+            captured = board.piece_type_at(move.to_square)
+            if captured is None:
+                captured = chess.PAWN
+            is_promotion = board.promoted & (1 << move.to_square)
+            if is_promotion:
+                captured = chess.PAWN
+            partner_pocket = other.pockets[not board.turn]
+            partner_pocket.add(captured)
+
+        board.push(move)
+        if is_capture:
+            opponent_pocket = board.pockets[not board.turn]
+            opponent_pocket.remove(captured)
+
+        self.move_history.append(move)
+        self.board_order.append(board_num)
+
     def pop(self) -> None:
         last_move = self.move_history.pop()
         last_board = self.board_order.pop()
