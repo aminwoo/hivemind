@@ -110,6 +110,8 @@ class BughouseBoard(object):
         self.move_history.append(move)
         self.board_order.append(board_num)
 
+        return move.uci 
+
     def pop(self) -> None:
         last_move = self.move_history.pop()
         last_board = self.board_order.pop()
@@ -127,3 +129,6 @@ class BughouseBoard(object):
                 captured = chess.PAWN
             partner_pocket = other.pockets[not board.turn]
             partner_pocket.remove(captured)
+
+    def parse_san(self, board_num: int, move_san: str) -> str: 
+        return self.boards[board_num].parse_san(move_san) 

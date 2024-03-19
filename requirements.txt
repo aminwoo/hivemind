@@ -13,3 +13,4 @@ flax[all]
 optax
 wandb
 black
+tensorflow
