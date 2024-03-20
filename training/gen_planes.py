@@ -10,7 +10,7 @@ from loader import Parser
 from constants import POLICY_LABELS, BOARD_HEIGHT, BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS, BOARD_A
 
 
-def generate_planes(samples=409600): 
+def generate_planes(samples=2**16): 
     os.makedirs(f"data/training_data", exist_ok=True)
     with open('data/games.json') as f:
         games = json.load(f)
@@ -21,7 +21,7 @@ def generate_planes(samples=409600):
     checkpoint = 0
     board_planes = np.zeros((samples, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS))
     move_planes = np.zeros((samples, 2))
-    value_planes = np.zeros((samples))
+    value_planes = np.zeros((samples, 1))
     
     for game in games:
         try:
@@ -63,7 +63,7 @@ def generate_planes(samples=409600):
                     np.savez_compressed(f'data/training_data/checkpoint{checkpoint}', board_planes=board_planes, move_planes=move_planes, value_planes=value_planes)
                     board_planes = np.zeros((samples, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS))
                     move_planes = np.zeros((samples, 2))
-                    value_planes = np.zeros((samples))
+                    value_planes = np.zeros((samples, 1))
                     checkpoint += 1
                     idx = 0
 
