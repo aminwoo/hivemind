@@ -1,1 +1,0 @@
-/usr/bin/c++   -Wall -Ofast -DNDEBUG -DNNUE_EMBEDDING_OFF   CMakeFiles/hivemind.dir/main.cpp.o  -o hivemind  Fairy-Stockfish/libFairy-Stockfish.a 

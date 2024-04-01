@@ -1,2 +1,2 @@
 black:
-	black ./training
+	black ./src
