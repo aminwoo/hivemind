@@ -177,7 +177,7 @@ class Client:
         self.main_loop(ws)
 
     def main_loop(self, ws) -> None:
-        action = mcts_search(self.state).action
+        action = search(self.state).action
 
         while True:
             message = json.loads(ws.recv())[0] 
