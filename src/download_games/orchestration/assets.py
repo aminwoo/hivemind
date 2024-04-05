@@ -1,14 +1,12 @@
+import asyncio
+import glob
 import json
 import os
-import glob
+
 import requests
-import asyncio
-
 from aiocfscrape import CloudflareScraper
-from dagster import asset, AssetExecutionContext
-
+from dagster import AssetExecutionContext, asset
 from download import batch_download
-
 
 headers = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "

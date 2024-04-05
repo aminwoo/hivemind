@@ -1,14 +1,16 @@
-import os 
-import json 
-import jax
-import jax.numpy as jnp 
-import numpy as np 
+import json
+import os
+
 import chess
-from tqdm import tqdm
+import jax
+import jax.numpy as jnp
+import numpy as np
 from pgx.bughouse import Bughouse, State, _observe
 from pgx.experimental.bughouse import make_policy_labels
-from src.domain.move2planes import mirrorMoveUCI
+from tqdm import tqdm
+
 from src.domain.board import BughouseBoard
+from src.domain.move2planes import mirrorMoveUCI
 from src.prepare_data.loader import JSONGameReader
 
 

@@ -1,23 +1,17 @@
+import gzip
+import json
+
 import chess
 import numpy as np
-from src.utils.tcn import tcn_decode
-from src.domain.board import BughouseBoard
-import json
-import gzip
-
 import torch
 from torch.utils.data import Dataset
 
+from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
 from src.domain.move2planes import mirrorMoveUCI
-from src.types import (
-    POLICY_LABELS,
-    BOARD_HEIGHT,
-    NUM_BUGHOUSE_CHANNELS,
-    BOARD_WIDTH,
-    BOARD_A,
-    BOARD_B,
-)
+from src.types import (BOARD_A, BOARD_B, BOARD_HEIGHT, BOARD_WIDTH,
+                       NUM_BUGHOUSE_CHANNELS, POLICY_LABELS)
+from src.utils.tcn import tcn_decode
 
 
 class JSONGameReader(object):

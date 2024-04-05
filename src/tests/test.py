@@ -1,5 +1,7 @@
 import unittest
+
 import chess
+
 from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
 

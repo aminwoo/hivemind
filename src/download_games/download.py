@@ -1,8 +1,9 @@
 import os
 import time
+from multiprocessing.pool import ThreadPool
+
 import requests
 from requests.adapters import HTTPAdapter, Retry
-from multiprocessing.pool import ThreadPool
 
 
 def batch_download(urls, file_paths, num_threads=4):

@@ -19,18 +19,18 @@ import time
 from functools import partial
 from typing import NamedTuple
 
+import chex
 import jax
 import jax.numpy as jnp
 import mctx
 import optax
-import chex
 import pgx
 import wandb
+from flax.training import train_state
+from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pgx.experimental import auto_reset
 from pydantic import BaseModel
-from flax.training.train_state import TrainState
-from flax.training import train_state
 
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 

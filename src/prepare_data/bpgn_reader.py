@@ -1,16 +1,17 @@
-import re
-import os
-import chess
 import bz2
-import chardet
 import glob
-import jax
-import jax.numpy as jnp 
-import numpy as np 
-from tqdm import tqdm 
+import os
+import re
 
-from pgx.bughouse import Bughouse, State, _observe, Action
+import chardet
+import chess
+import jax
+import jax.numpy as jnp
+import numpy as np
+from pgx.bughouse import Action, Bughouse, State, _observe
 from pgx.experimental.bughouse import make_policy_labels
+from tqdm import tqdm
+
 from src.domain.board import BughouseBoard
 from src.domain.move2planes import mirrorMoveUCI
 

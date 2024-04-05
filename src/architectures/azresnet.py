@@ -1,8 +1,9 @@
 import time
 from dataclasses import dataclass
+
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 
 
 def mish(x):
@@ -106,8 +107,8 @@ class AZResnet(nn.Module):
 
 
 if __name__ == "__main__":
-    from itertools import product
     from functools import partial
+    from itertools import product
 
     model = AZResnet(
         AZResnetConfig(

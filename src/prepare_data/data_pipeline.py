@@ -1,9 +1,10 @@
 import glob
+import time
 from random import shuffle
+
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
-import time
 
 ARRAY_SHAPES_WITHOUT_BATCH = [(8, 16, 32), (2,), ()]
 

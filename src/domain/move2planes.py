@@ -1,7 +1,7 @@
-import numpy as np
 import chess
-from src.types import POLICY_LABELS
+import numpy as np
 
+from src.types import POLICY_LABELS
 
 columns = 'abcdefgh'
 rows = '12345678'

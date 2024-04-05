@@ -1,17 +1,18 @@
+import json
 from time import time
-import typer 
-import json 
+
 import jax
 import jax.numpy as jnp
+import typer
 import websocket
-
-from pgx.bughouse import Bughouse, Action, State, _set_clock, _set_current_player, _set_board_num
+from pgx.bughouse import (Action, Bughouse, _set_board_num, _set_clock,
+                          _set_current_player)
 from pgx.experimental.bughouse import make_policy_labels
 
-from src.utils.tcn import tcn_encode, tcn_decode
+from chessdotcom.auth import get_session_key
 from src.domain.move2planes import mirrorMoveUCI
 from src.mcts.search import search
-from chessdotcom.auth import get_session_key
+from src.utils.tcn import tcn_decode, tcn_encode
 
 #########################################################
 ### For testing purposes only (use at your own risk!) ###

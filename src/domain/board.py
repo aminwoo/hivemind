@@ -1,8 +1,10 @@
-import time 
+import time
 from copy import copy, deepcopy
 from typing import List
+
 import chess
 from chess.variant import CrazyhouseBoard
+
 
 class BughouseBoard(object):
     def __init__(self, time_control: int = 1800) -> None:

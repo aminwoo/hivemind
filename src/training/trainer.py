@@ -1,17 +1,15 @@
 from typing import Any
-from tqdm.auto import tqdm
 
-import numpy as np
+import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import orbax
-import chex
-
-from flax.training import orbax_utils
-from flax.training.train_state import TrainState
 from flax import linen as nn
-from flax.training import train_state
+from flax.training import orbax_utils, train_state
+from flax.training.train_state import TrainState
+from tqdm.auto import tqdm
 
 
 class TrainState(train_state.TrainState):
@@ -201,9 +199,11 @@ class TrainerModule:
         return ckpt['train_state']
 
 if __name__ == '__main__':
-    from src.architectures.azresnet import AZResnet, AZResnetConfig
-    import tensorflow as tf
     import glob
+
+    import tensorflow as tf
+
+    from src.architectures.azresnet import AZResnet, AZResnetConfig
 
     batch_size = 1024
     epochs = 8 

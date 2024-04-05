@@ -13,6 +13,8 @@ websocket-client = "^1.7.0"
 tqdm = "^4.66.2"
 pgx = {git = "git@github.com:aminwoo/pgx.git"}
 tensorflow = {extras = ["and-cuda"], version = "^2.16.1"}
+isort = "^5.13.2"
+black = "^24.3.0"
 
 [build-system]
 requires = ["poetry-core"]

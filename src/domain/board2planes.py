@@ -1,20 +1,14 @@
+import sys
+
 import chess
 import chess.variant
 import jax.numpy as jnp
 import numpy as np
-import sys
 from matplotlib import pyplot as plt
 
-from src.types import (
-    BOARD_HEIGHT,
-    BOARD_WIDTH,
-    MAX_NUM_DROPS,
-    MAX_TIME,
-    NUM_BUGHOUSE_CHANNELS,
-    BOARD_A,
-    BOARD_B,
-)
 from src.domain.board import BughouseBoard
+from src.types import (BOARD_A, BOARD_B, BOARD_HEIGHT, BOARD_WIDTH,
+                       MAX_NUM_DROPS, MAX_TIME, NUM_BUGHOUSE_CHANNELS)
 
 
 def board2planes(board: BughouseBoard, side: chess.Color) -> np.ndarray:

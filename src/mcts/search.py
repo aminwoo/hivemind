@@ -1,10 +1,11 @@
 from functools import partial
 from time import time
+
 import jax
 import jax.numpy as jnp
 import mctx
+from pgx.bughouse import Action, Bughouse, State
 
-from pgx.bughouse import Bughouse, Action, State
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
 
