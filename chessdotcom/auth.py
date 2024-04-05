@@ -32,7 +32,3 @@ def get_session_key(username: str, password: str) -> str:
     }
     r = s.post('https://www.chess.com/login_check', data=login_data, headers=headers, allow_redirects=False, verify=True)
     return r.headers['Set-Cookie'].split('=')[1].split(';')[0]
-
-if __name__ == '__main__':
-    print(get_session_key("pumpkinspicedream", "Qwerty12"))
-    print(get_session_key("pumpkinspicefever", "Qwerty12"))
