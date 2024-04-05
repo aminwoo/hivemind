@@ -27,8 +27,6 @@ model = AZResnet(
         num_policy_labels=2*64*78+1,
     )
 )
-#x = jnp.ones((1, 8, 16, 32))
-#variables = model.init(jax.random.key(0), x, train=False)
 forward = jax.jit(partial(model.apply, train=False))
 
 seed = 42
@@ -39,6 +37,7 @@ env = Bughouse()
 step_fn = jax.jit(jax.vmap(env.step))
 init_fn = jax.jit(jax.vmap(env.init))
 
+@jax.jit
 def search(state):
 
     def recurrent_fn(variables, rng_key: jnp.ndarray, action: jnp.ndarray, state):
@@ -80,7 +79,6 @@ def search(state):
     return policy_output
 
 if __name__ == '__main__':
-    init_fn = jax.jit(jax.vmap(partial(State._from_fen, "r1bqkbnr/pppp2pp/2n2p2/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR/Q w KQkq - 0 4|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR/ w KQkq - 0 1")))
     state = init_fn(keys)
     out = search(state)
     print(Action._from_label(out.action[0])._to_string())

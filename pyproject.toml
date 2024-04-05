@@ -7,14 +7,12 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-jax = {extras = ["cuda12-pip"], version = "^0.4.25"}
-flax = {extras = ["all"], version = "^0.8.2"}
-
-
-[[tool.poetry.source]]
-name = "jax"
-url = "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
-priority = "primary"
+chess = "^1.10.0"
+wandb = "^0.16.6"
+websocket-client = "^1.7.0"
+tqdm = "^4.66.2"
+pgx = {git = "git@github.com:aminwoo/pgx.git"}
+tensorflow = {extras = ["and-cuda"], version = "^2.16.1"}
 
 [build-system]
 requires = ["poetry-core"]
