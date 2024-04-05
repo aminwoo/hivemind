@@ -1,15 +1,17 @@
 from typing import Any
+from tqdm.auto import tqdm
 
-import chex
+import numpy as np
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 import orbax
-from flax import linen as nn
-from flax.training import orbax_utils, train_state
+import chex
+
+from flax.training import orbax_utils
 from flax.training.train_state import TrainState
-from tqdm.auto import tqdm
+from flax import linen as nn
+from flax.training import train_state
 
 
 class TrainState(train_state.TrainState):
@@ -151,7 +153,7 @@ class TrainerModule:
         self.eval_step = jax.jit(eval_step)
 
     def train_loop(self, train_files, eval_files=None, epochs=7, batch_size=1024):
-        for epoch in range(epochs):
+        for epoch in range(4, epochs):
             print(f'Training Epoch: {epoch}/{epochs}')
             for file in tqdm(train_files):
                 data = np.load(file)
@@ -161,10 +163,10 @@ class TrainerModule:
                 for board_planes, y_policy, y_value in train_loader:
                     self.state, loss = self.train_step(self.state, board_planes.numpy(), y_policy.numpy().astype(np.int32), y_value.numpy())
 
-            policy_acc, value_acc =  trainer.eval_model(eval_files, batch_size)
+            policy_acc, value_acc =  self.eval_model(eval_files, batch_size)
             print('Policy Accuracy:', policy_acc)
             print('Value Accuracy:', value_acc)
-            self.save_checkpoint(trainer.state, epoch=epoch)
+            self.save_checkpoint(self.state, epoch=epoch)
 
     def eval_model(self, files, batch_size):
         policy_acc = 0
@@ -199,11 +201,9 @@ class TrainerModule:
         return ckpt['train_state']
 
 if __name__ == '__main__':
-    import glob
-
-    import tensorflow as tf
-
     from src.architectures.azresnet import AZResnet, AZResnetConfig
+    import tensorflow as tf
+    import glob
 
     batch_size = 1024
     epochs = 8 
@@ -215,6 +215,7 @@ if __name__ == '__main__':
         value_channels=8,
         num_policy_labels=2*64*78+1
     ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((batch_size, 8, 16, 32)))
+    trainer.state = trainer.load_checkpoint('3')
     trainer.init_optimizer()
 
     files = glob.glob('data/training_data/*')
