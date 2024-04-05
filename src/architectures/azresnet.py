@@ -70,64 +70,24 @@ class AZResnet(nn.Module):
             x = ResidualBlock(channels=self.config.channels, se=True)(x, train=train)
 
         # policy head
-        a = nn.Conv(
+        policy = nn.Conv(
             features=self.config.channels,
             kernel_size=(3, 3),
             padding=(1, 1),
             use_bias=False,
         )(x)
-        a = nn.BatchNorm(use_running_average=not train)(a)
-        a = mish(a)
-        a = nn.Conv(
+        policy = nn.BatchNorm(use_running_average=not train)(policy)
+        policy = mish(policy)
+        policy = nn.Conv(
             features=self.config.policy_channels,
             kernel_size=(3, 3),
             padding=(1, 1),
             use_bias=False,
-        )(a)
-        a = nn.BatchNorm(use_running_average=not train)(a)
-        a = mish(a)
-        a = a.reshape((batch_size, -1))
-        a = nn.Dense(features=self.config.num_policy_labels)(a)
-
-        b = nn.Conv(
-            features=self.config.channels,
-            kernel_size=(3, 3),
-            padding=(1, 1),
-            use_bias=False,
-        )(x)
-        b = nn.BatchNorm(use_running_average=not train)(b)
-        b = mish(b)
-        b = nn.Conv(
-            features=self.config.policy_channels,
-            kernel_size=(3, 3),
-            padding=(1, 1),
-            use_bias=False,
-        )(b)
-        b = nn.BatchNorm(use_running_average=not train)(b)
-        b = mish(b)
-        b = b.reshape((batch_size, -1))
-        b = nn.Dense(features=self.config.num_policy_labels)(b)
-
-        # Sit Action
-        c = nn.Conv(
-            features=self.config.channels,
-            kernel_size=(3, 3),
-            padding=(1, 1),
-            use_bias=False,
-        )(x)
-        c = nn.BatchNorm(use_running_average=not train)(c)
-        c = mish(c)
-        c = nn.Conv(
-            features=self.config.policy_channels,
-            kernel_size=(3, 3),
-            padding=(1, 1),
-            use_bias=False,
-        )(c)
-        c = nn.BatchNorm(use_running_average=not train)(c)
-        c = mish(c)
-        c = a.reshape((batch_size, -1))
-        c = nn.Dense(features=1)(c)
-        policy = jnp.concatenate((a, b, c), axis=1)
+        )(policy)
+        policy = nn.BatchNorm(use_running_average=not train)(policy)
+        policy = mish(policy)
+        policy = policy.reshape((batch_size, -1))
+        policy = nn.Dense(features=self.config.num_policy_labels)(policy)
 
         # value head
         value = nn.Conv(
@@ -155,17 +115,16 @@ if __name__ == "__main__":
             channels=256,
             policy_channels=4,
             value_channels=8,
-            num_policy_labels=64*77,
+            num_policy_labels=2*64*78+1,
         )
     )
-    x = jnp.ones((1, 8, 16, 32))
+    x = jnp.ones((1024, 8, 16, 32))
     variables = model.init(jax.random.key(0), x, train=False)
-
-    forward = jax.jit(partial(model.apply, variables, train=False))
+    forward = jax.jit(partial(model.apply, train=False))
 
     for i in range(100):
         start = time.time()
-        out = forward(x)
+        out = forward(variables, x)
         print(time.time() - start)
     policy, value = out
     print(policy.shape)

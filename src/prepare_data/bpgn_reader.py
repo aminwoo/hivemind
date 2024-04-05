@@ -4,13 +4,15 @@ import chess
 import bz2
 import chardet
 import glob
+import jax
+import jax.numpy as jnp 
 import numpy as np 
 from tqdm import tqdm 
 
+from pgx.bughouse import Bughouse, State, _observe, Action
+from pgx.experimental.bughouse import make_policy_labels
 from src.domain.board import BughouseBoard
-from src.domain.board2planes import board2planes
 from src.domain.move2planes import mirrorMoveUCI
-from src.types import POLICY_LABELS, BOARD_HEIGHT, BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS, BOARD_A
 
 
 def parse_bpgn_file(file_content):
@@ -58,15 +60,24 @@ def parse_bpgn_file(file_content):
     return filtered_games
 
 
-if __name__ == "__main__": 
-    os.makedirs(f"data/fics_training_data", exist_ok=True)
+def generate_planes():
+    os.makedirs(f"data/training_data", exist_ok=True)
 
+    seed = 42 
+    key = jax.random.PRNGKey(seed)
+    env = Bughouse() 
+    init_fn = jax.jit(env.init)
+    step_fn = jax.jit(env.step)
+
+    labels = make_policy_labels()
+    print("Num labels:", len(labels))
+     
     samples = 2**16 
     idx = 0 
     checkpoint = 0
-    board_planes = np.zeros((samples, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS))
-    move_planes = np.zeros((samples, 2))
-    value_planes = np.zeros((samples, 1))
+    board_planes = np.zeros((samples, 8, 16, 32))
+    move_planes = np.zeros((samples))
+    value_planes = np.zeros((samples))
     
     min_rating = 2000
 
@@ -78,30 +89,33 @@ if __name__ == "__main__":
 
         for game in games:
             try:
+                state = init_fn(key)
+
                 if 'Result' not in game:
                     continue
 
                 result = game['Result'].split(']')[0].strip('""')
-
                 if result == '1-0':
-                    reward = [[-1, 1], [1, -1]]
-                elif result == '0-1':
                     reward = [[1, -1], [-1, 1]]
+                elif result == '0-1':
+                    reward = [[-1, 1], [1, -1]]
                 elif result == '1/2-1/2':
                     reward = [[0, 0], [0, 0]]
                 else:
                     continue
 
                 if game['TimeControl'] == "120+0":
+                    state = state.replace(_clock=jnp.int32([[1200, 1200], [1200, 1200]]))
                     board = BughouseBoard(1200)
                     times = [[1200, 1200], [1200, 1200]] 
                 elif game['TimeControl'] == "180+0":
+                    state = state.replace(_clock=jnp.int32([[1800, 1800], [1800, 1800]]))
                     board = BughouseBoard(1800)
                     times = [[1800, 1800], [1800, 1800]]
                 else:
                     continue
 
-                turn = [True, True]
+                turn = [0, 0]
                 if game['WhiteA']['rating'] > min_rating and game['BlackA']['rating'] > min_rating and game['WhiteB']['rating'] > min_rating and game['BlackB']['rating'] > min_rating:
                     pattern = r"(\d+[A-Za-z]\.\s\S+\{[-\d\.]+\})"
                     matches = re.findall(pattern, game["moves"][1])
@@ -120,51 +134,51 @@ if __name__ == "__main__":
                         
                     for i in range(len(data)):
                         board_num, move_san, time_left = data[i] 
-                        times[not board_num][turn[not board_num]] -= times[board_num][turn[board_num]] - time_left
+                        times[1 - board_num][turn[1 - board_num]] -= (times[board_num][turn[board_num]] - time_left)
                         times[board_num][turn[board_num]] = time_left 
-                        board.set_time(times)
+                        assert (times[0][0] - times[1][0]) == (times[1][1] - times[0][1])
 
-                        boards = board.get_boards()
+                        move_uci = str(board.parse_san(board_num, move_san))
+                        if board.turn(board_num) == chess.BLACK: 
+                            move_uci = mirrorMoveUCI(move_uci)
+                        move_uci = str(board_num) + move_uci 
+                        if move_uci.endswith("q"): # Treat queen promotion as default move
+                            move_uci = move_uci[:-1]
 
-                        # One hot encoding for expected move
-                        if boards[board_num].turn == chess.WHITE:
-                            move_planes[idx][board_num] = POLICY_LABELS.index(str(board.parse_san(board_num, move_san)))
-                        else:
-                            move_planes[idx][board_num] = POLICY_LABELS.index(mirrorMoveUCI(str(board.parse_san(board_num, move_san))))
+                        t = times.copy()
+                        if turn[0] != 0:
+                            t[0] = t[0][::-1]
+                        if turn[1] != 0:
+                            t[1] = t[1][::-1]
 
-                        try:
-                            # Move for partner board
-                            if (
-                                boards[board_num].turn != boards[1 - board_num].turn
-                                and i + 1 < len(data)
-                                and data[i + 1][0] != board_num
-                            ):
-                                partner_move = data[i + 1][1]
-                                if boards[1 - board_num].turn == chess.WHITE:
-                                    move_planes[idx][1 - board_num] = POLICY_LABELS.index(str(board.parse_san(1 - board_num, partner_move)))
-                                else:
-                                    move_planes[idx][1 - board_num] = POLICY_LABELS.index(mirrorMoveUCI(str(board.parse_san(1 - board_num, partner_move))))
-                            else:
-                                move_planes[idx][1 - board_num] = 0  # NO action
-                        except:
-                            move_planes[idx][1 - board_num] = 0  # NO action
+                        state = state.replace(_clock=jnp.int32(t))
+                        state = state.replace(current_player=turn[board_num] if board_num == 0 else 1 - turn[board_num])
+                        planes = np.array(_observe(state, player_id=state.current_player)).reshape(8, 16, 32)
 
-                        board_planes[idx] = board2planes(board, turn[0] if board_num == BOARD_A else not turn[1])
+                        assert np.isclose(planes[0, 0, 31], (0.5 + (times[board_num][turn[board_num]] - times[1 - board_num][turn[board_num]]) / 300), atol=1e-05)
+                        assert (jnp.int32(turn) == state._turn).all() 
+                        move_planes[idx] = labels.index(move_uci)
+                        board_planes[idx] = planes
                         value_planes[idx] = reward[board_num][turn[board_num]]
-                        
-                        turn[board_num] = not turn[board_num]
+
+                        turn[board_num] = 1 - turn[board_num]
                         board.push_san(board_num, move_san)
+                        state = step_fn(state, labels.index(move_uci))
 
                         idx += 1
                         if idx >= samples: 
-                            np.savez_compressed(f'data/fics_training_data/checkpoint{checkpoint}', board_planes=board_planes, move_planes=move_planes, value_planes=value_planes)
-                            board_planes = np.zeros((samples, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS))
-                            move_planes = np.zeros((samples, 2))
-                            value_planes = np.zeros((samples, 1))
+                            np.savez_compressed(f'data/training_data/checkpoint{checkpoint}', board_planes=board_planes, move_planes=move_planes, value_planes=value_planes)
+                            board_planes = np.zeros((samples, 8, 16, 32))
+                            move_planes = np.zeros((samples))
+                            value_planes = np.zeros((samples))
                             checkpoint += 1
                             idx = 0
             except Exception as e:
+                print(game)
                 print(e)
                 errors += 1
 
     print(errors)
+
+if __name__ == "__main__": 
+    generate_planes()

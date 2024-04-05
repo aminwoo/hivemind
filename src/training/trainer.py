@@ -1,11 +1,9 @@
-import os
-import numpy as np
 from typing import Any
 from tqdm.auto import tqdm
 
+import numpy as np
 import jax
 import jax.numpy as jnp
-import flax
 import optax
 import orbax
 import chex
@@ -15,13 +13,10 @@ from flax.training.train_state import TrainState
 from flax import linen as nn
 from flax.training import train_state
 
-def extract_params(state: TrainState) -> chex.ArrayTree:
-    if hasattr(state, 'batch_stats'):
-        return {'params': state.params, 'batch_stats': state.batch_stats}
-    return {'params': state.params}
 
 class TrainState(train_state.TrainState):
     batch_stats: chex.ArrayTree
+
 
 class TrainerModule:
 
@@ -34,11 +29,11 @@ class TrainerModule:
         optimizer_params: dict,
         x: Any,
         ckpt_dir: str = '/tmp/checkpoints',
-        max_checkpoints: int = 2,
+        max_checkpoints: int = 10,
         seed=42,
     ):
         '''
-        Module for summarizing all training functionalities for classification on CIFAR10.
+        Module for summarizing all training functionalities for classification.
 
         Inputs:
             model_name - String of the class name, used for logging and saving
@@ -116,33 +111,23 @@ class TrainerModule:
                     train=train,
                     mutable=['batch_stats'],
                 )
-
-                policy_logits, value_logits = logits
+                policy_logits, value = logits
 
                 policy_loss = optax.softmax_cross_entropy_with_integer_labels(
-                    logits=policy_logits[0], labels=y_policy[:, 0]
-                ).mean()
-                policy_loss += optax.softmax_cross_entropy_with_integer_labels(
-                    logits=policy_logits[1], labels=y_policy[:, 1]
+                    logits=policy_logits, labels=y_policy
                 ).mean()
 
-                #a = (np.argmax(policy_logits[0], axis=1) == 0)
-                #b = (np.argmax(policy_logits[1], axis=1) == 0)
-                #c = a & b
-                # To penalize double sitting increase policy loss
-                #policy_loss *= (1 + np.sum(c))
+                value_loss = optax.l2_loss(value, y_value).mean()
+                loss = 0.99 * policy_loss + 0.01 * value_loss
 
-                value_loss = optax.l2_loss(value_logits, y_value).mean()
-                loss = 0.5 * policy_loss + 0.01 * value_loss
-
-                return loss, (new_model_state)
+                return loss, (new_model_state, policy_loss, value_loss)
 
             loss_fn = lambda params: calculate_loss(
                 params, state.batch_stats, train=True
             )
 
             # Get loss, gradients for loss, and other outputs of loss function
-            (loss, (new_model_state)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+            (loss, (new_model_state, policy_loss, value_loss)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 state.params
             )
             # Update parameters and batch statistics
@@ -150,32 +135,57 @@ class TrainerModule:
                 grads=grads, batch_stats=new_model_state['batch_stats']
             )
             return state, loss
-
-        # jit for efficiency
-        self.train_step = jax.jit(train_step)
-
-    def train_model(self, train_loader):
-        for board_planes, y_policy, y_value in train_loader:
-            self.state, loss = self.train_step(self.state, board_planes.numpy(), y_policy.numpy().astype(np.int32), y_value.numpy())
-
-    def eval_model(self, val_loader, batch_size):
-        policy_acc = 0
-        value_acc = 0
-
-        for board_planes, y_policy, y_value in val_loader:
-            policy_logits, value = self.state.apply_fn(
+        
+        def eval_step(state: TrainState, board_planes, y_policy, y_value):
+            policy_logits, value = state.apply_fn(
                 {'params': self.state.params, 
-                 'batch_stats': self.state.batch_stats},
+                'batch_stats': self.state.batch_stats},
                 board_planes,
                 train=False,
             )
 
-            policy_acc += np.sum(np.argmax(policy_logits[0], axis=1) == y_policy[:,0]) 
-            policy_acc += np.sum(np.argmax(policy_logits[1], axis=1) == y_policy[:,1]) 
-            value_acc += np.sum((value > 0) == (y_value > 0)) 
+            policy_acc = np.sum(np.argmax(policy_logits, axis=1) == y_policy) 
+            value_acc = np.sum((value > 0) == (y_value > 0)) 
+            return policy_acc, value_acc
 
-        policy_acc /= len(val_loader) * batch_size * 2
-        value_acc /= len(val_loader) * batch_size
+        # jit for efficiency
+        self.train_step = jax.jit(train_step)
+        self.eval_step = jax.jit(eval_step)
+
+    def train_loop(self, train_files, eval_files=None, epochs=7, batch_size=1024):
+        for epoch in range(epochs):
+            print(f'Training Epoch: {epoch}/{epochs}')
+            for file in tqdm(train_files):
+                data = np.load(file)
+                with tf.device('/CPU:0'):
+                    train_loader = tf.data.Dataset.from_tensor_slices((data['board_planes'], data['move_planes'], data['value_planes']))
+                    train_loader = train_loader.shuffle(buffer_size=2**16).batch(batch_size)
+                for board_planes, y_policy, y_value in train_loader:
+                    self.state, loss = self.train_step(self.state, board_planes.numpy(), y_policy.numpy().astype(np.int32), y_value.numpy())
+
+            policy_acc, value_acc =  trainer.eval_model(eval_files, batch_size)
+            print('Policy Accuracy:', policy_acc)
+            print('Value Accuracy:', value_acc)
+            self.save_checkpoint(trainer.state, epoch=epoch)
+
+    def eval_model(self, files, batch_size):
+        policy_acc = 0
+        value_acc = 0
+
+        for file in tqdm(files):
+            data = np.load(file)
+            with tf.device('/CPU:0'):
+                val_loader = tf.data.Dataset.from_tensor_slices((data['board_planes'], data['move_planes'], data['value_planes']))
+                val_loader = val_loader.shuffle(buffer_size=2**16).batch(batch_size)
+
+            for board_planes, y_policy, y_value in val_loader:
+                batch_policy_acc, batch_value_acc = self.eval_step(self.state, board_planes.numpy(), y_policy.numpy().astype(np.int32), y_value.numpy())
+
+                policy_acc += batch_policy_acc
+                value_acc += batch_value_acc
+
+        policy_acc /= len(val_loader) * batch_size * len(files)
+        value_acc /= len(val_loader) * batch_size * len(files)
 
         return policy_acc, value_acc
 
@@ -192,43 +202,22 @@ class TrainerModule:
 
 if __name__ == '__main__':
     from src.architectures.azresnet import AZResnet, AZResnetConfig
-    from src.types import POLICY_LABELS, BOARD_HEIGHT, BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS
     import tensorflow as tf
     import glob
 
     batch_size = 1024
     epochs = 8 
-    steps = 0
-    eval_steps = 300
 
     trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_configs=AZResnetConfig(
         num_blocks=15,
         channels=256,
         policy_channels=4, 
         value_channels=8,
-        num_policy_labels=len(POLICY_LABELS)
-    ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((batch_size, BOARD_HEIGHT, 2 * BOARD_WIDTH, NUM_BUGHOUSE_CHANNELS)))
-    trainer.state = trainer.load_checkpoint('1')
+        num_policy_labels=2*64*78+1
+    ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((batch_size, 8, 16, 32)))
     trainer.init_optimizer()
 
-    data = np.load('data/fics_training_data/checkpoint0.npz')
-    with tf.device('/CPU:0'):
-        val_loader = tf.data.Dataset.from_tensor_slices((data['board_planes'], data['move_planes'], data['value_planes']))
-        val_loader = val_loader.shuffle(buffer_size=2**16).batch(batch_size)
-
-    for epoch in range(2, epochs):
-        print(f'Training Epoch: {epoch}/{epochs}')
-        for path in tqdm(glob.glob('data/*training_data/*')):
-            data = np.load(path)
-            with tf.device('/CPU:0'):
-                train_loader = tf.data.Dataset.from_tensor_slices((data['board_planes'], data['move_planes'], data['value_planes']))
-                train_loader = train_loader.shuffle(buffer_size=2**16).batch(batch_size)
-            trainer.train_model(train_loader) 
-
-            if steps % eval_steps == 0:
-                policy_acc, value_acc =  trainer.eval_model(val_loader, batch_size)
-                print(policy_acc, value_acc)
-
-            steps += 1
-        
-        trainer.save_checkpoint(trainer.state, epoch=epoch)
+    files = glob.glob('data/training_data/*')
+    train_files = files[1:]
+    eval_files = files[:1] 
+    trainer.train_loop(train_files, eval_files) 

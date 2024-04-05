@@ -1,16 +1,11 @@
 numpy
 pandas
-torch
-onnx
 requests
 tqdm
-aiocfscrape
 chess
-dagster
-dagster-webserver
 jax[cuda12_pip]
 flax[all]
 optax
 wandb
 black
-tensorflow
+tensorflow[and-cuda]

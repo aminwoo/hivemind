@@ -1,6 +1,6 @@
 import chess
 import numpy as np
-from src.training.tcn import tcn_decode
+from src.utils.tcn import tcn_decode
 from src.domain.board import BughouseBoard
 import json
 import gzip
@@ -20,7 +20,7 @@ from src.types import (
 )
 
 
-class Parser(object):
+class JSONGameReader(object):
 
     def __init__(self, game):
         self.result = self.get_game_result(game)
@@ -187,13 +187,13 @@ class BughouseDataset(Dataset):
         self.result_data = []
 
         while len(self.board_data) < chunk_size and self.game_idx < len(self.games):
-            parser = Parser(self.games[self.game_idx])
+            JSONGameReader = JSONGameReader(self.games[self.game_idx])
             self.game_idx += 1
-            if parser.time_control not in [1800, 1200]:
+            if JSONGameReader.time_control not in [1800, 1200]:
                 continue
 
-            board = BughouseBoard(parser.time_control)
-            for i, (board_num, move, time_left, move_time) in enumerate(parser.moves):
+            board = BughouseBoard(JSONGameReader.time_control)
+            for i, (board_num, move, time_left, move_time) in enumerate(JSONGameReader.moves):
                 board.update_time(board_num, time_left, move_time)
                 boards = board.get_boards()
 
@@ -209,10 +209,10 @@ class BughouseDataset(Dataset):
                 # Move for partner board
                 if (
                     boards[board_num].turn != boards[1 - board_num].turn
-                    and i + 1 < len(parser.moves)
-                    and parser.moves[i + 1][0] != board_num
+                    and i + 1 < len(JSONGameReader.moves)
+                    and JSONGameReader.moves[i + 1][0] != board_num
                 ):
-                    partner_move = parser.moves[i + 1][1]
+                    partner_move = JSONGameReader.moves[i + 1][1]
                     if boards[1 - board_num].turn == chess.WHITE:
                         move_planes[1 - board_num][
                             POLICY_LABELS.index(str(partner_move))
@@ -229,7 +229,7 @@ class BughouseDataset(Dataset):
                     board2planes(board, turn if board_num == BOARD_A else not turn)
                 )
                 self.move_data.append(move_planes)
-                self.result_data.append(np.array([parser.get_result(board_num, turn)]))
+                self.result_data.append(np.array([JSONGameReader.get_result(board_num, turn)]))
                 board.push(board_num, move)
 
         self.num_samples = len(self.board_data)
@@ -246,9 +246,9 @@ if __name__ == "__main__":
     """with open("data/games.json") as f:
         games = json.load(f)
     print(games[0]["a"]["id"])
-    parser = Parser(games[0])
-    board = BughouseBoard(time_control=parser.time_control)
-    for board_num, move, time_left, move_time in parser.moves:
+    JSONGameReader = JSONGameReader(games[0])
+    board = BughouseBoard(time_control=JSONGameReader.time_control)
+    for board_num, move, time_left, move_time in JSONGameReader.moves:
         print(board_num, move, time_left, move_time)
         board.update_time(board_num, time_left, move_time)"""
     generator = BughouseDataset("data/games.json")
