@@ -26,15 +26,6 @@ update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
 labels = make_policy_labels()
-mcts_search = jax.jit(search)
-
-@jax.jit
-def act_randomly(rng_key, obs, mask):
-    """Ignore observation and choose randomly from legal actions"""
-    del obs
-    probs = mask / mask.sum()
-    logits = jnp.maximum(jnp.log(probs), jnp.finfo(probs.dtype).min)
-    return jax.random.categorical(rng_key, logits=logits, axis=-1)
 
         
 class Client: 
@@ -246,10 +237,7 @@ class Client:
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                         self.state = update_clock(self.state, jnp.int32([self.times]))
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
-                        #self.state = update_board(self.state, jnp.int32([self.board_num]))
-                        #self.key, subkey = jax.random.split(self.key)
-                        action = mcts_search(self.state).action
-                        #action = act_randomly(subkey, self.state.observation, self.state.legal_action_mask)
+                        action = search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
                         if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
                             move_uci = move_uci[1:]
