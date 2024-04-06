@@ -221,4 +221,5 @@ if __name__ == '__main__':
     files = glob.glob('data/training_data/*')
     train_files = files[1:]
     eval_files = files[:1] 
-    trainer.train_loop(train_files, eval_files) 
+    #trainer.train_loop(train_files, eval_files) 
+    print(trainer.eval_model(eval_files, 1024))

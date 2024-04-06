@@ -1,5 +1,3 @@
-import time
-from copy import copy, deepcopy
 from typing import List
 
 import chess

@@ -7,7 +7,7 @@ import typer
 import websocket
 from pgx.bughouse import (Action, Bughouse, _set_board_num, _set_clock,
                           _set_current_player, _time_advantage)
-from pgx.experimental.bughouse import make_policy_labels, to_fen
+from pgx.experimental.bughouse import make_policy_labels
 
 from chessdotcom.auth import get_session_key
 from src.domain.move2planes import mirrorMoveUCI

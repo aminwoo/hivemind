@@ -106,7 +106,7 @@ class AZResnet(nn.Module):
         return policy, value
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     from functools import partial
     from itertools import product
 
@@ -123,9 +123,8 @@ if __name__ == "__main__":
     variables = model.init(jax.random.key(0), x, train=False)
     forward = jax.jit(partial(model.apply, train=False))
 
-    for i in range(100):
+    for i in range(1000):
         start = time.time()
-        out = forward(variables, x)
+        policy, value = forward(variables, x)
         print(time.time() - start)
-    policy, value = out
     print(policy.shape)

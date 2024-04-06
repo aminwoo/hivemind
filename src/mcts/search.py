@@ -4,7 +4,7 @@ from time import time
 import jax
 import jax.numpy as jnp
 import mctx
-from pgx.bughouse import Action, Bughouse, State
+from pgx.bughouse import Action, Bughouse, State, _set_current_player
 
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
@@ -16,7 +16,7 @@ trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_confi
     value_channels=8,
     num_policy_labels=2*64*78+1
 ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint('0')
+state = trainer.load_checkpoint('4')
 
 variables = {'params': state['params'], 'batch_stats': state['batch_stats']}
 model = AZResnet(
@@ -71,7 +71,7 @@ def search(state):
         rng_key=key1,
         root=root,
         recurrent_fn=recurrent_fn,
-        num_simulations=400,
+        num_simulations=100,
         invalid_actions=~state.legal_action_mask,
         qtransform=mctx.qtransform_completed_by_mix_value,
         max_num_considered_actions=512,
@@ -80,6 +80,16 @@ def search(state):
     return policy_output
 
 if __name__ == '__main__':
+    init_fn = jax.jit(jax.vmap(partial(State._from_fen, "rk5r/ppR3pp/2npNn2/2b1p3/4P1B1/2PP4/PP3PPP/RNB2RK1/ b - - 31 16|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR/ b KQkq - 0 1")))
+    update_player = jax.jit(jax.vmap(_set_current_player))
     state = init_fn(keys)
+    state = update_player(state, jnp.int32([1]))
+    #policy_logits, value = forward(variables, state.observation)
+    #for i in range(2*64*78+1):
+    #    if state.legal_action_mask[0, i]:
+    #        print(policy_logits[0, i], Action._from_label(i)._to_string())
     out = search(state)
     print(Action._from_label(out.action[0])._to_string())
+    start = time()
+    search(state)
+    print(time() - start)
