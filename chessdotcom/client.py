@@ -65,7 +65,7 @@ class Client:
             move_uci = move_uci[:-1]
         action = labels.index(move_uci)
         if self.state.legal_action_mask[0][action]:
-            print("Move played:", move)
+            print("Move played:", move, "on board", board_num)
             if ws:
                 self.send_move(ws, tcn_encode([move]))
             self.prev_move[board_num] = move
@@ -239,6 +239,7 @@ class Client:
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
                         action = search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
+                        print('Engine says:', move_uci)
                         if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
                             move_uci = move_uci[1:]
                             if self.turn[self.board_num] == 1:
