@@ -247,6 +247,7 @@ class Client:
                             continue
                         action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
+                        print(self.state._to_fen())
                         print('Engine says:', move_uci)
                         if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
                             move_uci = move_uci[1:]
