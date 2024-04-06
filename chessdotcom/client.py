@@ -125,7 +125,6 @@ class Client:
         self.times[self.board_num] = times
 
     def connect(self) -> None: 
-        engine_search(self.state)
         ws = websocket.WebSocket()
         ws.connect('wss://live2.chess.com/cometd', cookie=f'PHPSESSID={self.phpsessid}') 
         data = [
@@ -233,6 +232,7 @@ class Client:
                         if move and self.prev_move[1 - self.board_num] != move:
                             self.play_move(1 - self.board_num, move)
 
+                    print(self.turn[self.board_num], self.side, ~self.state.terminated.any())
                     # If our turn to move play engine move
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                         t = self.times.copy()
