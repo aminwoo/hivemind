@@ -179,6 +179,7 @@ class Client:
 
     def main_loop(self, ws) -> None:
         while True:
+            print('receiving message')
             message = json.loads(ws.recv())[0] 
             #print(message)
             # Get Client ID 
