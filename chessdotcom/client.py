@@ -125,6 +125,7 @@ class Client:
         self.times[self.board_num] = times
 
     def connect(self) -> None: 
+        engine_search(self.state)
         ws = websocket.WebSocket()
         ws.connect('wss://live2.chess.com/cometd', cookie=f'PHPSESSID={self.phpsessid}') 
         data = [
@@ -178,7 +179,6 @@ class Client:
         self.main_loop(ws)
 
     def main_loop(self, ws) -> None:
-        engine_search(self.state)
         while True:
             message = json.loads(ws.recv())[0] 
             #print(message)
