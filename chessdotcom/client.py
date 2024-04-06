@@ -235,7 +235,12 @@ class Client:
 
                     # If our turn to move play engine move
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
-                        self.state = update_clock(self.state, jnp.int32([self.times]))
+                        t = self.times.copy()
+                        if self.turn[0] != 0:
+                            t[0] = t[0][::-1]
+                        if self.turn[1] != 0:
+                            t[1] = t[1][::-1]
+                        self.state = update_clock(self.state, jnp.int32([t]))
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
                         print(time_advantage(self.state))
                         if self.turn[1 - self.board_num] == self.side and time_advantage(self.state)[0] > 20:
