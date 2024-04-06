@@ -7,7 +7,7 @@ import typer
 import websocket
 from pgx.bughouse import (Action, Bughouse, _set_board_num, _set_clock,
                           _set_current_player, _time_advantage)
-from pgx.experimental.bughouse import make_policy_labels
+from pgx.experimental.bughouse import make_policy_labels, to_fen
 
 from chessdotcom.auth import get_session_key
 from src.domain.move2planes import mirrorMoveUCI
@@ -26,6 +26,7 @@ update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
 time_advantage = jax.jit(jax.vmap(_time_advantage))
+fen = jax.jit(jax.vmap(to_fen))
 labels = make_policy_labels()
 engine_search = jax.jit(search)
 
@@ -247,7 +248,7 @@ class Client:
                             continue
                         action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
-                        print(self.state._to_fen())
+                        print(fen(self.state)[0])
                         print('Engine says:', move_uci)
                         if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
                             move_uci = move_uci[1:]
