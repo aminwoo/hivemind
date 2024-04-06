@@ -26,7 +26,6 @@ update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
 time_advantage = jax.jit(jax.vmap(_time_advantage))
-fen = jax.jit(jax.vmap(to_fen))
 labels = make_policy_labels()
 engine_search = jax.jit(search)
 
@@ -51,7 +50,7 @@ class Client:
         self.prev_move = ['', '']
         self.times = [[1200, 1200], [1200, 1200]]
         self.turn = [0, 0]
-    
+
     def new_game(self) -> None: 
         self.state = init_fn(self.keys)
         self.prev_move = ['', '']
@@ -248,7 +247,6 @@ class Client:
                             continue
                         action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
-                        print(fen(self.state)[0])
                         print('Engine says:', move_uci)
                         if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
                             move_uci = move_uci[1:]
