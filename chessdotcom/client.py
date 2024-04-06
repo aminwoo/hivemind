@@ -236,7 +236,7 @@ class Client:
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                         self.state = update_clock(self.state, jnp.int32([self.times]))
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
-                        if self.turn[1 - self.board_num] == self.side and _time_advantage(self.state) > 20:
+                        if self.turn[1 - self.board_num] == self.side and _time_advantage(self.state).all() > 20:
                             continue
                         action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
