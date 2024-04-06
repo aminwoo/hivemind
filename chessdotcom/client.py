@@ -26,8 +26,8 @@ update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
 labels = make_policy_labels()
+engine_search = jax.jit(search)
 
-        
 class Client: 
     """
     Client class to play an account
@@ -237,7 +237,7 @@ class Client:
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                         self.state = update_clock(self.state, jnp.int32([self.times]))
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
-                        action = search(self.state).action
+                        action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
                         print('Engine says:', move_uci)
                         if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
