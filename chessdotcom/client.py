@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import typer
 import websocket
 from pgx.bughouse import (Action, Bughouse, _set_board_num, _set_clock,
-                          _set_current_player)
+                          _set_current_player, _time_advantage)
 from pgx.experimental.bughouse import make_policy_labels
 
 from chessdotcom.auth import get_session_key
@@ -236,6 +236,8 @@ class Client:
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                         self.state = update_clock(self.state, jnp.int32([self.times]))
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
+                        if self.turn[1 - self.board_num] == self.side and _time_advantage(self.state) > 20:
+                            continue
                         action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
                         print('Engine says:', move_uci)
