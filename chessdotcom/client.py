@@ -25,6 +25,7 @@ step_fn = jax.jit(jax.vmap(env.step))
 update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
+time_advantage = jax.jit(jax.vmap(_time_advantage))
 labels = make_policy_labels()
 engine_search = jax.jit(search)
 
@@ -236,7 +237,8 @@ class Client:
                     if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                         self.state = update_clock(self.state, jnp.int32([self.times]))
                         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
-                        if self.turn[1 - self.board_num] == self.side and _time_advantage(self.state).all() > 20:
+                        print(time_advantage(self.state))
+                        if self.turn[1 - self.board_num] == self.side and time_advantage(self.state)[0] > 20:
                             continue
                         action = engine_search(self.state).action
                         move_uci = Action._from_label(action[0])._to_string()
