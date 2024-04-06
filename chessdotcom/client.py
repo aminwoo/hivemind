@@ -177,8 +177,7 @@ class Client:
         self.main_loop(ws)
 
     def main_loop(self, ws) -> None:
-        action = search(self.state).action
-
+        engine_search(self.state)
         while True:
             message = json.loads(ws.recv())[0] 
             #print(message)
