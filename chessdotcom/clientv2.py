@@ -74,7 +74,6 @@ class Client:
             if ws:
                 await self.send_move(ws, tcn_encode([move]))
             self.state = step_fn(self.state, jnp.int32([action]))
-            self.turn[board_num] = 1 - self.turn[board_num] # Update turn 
 
     async def seek_game(self, ws) -> None:
         data = [
@@ -237,17 +236,18 @@ class Client:
                     self.update_clock(self.board_num, times)
 
                     # Update state with new move
-                    if move and self.lengths[self.board_num] < len(tcn_moves) and self.turn[self.board_num] != self.side:
+                    if move and self.lengths[self.board_num] < len(tcn_moves) and self.turn[self.board_num] == self.side:
                         self.lengths[self.board_num] = len(tcn_moves)
                         await self.play_move(self.board_num, move)
                 else:
+                    self.turn[1 - self.board_num] = message['data']['game']['seq'] % 2
                     self.update_clock(1 - self.board_num, times)
 
                     if move and self.lengths[1 - self.board_num] < len(tcn_moves):
                         self.lengths[1 - self.board_num] = len(tcn_moves)
                         await self.play_move(1 - self.board_num, move)
 
-                print('Has terminated:', ~self.state.terminated.any())
+                print('Has terminated:', self.state.terminated.any())
                 # If our turn to move play engine move
                 if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                     self.update_clock_and_player()
