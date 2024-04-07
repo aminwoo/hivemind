@@ -49,13 +49,13 @@ class Client:
         self.key = jax.random.PRNGKey(seed)
         self.keys = jax.random.split(self.key, 1)
         self.state = init_fn(self.keys)
-        self.prev_move = ['', '']
+        self.lengths = [0, 0]
         self.times = [[1200, 1200], [1200, 1200]]
         self.turn = [0, 0]
 
     def new_game(self) -> None: 
         self.state = init_fn(self.keys)
-        self.prev_move = ['', '']
+        self.lengths = [0, 0]
         self.times = [[1200, 1200], [1200, 1200]]
         self.turn = [0, 0]
 
@@ -71,7 +71,6 @@ class Client:
             print("Move played:", move, "on board", board_num)
             if ws:
                 await self.send_move(ws, tcn_encode([move]))
-            self.prev_move[board_num] = move
             self.state = update_player(self.state, jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
             self.state = step_fn(self.state, jnp.int32([action]))
             self.turn[board_num] = 1 - self.turn[board_num] # Update turn 
@@ -190,7 +189,7 @@ class Client:
                 asyncio.create_task(self.handle_message(ws, message))
 
     async def handle_message(self, ws, message: str) -> None:
-        print(message)
+        #print(message)
 
         # Get Client ID 
         if 'clientId' in message:
@@ -226,23 +225,28 @@ class Client:
                 times = message['data']['game']['clocks']
                 tcn_moves = message['data']['game']['moves']
                 move = '' if not tcn_moves else tcn_decode(tcn_moves[-2:])[0].uci()
+                print('Client received move:', move)
                 if user_index != -1:
                     self.gameId = message['data']['game']['id']
                     self.ply = message['data']['game']['seq']
                     self.side = user_index
+                    self.turn[self.board_num] = self.ply % 2
 
                     # Update clock times
                     self.update_clock(self.board_num, times)
 
                     # Update state with new move
-                    if move and self.prev_move[self.board_num] != move and self.turn[self.board_num] != self.side:
+                    if move and self.lengths[self.board_num] < len(tcn_moves) and self.turn[self.board_num] != self.side:
+                        self.lengths[self.board_num] = len(tcn_moves)
                         await self.play_move(self.board_num, move)
                 else:
                     self.update_clock(1 - self.board_num, times)
 
-                    if move and self.prev_move[1 - self.board_num] != move:
+                    if move and self.lengths[1 - self.board_num] < len(tcn_moves):
+                        self.lengths[1 - self.board_num] = len(tcn_moves)
                         await self.play_move(1 - self.board_num, move)
 
+                print('Has terminated:', ~self.state.terminated.any())
                 # If our turn to move play engine move
                 if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                     self.update_clock_and_player()
