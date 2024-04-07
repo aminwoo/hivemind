@@ -67,11 +67,12 @@ class Client:
         if move_uci.endswith("q"): # Treat queen promotion as default move
             move_uci = move_uci[:-1]
         action = labels.index(move_uci)
+
+        self.state = update_player(self.state, jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
         if self.state.legal_action_mask[0][action]:
             print("Move played:", move, "on board", board_num)
             if ws:
                 await self.send_move(ws, tcn_encode([move]))
-            self.state = update_player(self.state, jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
             self.state = step_fn(self.state, jnp.int32([action]))
             self.turn[board_num] = 1 - self.turn[board_num] # Update turn 
 
