@@ -68,12 +68,7 @@ class Client:
             move_uci = move_uci[:-1]
         action = labels.index(move_uci)
 
-        #print(jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
         self.state = update_player(self.state, jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
-        #for i in range(2*64*78+1):
-        #    if self.state.legal_action_mask[0][i]:
-        #        print(i, Action._from_label(i)._to_string())
-
         if self.state.legal_action_mask[0][action]:
             print("Move played:", move, "on board", board_num)
             if ws:
@@ -131,13 +126,15 @@ class Client:
         self.times[self.board_num] = times
 
     def update_clock_and_player(self):
+        print(self.times)
+        self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
         t = self.times.copy()
         if self.turn[0] != 0:
             t[0] = t[0][::-1]
         if self.turn[1] != 0:
             t[1] = t[1][::-1]
+        print(t)
         self.state = update_clock(self.state, jnp.int32([t]))
-        self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
 
     async def start(self) -> None: 
         async with websockets.connect('wss://live2.chess.com/cometd', extra_headers=[('Cookie', f'PHPSESSID={self.phpsessid}')]) as ws:

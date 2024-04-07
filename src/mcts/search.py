@@ -16,7 +16,7 @@ trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_confi
     value_channels=8,
     num_policy_labels=2*64*78+1
 ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint('4')
+state = trainer.load_checkpoint('69')
 
 variables = {'params': state['params'], 'batch_stats': state['batch_stats']}
 model = AZResnet(
