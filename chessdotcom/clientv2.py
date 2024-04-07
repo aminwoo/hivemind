@@ -189,7 +189,7 @@ class Client:
                 asyncio.create_task(self.handle_message(ws, message))
 
     async def handle_message(self, ws, message: str) -> None:
-        #print(message)
+        print(message)
 
         # Get Client ID 
         if 'clientId' in message:
