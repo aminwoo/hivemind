@@ -22,9 +22,10 @@ poetry install
 ```
 to install. 
 
-## Play
+## Playing against the Engine
 
 ## Training
+
 
 ## Cite This Work
 If you found this work useful, please cite it with:
