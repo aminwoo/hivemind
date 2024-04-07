@@ -68,12 +68,18 @@ class Client:
             move_uci = move_uci[:-1]
         action = labels.index(move_uci)
 
+        #print(jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
         self.state = update_player(self.state, jnp.int32([self.turn[board_num]]) if board_num == 0 else jnp.int32([1 - self.turn[board_num]]))
+        #for i in range(2*64*78+1):
+        #    if self.state.legal_action_mask[0][i]:
+        #        print(i, Action._from_label(i)._to_string())
+
         if self.state.legal_action_mask[0][action]:
             print("Move played:", move, "on board", board_num)
             if ws:
                 await self.send_move(ws, tcn_encode([move]))
             self.state = step_fn(self.state, jnp.int32([action]))
+            self.turn[board_num] = 1 - self.turn[board_num]
 
     async def seek_game(self, ws) -> None:
         data = [
@@ -189,7 +195,7 @@ class Client:
                 asyncio.create_task(self.handle_message(ws, message))
 
     async def handle_message(self, ws, message: str) -> None:
-        print(message)
+        #print(message)
 
         # Get Client ID 
         if 'clientId' in message:
@@ -230,17 +236,15 @@ class Client:
                     self.gameId = message['data']['game']['id']
                     self.ply = message['data']['game']['seq']
                     self.side = user_index
-                    self.turn[self.board_num] = self.ply % 2
 
                     # Update clock times
                     self.update_clock(self.board_num, times)
 
                     # Update state with new move
-                    if move and self.lengths[self.board_num] < len(tcn_moves) and self.turn[self.board_num] == self.side:
+                    if move and self.lengths[self.board_num] < len(tcn_moves) and self.turn[self.board_num] != self.side:
                         self.lengths[self.board_num] = len(tcn_moves)
                         await self.play_move(self.board_num, move)
                 else:
-                    self.turn[1 - self.board_num] = message['data']['game']['seq'] % 2
                     self.update_clock(1 - self.board_num, times)
 
                     if move and self.lengths[1 - self.board_num] < len(tcn_moves):
@@ -254,6 +258,10 @@ class Client:
                     print(time_advantage(self.state))
                     if self.turn[1 - self.board_num] == self.side and time_advantage(self.state)[0] > 20:
                         return
+                    
+                    #for i in range(2*64*78+1):
+                    #    if self.state.legal_action_mask[0][i]:
+                    #        print(i, Action._from_label(i)._to_string())
                     action = engine_search(self.state).action
                     move_uci = Action._from_label(action[0])._to_string()
                     print('Engine says:', move_uci)
