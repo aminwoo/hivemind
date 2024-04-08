@@ -9,7 +9,7 @@ import websockets
 import yaml
 from pgx.bughouse import (Action, Bughouse, _set_board_num, _set_clock,
                           _set_current_player, _time_advantage, _is_promotion)
-from pgx.experimental.bughouse import make_policy_labels
+from chessdotcom.constants import labels
 
 from chessdotcom.auth import get_session_key
 from src.domain.move2planes import mirrorMoveUCI
@@ -28,7 +28,6 @@ update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
 time_advantage = jax.jit(jax.vmap(_time_advantage))
-labels = make_policy_labels()
 engine_search = jax.jit(search)
 
 class Client: 
