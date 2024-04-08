@@ -239,7 +239,7 @@ class Client:
                     self.playing = False
                     self.new_game()
                     await self.rematch(ws)
-                    #await self.seek_game(ws)
+                    await self.seek_game(ws)
             else:
                 if message['data']['game']['status'] == 'starting':
                     self.playing = True
@@ -255,7 +255,7 @@ class Client:
                 tcn_moves = message['data']['game']['moves']
                 move = '' if not tcn_moves else tcn_decode(tcn_moves[-2:])[0].uci()
                 if user_index != -1:
-                    self.opponent = players[1 - user_index]
+                    self.opponent = players[1 - user_index]['uid']
                     self.gameId = message['data']['game']['id']
                     self.ply = message['data']['game']['seq']
                     self.side = user_index
