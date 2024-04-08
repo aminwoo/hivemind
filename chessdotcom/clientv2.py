@@ -109,7 +109,7 @@ class Client:
                 'data': {
                     'tid': 'Challenge',
                     'uuid': '',
-                    'to': None,
+                    'to': 'summertimedreams',
                     'from': self.username,
                     'gametype': 'bughouse',
                     'initpos': None,
