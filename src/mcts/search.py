@@ -73,7 +73,6 @@ def search(state):
         num_simulations=100,
         invalid_actions=~state.legal_action_mask,
         qtransform=mctx.qtransform_completed_by_mix_value,
-        max_num_considered_actions=512,
         gumbel_scale=0.1,
     )
     return policy_output
