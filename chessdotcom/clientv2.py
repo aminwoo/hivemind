@@ -38,6 +38,7 @@ class Client:
     def __init__(self, phpsessid: str, username: str, board_num: int) -> None:
         self.phpsessid = phpsessid 
         self.username = username
+        self.opponent = ''
         self.board_num = board_num
         self.clientId = ''
         self.ply = 0
@@ -75,6 +76,31 @@ class Client:
                 await self.send_move(ws, tcn_encode([move]))
             self.state = step_fn(self.state, jnp.int32([action]), self.keys)
             self.turn[board_num] = 1 - self.turn[board_num]
+
+    async def rematch(self, ws) -> None: 
+        data = [
+            {
+                'channel': '/service/game',
+                'data': {
+                    'tid': 'Challenge',
+                    'uuid': '',
+                    'to': self.opponent,
+                    'from': self.username,
+                    'gametype': 'bughouse',
+                    'initpos': None,
+                    'rated': False,
+                    'minrating': None,
+                    'maxrating': None,
+                    'rematchgid': self.gameId,
+                    'basetime': 1200,
+                    'timeinc': 0
+                },
+                'id': self.id,
+                'clientId': self.clientId,
+            },
+        ]
+        await ws.send(json.dumps(data))
+        self.id += 1
 
     async def seek_game(self, ws) -> None:
         data = [
@@ -211,7 +237,8 @@ class Client:
                 if self.playing:
                     self.playing = False
                     self.new_game()
-                    await self.seek_game(ws)
+                    await self.rematch(ws)
+                    #await self.seek_game(ws)
             else:
                 if message['data']['game']['status'] == 'starting':
                     self.playing = True
@@ -227,6 +254,7 @@ class Client:
                 tcn_moves = message['data']['game']['moves']
                 move = '' if not tcn_moves else tcn_decode(tcn_moves[-2:])[0].uci()
                 if user_index != -1:
+                    self.opponent = players[1 - user_index]
                     self.gameId = message['data']['game']['id']
                     self.ply = message['data']['game']['seq']
                     self.side = user_index
