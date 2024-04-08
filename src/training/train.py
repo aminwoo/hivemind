@@ -33,6 +33,7 @@ from pgx.experimental import auto_reset
 from pydantic import BaseModel
 
 from src.architectures.azresnet import AZResnet, AZResnetConfig
+from src.training.trainer import TrainerModule
 
 devices = jax.local_devices()
 num_devices = len(devices)
@@ -41,16 +42,16 @@ print("Number of devices:", num_devices)
 class Config(BaseModel):
     env_id: pgx.EnvId = "bughouse"
     seed: int = 0
-    max_num_iters: int = 400
+    max_num_iters: int = 9999
     # network params
     num_channels: int = 256
     num_layers: int = 15
     # selfplay params
-    selfplay_batch_size: int = 16
-    num_simulations: int = 32
+    selfplay_batch_size: int = 32
+    num_simulations: int = 400
     max_num_steps: int = 256
     # training params
-    training_batch_size: int = 16
+    training_batch_size: int = 1024
     learning_rate: float = 0.001
     # eval params
     eval_interval: int = 5
@@ -80,10 +81,9 @@ net = AZResnet(
 )
 
 def recurrent_fn(model_state, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.State):
-    del rng_key
-
+    rng_keys = jax.random.split(rng_key, config.selfplay_batch_size)
     current_player = state.current_player
-    state = jax.vmap(env.step)(state, action)
+    state = jax.vmap(env.step)(state, action, rng_keys)
 
     model_params = {'params': model_state.params, 'batch_stats': model_state.batch_stats}
     logits, value = model_state.apply_fn(
@@ -229,6 +229,38 @@ def train(model_state, data: Sample):
     return model_state, policy_loss, value_loss
 
 
+@jax.pmap
+def evaluate(rng_key, my_model_state, baseline_state):
+    """A simplified evaluation by sampling. Only for debugging. 
+    Please use MCTS and run tournaments for serious evaluation."""
+    my_player = 0
+
+    key, subkey = jax.random.split(rng_key)
+    batch_size = config.selfplay_batch_size // num_devices
+    keys = jax.random.split(subkey, batch_size)
+    state = jax.vmap(env.init)(keys)
+
+    def body_fn(val):
+        key, state, R = val
+        my_logits, _ = my_model_state.apply_fn(
+            {'params': my_model_state.params, 'batch_stats': my_model_state.batch_stats}, state.observation, train=False
+        )
+        opp_logits, _ = baseline_state.apply_fn(
+            {'params': baseline_state.params, 'batch_stats': baseline_state.batch_stats}, state.observation, train=False
+        )
+        is_my_turn = (state.current_player == my_player).reshape((-1, 1))
+        logits = jnp.where(is_my_turn, my_logits, opp_logits)
+        key, subkey = jax.random.split(key)
+        action = jax.random.categorical(subkey, logits, axis=-1)
+        state = jax.vmap(env.step)(state, action, keys)
+        R = R + state.rewards[jnp.arange(batch_size), my_player]
+        return (key, state, R)
+
+    _, _, R = jax.lax.while_loop(
+        lambda x: ~(x[1].terminated.all()), body_fn, (key, state, jnp.zeros(batch_size))
+    )
+    return R
+
 if __name__ == "__main__":
     #wandb.init(project="pgx-az", config=config.model_dump())
 
@@ -236,8 +268,23 @@ if __name__ == "__main__":
     dummy_state = jax.vmap(env.init)(jax.random.split(jax.random.PRNGKey(0), 2))
     dummy_input = dummy_state.observation
     
-    model_parameters = net.init(jax.random.key(0), dummy_input, train=True)
+    trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_configs=AZResnetConfig(
+        num_blocks=15,
+        channels=256,
+        policy_channels=4, 
+        value_channels=8,
+        num_policy_labels=2*64*78+1
+    ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((1, 8, 16, 32)))
+    state = trainer.load_checkpoint('20240406121656')
+
+    model_parameters = {'params': state['params'], 'batch_stats': state['batch_stats']}
     model_state = TrainState.create(
+        apply_fn=net.apply,
+        params=model_parameters['params'],
+        batch_stats=model_parameters['batch_stats'],
+        tx=optimizer,
+    )
+    baseline_state = TrainState.create(
         apply_fn=net.apply,
         params=model_parameters['params'],
         batch_stats=model_parameters['batch_stats'],
@@ -246,12 +293,7 @@ if __name__ == "__main__":
 
     # replicates to all devices
     model_state  = jax.device_put_replicated(model_state, devices)
-
-    # Prepare checkpoint dir
-    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
-    now = now.strftime("%Y%m%d%H%M%S")
-    ckpt_dir = os.path.join("checkpoints", f"{config.env_id}_{now}")
-    os.makedirs(ckpt_dir, exist_ok=True)
+    baseline_state = jax.device_put_replicated(baseline_state, devices)
 
     # Initialize logging dict
     iteration: int = 0
@@ -261,27 +303,24 @@ if __name__ == "__main__":
 
     rng_key = jax.random.PRNGKey(config.seed)
     while True:
-        '''if iteration % config.eval_interval == 0:
+        if iteration % config.eval_interval == 0:
             # Evaluation
             rng_key, subkey = jax.random.split(rng_key)
             keys = jax.random.split(subkey, num_devices)
+            R = evaluate(keys, model_state, baseline_state)
+            log.update(
+                {
+                    f"eval/vs_baseline/avg_R": R.mean().item(),
+                    f"eval/vs_baseline/win_rate": ((R == 1).sum() / R.size).item(),
+                    f"eval/vs_baseline/draw_rate": ((R == 0).sum() / R.size).item(),
+                    f"eval/vs_baseline/lose_rate": ((R == -1).sum() / R.size).item(),
+                }
+            )
 
             # Store checkpoints
-            model_0, opt_state_0 = jax.tree_util.tree_map(lambda x: x[0], (model, opt_state))
-            with open(os.path.join(ckpt_dir, f"{iteration:06d}.ckpt"), "wb") as f:
-                dic = {
-                    "config": config,
-                    "rng_key": rng_key,
-                    "model": jax.device_get(model_0),
-                    "opt_state": jax.device_get(opt_state_0),
-                    "iteration": iteration,
-                    "frames": frames,
-                    "hours": hours,
-                    "pgx.__version__": pgx.__version__,
-                    "env_id": env.id,
-                    "env_version": env.version,
-                }
-                pickle.dump(dic, f)'''
+            model_state_0 = jax.tree_util.tree_map(lambda x: x[0], (model_state))
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10)))
+            trainer.save_checkpoint(model_state_0, epoch=int(now.strftime("%Y%m%d%H%M%S")))
 
         print(log)
         #wandb.log(log)

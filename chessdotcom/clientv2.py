@@ -8,7 +8,7 @@ import typer
 import websockets
 import yaml
 from pgx.bughouse import (Action, Bughouse, _set_board_num, _set_clock,
-                          _set_current_player, _time_advantage)
+                          _set_current_player, _time_advantage, _is_promotion)
 from pgx.experimental.bughouse import make_policy_labels
 
 from chessdotcom.auth import get_session_key
@@ -122,18 +122,16 @@ class Client:
 
     def update_clock(self, board_num, times): 
         delta = max(self.times[board_num][i] - times[i] for i in range(2))
-        self.times[1 - self.board_num][self.turn[1 - self.board_num]] -= delta 
-        self.times[self.board_num] = times
+        self.times[1 - board_num][self.turn[1 - board_num]] -= delta 
+        self.times[board_num] = times
 
     def update_clock_and_player(self):
-        print(self.times)
         self.state = update_player(self.state, jnp.int32([self.turn[self.board_num]]) if self.board_num == 0 else jnp.int32([1 - self.turn[self.board_num]]))
         t = self.times.copy()
         if self.turn[0] != 0:
             t[0] = t[0][::-1]
         if self.turn[1] != 0:
             t[1] = t[1][::-1]
-        print(t)
         self.state = update_clock(self.state, jnp.int32([t]))
 
     async def start(self) -> None: 
@@ -228,7 +226,6 @@ class Client:
                 times = message['data']['game']['clocks']
                 tcn_moves = message['data']['game']['moves']
                 move = '' if not tcn_moves else tcn_decode(tcn_moves[-2:])[0].uci()
-                print('Client received move:', move)
                 if user_index != -1:
                     self.gameId = message['data']['game']['id']
                     self.ply = message['data']['game']['seq']
@@ -256,16 +253,17 @@ class Client:
                     if self.turn[1 - self.board_num] == self.side and time_advantage(self.state)[0] > 20:
                         return
                     
-                    #for i in range(2*64*78+1):
-                    #    if self.state.legal_action_mask[0][i]:
-                    #        print(i, Action._from_label(i)._to_string())
                     action = engine_search(self.state).action
                     move_uci = Action._from_label(action[0])._to_string()
+                    
                     print('Engine says:', move_uci)
                     if move_uci != 'pass' and int(move_uci[0]) == self.board_num:
                         move_uci = move_uci[1:]
                         if self.turn[self.board_num] == 1:
-                            move_uci = mirrorMoveUCI(move_uci) 
+                            move_uci = mirrorMoveUCI(move_uci)
+                        if _is_promotion(self.state, action) and len(move_uci) < 5:
+                            move_uci += 'q'
+ 
                         await self.play_move(self.board_num, move_uci, ws)
 
 

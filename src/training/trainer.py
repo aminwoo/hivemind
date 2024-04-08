@@ -1,3 +1,5 @@
+import os
+
 from typing import Any
 from tqdm.auto import tqdm
 
@@ -28,7 +30,7 @@ class TrainerModule:
         optimizer_name: str,
         optimizer_params: dict,
         x: Any,
-        ckpt_dir: str = '/tmp/checkpoints',
+        ckpt_dir: str = os.getcwd() + '/checkpoints',
         max_checkpoints: int = 10,
         seed=42,
     ):
