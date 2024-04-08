@@ -92,6 +92,7 @@ class Client:
                     'minrating': None,
                     'maxrating': None,
                     'rematchgid': self.gameId,
+                    'color': 2 if self.side == 0 else 1,
                     'basetime': 1200,
                     'timeinc': 0
                 },
