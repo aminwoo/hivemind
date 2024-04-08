@@ -226,7 +226,7 @@ class Bughouse(core.Env):
 
     def _step(self, state: core.State, action: Array, key) -> State:
         assert isinstance(state, State)
-        delta = jax.random.randint(key, (), 1, 20)
+        delta = jax.random.randint(key, (), 3, 7)
         state = _step_time(state, -delta)
         state = _step(state, action)
         state = jax.lax.cond(

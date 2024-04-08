@@ -70,11 +70,11 @@ def search(state):
         rng_key=key,
         root=root,
         recurrent_fn=recurrent_fn,
-        num_simulations=200,
+        num_simulations=100,
         invalid_actions=~state.legal_action_mask,
         qtransform=mctx.qtransform_completed_by_mix_value,
         max_num_considered_actions=512,
-        gumbel_scale=0.0,
+        gumbel_scale=0.1,
     )
     return policy_output
 
