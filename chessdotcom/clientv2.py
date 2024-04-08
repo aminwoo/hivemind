@@ -73,7 +73,7 @@ class Client:
             print("Move played:", move, "on board", board_num)
             if ws:
                 await self.send_move(ws, tcn_encode([move]))
-            self.state = step_fn(self.state, jnp.int32([action]))
+            self.state = step_fn(self.state, jnp.int32([action]), self.keys)
             self.turn[board_num] = 1 - self.turn[board_num]
 
     async def seek_game(self, ws) -> None:
@@ -261,9 +261,7 @@ class Client:
                         move_uci = move_uci[1:]
                         if self.turn[self.board_num] == 1:
                             move_uci = mirrorMoveUCI(move_uci)
-                        if _is_promotion(self.state, action) and len(move_uci) < 5:
-                            move_uci += 'q'
- 
+
                         await self.play_move(self.board_num, move_uci, ws)
 
 
