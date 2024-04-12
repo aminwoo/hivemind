@@ -1,1 +1,0 @@
-{"iteration": 2, "hours": 0.09423369546731314, "frames": 8192, "eval/vs_baseline/avg_R": -0.3125, "eval/vs_baseline/win_rate": 0.34375, "eval/vs_baseline/draw_rate": 0.0, "eval/vs_baseline/lose_rate": 0.65625, "_timestamp": 1712612289.7732506, "_runtime": 379.0556676387787, "_step": 2, "train/policy_loss": 11.749175190925598, "train/value_loss": 0.2793472483754158}
