@@ -183,8 +183,6 @@ def compute_loss_input(data: SelfplayOutput) -> Sample:
     )
 
 
-
-
 if __name__ == "__main__":    
     # Initialize network and load weights 
     net = AZResnet(
@@ -215,6 +213,9 @@ if __name__ == "__main__":
 
     # replicates to all devices
     model_state  = jax.device_put_replicated(model_state, devices)
+
+    os.makedirs(f'data/run1', exist_ok=True)
+
 
     rng_key = jax.random.PRNGKey(config.seed)
     for _ in tqdm(range(config.max_num_iters)):
