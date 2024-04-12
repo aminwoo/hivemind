@@ -1,0 +1,107 @@
+{
+    "os": "Linux-5.15.0-101-generic-x86_64-with-glibc2.31",
+    "python": "3.9.18",
+    "heartbeatAt": "2024-04-08T22:49:33.529123",
+    "startedAt": "2024-04-08T22:49:32.851254",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "-m src.training.train",
+    "codePathLocal": null,
+    "git": {
+        "remote": "git@github.com:aminwoo/hivemind.git",
+        "commit": "66e085da6fa2e1bbac9541f326a25826f0d84242"
+    },
+    "email": "bwoo2718@gmail.com",
+    "root": "/home/ben/Desktop/hivemind",
+    "host": "ben-MS-7E07",
+    "username": "ben",
+    "executable": "/home/ben/miniconda3/envs/py39/bin/python",
+    "cpu_count": 6,
+    "cpu_count_logical": 12,
+    "cpu_freq": {
+        "current": 2483.3515,
+        "min": 800.0,
+        "max": 4400.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 869.647,
+            "min": 800.0,
+            "max": 4400.0
+        },
+        {
+            "current": 2500.0,
+            "min": 800.0,
+            "max": 4400.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 1832.2072448730469,
+            "used": 300.79907608032227
+        }
+    },
+    "gpu": "NVIDIA GeForce GTX 1070",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce GTX 1070",
+            "memory_total": 8589934592
+        }
+    ],
+    "memory": {
+        "total": 31.191131591796875
+    }
+}

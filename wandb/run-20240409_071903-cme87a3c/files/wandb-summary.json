@@ -1,0 +1,1 @@
+{"iteration": 0, "hours": 0.0, "frames": 0, "eval/vs_baseline/avg_R": -0.0625, "eval/vs_baseline/win_rate": 0.46875, "eval/vs_baseline/draw_rate": 0.0, "eval/vs_baseline/lose_rate": 0.53125, "_timestamp": 1712611184.956751, "_runtime": 41.08875513076782, "_step": 0, "_wandb": {"runtime": 388}}

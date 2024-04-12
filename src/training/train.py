@@ -22,6 +22,7 @@ from typing import NamedTuple
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np 
 import mctx
 import optax
 import pgx
@@ -31,6 +32,7 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pgx.experimental import auto_reset
 from pydantic import BaseModel
+from tqdm import tqdm
 
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
@@ -41,20 +43,12 @@ print("Number of devices:", num_devices)
 
 class Config(BaseModel):
     env_id: pgx.EnvId = "bughouse"
-    seed: int = 0
-    max_num_iters: int = 9999
-    # network params
-    num_channels: int = 256
-    num_layers: int = 15
+    seed: int = 42
+    max_num_iters: int = 60
     # selfplay params
-    selfplay_batch_size: int = 32
+    selfplay_batch_size: int = 8
     num_simulations: int = 400
-    max_num_steps: int = 256
-    # training params
-    training_batch_size: int = 1024
-    learning_rate: float = 0.001
-    # eval params
-    eval_interval: int = 5
+    max_num_steps: int = 2048
 
     class Config:
         extra = "forbid"
@@ -69,16 +63,6 @@ class TrainState(train_state.TrainState):
 
 env = pgx.make(config.env_id)
 
-optimizer = optax.adam(learning_rate=config.learning_rate)
-net = AZResnet(
-    AZResnetConfig(
-        num_blocks=15,
-        channels=256,
-        policy_channels=4,
-        value_channels=8,
-        num_policy_labels=2*64*78+1,
-    )
-)
 
 def recurrent_fn(model_state, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.State):
     rng_keys = jax.random.split(rng_key, config.selfplay_batch_size)
@@ -139,7 +123,6 @@ def selfplay(model_state, rng_key: jnp.ndarray) -> SelfplayOutput:
             num_simulations=config.num_simulations,
             invalid_actions=~state.legal_action_mask,
             qtransform=mctx.qtransform_completed_by_mix_value,
-            max_num_considered_actions=512,
             gumbel_scale=1.0,
         )
         actor = state.current_player
@@ -200,74 +183,19 @@ def compute_loss_input(data: SelfplayOutput) -> Sample:
     )
 
 
-@partial(jax.pmap, axis_name="i")
-def train(model_state, data: Sample):
-    def calculate_loss(model_params, batch_stats, samples: Sample):
-        (logits, value), new_model_state = model_state.apply_fn(
-            {'params': model_params, 'batch_stats': batch_stats},
-            samples.obs, train=True, mutable=['batch_stats']
+
+
+if __name__ == "__main__":    
+    # Initialize network and load weights 
+    net = AZResnet(
+        AZResnetConfig(
+            num_blocks=15,
+            channels=256,
+            policy_channels=4,
+            value_channels=8,
+            num_policy_labels=2*64*78+1,
         )
-
-        policy_loss = optax.softmax_cross_entropy(logits, samples.policy_tgt)
-        policy_loss = jnp.mean(policy_loss)
-
-        value_loss = optax.l2_loss(value, samples.value_tgt)
-        value_loss = jnp.mean(value_loss * samples.mask)  # mask if the episode is truncated
-
-        return policy_loss + value_loss, (new_model_state, policy_loss, value_loss)
-    
-    loss_fn = lambda params: calculate_loss(
-        params, model_state.batch_stats, data
     )
-    (loss, (new_model_state, policy_loss, value_loss)), grads = jax.value_and_grad(loss_fn, has_aux=True)(
-        model_state.params
-    )
-    grads = jax.lax.pmean(grads, axis_name="i")
-    model_state = model_state.apply_gradients(
-        grads=grads, batch_stats=new_model_state['batch_stats']
-    )
-    return model_state, policy_loss, value_loss
-
-
-@jax.pmap
-def evaluate(rng_key, my_model_state, baseline_state):
-    """A simplified evaluation by sampling. Only for debugging. 
-    Please use MCTS and run tournaments for serious evaluation."""
-    my_player = 0
-
-    key, subkey = jax.random.split(rng_key)
-    batch_size = config.selfplay_batch_size // num_devices
-    keys = jax.random.split(subkey, batch_size)
-    state = jax.vmap(env.init)(keys)
-
-    def body_fn(val):
-        key, state, R = val
-        my_logits, _ = my_model_state.apply_fn(
-            {'params': my_model_state.params, 'batch_stats': my_model_state.batch_stats}, state.observation, train=False
-        )
-        opp_logits, _ = baseline_state.apply_fn(
-            {'params': baseline_state.params, 'batch_stats': baseline_state.batch_stats}, state.observation, train=False
-        )
-        is_my_turn = (state.current_player == my_player).reshape((-1, 1))
-        logits = jnp.where(is_my_turn, my_logits, opp_logits)
-        key, subkey = jax.random.split(key)
-        action = jax.random.categorical(subkey, logits, axis=-1)
-        state = jax.vmap(env.step)(state, action, keys)
-        R = R + state.rewards[jnp.arange(batch_size), my_player]
-        return (key, state, R)
-
-    _, _, R = jax.lax.while_loop(
-        lambda x: ~(x[1].terminated.all()), body_fn, (key, state, jnp.zeros(batch_size))
-    )
-    return R
-
-if __name__ == "__main__":
-    #wandb.init(project="pgx-az", config=config.model_dump())
-
-    # Initialize model and opt_state
-    dummy_state = jax.vmap(env.init)(jax.random.split(jax.random.PRNGKey(0), 2))
-    dummy_input = dummy_state.observation
-    
     trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_configs=AZResnetConfig(
         num_blocks=15,
         channels=256,
@@ -282,54 +210,14 @@ if __name__ == "__main__":
         apply_fn=net.apply,
         params=model_parameters['params'],
         batch_stats=model_parameters['batch_stats'],
-        tx=optimizer,
-    )
-    baseline_state = TrainState.create(
-        apply_fn=net.apply,
-        params=model_parameters['params'],
-        batch_stats=model_parameters['batch_stats'],
-        tx=optimizer,
+        tx=optax.lion(learning_rate=0.00001),
     )
 
     # replicates to all devices
     model_state  = jax.device_put_replicated(model_state, devices)
-    baseline_state = jax.device_put_replicated(baseline_state, devices)
-
-    # Initialize logging dict
-    iteration: int = 0
-    hours: float = 0.0
-    frames: int = 0
-    log = {"iteration": iteration, "hours": hours, "frames": frames}
 
     rng_key = jax.random.PRNGKey(config.seed)
-    while True:
-        if iteration % config.eval_interval == 0:
-            # Evaluation
-            rng_key, subkey = jax.random.split(rng_key)
-            keys = jax.random.split(subkey, num_devices)
-            R = evaluate(keys, model_state, baseline_state)
-            log.update(
-                {
-                    f"eval/vs_baseline/avg_R": R.mean().item(),
-                    f"eval/vs_baseline/win_rate": ((R == 1).sum() / R.size).item(),
-                    f"eval/vs_baseline/draw_rate": ((R == 0).sum() / R.size).item(),
-                    f"eval/vs_baseline/lose_rate": ((R == -1).sum() / R.size).item(),
-                }
-            )
-
-            # Store checkpoints
-            model_state_0 = jax.tree_util.tree_map(lambda x: x[0], (model_state))
-            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10)))
-            trainer.save_checkpoint(model_state_0, epoch=int(now.strftime("%Y%m%d%H%M%S")))
-
-        print(log)
-        #wandb.log(log)
-
-        if iteration >= config.max_num_iters:
-            break
-
-        iteration += 1
-        log = {"iteration": iteration}
+    for _ in tqdm(range(config.max_num_iters)):
         st = time.time()
 
         # Selfplay
@@ -338,35 +226,17 @@ if __name__ == "__main__":
         data: SelfplayOutput = selfplay(model_state, keys)
         samples: Sample = compute_loss_input(data)
 
-        # Shuffle samples and make minibatches
+        # Shuffle samples 
         samples = jax.device_get(samples)  # (#devices, batch, max_num_steps, ...)
-        frames += samples.obs.shape[0] * samples.obs.shape[1] * samples.obs.shape[2]
+        frames = samples.obs.shape[0] * samples.obs.shape[1] * samples.obs.shape[2]
         samples = jax.tree_util.tree_map(lambda x: x.reshape((-1, *x.shape[3:])), samples)
         rng_key, subkey = jax.random.split(rng_key)
         ixs = jax.random.permutation(subkey, jnp.arange(samples.obs.shape[0]))
-        samples = jax.tree_map(lambda x: x[ixs], samples)  # shuffle
-        num_updates = samples.obs.shape[0] // config.training_batch_size
-        minibatches = jax.tree_map(
-            lambda x: x.reshape((num_updates, num_devices, -1) + x.shape[1:]), samples
-        )
+        samples = jax.tree_util.tree_map(lambda x: x[ixs], samples)  # shuffle
 
-        # Training
-        policy_losses, value_losses = [], []
-        for i in range(num_updates):
-            minibatch: Sample = jax.tree_map(lambda x: x[i], minibatches)
-            model_state, policy_loss, value_loss = train(model_state, minibatch)
-            policy_losses.append(policy_loss.mean().item())
-            value_losses.append(value_loss.mean().item())
-        policy_loss = sum(policy_losses) / len(policy_losses)
-        value_loss = sum(value_losses) / len(value_losses)
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10)))
+        np.savez_compressed(f'data/run1/training-run1-{now.strftime("%Y%m%d")}-{now.strftime("%H%M")}', obs=samples.obs, policy_tgt=samples.policy_tgt, value_tgt=samples.value_tgt, value_mask=samples.mask)
 
         et = time.time()
-        hours += (et - st) / 3600
-        log.update(
-            {
-                "train/policy_loss": policy_loss,
-                "train/value_loss": value_loss,
-                "hours": hours,
-                "frames": frames,
-            }
-        )
+        hours = (et - st) / 3600
+        print(f'{frames} new samples generated in {hours} hours')

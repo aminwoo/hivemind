@@ -226,7 +226,7 @@ class Bughouse(core.Env):
 
     def _step(self, state: core.State, action: Array, key) -> State:
         assert isinstance(state, State)
-        delta = jax.random.randint(key, (), 3, 7)
+        delta = jax.random.randint(key, (), 3, 10)
         state = _step_time(state, -delta)
         state = _step(state, action)
         state = jax.lax.cond(
@@ -274,7 +274,6 @@ def _step(state: State, action: Array):
 
         state = _update_history(state, a.board_num)
         state = state.replace(legal_action_mask=_legal_action_mask(state))  # type: ignore
-        state = _mask_moves(state)
         state = _check_termination(state)
         return state
 
@@ -289,12 +288,16 @@ def _update_history(state: State, board_num: Array):
 
 def _check_termination(state: State):
     def fn(board_num: Array):
+        rep = (state._hash_history[board_num] == state._zobrist_hash[board_num]).all(axis=1).sum() - 1
+        terminated = rep >= 2
+
         action_mask = jax.lax.select(board_num == 0, state.legal_action_mask[:4992], state.legal_action_mask[4992:9984])
         has_legal_action = action_mask.any() 
-        terminated = (~has_legal_action) & _on_turn(state, board_num)
-        rep = (state._hash_history[board_num] == state._zobrist_hash[board_num]).all(axis=1).sum() - 1
-        terminated |= rep >= 2
-        is_checkmate = (~has_legal_action) & _on_turn(state, board_num) & _is_checking(_flip(state, board_num), board_num)
+        is_checkmate = jax.lax.cond(state._pocket[board_num, 0].sum() > 0, 
+                                      lambda: ~has_legal_action & _on_turn(state, board_num), 
+                                      lambda: (~has_legal_action & _on_turn(state, board_num)) & (((state._turn[0] == state._turn[1]) & (_time_advantage(state) <= 0)) | ~_legal_drops(state, board_num))
+                                      )
+        terminated |= is_checkmate
 
         return terminated, is_checkmate
     
@@ -310,6 +313,31 @@ def _check_termination(state: State):
         terminated=terminated_left | terminated_right,
         rewards=reward,
     )
+
+
+def _legal_drops(state: State, board_num: Array): 
+    def is_drop_legal(a: Action, board_num: Array):
+        next_s = _flip(_apply_move(state, a), board_num)
+        return ~_is_checking(next_s, board_num)
+    
+    @partial(jax.vmap, in_axes=(0, None))
+    def legal_drops(from_, board_num: Array): 
+        piece = state._board[board_num, from_]
+
+        def legal_label(drop):
+            a = Action(from_=from_, to=from_, drop=drop, board_num=board_num)
+            return jax.lax.select(
+                (from_ > 0) & (piece == 0) & is_drop_legal(a, board_num),
+                TRUE,
+                FALSE,
+            )
+
+        return legal_label(5)
+    
+    king_pos = jnp.argmin(jnp.abs(state._board[board_num] - KING))
+    return legal_drops(CAN_MOVE[KING, king_pos], board_num).any() 
+    
+
 
 def _apply_move(state: State, a: Action):
     # apply move action
@@ -493,7 +521,7 @@ def _legal_action_mask(state: State):
         def legal_labels(drop):
             a = Action(from_=from_, to=from_, drop=drop, board_num=board_num)
             return jax.lax.select(
-                (state._pocket[board_num, 0, drop] > 0) & (from_ >= 0) & (piece == 0) & ~(drop == PAWN & ((from_ % 8 == 7) | (from_ % 8 == 0))) & is_drop_legal(a, board_num),
+                (state._pocket[board_num, 0, drop] > 0) & (piece == 0) & ~(drop == PAWN & ((from_ % 8 == 7) | (from_ % 8 == 0))) & is_drop_legal(a, board_num),
                 a._to_label(),
                 jnp.int32(-1),
             )
@@ -508,7 +536,7 @@ def _legal_action_mask(state: State):
         def legal_label(to):
             a = Action(from_=from_, to=to, board_num=board_num)
             return jax.lax.select(
-                (from_ >= 0) & (piece > 0) & (to >= 0) & is_legal(a, board_num),
+                (piece > 0) & (to >= 0) & is_legal(a, board_num),
                 a._to_label(),
                 jnp.int32(-1),
             )
@@ -560,8 +588,6 @@ def _legal_action_mask(state: State):
 
         @jax.vmap
         def is_ok(label):
-            #print(label)
-            #print(Action._from_label(label))
             return ~_is_checking(_flip(_apply_move(state, Action._from_label(label)), board_num), board_num)
 
         ok &= ~_is_checking(_flip(state, board_num), board_num)
@@ -588,48 +614,63 @@ def _legal_action_mask(state: State):
 
         return ok
 
-    actions = legal_norml_moves(jnp.arange(64), 0).flatten()  # include -1
-    # +1 is to avoid setting True to the last element
+    def legal_moves_left(mask):
+        actions = legal_norml_moves(jnp.arange(64), 0).flatten()  # include -1
+        # +1 is to avoid setting True to the last element
+        mask = mask.at[actions].set(TRUE)
+
+        # castling
+        mask = mask.at[2524].set(jax.lax.select(can_castle_queen_side(0), TRUE, mask[2524]))
+        mask = mask.at[2527].set(jax.lax.select(can_castle_king_side(0), TRUE, mask[2527]))
+
+        # set en passant
+        actions = legal_en_passants(0)
+        mask = mask.at[actions].set(TRUE)
+
+        # set underpromotions
+        actions = legal_underpromotions(mask, 0)
+        mask = mask.at[actions].set(TRUE)
+
+        # set drops
+        actions = legal_drops(jnp.arange(64), 0).flatten() 
+        mask = mask.at[actions].set(TRUE)
+
+        # unset -1 action
+        mask.at[4992].set(FALSE)
+        return mask
+
+    def legal_moves_right(mask):
+        actions = legal_norml_moves(jnp.arange(64), 1).flatten()  # include -1
+        mask = mask.at[actions].set(TRUE)
+
+        # castling
+        mask = mask.at[7516].set(jax.lax.select(can_castle_queen_side(1), TRUE, mask[7516]))
+        mask = mask.at[7519].set(jax.lax.select(can_castle_king_side(1), TRUE, mask[7519]))
+
+        # set en passant
+        actions = legal_en_passants(1)
+        mask = mask.at[actions].set(TRUE)
+
+        # set underpromotions
+        actions = legal_underpromotions(mask, 1)
+        mask = mask.at[actions].set(TRUE)
+
+        # set drops
+        actions = legal_drops(jnp.arange(64), 1).flatten() 
+        mask = mask.at[actions].set(TRUE)
+        return mask 
+
     mask = jnp.zeros(2 * 64 * 78 + 1, dtype=jnp.bool_)
-    mask = mask.at[actions].set(TRUE)
-
-    # castling
-    mask = mask.at[2524].set(jax.lax.select(can_castle_queen_side(0), TRUE, mask[2524]))
-    mask = mask.at[2527].set(jax.lax.select(can_castle_king_side(0), TRUE, mask[2527]))
-
-    # set en passant
-    actions = legal_en_passants(0)
-    mask = mask.at[actions].set(TRUE)
-
-    # set underpromotions
-    actions = legal_underpromotions(mask, 0)
-    mask = mask.at[actions].set(TRUE)
-
-    # set drops
-    actions = legal_drops(jnp.arange(64), 0).flatten() 
-    mask = mask.at[actions].set(TRUE)
-
-    # unset -1 action
-    mask.at[4992].set(FALSE)
-
-    actions = legal_norml_moves(jnp.arange(64), 1).flatten()  # include -1
-    mask = mask.at[actions].set(TRUE)
-
-    # castling
-    mask = mask.at[7516].set(jax.lax.select(can_castle_queen_side(1), TRUE, mask[7516]))
-    mask = mask.at[7519].set(jax.lax.select(can_castle_king_side(1), TRUE, mask[7519]))
-
-    # set en passant
-    actions = legal_en_passants(1)
-    mask = mask.at[actions].set(TRUE)
-
-    # set underpromotions
-    actions = legal_underpromotions(mask, 1)
-    mask = mask.at[actions].set(TRUE)
-
-    # set drops
-    actions = legal_drops(jnp.arange(64), 1).flatten() 
-    mask = mask.at[actions].set(TRUE)
+    mask = jax.lax.cond(
+        _on_turn(state, 0),
+        lambda: legal_moves_left(mask),  # type: ignore
+        lambda: mask
+    )
+    mask = jax.lax.cond(
+        _on_turn(state, 1),
+        lambda: legal_moves_right(mask),  # type: ignore
+        lambda: mask
+    )
 
     # PASS action (if we are up time and diagonal players on turn)
     mask = mask.at[-1].set(_time_advantage(state) > 0 & (state._turn[0] == state._turn[1]))
@@ -774,7 +815,7 @@ def _mask_moves(state: State):
     mask = state.legal_action_mask
     mask = jax.lax.select(~_on_turn(state, 0), mask.at[:4992].set(FALSE), mask)
     mask = jax.lax.select(~_on_turn(state, 1), mask.at[4992:].set(FALSE), mask)
-    mask = mask.at[9984].set(_time_advantage(state) > 0)
+    mask = mask.at[-1].set(_time_advantage(state) > 0 & (state._turn[0] == state._turn[1]))
     return state.replace(legal_action_mask=mask) # type: ignore
 
 def _observe(state: State, player_id: Array):
@@ -842,11 +883,13 @@ def _observe(state: State, player_id: Array):
     )
     return planes.transpose((1, 2, 0))
 
+
 @jax.jit
 def _set_clock(state, clock): 
     state = state.replace(_clock=clock)
     state = state.replace(observation=_observe(state, state.current_player))
     return state 
+
 
 @jax.jit
 def _set_current_player(state, current_player):
@@ -856,16 +899,19 @@ def _set_current_player(state, current_player):
     state = _mask_moves(state)
     return state
 
+
 @jax.jit
 def _set_board_num(state, board_num): 
     state = state.replace(legal_action_mask=jax.lax.select(board_num == 0, state.legal_action_mask.at[4992:].set(FALSE), state.legal_action_mask.at[:4992].set(FALSE)))  # type: ignore
     return state
+
 
 @jax.jit
 def _is_promotion(state, action):
     a = Action._from_label(action)
     piece = state._board[a.board_num, a.from_]
     return (piece == PAWN) & (a.from_ % 8 == 6) & (a.drop < 0)
+
 
 @jax.jit
 def _step_time(state, delta):

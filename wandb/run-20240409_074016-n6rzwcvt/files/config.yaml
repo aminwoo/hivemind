@@ -1,0 +1,60 @@
+wandb_version: 1
+
+env_id:
+  desc: null
+  value: bughouse
+seed:
+  desc: null
+  value: 0
+max_num_iters:
+  desc: null
+  value: 10000
+num_channels:
+  desc: null
+  value: 256
+num_layers:
+  desc: null
+  value: 15
+selfplay_batch_size:
+  desc: null
+  value: 32
+num_simulations:
+  desc: null
+  value: 32
+max_num_steps:
+  desc: null
+  value: 128
+training_batch_size:
+  desc: null
+  value: 1024
+learning_rate:
+  desc: null
+  value: 0.001
+eval_interval:
+  desc: null
+  value: 5
+_wandb:
+  desc: null
+  value:
+    python_version: 3.9.18
+    cli_version: 0.16.6
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1712612416.0
+    t:
+      1:
+      - 12
+      - 45
+      - 55
+      2:
+      - 12
+      - 45
+      - 55
+      3:
+      - 16
+      - 23
+      4: 3.9.18
+      5: 0.16.6
+      8:
+      - 5
+      13: linux-x86_64

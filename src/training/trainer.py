@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import optax
 import orbax
 import chex
+import wandb
 
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
@@ -31,7 +32,7 @@ class TrainerModule:
         optimizer_params: dict,
         x: Any,
         ckpt_dir: str = os.getcwd() + '/checkpoints',
-        max_checkpoints: int = 10,
+        max_checkpoints: int = 999,
         seed=42,
     ):
         '''
@@ -105,27 +106,24 @@ class TrainerModule:
 
     def create_functions(self):
         # Function to calculate the classification loss and accuracy for a model
-        def train_step(state: TrainState, board_planes, y_policy, y_value):
-            def calculate_loss(params, batch_stats, train):
+        def train_step(state: TrainState, obs, policy_tgt, value_tgt):
+            def calculate_loss(params, batch_stats):
                 logits, new_model_state = state.apply_fn(
                     {'params': params, 'batch_stats': batch_stats},
-                    board_planes,
-                    train=train,
+                    obs,
+                    train=True,
                     mutable=['batch_stats'],
                 )
                 policy_logits, value = logits
+                policy_loss = optax.softmax_cross_entropy(policy_logits, policy_tgt).mean()
 
-                policy_loss = optax.softmax_cross_entropy_with_integer_labels(
-                    logits=policy_logits, labels=y_policy
-                ).mean()
-
-                value_loss = optax.l2_loss(value, y_value).mean()
-                loss = 0.99 * policy_loss + 0.01 * value_loss
+                value_loss = optax.l2_loss(value, value_tgt).mean()
+                loss = policy_loss + value_loss
 
                 return loss, (new_model_state, policy_loss, value_loss)
 
             loss_fn = lambda params: calculate_loss(
-                params, state.batch_stats, train=True
+                params, state.batch_stats
             )
 
             # Get loss, gradients for loss, and other outputs of loss function
@@ -136,7 +134,7 @@ class TrainerModule:
             state = state.apply_gradients(
                 grads=grads, batch_stats=new_model_state['batch_stats']
             )
-            return state, loss
+            return state, policy_loss, value_loss
         
         def eval_step(state: TrainState, board_planes, y_policy, y_value):
             policy_logits, value = state.apply_fn(
@@ -155,19 +153,29 @@ class TrainerModule:
         self.eval_step = jax.jit(eval_step)
 
     def train_loop(self, train_files, eval_files=None, epochs=7, batch_size=1024):
-        for epoch in range(4, epochs):
+        log = {} 
+        for epoch in range(epochs):
             print(f'Training Epoch: {epoch}/{epochs}')
+            policy_losses, value_losses = [], []
             for file in tqdm(train_files):
                 data = np.load(file)
                 with tf.device('/CPU:0'):
-                    train_loader = tf.data.Dataset.from_tensor_slices((data['board_planes'], data['move_planes'], data['value_planes']))
+                    train_loader = tf.data.Dataset.from_tensor_slices((data['obs'], data['policy_tgt'], data['value_tgt']))
                     train_loader = train_loader.shuffle(buffer_size=2**16).batch(batch_size)
-                for board_planes, y_policy, y_value in train_loader:
-                    self.state, loss = self.train_step(self.state, board_planes.numpy(), y_policy.numpy().astype(np.int32), y_value.numpy())
+                for obs, policy_tgt, value_tgt in train_loader:
+                    self.state, policy_loss, value_loss = self.train_step(self.state, obs.numpy(), policy_tgt.numpy(), value_tgt.numpy())
+                    policy_losses.append(policy_loss.item())
+                    value_losses.append(value_loss.item())
 
-            policy_acc, value_acc =  self.eval_model(eval_files, batch_size)
-            print('Policy Accuracy:', policy_acc)
-            print('Value Accuracy:', value_acc)
+            policy_loss = sum(policy_losses) / len(policy_losses)
+            value_loss = sum(value_losses) / len(value_losses)
+            log.update(
+                {
+                    "train/policy_loss": policy_loss,
+                    "train/value_loss": value_loss,
+                }
+            )
+            print(log)
             self.save_checkpoint(self.state, epoch=epoch)
 
     def eval_model(self, files, batch_size):
@@ -177,11 +185,11 @@ class TrainerModule:
         for file in tqdm(files):
             data = np.load(file)
             with tf.device('/CPU:0'):
-                val_loader = tf.data.Dataset.from_tensor_slices((data['board_planes'], data['move_planes'], data['value_planes']))
+                val_loader = tf.data.Dataset.from_tensor_slices((data['obs'], data['policy_tgt'], data['value_tgt']))
                 val_loader = val_loader.shuffle(buffer_size=2**16).batch(batch_size)
 
-            for board_planes, y_policy, y_value in val_loader:
-                batch_policy_acc, batch_value_acc = self.eval_step(self.state, board_planes.numpy(), y_policy.numpy().astype(np.int32), y_value.numpy())
+            for obs, policy_tgt, value_tgt in val_loader:
+                batch_policy_acc, batch_value_acc = self.eval_step(self.state, obs.numpy(), policy_tgt.numpy(), value_tgt.numpy())
 
                 policy_acc += batch_policy_acc
                 value_acc += batch_value_acc
@@ -207,21 +215,17 @@ if __name__ == '__main__':
     import tensorflow as tf
     import glob
 
-    batch_size = 1024
-    epochs = 8 
-
     trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_configs=AZResnetConfig(
         num_blocks=15,
         channels=256,
         policy_channels=4, 
         value_channels=8,
-        num_policy_labels=2*64*78+1
-    ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((batch_size, 8, 16, 32)))
-    trainer.state = trainer.load_checkpoint('3')
-    trainer.init_optimizer()
+        num_policy_labels=2*64*78+1, 
+    ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((1024, 8, 16, 32)))
+    print(os.getcwd() + '/checkpoints')
+    trainer.save_checkpoint(trainer.state)
+    #trainer.state = trainer.load_checkpoint('20240406121656')
+    #trainer.init_optimizer()
 
-    files = glob.glob('data/training_data/*')
-    train_files = files[1:]
-    eval_files = files[:1] 
-    #trainer.train_loop(train_files, eval_files) 
-    print(trainer.eval_model(eval_files, 1024))
+    #files = glob.glob('data/run1/*')
+    #trainer.train_loop(files, epochs=1) 

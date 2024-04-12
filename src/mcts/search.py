@@ -78,12 +78,15 @@ def search(state):
     return policy_output
 
 if __name__ == '__main__':
-    #init_fn = jax.jit(jax.vmap(partial(State._from_fen, "rk5r/ppR3pp/2npNn2/2b1p3/4P1B1/2PP4/PP3PPP/RNB2RK1/ b - - 31 16|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR/ b KQkq - 0 1")))
+    init_fn = jax.jit(jax.vmap(partial(State._from_fen, "rk5r/ppR3pp/2npNn2/2b1p3/4P1B1/2PP4/PP3PPP/RNB2RK1/ w - - 31 16|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR/ w KQkq - 0 1")))
     update_player = jax.jit(jax.vmap(_set_current_player))
     state = init_fn(keys)
     state = update_player(state, jnp.int32([1]))
     out = search(state)
-    print(out)
+    import sys
+    import numpy
+    numpy.set_printoptions(threshold=sys.maxsize)
+    print(out.action_weights)
     print(Action._from_label(out.action[0])._to_string())
     start = time()
     search(state)
