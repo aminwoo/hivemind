@@ -39,7 +39,7 @@ class Client:
         self.username = config['username']
         self.partner = config['partner']
         self.opponent = config['opponent']
-        self.board_num = config['board_num']
+        self.board_num = config['board']
         self.clientId = ''
         self.ply = 0
         self.gameId = -1
