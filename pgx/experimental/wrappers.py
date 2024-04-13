@@ -14,7 +14,7 @@ def auto_reset(step_fn, init_fn):
 
     We have a concern about the final state before staging this wrapper:
 
-    When auto-reset happens, the termianl (or truncated) state/observation is
+    When auto-reset happens, the terminal (or truncated) state/observation is
     replaced by initial state/observation, It's ok if it's termination.
     However, when truncation happens, value of truncated state/observation
     might be used by agents (by bootstrap). So it must be stored somewhere.

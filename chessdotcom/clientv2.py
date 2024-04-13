@@ -28,17 +28,18 @@ update_clock = jax.jit(jax.vmap(_set_clock))
 update_player = jax.jit(jax.vmap(_set_current_player))
 update_board = jax.jit(jax.vmap(_set_board_num))
 time_advantage = jax.jit(jax.vmap(_time_advantage))
-engine_search = jax.jit(search)
+
 
 class Client: 
     """
     Client class to play an account
     """
-    def __init__(self, phpsessid: str, username: str, board_num: int) -> None:
-        self.phpsessid = phpsessid 
-        self.username = username
-        self.opponent = ''
-        self.board_num = board_num
+    def __init__(self, config) -> None:
+        self.phpsessid = get_session_key(config['username'], config['password']) 
+        self.username = config['username']
+        self.partner = config['partner']
+        self.opponent = config['opponent']
+        self.board_num = config['board_num']
         self.clientId = ''
         self.ply = 0
         self.gameId = -1
@@ -76,6 +77,22 @@ class Client:
             self.state = step_fn(self.state, jnp.int32([action]), self.keys)
             self.turn[board_num] = 1 - self.turn[board_num]
 
+    async def send_partnership(self, ws) -> None: 
+        data = [
+            {
+                'channel': '/service/game',
+                'data': {
+                    'tid': 'RequestBughousePair',
+                    'to': self.partner,
+                    'from': self.username,
+                },
+                'id': self.id,
+                'clientId': self.clientId,
+            },
+        ]
+        await ws.send(json.dumps(data))
+        self.id += 1
+
     async def rematch(self, ws) -> None: 
         data = [
             {
@@ -109,7 +126,7 @@ class Client:
                 'data': {
                     'tid': 'Challenge',
                     'uuid': '',
-                    'to': 'summertimedreams',
+                    'to': self.opponent,
                     'from': self.username,
                     'gametype': 'bughouse',
                     'initpos': None,
@@ -221,6 +238,7 @@ class Client:
         # Get Client ID 
         if 'clientId' in message:
             self.clientId = message['clientId']
+            await self.send_partnership(ws)
             await self.seek_game(ws)
 
         # Send heartbeat back to server
@@ -254,7 +272,6 @@ class Client:
                 tcn_moves = message['data']['game']['moves']
                 move = '' if not tcn_moves else tcn_decode(tcn_moves[-2:])[0].uci()
                 if user_index != -1:
-                    self.opponent = players[1 - user_index]['uid']
                     self.gameId = message['data']['game']['id']
                     self.ply = message['data']['game']['seq']
                     self.side = user_index
@@ -277,11 +294,10 @@ class Client:
                 # If our turn to move play engine move
                 if self.turn[self.board_num] == self.side and ~self.state.terminated.any():
                     self.update_clock_and_player()
-                    print(time_advantage(self.state))
                     if self.turn[1 - self.board_num] == self.side and time_advantage(self.state)[0] > 20:
                         return
                     
-                    action = engine_search(self.state).action
+                    action = search(self.state).action
                     move_uci = Action._from_label(action[0])._to_string()
                     
                     print('Engine says:', move_uci)
@@ -296,7 +312,7 @@ class Client:
 def main():
     with open('chessdotcom/config.yaml', 'r') as file:
         config = yaml.safe_load(file)
-    client = Client(get_session_key(config['username'], config['password']), config['username'], config['board'])
+    client = Client(config)
     asyncio.run(client.start())
 
 

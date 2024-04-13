@@ -70,7 +70,7 @@ def search(state):
         rng_key=key,
         root=root,
         recurrent_fn=recurrent_fn,
-        num_simulations=100,
+        num_simulations=400,
         invalid_actions=~state.legal_action_mask,
         qtransform=mctx.qtransform_completed_by_mix_value,
         gumbel_scale=0.1,
@@ -79,9 +79,9 @@ def search(state):
 
 if __name__ == '__main__':
     #init_fn = jax.jit(jax.vmap(partial(State._from_fen, "rk5r/ppR3pp/2npNn2/2b1p3/4P1B1/2PP4/PP3PPP/RNB2RK1/ b - - 31 16|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR/ b KQkq - 0 1")))
-    update_player = jax.jit(jax.vmap(_set_current_player))
+    #update_player = jax.jit(jax.vmap(_set_current_player))
     state = init_fn(keys)
-    state = update_player(state, jnp.int32([1]))
+    #state = update_player(state, jnp.int32([1]))
     out = search(state)
     print(out)
     print(Action._from_label(out.action[0])._to_string())

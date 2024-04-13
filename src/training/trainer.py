@@ -197,6 +197,7 @@ class TrainerModule:
         save_args = orbax_utils.save_args_from_target(ckpt)
         self.checkpoint_manager.save(epoch, ckpt, save_kwargs={'save_args': save_args})
 
+
     def load_checkpoint(self, checkpoint_path: str) -> TrainState:
         # Load model. We use different checkpoint for pretrained models
         ckpt = self.checkpoint_manager.restore(checkpoint_path)

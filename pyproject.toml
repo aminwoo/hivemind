@@ -11,12 +11,10 @@ chess = "^1.10.0"
 wandb = "^0.16.6"
 websocket-client = "^1.7.0"
 tqdm = "^4.66.2"
-tensorflow = {extras = ["and-cuda"], version = "^2.16.1"}
 isort = "^5.13.2"
 black = "^24.3.0"
 mctx = "^0.0.5"
 bs4 = "^0.0.2"
-pgx = {git = "git@github.com:aminwoo/pgx.git"}
 flax = "^0.8.2"
 typer = "^0.12.1"
 asyncio = "^3.4.3"
