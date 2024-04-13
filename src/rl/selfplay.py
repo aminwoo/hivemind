@@ -43,12 +43,12 @@ print("Number of devices:", num_devices)
 
 class Config(BaseModel):
     env_id: pgx.EnvId = "bughouse"
-    seed: int = 0
-    max_num_iters: int = 20
+    seed: int = 42
+    max_num_iters: int = 60
     # selfplay params
-    selfplay_batch_size: int = 16
+    selfplay_batch_size: int = 8
     num_simulations: int = 400
-    max_num_steps: int = 1024
+    max_num_steps: int = 2048
 
     class Config:
         extra = "forbid"
@@ -183,42 +183,8 @@ def compute_loss_input(data: SelfplayOutput) -> Sample:
     )
 
 
-@jax.pmap
-def evaluate(rng_key, my_model_state, baseline_state):
-    """A simplified evaluation by sampling. Only for debugging. 
-    Please use MCTS and run tournaments for serious evaluation."""
-    my_player = 0
-
-    key, subkey = jax.random.split(rng_key)
-    batch_size = config.selfplay_batch_size // num_devices
-    keys = jax.random.split(subkey, batch_size)
-    state = jax.vmap(env.init)(keys)
-
-    def body_fn(val):
-        key, state, R = val
-        my_logits, _ = my_model_state.apply_fn(
-            {'params': my_model_state.params, 'batch_stats': my_model_state.batch_stats}, state.observation, train=False
-        )
-        opp_logits, _ = baseline_state.apply_fn(
-            {'params': baseline_state.params, 'batch_stats': baseline_state.batch_stats}, state.observation, train=False
-        )
-        is_my_turn = (state.current_player == my_player).reshape((-1, 1))
-        logits = jnp.where(is_my_turn, my_logits, opp_logits)
-        key, subkey = jax.random.split(key)
-        action = jax.random.categorical(subkey, logits, axis=-1)
-        state = jax.vmap(env.step)(state, action, keys)
-        R = R + state.rewards[jnp.arange(batch_size), my_player]
-        return (key, state, R)
-
-    _, _, R = jax.lax.while_loop(
-        lambda x: ~(x[1].terminated.all()), body_fn, (key, state, jnp.zeros(batch_size))
-    )
-    return R
-
 if __name__ == "__main__":    
-    state = TrainerModule.load_checkpoint('20240406121656')
-    model_parameters = {'params': state['params'], 'batch_stats': state['batch_stats']}
-
+    # Initialize network and load weights 
     net = AZResnet(
         AZResnetConfig(
             num_blocks=15,
@@ -228,40 +194,35 @@ if __name__ == "__main__":
             num_policy_labels=2*64*78+1,
         )
     )
+    trainer = TrainerModule(model_name='AZResNet', model_class=AZResnet, model_configs=AZResnetConfig(
+        num_blocks=15,
+        channels=256,
+        policy_channels=4, 
+        value_channels=8,
+        num_policy_labels=2*64*78+1
+    ), optimizer_name='lion', optimizer_params={'learning_rate': 0.00001}, x=jnp.ones((1, 8, 16, 32)))
+    state = trainer.load_checkpoint('20240406121656')
+
+    model_parameters = {'params': state['params'], 'batch_stats': state['batch_stats']}
     model_state = TrainState.create(
         apply_fn=net.apply,
         params=model_parameters['params'],
         batch_stats=model_parameters['batch_stats'],
-        tx=optax.adam(),
+        tx=optax.lion(learning_rate=0.00001),
     )
 
     # replicates to all devices
     model_state  = jax.device_put_replicated(model_state, devices)
 
-<<<<<<< HEAD:src/rl/selfplay.py
-    samples = 2**16 
-    idx = 0 
-    step = 0
-    policy_tgt = np.zeros((samples))
-    value_tgt = np.zeros((samples))
-
-    rng_key = jax.random.PRNGKey(config.seed)
-    while True:
-        if idx >= samples: 
-            np.savez_compressed(f'data/training_data/checkpoint{step}', obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
-            obs = np.zeros((samples, 8, 16, 32))
-            policy_tgt = np.zeros((samples))
-            value_tgt = np.zeros((samples))
-            step += 1
-            idx = 0
-
-        if step >= config.max_num_iters:
-            break
-
-=======
     os.makedirs(f'data/run1', exist_ok=True)
 
 
+    rng_key = jax.random.PRNGKey(config.seed)
+    for _ in tqdm(range(config.max_num_iters)):
+        st = time.time()
+
+        # Selfplay
+        rng_key, subkey = jax.random.split(rng_key)
         keys = jax.random.split(subkey, num_devices)
         data: SelfplayOutput = selfplay(model_state, keys)
         samples: Sample = compute_loss_input(data)
@@ -272,19 +233,11 @@ if __name__ == "__main__":
         samples = jax.tree_util.tree_map(lambda x: x.reshape((-1, *x.shape[3:])), samples)
         rng_key, subkey = jax.random.split(rng_key)
         ixs = jax.random.permutation(subkey, jnp.arange(samples.obs.shape[0]))
-<<<<<<< HEAD:src/rl/selfplay.py
-        samples = jax.tree_map(lambda x: x[ixs], samples)  # shuffle
-        print(samples)
-        
-        num_updates = samples.obs.shape[0] // config.training_batch_size
-        minibatches = jax.tree_map(
-            lambda x: x.reshape((num_updates, num_devices, -1) + x.shape[1:]), samples
-        )
-=======
         samples = jax.tree_util.tree_map(lambda x: x[ixs], samples)  # shuffle
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10)))
         np.savez_compressed(f'data/run1/training-run1-{now.strftime("%Y%m%d")}-{now.strftime("%H%M")}', obs=samples.obs, policy_tgt=samples.policy_tgt, value_tgt=samples.value_tgt, value_mask=samples.mask)
+
         et = time.time()
         hours = (et - st) / 3600
         print(f'{frames} new samples generated in {hours} hours')

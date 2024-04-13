@@ -298,7 +298,7 @@ def _check_termination(state: State):
         action_mask = jax.lax.select(board_num == 0, state.legal_action_mask[:4992], state.legal_action_mask[4992:9984])
         has_legal_action = action_mask.any() 
 
-        is_checkmate = jax.lax.cond(state._pocket[board_num, 0].sum() > 0, 
+        is_checkmate = jax.lax.cond(state._pocket[board_num, 0].any(), 
                                       lambda: ~has_legal_action & _on_turn(state, board_num), 
                                       lambda: (~has_legal_action & _on_turn(state, board_num)) & (~state.legal_action_mask[9984] | ~_legal_drops(state, board_num))
                                       )
@@ -329,20 +329,16 @@ def _legal_drops(state: State, board_num: Array):
     def legal_drops(from_, board_num: Array): 
         piece = state._board[board_num, from_]
 
-        def legal_label(drop):
-            a = Action(from_=from_, to=from_, drop=drop, board_num=board_num)
-            return jax.lax.select(
-                (from_ > 0) & (piece == 0) & is_drop_legal(a, board_num),
-                TRUE,
-                FALSE,
-            )
-
-        return legal_label(5)
+        a = Action(from_=from_, to=from_, drop=5, board_num=board_num)
+        return jax.lax.select(
+            (from_ >= 0) & (piece == 0) & is_drop_legal(a, board_num),
+            TRUE,
+            FALSE,
+        )
     
     king_pos = jnp.argmin(jnp.abs(state._board[board_num] - KING))
     return legal_drops(CAN_MOVE[KING, king_pos], board_num).any() 
     
-
 
 def _apply_move(state: State, a: Action):
     # apply move action
@@ -678,7 +674,6 @@ def _legal_action_mask(state: State):
     )
 
     # PASS action (if we are up time and diagonal players on turn)
-    mask = mask.at[-1].set(FALSE)
     mask = mask.at[-1].set((_time_advantage(state) > 0) & (state._turn[0] == state._turn[1]))
 
     return mask

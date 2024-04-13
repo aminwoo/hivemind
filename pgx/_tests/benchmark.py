@@ -23,7 +23,7 @@ key = jax.random.PRNGKey(seed)
 state = init_fn(key)
 
 times = [] 
-iterations = 100
+iterations = 1000
 for seed in range(iterations): 
     while ~state.terminated:
         key, subkey = jax.random.split(key)
