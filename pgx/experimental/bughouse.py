@@ -123,6 +123,7 @@ def from_fen(fen: str) -> State:
         _board = _board.at[board_num].set(jnp.rot90(mat, k=3).flatten()) 
     
     state = State(  # type: ignore
+        current_player=jnp.int32(1),
         _board=_board,
         _turn=_turn,
         _can_castle_queen_side=_can_castle_queen_side,
@@ -141,7 +142,7 @@ def from_fen(fen: str) -> State:
     state = state.replace(_zobrist_hash=state._zobrist_hash.at[1].set(_zobrist_hash(state, 1)))  # type: ignore
     state = _update_history(state, 0)
     state = _update_history(state, 1)
-    state = jax.jit(_check_termination)(state)
+    state = _check_termination(state)
     state = state.replace(observation=jax.jit(_observe)(state, state.current_player))  # type: ignore
     return state
 

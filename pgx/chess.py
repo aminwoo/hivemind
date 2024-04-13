@@ -544,7 +544,8 @@ def _legal_action_mask(state):
 
         return ok
 
-    actions = legal_norml_moves(state._possible_piece_positions[0]).flatten()  # include -1
+    actions = legal_norml_moves(jnp.arange(64)).flatten()  # include -1
+    #actions = legal_norml_moves(state._possible_piece_positions[0]).flatten()  # include -1
     # +1 is to avoid setting True to the last element
     mask = jnp.zeros(64 * 73 + 1, dtype=jnp.bool_)
     mask = mask.at[actions].set(TRUE)

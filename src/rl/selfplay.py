@@ -22,6 +22,7 @@ from typing import NamedTuple
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np 
 import mctx
 import optax
 import pgx
@@ -31,6 +32,7 @@ from flax.training.train_state import TrainState
 from omegaconf import OmegaConf
 from pgx.experimental import auto_reset
 from pydantic import BaseModel
+from tqdm import tqdm
 
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
@@ -236,10 +238,10 @@ if __name__ == "__main__":
     # replicates to all devices
     model_state  = jax.device_put_replicated(model_state, devices)
 
+<<<<<<< HEAD:src/rl/selfplay.py
     samples = 2**16 
     idx = 0 
     step = 0
-    obs = np.zeros((samples, 8, 16, 32))
     policy_tgt = np.zeros((samples))
     value_tgt = np.zeros((samples))
 
@@ -256,20 +258,21 @@ if __name__ == "__main__":
         if step >= config.max_num_iters:
             break
 
-        st = time.time()
+=======
+    os.makedirs(f'data/run1', exist_ok=True)
 
-        # Selfplay
-        rng_key, subkey = jax.random.split(rng_key)
+
         keys = jax.random.split(subkey, num_devices)
         data: SelfplayOutput = selfplay(model_state, keys)
         samples: Sample = compute_loss_input(data)
 
-        # Shuffle samples and make minibatches
+        # Shuffle samples 
         samples = jax.device_get(samples)  # (#devices, batch, max_num_steps, ...)
-        frames += samples.obs.shape[0] * samples.obs.shape[1] * samples.obs.shape[2]
+        frames = samples.obs.shape[0] * samples.obs.shape[1] * samples.obs.shape[2]
         samples = jax.tree_util.tree_map(lambda x: x.reshape((-1, *x.shape[3:])), samples)
         rng_key, subkey = jax.random.split(rng_key)
         ixs = jax.random.permutation(subkey, jnp.arange(samples.obs.shape[0]))
+<<<<<<< HEAD:src/rl/selfplay.py
         samples = jax.tree_map(lambda x: x[ixs], samples)  # shuffle
         print(samples)
         
@@ -277,6 +280,11 @@ if __name__ == "__main__":
         minibatches = jax.tree_map(
             lambda x: x.reshape((num_updates, num_devices, -1) + x.shape[1:]), samples
         )
+=======
+        samples = jax.tree_util.tree_map(lambda x: x[ixs], samples)  # shuffle
+
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=10)))
+        np.savez_compressed(f'data/run1/training-run1-{now.strftime("%Y%m%d")}-{now.strftime("%H%M")}', obs=samples.obs, policy_tgt=samples.policy_tgt, value_tgt=samples.value_tgt, value_mask=samples.mask)
         et = time.time()
         hours = (et - st) / 3600
         print(f'{frames} new samples generated in {hours} hours')

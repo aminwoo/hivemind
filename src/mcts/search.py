@@ -83,7 +83,10 @@ if __name__ == '__main__':
     state = init_fn(keys)
     #state = update_player(state, jnp.int32([1]))
     out = search(state)
-    print(out)
+    import sys
+    import numpy
+    numpy.set_printoptions(threshold=sys.maxsize)
+    print(out.action_weights)
     print(Action._from_label(out.action[0])._to_string())
     start = time()
     search(state)
