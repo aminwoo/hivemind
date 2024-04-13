@@ -306,16 +306,20 @@ def _check_termination(state: State):
 
         return terminated, is_checkmate
     
+    is_checkmate = ~(state.legal_action_mask.any()) # No legal actions
+    terminated = is_checkmate 
     terminated_left, is_checkmate_left = board_result(0) 
     terminated_right, is_checkmate_right = board_result(1) 
-    
+    is_checkmate |= (is_checkmate_left | is_checkmate_right)
+    terminated |= (terminated_left | terminated_right)
+
     reward = jax.lax.select(
-        is_checkmate_left | is_checkmate_right,
+        is_checkmate,
         jnp.ones(2, dtype=jnp.float32).at[state.current_player].set(-1),
         jnp.zeros(2, dtype=jnp.float32),
     )
     return state.replace(  # type: ignore
-        terminated=terminated_left | terminated_right,
+        terminated=terminated,
         rewards=reward,
     )
 
@@ -490,7 +494,7 @@ def _rotate(board):
 
 def _flip(state: State, board_num: Array) -> State:
     return state.replace(  # type: ignore
-        current_player=(state.current_player + 1) % 2,
+        current_player=1-state.current_player,
         _board=state._board.at[board_num].set(-jnp.flip(state._board[board_num].reshape(8, 8), axis=1).flatten()),
         _turn=state._turn.at[board_num].set(1 - state._turn[board_num]),
         _en_passant=state._en_passant.at[board_num].set(_flip_pos(state._en_passant[board_num])),
@@ -661,7 +665,7 @@ def _legal_action_mask(state: State):
         mask = mask.at[actions].set(TRUE)
         return mask 
 
-    mask = jnp.zeros(2 * 64 * 78 + 1, dtype=jnp.bool_)
+    mask = jnp.zeros(2*64*78+1, dtype=jnp.bool_)
     mask = jax.lax.cond(
         _on_turn(state, 0),
         lambda: legal_moves_left(mask),  # type: ignore
@@ -805,7 +809,7 @@ def _update_zobrist_hash(state: State, a: Action):
 def _on_turn(state: State, board_num: Array):
     ret = FALSE
     ret |= ((board_num == 0) & (state.current_player == state._turn[board_num]))
-    ret |= ((board_num == 1) & (state.current_player == 1 - state._turn[board_num]))
+    ret |= ((board_num == 1) & (state.current_player == (1 - state._turn[board_num])))
     return ret
 
 
