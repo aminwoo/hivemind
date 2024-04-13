@@ -37,8 +37,14 @@ class BughouseBoard(object):
     def set_times(self, times: List[int]) -> None:
         self.times = times
 
+    @classmethod
+    def from_fen(cls, fen: str) -> 'BughouseBoard':
+        board = cls() 
+        board.set_fen(fen)
+        return board
+
     def set_fen(self, fen: str) -> None:
-        fen = fen.split(" | ")
+        fen = fen.split("|")
         self.boards[0].set_fen(fen[0])
         self.boards[1].set_fen(fen[1])
 
