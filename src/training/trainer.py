@@ -112,7 +112,7 @@ class TrainerModule:
                     mutable=['batch_stats'],
                 )
                 policy_logits, value = logits
-                policy_loss = optax.softmax_cross_entropy(policy_logits, policy_tgt).mean()
+                policy_loss = optax.softmax_cross_entropy_with_integer_labels(policy_logits, policy_tgt).mean()
 
                 value_loss = optax.l2_loss(value, value_tgt)
                 value_loss = jnp.mean(value_loss * value_mask)
@@ -145,6 +145,35 @@ class TrainerModule:
             policy_acc = np.sum(np.argmax(policy_logits, axis=1) == y_policy) 
             value_acc = np.sum((value > 0) == (y_value > 0)) 
             return policy_acc, value_acc
+            
+        def evaluate(variables, baseline, batch_size=1024):
+            """A simplified evaluation by sampling. Only for debugging. 
+            Please use MCTS and run tournaments for serious evaluation."""
+            my_player = 0
+
+            env = pgx.make('bughouse')
+            rng_key = jax.random.PRNGKey(self.seed)
+            key, subkey = jax.random.split(rng_key)
+            keys = jax.random.split(subkey, batch_size)
+            state = jax.vmap(env.init)(keys)
+
+            def body_fn(val):
+                key, state, R = val
+                my_logits, _ = self.model.apply(variables, state.observation, train=False)
+                opp_logits, _ = self.model.apply(baseline, state.observation, train=False)
+                is_my_turn = (state.current_player == my_player).reshape((-1, 1))
+                logits = jnp.where(is_my_turn, my_logits, opp_logits)
+                key, subkey = jax.random.split(key)
+                action = jax.random.categorical(subkey, logits, axis=-1)
+                keys = jax.random.split(subkey, batch_size)
+                state = jax.vmap(env.step)(state, action, keys)
+                R = R + state.rewards[jnp.arange(batch_size), my_player]
+                return (key, state, R)
+
+            _, _, R = jax.lax.while_loop(
+                lambda x: ~(x[1].terminated.all()), body_fn, (key, state, jnp.zeros(batch_size))
+            )
+            return R
 
         def evaluate(variables, baseline, batch_size=1024):
             """A simplified evaluation by sampling. Only for debugging. 
