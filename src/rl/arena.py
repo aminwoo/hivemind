@@ -1,0 +1,178 @@
+import datetime
+import os
+import pickle
+import random 
+import time
+import requests
+from threading import Thread
+from functools import partial
+from typing import Optional
+
+import chex
+import jax
+import jax.numpy as jnp
+import numpy as np 
+import mctx
+import optax
+import pgx
+from flax.training import train_state
+from pydantic import BaseModel
+from tqdm import tqdm
+
+from pgx.bughouse import Action
+
+from src.utils.bpgn import write_bpgn
+from src.architectures.azresnet import AZResnet, AZResnetConfig
+from src.training.trainer import TrainerModule
+from server.server import Sample
+
+class TrainState(train_state.TrainState):
+    batch_stats: chex.ArrayTree
+
+model_configs = AZResnetConfig(
+    num_blocks=15,
+    channels=256,
+    policy_channels=4,
+    value_channels=8,
+    num_policy_labels=2*64*78+1,
+)
+net = AZResnet(model_configs)
+trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name='lion', optimizer_params={'learning_rate': 1}, x=jnp.ones((1, 8, 16, 32)))
+state = trainer.load_checkpoint(0)
+
+params = {'params': state['params'], 'batch_stats': state['batch_stats']}
+forward = jax.jit(partial(net.apply, train=False))
+
+devices = jax.local_devices()
+num_devices = len(devices)
+print('Number of devices:', num_devices)
+
+class Config(BaseModel):
+    env_id: pgx.EnvId = 'bughouse'
+    seed: int = random.randint(0, 999999999)
+    max_num_iters: int = 1000
+    # selfplay params
+    selfplay_batch_size: int = 1
+    num_simulations: int = 800
+    max_num_steps: int = 512
+
+    class Config:
+        extra = 'forbid'
+
+config: Config = Config()
+
+env = pgx.make(config.env_id)
+
+def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.State):
+    rng_keys = jax.random.split(rng_key, config.selfplay_batch_size)
+    current_player = state.current_player
+    state = jax.vmap(env.step)(state, action, rng_keys)
+
+    logits, value = forward(params, state.observation)
+    logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
+
+    # mask invalid actions
+    logits = logits - jnp.max(logits, axis=-1, keepdims=True)
+    logits = jnp.where(state.legal_action_mask, logits, jnp.finfo(logits.dtype).min)
+
+    reward = state.rewards[jnp.arange(state.rewards.shape[0]), current_player]
+    value = jnp.where(state.terminated, 0.0, value)
+    discount = -1.0 * jnp.ones_like(value)
+    discount = jnp.where(state.terminated, 0.0, discount)
+
+    recurrent_fn_output = mctx.RecurrentFnOutput(
+        reward=reward,
+        discount=discount,
+        prior_logits=logits,
+        value=value,
+    )
+    return recurrent_fn_output, state
+
+
+@partial(jax.jit, static_argnums=(2,))
+def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None):
+    key1, key2 = jax.random.split(key)
+
+    logits, value = forward(params, state.observation)
+    logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
+
+    root = mctx.RootFnOutput(prior_logits=logits, value=value, embedding=state)
+
+    policy_output = mctx.alphazero_policy(
+        params=params,
+        rng_key=key1,
+        root=root,
+        recurrent_fn=recurrent_fn,
+        num_simulations=num_simulations,
+        invalid_actions=~state.legal_action_mask,
+        search_tree=None,
+        qtransform=partial(mctx.qtransform_by_min_max, min_value=-1, max_value=1),
+    )
+    return policy_output
+    
+
+if __name__ == '__main__':
+    init_fn = jax.jit(jax.vmap(env.init))
+    step_fn = jax.jit(jax.vmap(env.step))
+
+    print('Running selfplay with initial seed', config.seed)
+
+    rng_key = jax.random.PRNGKey(config.seed)
+
+    for _ in tqdm(range(config.max_num_iters)):
+        game_id = random.randint(0, 999999999)
+        print(f'Playing game id: {game_id}')
+
+        rng_key, sub_key = jax.random.split(rng_key)
+        keys = jax.random.split(sub_key, config.selfplay_batch_size)
+        state = init_fn(keys)
+        tree = None 
+        actions = [] 
+        times = [] 
+
+        obs = [] 
+        policy_tgt = [] 
+        value_tgt = [] 
+
+        while ~state.terminated.all():
+            rng_key, sub_key = jax.random.split(rng_key)
+            policy_output = run_mcts(state, sub_key, config.num_simulations, tree)
+            #tree = mctx.get_subtree(policy_output.search_tree, policy_output.action)
+            #print(state.observation)
+            #print(np.array(state.observation))
+            #print(np.array(state.observation.ravel()).reshape(1, 8, 16, 32))
+            obs.append(state.observation.ravel())
+            policy_tgt.append(policy_output.action_weights.ravel())
+            #assert (np.array(state.observation.ravel().tolist()).reshape((8, 16, 32)) == np.array(state.observation.tolist()[0])).all()
+            action = policy_output.action.item()
+            #assert state.legal_action_mask[0][action].all()
+            keys = jax.random.split(sub_key, config.selfplay_batch_size)
+            state = step_fn(state, policy_output.action, keys)
+            #print(Action._from_label(action)._to_string())
+            actions.append(Action._from_label(action)._to_string())
+            times.append(state._clock[0].tolist())
+
+        reward = abs(int(state.rewards[0][0]))
+        for i in range(len(obs)):
+            value_tgt.append(reward)
+            reward *= -1 
+            #assert np.sum(policy_tgt[i]) == 1
+
+        value_tgt = value_tgt[::-1]
+        #assert value_tgt[-1] != -1
+        write_bpgn(game_id, actions, times)
+
+        game_data = {
+            "obs": obs, 
+            "policy_tgt": policy_tgt, 
+            "value_tgt": value_tgt,
+        }
+
+        url = f"http://ec2-18-208-220-129.compute-1.amazonaws.com:8000/game/{game_id}/"
+        sample = Sample(**game_data)
+        response = requests.post(url, json=sample.model_dump())
+
+        if response.status_code == 200:
+            print("Game sent successfully!")
+        else:
+            print(f"Error: {response.status_code}")
