@@ -22,8 +22,8 @@ from flax.training import train_state
 
 def extract_params(state: TrainState): 
     if isinstance(state, dict):
-        return {'params': state['params'], 'batch_stats': state['batch_stats']}
-    return {'params': state.params, 'batch_stats': state.batch_stats}
+        return {"params": state["params"], "batch_stats": state["batch_stats"]}
+    return {"params": state.params, "batch_stats": state.batch_stats}
 
 
 class TrainState(train_state.TrainState):
@@ -39,10 +39,10 @@ class TrainerModule:
         optimizer_name: str,
         optimizer_params: dict,
         x: Any,
-        ckpt_dir: str = os.getcwd() + '/checkpoints',
+        ckpt_dir: str = os.getcwd() + "/checkpoints",
         seed=42,
     ):
-        '''
+        """
         Module for summarizing all training functionalities for classification.
 
         Inputs:
@@ -52,7 +52,7 @@ class TrainerModule:
             optimizer_params - Hyperparameters of the optimizer, including learning rate as 'lr'
             x - Example imgs, used as input to initialize the model
             seed - Seed to use in the model initialization
-        '''
+        """
         super().__init__()
         self.model_class = model_class
         self.model_configs = model_configs
@@ -73,20 +73,20 @@ class TrainerModule:
         init_rng = jax.random.PRNGKey(self.seed)
         variables = self.model.init(init_rng, x, train=True)
         self.init_params, self.init_batch_stats = (
-            variables['params'],
-            variables['batch_stats'],
+            variables["params"],
+            variables["batch_stats"],
         )
         self.state = None
 
     def init_optimizer(self):
         # Initialize learning rate schedule and optimizer
-        if self.optimizer_name.lower() == 'adam':
+        if self.optimizer_name.lower() == "adam":
             opt_class = optax.adam
-        elif self.optimizer_name.lower() == 'adamw':
+        elif self.optimizer_name.lower() == "adamw":
             opt_class = optax.adamw
-        elif self.optimizer_name.lower() == 'sgd':
+        elif self.optimizer_name.lower() == "sgd":
             opt_class = optax.sgd
-        elif self.optimizer_name.lower() == 'lion':
+        elif self.optimizer_name.lower() == "lion":
             opt_class = optax.lion
         else:
             assert False, f'Unknown optimizer "{opt_class}"'
@@ -94,28 +94,27 @@ class TrainerModule:
         # Initialize training state
         self.state = TrainState.create(
             apply_fn=self.model.apply,
-            params=self.init_params if self.state is None else self.state['params'],
+            params=self.init_params if self.state is None else self.state["params"],
             batch_stats=(
-                self.init_batch_stats if self.state is None else self.state['batch_stats']
+                self.init_batch_stats if self.state is None else self.state["batch_stats"]
             ),
             tx=opt_class(**self.optimizer_params),
         )
 
     def create_functions(self):
         # Function to calculate the classification loss and accuracy for a model
-        def train_step(state: TrainState, obs, policy_tgt, value_tgt, value_mask):
+        def train_step(state: TrainState, obs, policy_tgt, value_tgt):
             def calculate_loss(params, batch_stats):
                 logits, new_model_state = state.apply_fn(
-                    {'params': params, 'batch_stats': batch_stats},
+                    {"params": params, "batch_stats": batch_stats},
                     obs,
                     train=True,
-                    mutable=['batch_stats'],
+                    mutable=["batch_stats"],
                 )
                 policy_logits, value = logits
-                policy_loss = optax.softmax_cross_entropy_with_integer_labels(policy_logits, policy_tgt).mean()
+                policy_loss = optax.softmax_cross_entropy(policy_logits, policy_tgt).mean()
 
-                value_loss = optax.l2_loss(value, value_tgt)
-                value_loss = jnp.mean(value_loss * value_mask)
+                value_loss = optax.l2_loss(value, value_tgt).mean()
                 loss = 0.99 * policy_loss + 0.01 * value_loss
 
                 return loss, (new_model_state, policy_loss, value_loss)
@@ -130,14 +129,13 @@ class TrainerModule:
             )
             # Update parameters and batch statistics
             state = state.apply_gradients(
-                grads=grads, batch_stats=new_model_state['batch_stats']
+                grads=grads, batch_stats=new_model_state["batch_stats"]
             )
             return state, policy_loss, value_loss
         
         def eval_step(state: TrainState, board_planes, y_policy, y_value):
             policy_logits, value = state.apply_fn(
-                {'params': self.state.params, 
-                'batch_stats': self.state.batch_stats},
+                extract_params(state),
                 board_planes,
                 train=False,
             )
@@ -151,7 +149,7 @@ class TrainerModule:
             Please use MCTS and run tournaments for serious evaluation."""
             my_player = 0
 
-            env = pgx.make('bughouse')
+            env = pgx.make("bughouse")
             rng_key = jax.random.PRNGKey(self.seed)
             key, subkey = jax.random.split(rng_key)
             keys = jax.random.split(subkey, batch_size)
@@ -180,7 +178,7 @@ class TrainerModule:
             Please use MCTS and run tournaments for serious evaluation."""
             my_player = 0
 
-            env = pgx.make('bughouse')
+            env = pgx.make("bughouse")
             rng_key = jax.random.PRNGKey(self.seed)
             key, subkey = jax.random.split(rng_key)
             keys = jax.random.split(subkey, batch_size)
@@ -205,30 +203,32 @@ class TrainerModule:
             return R
 
         # jit for efficiency
-        #self.train_step = jax.jit(train_step)
         self.train_step = jax.jit(train_step)
         self.eval_step = jax.jit(eval_step)
         self.evaluate = jax.jit(evaluate)
 
-    def train_loop(self, train_files, eval_files=None, epochs=7, batch_size=1024):
+    def train_loop(self, train_files, eval_files=None, epochs=1, batch_size=1024):
         """Training model with provided files"""
         baseline = extract_params(self.state)
         log = {} 
 
         for epoch in range(epochs):
-            print(f'Training Epoch: {epoch + 1}/{epochs}')
+            print(f"Training Epoch: {epoch + 1}/{epochs}")
             policy_losses, value_losses = [], []
             for file in tqdm(train_files):
                 data = np.load(file)
-                with tf.device('/CPU:0'):
-                    train_loader = tf.data.Dataset.from_tensor_slices((data['obs'], data['policy_tgt'], data['value_tgt'], data['value_mask']))
-                    train_loader = train_loader.batch(batch_size)
-                for obs, policy_tgt, value_tgt, value_mask in train_loader:
-                    obs = obs.numpy()
+                with tf.device("/CPU:0"):
+                    train_loader = tf.data.Dataset.from_tensor_slices((data["obs"], data["policy_tgt"], data["value_tgt"]))
+                    train_loader = train_loader.shuffle(2**16).batch(batch_size)
+                for obs, policy_tgt, value_tgt in train_loader:
+                    obs = obs.numpy().reshape(-1, 8, 16, 32)
                     policy_tgt = policy_tgt.numpy()
+                    #policy_tgt[:,9984] = 0
+                    policy_tgt[:,9984] *= np.random.uniform(0.01, 0.05, size=obs.shape[0])
+                    policy_tgt /= np.sum(policy_tgt, axis=1)[:,None] # Normalize
+                    #print(policy_tgt[:,9984])
                     value_tgt = value_tgt.numpy()
-                    value_mask = value_mask.numpy()
-                    self.state, policy_loss, value_loss = self.train_step(self.state, obs, policy_tgt, value_tgt, value_mask)
+                    self.state, policy_loss, value_loss = self.train_step(self.state, obs, policy_tgt, value_tgt)
                     policy_losses.append(policy_loss.item())
                     value_losses.append(value_loss.item())
 
@@ -237,15 +237,15 @@ class TrainerModule:
             R = self.evaluate(extract_params(self.state), baseline)
             log.update(
                 {
-                    'train/policy_loss': policy_loss,
-                    'train/value_loss': value_loss,
-                    f'eval/vs_baseline/avg_R': R.mean().item(),
-                    f'eval/vs_baseline/win_rate': ((R == 1).sum() / R.size).item(),
-                    f'eval/vs_baseline/draw_rate': ((R == 0).sum() / R.size).item(),
-                    f'eval/vs_baseline/lose_rate': ((R == -1).sum() / R.size).item(),
+                    "train/policy_loss": policy_loss,
+                    "train/value_loss": value_loss,
+                    f"eval/vs_baseline/avg_R": R.mean().item(),
+                    f"eval/vs_baseline/win_rate": ((R == 1).sum() / R.size).item(),
+                    f"eval/vs_baseline/draw_rate": ((R == 0).sum() / R.size).item(),
+                    f"eval/vs_baseline/lose_rate": ((R == -1).sum() / R.size).item(),
                 }
             )
-            self.save_checkpoint(step=epoch+1)
+            self.save_checkpoint(step=1)
             print(log)
             wandb.log(log)
 
@@ -255,8 +255,8 @@ class TrainerModule:
 
         for file in tqdm(files):
             data = np.load(file)
-            with tf.device('/CPU:0'):
-                val_loader = tf.data.Dataset.from_tensor_slices((data['obs'], data['policy_tgt'], data['value_tgt']))
+            with tf.device("/CPU:0"):
+                val_loader = tf.data.Dataset.from_tensor_slices((data["obs"], data["policy_tgt"], data["value_tgt"]))
                 val_loader = val_loader.batch(batch_size)
 
             for obs, policy_tgt, value_tgt in val_loader:
@@ -292,7 +292,7 @@ class TrainerModule:
             self.state = mngr.restore(step)
             return self.state
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     from src.architectures.azresnet import AZResnet, AZResnetConfig
     import tensorflow as tf
     import glob
@@ -305,9 +305,9 @@ if __name__ == '__main__':
         policy_channels=4, 
         value_channels=8,
         num_policy_labels=2*64*78+1, 
-    ), optimizer_name='lion', optimizer_params={'learning_rate': 8e-6}, x=jnp.ones((1024, 8, 16, 32)))
+    ), optimizer_name="lion", optimizer_params={"learning_rate": 1e-5}, x=jnp.ones((1024, 8, 16, 32)))
     trainer.load_checkpoint(0)
     trainer.init_optimizer()
 
-    files = glob.glob('data/run2/*')
+    files = glob.glob("data/run1/*")
     trainer.train_loop(files, epochs=1) 
