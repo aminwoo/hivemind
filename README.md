@@ -36,6 +36,13 @@ poetry install
 ```
 to install. 
 
+## Installing pgx and mctz 
+
+```
+pip install git+https://github.com/aminwoo/pgx.git
+pip install git+https://github.com/lowrollr/mctx-az.git
+```
+
 ## Playing against the Engine
 
 ## Training
