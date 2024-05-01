@@ -21,6 +21,20 @@ class BughouseBoard(object):
         ret.times = self.times.copy()
         return ret
     
+    def result(self): 
+        if self.boards[0].is_checkmate() or self.boards[0].is_stalemate():
+            if self.turn(0) == chess.WHITE:
+                return '0-1'
+            else:
+                return '1-0'
+        if self.boards[1].is_checkmate() or self.boards[1].is_stalemate():
+            if self.turn(1) == chess.WHITE:
+                return '1-0'
+            else:
+                return '0-1'
+        
+        return '1/2-1/2'
+    
     def is_checkmate(self): 
         return self.boards[0].is_checkmate() or self.boards[1].is_checkmate()
 
@@ -116,3 +130,9 @@ class BughouseBoard(object):
     
     def parse_san(self, board_num: int, move_san: str) -> chess.Move: 
         return self.boards[board_num].parse_san(move_san) 
+    
+    def to_san(self, board_num: int, move_uci: str) -> str:
+        try: 
+            return self.boards[board_num].san(self.parse_uci(board_num, move_uci))
+        except:
+            return self.boards[board_num].san(self.parse_uci(board_num, move_uci + 'q'))
