@@ -25,6 +25,9 @@ from src.utils.bpgn import write_bpgn
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
 from server.server import Sample
+from pgx.bughouse import _time_advantage
+
+time_advantage = jax.jit(jax.vmap(_time_advantage))
 
 class TrainState(train_state.TrainState):
     batch_stats: chex.ArrayTree
@@ -38,7 +41,7 @@ model_configs = AZResnetConfig(
 )
 net = AZResnet(model_configs)
 trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name='lion', optimizer_params={'learning_rate': 1}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint(0)
+state = trainer.load_checkpoint(1)
 
 params = {'params': state['params'], 'batch_stats': state['batch_stats']}
 forward = jax.jit(partial(net.apply, train=False))
@@ -69,7 +72,8 @@ def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.S
     state = jax.vmap(env.step)(state, action, rng_keys)
 
     logits, value = forward(params, state.observation)
-    logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
+    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(time_advantage(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
+    logits = logits.at[:, 9984].set(sit_prob)
 
     # mask invalid actions
     logits = logits - jnp.max(logits, axis=-1, keepdims=True)
@@ -94,7 +98,8 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     key1, key2 = jax.random.split(key)
 
     logits, value = forward(params, state.observation)
-    logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
+    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(time_advantage(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
+    logits = logits.at[:, 9984].set(sit_prob)
 
     root = mctx.RootFnOutput(prior_logits=logits, value=value, embedding=state)
 
@@ -112,6 +117,8 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     
 
 if __name__ == '__main__':
+    os.makedirs("data/run3", exist_ok=True)
+    
     init_fn = jax.jit(jax.vmap(env.init))
     step_fn = jax.jit(jax.vmap(env.step))
 
@@ -138,19 +145,17 @@ if __name__ == '__main__':
             rng_key, sub_key = jax.random.split(rng_key)
             policy_output = run_mcts(state, sub_key, config.num_simulations, tree)
             #tree = mctx.get_subtree(policy_output.search_tree, policy_output.action)
-            #print(state.observation)
-            #print(np.array(state.observation))
-            #print(np.array(state.observation.ravel()).reshape(1, 8, 16, 32))
             obs.append(state.observation.ravel())
             policy_tgt.append(policy_output.action_weights.ravel())
-            #assert (np.array(state.observation.ravel().tolist()).reshape((8, 16, 32)) == np.array(state.observation.tolist()[0])).all()
+            
             action = policy_output.action.item()
-            #assert state.legal_action_mask[0][action].all()
             keys = jax.random.split(sub_key, config.selfplay_batch_size)
             state = step_fn(state, policy_output.action, keys)
-            #print(Action._from_label(action)._to_string())
-            actions.append(Action._from_label(action)._to_string())
+
+            move_uci = Action._from_label(action)._to_string()
+            actions.append(move_uci)
             times.append(state._clock[0].tolist())
+
 
         reward = abs(int(state.rewards[0][0]))
         for i in range(len(obs)):
@@ -159,18 +164,17 @@ if __name__ == '__main__':
             #assert np.sum(policy_tgt[i]) == 1
 
         value_tgt = value_tgt[::-1]
-        #assert value_tgt[-1] != -1
-        write_bpgn(game_id, actions, times)
+        assert value_tgt[-1] != -1
+        #write_bpgn(game_id, actions, times)
 
-        game_data = {
-            "obs": obs, 
-            "policy_tgt": policy_tgt, 
-            "value_tgt": value_tgt,
-        }
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=0)))
+        filepath = f'data/run3/training-run3-{now.strftime("%Y%m%d")}-{now.strftime("%H%M")}'
+        np.savez_compressed(filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
 
-        url = f"http://ec2-18-208-220-129.compute-1.amazonaws.com:8000/game/{game_id}/"
-        sample = Sample(**game_data)
-        response = requests.post(url, json=sample.model_dump())
+        url = f"http://ec2-52-90-97-132.compute-1.amazonaws.com:8000/upload"
+        file = {"file": open(filepath + ".npz", "rb")}
+        
+        response = requests.post(url=url, files=file) 
 
         if response.status_code == 200:
             print("Game sent successfully!")
