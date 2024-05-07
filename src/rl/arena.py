@@ -1,10 +1,8 @@
 import datetime
 import os
-import pickle
 import random 
 import time
 import requests
-from threading import Thread
 from functools import partial
 from typing import Optional
 
@@ -13,21 +11,17 @@ import jax
 import jax.numpy as jnp
 import numpy as np 
 import mctx
-import optax
 import pgx
 from flax.training import train_state
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from pgx.bughouse import Action
+from pgx.bughouse import Action, _time_advantage
 
 from src.utils.bpgn import write_bpgn
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
-from server.server import Sample
-from pgx.bughouse import _time_advantage
 
-time_advantage = jax.jit(jax.vmap(_time_advantage))
 
 class TrainState(train_state.TrainState):
     batch_stats: chex.ArrayTree
@@ -40,18 +34,18 @@ model_configs = AZResnetConfig(
     num_policy_labels=2*64*78+1,
 )
 net = AZResnet(model_configs)
-trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name='lion', optimizer_params={'learning_rate': 1}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint(1)
+trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name="lion", optimizer_params={"learning_rate": 1}, x=jnp.ones((1, 8, 16, 32)))
+state = trainer.load_checkpoint(0)
 
-params = {'params': state['params'], 'batch_stats': state['batch_stats']}
+params = {"params": state["params"], "batch_stats": state["batch_stats"]}
 forward = jax.jit(partial(net.apply, train=False))
 
 devices = jax.local_devices()
 num_devices = len(devices)
-print('Number of devices:', num_devices)
+print("Number of devices:", num_devices)
 
 class Config(BaseModel):
-    env_id: pgx.EnvId = 'bughouse'
+    env_id: pgx.EnvId = "bughouse"
     seed: int = random.randint(0, 999999999)
     max_num_iters: int = 1000
     # selfplay params
@@ -60,11 +54,33 @@ class Config(BaseModel):
     max_num_steps: int = 512
 
     class Config:
-        extra = 'forbid'
+        extra = "forbid"
 
 config: Config = Config()
-
 env = pgx.make(config.env_id)
+
+
+def winning_action_mask(state, rng_key):
+    """
+    Finds all actions that would immediately win the game for the given player.
+    """
+
+    # Play all actions and check the reward.
+    # Remember that the reward is for the current player, so we expect it to be 1.
+
+    legal_action_mask = state.legal_action_mask
+
+    def step_and_check(action, winning_action_mask):
+        winning_action_mask = jax.lax.cond(legal_action_mask[action], 
+                                             lambda: winning_action_mask.at[action].set(env.step(state, action, rng_key).rewards[0] != 0), 
+                                             lambda: winning_action_mask)
+        return winning_action_mask
+
+    winning_action_mask = jnp.zeros(9985)
+    winning_action_mask = jax.lax.fori_loop(0, 9985, step_and_check, winning_action_mask)
+
+    return winning_action_mask
+
 
 def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.State):
     rng_keys = jax.random.split(rng_key, config.selfplay_batch_size)
@@ -72,7 +88,7 @@ def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.S
     state = jax.vmap(env.step)(state, action, rng_keys)
 
     logits, value = forward(params, state.observation)
-    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(time_advantage(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
+    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(jax.vmap(_time_advantage)(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
     logits = logits.at[:, 9984].set(sit_prob)
 
     # mask invalid actions
@@ -98,8 +114,9 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     key1, key2 = jax.random.split(key)
 
     logits, value = forward(params, state.observation)
-    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(time_advantage(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
+    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(jax.vmap(_time_advantage)(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
     logits = logits.at[:, 9984].set(sit_prob)
+    #logits = jnp.where(jax.vmap(winning_action_mask)(state, jax.random.split(key2, config.selfplay_batch_size)), jnp.finfo(logits.dtype).max, logits)
 
     root = mctx.RootFnOutput(prior_logits=logits, value=value, embedding=state)
 
@@ -116,19 +133,19 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     return policy_output
     
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     os.makedirs("data/run3", exist_ok=True)
-    
+
     init_fn = jax.jit(jax.vmap(env.init))
     step_fn = jax.jit(jax.vmap(env.step))
 
-    print('Running selfplay with initial seed', config.seed)
+    print("Running selfplay with initial seed", config.seed)
 
     rng_key = jax.random.PRNGKey(config.seed)
 
     for _ in tqdm(range(config.max_num_iters)):
         game_id = random.randint(0, 999999999)
-        print(f'Playing game id: {game_id}')
+        print(f"Playing game id: {game_id}")
 
         rng_key, sub_key = jax.random.split(rng_key)
         keys = jax.random.split(sub_key, config.selfplay_batch_size)
@@ -165,10 +182,10 @@ if __name__ == '__main__':
 
         value_tgt = value_tgt[::-1]
         assert value_tgt[-1] != -1
-        #write_bpgn(game_id, actions, times)
+        write_bpgn(game_id, actions, times)
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=0)))
-        filepath = f'data/run3/training-run3-{now.strftime("%Y%m%d")}-{now.strftime("%H%M")}'
+        filepath = f"data/run3/training-run3-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
         np.savez_compressed(filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
 
         url = f"http://ec2-52-90-97-132.compute-1.amazonaws.com:8000/upload"
