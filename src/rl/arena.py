@@ -88,8 +88,9 @@ def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.S
     state = jax.vmap(env.step)(state, action, rng_keys)
 
     logits, value = forward(params, state.observation)
-    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(jax.vmap(_time_advantage)(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
-    logits = logits.at[:, 9984].set(sit_prob)
+    sorted_logits = jnp.sort(logits, axis=1)
+    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 10, 0, 1) * (sorted_logits[:,-1] - sorted_logits[:,-2])
+    logits = logits.at[:, 9984].set(sit_logits)
 
     # mask invalid actions
     logits = logits - jnp.max(logits, axis=-1, keepdims=True)
@@ -114,8 +115,10 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     key1, key2 = jax.random.split(key)
 
     logits, value = forward(params, state.observation)
-    sit_prob = jnp.sort(logits, axis=1)[:,-5] + jnp.clip(jax.vmap(_time_advantage)(state) / 100, 0, 1) * (jnp.sort(logits, axis=1)[:,-1] - jnp.sort(logits, axis=1)[:,-5])
-    logits = logits.at[:, 9984].set(sit_prob)
+    sorted_logits = jnp.sort(logits, axis=1)
+    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 10, 0, 1) * (sorted_logits[:,-1] - sorted_logits[:,-2])
+    logits = logits.at[:, 9984].set(sit_logits)
+
     #logits = jnp.where(jax.vmap(winning_action_mask)(state, jax.random.split(key2, config.selfplay_batch_size)), jnp.finfo(logits.dtype).max, logits)
 
     root = mctx.RootFnOutput(prior_logits=logits, value=value, embedding=state)
@@ -134,7 +137,8 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     
 
 if __name__ == "__main__":
-    os.makedirs("data/run3", exist_ok=True)
+    os.makedirs("data/run4", exist_ok=True)
+    os.makedirs("data/games", exist_ok=True)
 
     init_fn = jax.jit(jax.vmap(env.init))
     step_fn = jax.jit(jax.vmap(env.step))
@@ -185,7 +189,7 @@ if __name__ == "__main__":
         write_bpgn(game_id, actions, times)
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=0)))
-        filepath = f"data/run3/training-run3-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
+        filepath = f"data/run4/training-run4-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
         np.savez_compressed(filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
 
         url = f"http://ec2-52-90-97-132.compute-1.amazonaws.com:8000/upload"
