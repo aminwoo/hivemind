@@ -1,5 +1,6 @@
 import datetime
 import os
+import shutil
 import random 
 import time
 import requests
@@ -35,7 +36,7 @@ model_configs = AZResnetConfig(
 )
 net = AZResnet(model_configs)
 trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name="lion", optimizer_params={"learning_rate": 1}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint(0)
+state = trainer.load_checkpoint(1)
 
 params = {"params": state["params"], "batch_stats": state["batch_stats"]}
 forward = jax.jit(partial(net.apply, train=False))
@@ -88,8 +89,10 @@ def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.S
     state = jax.vmap(env.step)(state, action, rng_keys)
 
     logits, value = forward(params, state.observation)
+    #logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
+
     sorted_logits = jnp.sort(logits, axis=1)
-    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 10, 0, 1) * (sorted_logits[:,-1] - sorted_logits[:,-2])
+    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 50, 0, 2) * (sorted_logits[:,-1] - sorted_logits[:,-2])
     logits = logits.at[:, 9984].set(sit_logits)
 
     # mask invalid actions
@@ -112,11 +115,13 @@ def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.S
 
 @partial(jax.jit, static_argnums=(2,))
 def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None):
+
     key1, key2 = jax.random.split(key)
 
     logits, value = forward(params, state.observation)
+    #logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
     sorted_logits = jnp.sort(logits, axis=1)
-    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 10, 0, 1) * (sorted_logits[:,-1] - sorted_logits[:,-2])
+    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 50, 0, 2) * (sorted_logits[:,-1] - sorted_logits[:,-2])
     logits = logits.at[:, 9984].set(sit_logits)
 
     #logits = jnp.where(jax.vmap(winning_action_mask)(state, jax.random.split(key2, config.selfplay_batch_size)), jnp.finfo(logits.dtype).max, logits)
@@ -137,8 +142,11 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     
 
 if __name__ == "__main__":
-    os.makedirs("data/run4", exist_ok=True)
-    os.makedirs("data/games", exist_ok=True)
+    os.makedirs("data/run5", exist_ok=True)
+    game_dir = "data/games"
+    if os.path.exists(game_dir):
+        shutil.rmtree(game_dir)
+    os.makedirs(game_dir)
 
     init_fn = jax.jit(jax.vmap(env.init))
     step_fn = jax.jit(jax.vmap(env.step))
@@ -177,7 +185,6 @@ if __name__ == "__main__":
             actions.append(move_uci)
             times.append(state._clock[0].tolist())
 
-
         reward = abs(int(state.rewards[0][0]))
         for i in range(len(obs)):
             value_tgt.append(reward)
@@ -189,7 +196,7 @@ if __name__ == "__main__":
         write_bpgn(game_id, actions, times)
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=0)))
-        filepath = f"data/run4/training-run4-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
+        filepath = f"data/run5/training-run5-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
         np.savez_compressed(filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
 
         url = f"http://ec2-52-90-97-132.compute-1.amazonaws.com:8000/upload"
