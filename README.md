@@ -1,4 +1,35 @@
-# HiveMind
+<div align="center">
+
+  [![Stockfish][stockfish128-logo]][website-link]
+
+  <h3>Stockfish</h3>
+
+  A free and strong UCI chess engine.
+  <br>
+  <strong>[Explore Stockfish docs »][wiki-link]</strong>
+  <br>
+  <br>
+  [Report bug][issue-link]
+  ·
+  [Open a discussion][discussions-link]
+  ·
+  [Discord][discord-link]
+  ·
+  [Blog][website-blog-link]
+
+  [![Build][build-badge]][build-link]
+  [![License][license-badge]][license-link]
+  <br>
+  [![Release][release-badge]][release-link]
+  [![Commits][commits-badge]][commits-link]
+  <br>
+  [![Website][website-badge]][website-link]
+  [![Fishtest][fishtest-badge]][fishtest-link]
+  [![Discord][discord-badge]][discord-link]
+
+</div>
+
+## Overview
 Bughouse or doubles chess is a chess variant involving two teams and two chess boards playing in parallel. 
 
 This repo features 
