@@ -1,31 +1,14 @@
 <div align="center">
 
-  [![Stockfish][stockfish128-logo]][website-link]
+  ![Hivemind](https://github.com/aminwoo/hivemind/assets/124148472/6aaf5e88-0ab7-4077-a16d-ea0b7d11886b)
 
-  <h3>Stockfish</h3>
+  <h3>Hivemind</h3>
 
   A free and strong UCI chess engine.
   <br>
   <strong>[Explore Stockfish docs »][wiki-link]</strong>
   <br>
   <br>
-  [Report bug][issue-link]
-  ·
-  [Open a discussion][discussions-link]
-  ·
-  [Discord][discord-link]
-  ·
-  [Blog][website-blog-link]
-
-  [![Build][build-badge]][build-link]
-  [![License][license-badge]][license-link]
-  <br>
-  [![Release][release-badge]][release-link]
-  [![Commits][commits-badge]][commits-link]
-  <br>
-  [![Website][website-badge]][website-link]
-  [![Fishtest][fishtest-badge]][fishtest-link]
-  [![Discord][discord-badge]][discord-link]
 
 </div>
 
