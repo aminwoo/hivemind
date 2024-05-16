@@ -1,14 +1,11 @@
 <div align="center">
 
-  ![Hivemind](https://github.com/aminwoo/hivemind/assets/124148472/6aaf5e88-0ab7-4077-a16d-ea0b7d11886b)
+  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/266db900-fe5b-434d-ad8c-895f393606b6)
+
 
   <h3>Hivemind</h3>
 
-  A free and strong UCI chess engine.
-  <br>
-  <strong>[Explore Stockfish docs »][wiki-link]</strong>
-  <br>
-  <br>
+  A free and strong UCI bughouse engine.
 
 </div>
 
