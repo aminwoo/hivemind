@@ -1,8 +1,5 @@
 <div align="center">
-
-  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/266db900-fe5b-434d-ad8c-895f393606b6)
-
-
+  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/dd2c18ca-13f7-4cd3-9f6a-7928637465a9)
   <h3>Hivemind</h3>
 
   A free and strong UCI bughouse engine.
