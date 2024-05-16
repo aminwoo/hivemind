@@ -43,7 +43,7 @@ pip install git+https://github.com/lowrollr/mctx-az.git
 ```
 
 ## Training
-Weights for a network trained on 600k human games and further trained via self-play is provided. 
+Weights for a network trained on 600k human games and further trained via self-play is provided. A trainer interface is provided to train your own model from scratch of continue training existing checkpoints. The module expects a policy target which sums to 1 and a value target (-1, 0 or 1). In the case of supervised learning, this will be a one-hot encoding of the expected action. Otherwise, it will be the policy action weights generated from the alphazero algorithm. 
 
 ## Tournament Play 
 
