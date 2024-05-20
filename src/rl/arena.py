@@ -36,7 +36,7 @@ model_configs = AZResnetConfig(
 )
 net = AZResnet(model_configs)
 trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name="lion", optimizer_params={"learning_rate": 1}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint(1)
+state = trainer.load_checkpoint(0)
 
 params = {"params": state["params"], "batch_stats": state["batch_stats"]}
 forward = jax.jit(partial(net.apply, train=False))
@@ -142,7 +142,7 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
     
 
 if __name__ == "__main__":
-    os.makedirs("data/run5", exist_ok=True)
+    os.makedirs("data/run6", exist_ok=True)
     game_dir = "data/games"
     if os.path.exists(game_dir):
         shutil.rmtree(game_dir)
@@ -196,10 +196,10 @@ if __name__ == "__main__":
         write_bpgn(game_id, actions, times)
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=0)))
-        filepath = f"data/run5/training-run5-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
+        filepath = f"data/run6/training-run6-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
         np.savez_compressed(filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
 
-        url = f"http://ec2-52-90-97-132.compute-1.amazonaws.com:8000/upload"
+        url = f"http://ec2-3-90-78-214.compute-1.amazonaws.com:8000/upload"
         file = {"file": open(filepath + ".npz", "rb")}
         
         response = requests.post(url=url, files=file) 
