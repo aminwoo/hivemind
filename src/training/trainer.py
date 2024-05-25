@@ -173,35 +173,6 @@ class TrainerModule:
             )
             return R
 
-        def evaluate(variables, baseline, batch_size=1024):
-            """A simplified evaluation by sampling. Only for debugging. 
-            Please use MCTS and run tournaments for serious evaluation."""
-            my_player = 0
-
-            env = pgx.make("bughouse")
-            rng_key = jax.random.PRNGKey(self.seed)
-            key, subkey = jax.random.split(rng_key)
-            keys = jax.random.split(subkey, batch_size)
-            state = jax.vmap(env.init)(keys)
-
-            def body_fn(val):
-                key, state, R = val
-                my_logits, _ = self.model.apply(variables, state.observation, train=False)
-                opp_logits, _ = self.model.apply(baseline, state.observation, train=False)
-                is_my_turn = (state.current_player == my_player).reshape((-1, 1))
-                logits = jnp.where(is_my_turn, my_logits, opp_logits)
-                key, subkey = jax.random.split(key)
-                action = jax.random.categorical(subkey, logits, axis=-1)
-                keys = jax.random.split(subkey, batch_size)
-                state = jax.vmap(env.step)(state, action, keys)
-                R = R + state.rewards[jnp.arange(batch_size), my_player]
-                return (key, state, R)
-
-            _, _, R = jax.lax.while_loop(
-                lambda x: ~(x[1].terminated.all()), body_fn, (key, state, jnp.zeros(batch_size))
-            )
-            return R
-
         # jit for efficiency
         self.train_step = jax.jit(train_step)
         self.eval_step = jax.jit(eval_step)
@@ -220,13 +191,14 @@ class TrainerModule:
                 with tf.device("/CPU:0"):
                     train_loader = tf.data.Dataset.from_tensor_slices((data["obs"], data["policy_tgt"], data["value_tgt"]))
                     train_loader = train_loader.shuffle(2**16).batch(batch_size)
+                data.close()
                 for obs, policy_tgt, value_tgt in train_loader:
                     obs = obs.numpy().reshape(-1, 8, 16, 32)
                     policy_tgt = policy_tgt.numpy()
                     #policy_tgt[:,9984] = 0
-                    policy_tgt[:,9984] *= np.random.uniform(0.01, 0.05, size=obs.shape[0])
+                    policy_tgt[:,9984] *= np.random.uniform(0.5, 0.55, size=obs.shape[0])
                     policy_tgt /= np.sum(policy_tgt, axis=1)[:,None] # Normalize
-                    #print(policy_tgt[:,9984])
+
                     value_tgt = value_tgt.numpy()
                     self.state, policy_loss, value_loss = self.train_step(self.state, obs, policy_tgt, value_tgt)
                     policy_losses.append(policy_loss.item())
@@ -247,28 +219,26 @@ class TrainerModule:
             )
             self.save_checkpoint(step=1)
             print(log)
-            wandb.log(log)
+            #wandb.log(log)
 
-    def eval_model(self, files, batch_size):
-        policy_acc = 0
-        value_acc = 0
+    def eval_model(self):
+        print("Tournament")
+        self.load_checkpoint(0)
+        baseline = extract_params(self.state)
 
-        for file in tqdm(files):
-            data = np.load(file)
-            with tf.device("/CPU:0"):
-                val_loader = tf.data.Dataset.from_tensor_slices((data["obs"], data["policy_tgt"], data["value_tgt"]))
-                val_loader = val_loader.batch(batch_size)
+        self.load_checkpoint(1)
 
-            for obs, policy_tgt, value_tgt in val_loader:
-                batch_policy_acc, batch_value_acc = self.eval_step(self.state, obs.numpy(), policy_tgt.numpy(), value_tgt.numpy())
-
-                policy_acc += batch_policy_acc
-                value_acc += batch_value_acc
-
-        policy_acc /= len(val_loader) * batch_size * len(files)
-        value_acc /= len(val_loader) * batch_size * len(files)
-
-        return policy_acc, value_acc
+        R = self.evaluate(extract_params(self.state), baseline)
+        log = {} 
+        log.update(
+            {
+                f"eval/vs_baseline/avg_R": R.mean().item(),
+                f"eval/vs_baseline/win_rate": ((R == 1).sum() / R.size).item(),
+                f"eval/vs_baseline/draw_rate": ((R == 0).sum() / R.size).item(),
+                f"eval/vs_baseline/lose_rate": ((R == -1).sum() / R.size).item(),
+            }
+        )
+        print(log)
 
     def save_checkpoint(self, step=0):
         # Save current model at certain training iteration
@@ -297,7 +267,7 @@ if __name__ == "__main__":
     import tensorflow as tf
     import glob
 
-    wandb.init()
+    #wandb.init()
 
     trainer = TrainerModule(model_class=AZResnet, model_configs=AZResnetConfig(
         num_blocks=15,
@@ -309,5 +279,7 @@ if __name__ == "__main__":
     trainer.load_checkpoint(0)
     trainer.init_optimizer()
 
-    files = glob.glob("data/run1/*")
-    trainer.train_loop(files, epochs=1) 
+    #files = glob.glob("data/run1/*")
+    #trainer.train_loop(files, epochs=1) 
+
+    trainer.eval_model()
