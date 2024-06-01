@@ -1,6 +1,6 @@
 <div align="center">
-  
-  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/dd2c18ca-13f7-4cd3-9f6a-7928637465a9)
+
+  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/eede1e40-e215-403b-af97-c75e6adf7db0)
   
   <h3>Hivemind</h3>
 
@@ -46,6 +46,14 @@ pip install git+https://github.com/lowrollr/mctx-az.git
 Weights for a network trained on 600k human games and further trained via self-play is provided. A trainer interface is provided to train your own model from scratch of continue training existing checkpoints. The module expects a policy target which sums to 1 and a value target (-1, 0 or 1). In the case of supervised learning, this will be a one-hot encoding of the expected action. Otherwise, it will be the policy action weights generated from the alphazero algorithm. 
 
 ## Tournament Play 
+
+## Contributing
+
+If you are interested in contributing to this project you can do so in several ways. 
+
+1. Donating GPU compute through Kaggle (30 hours free GPU compute)
+2. Improving documentation and instructions for this repo
+3. Suggesting bug fixes and improvements to the engine
 
 ## Cite This Work
 If you found this work useful, please cite it with:
