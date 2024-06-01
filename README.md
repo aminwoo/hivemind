@@ -2,7 +2,7 @@
   
   ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/94336c2f-8620-4e7e-9c59-e02ede240518)
   
-  <h3>Hivemind</h3>
+  <h3>HiveMind</h3>
 
   A free and strong UCI bughouse engine.
 
