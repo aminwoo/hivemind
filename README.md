@@ -47,6 +47,14 @@ Weights for a network trained on 600k human games and further trained via self-p
 
 ## Tournament Play 
 
+## Contributing
+
+If you are interested in contributing to this project you can do so in several ways. 
+
+1. Donating GPU compute through Kaggle (30 hours free GPU compute)
+2. Improving documentation and instructions for this repo
+3. Suggesting bug fixes and improvements to the engine
+
 ## Cite This Work
 If you found this work useful, please cite it with:
 ```
