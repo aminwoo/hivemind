@@ -1,6 +1,6 @@
 <div align="center">
   
-  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/a67dbb0d-2de4-4717-ba30-e7d1f9198add)
+  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/a3f487a0-ea7a-4270-8926-8401e8360a1e)
   
   <h3>Hivemind</h3>
 
