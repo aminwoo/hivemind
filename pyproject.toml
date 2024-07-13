@@ -8,7 +8,6 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 chess = "^1.10.0"
-wandb = "^0.16.6"
 websocket-client = "^1.7.0"
 tqdm = "^4.66.2"
 isort = "^5.13.2"
@@ -20,7 +19,12 @@ typer = "^0.12.1"
 asyncio = "^3.4.3"
 websockets = "^12.0"
 pyyaml = "^6.0.1"
-
+pydantic = "^2.8.2"
+jax = {extras = ["cuda12"], version = "^0.4.30"}
+wandb = "^0.17.4"
+pgx = { git = "https://github.com/aminwoo/pgx.git", branch = "main" }
+gdown = "^5.2.0"
+ 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
