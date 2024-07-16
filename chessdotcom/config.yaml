@@ -1,5 +1,12 @@
-username: 
-password: 
-board: 
-opponent:
-partner:
+login:
+  username: 
+  password: 
+search:
+  basetime:
+  minrating:
+  maxrating:
+  opponent:
+  partner:
+engine:
+  board: 
+  iterations:
