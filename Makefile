@@ -1,5 +1,2 @@
-black:
-	black ./src
-
 isort:
-	isort ./src
+	isort ./src ./chessdotcom/
