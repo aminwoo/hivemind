@@ -2,7 +2,13 @@ import chess
 import typer
 
 
+def print_intro():
+    print("hivemind - a uci bughouse engine")
+
+
 def main():
+    print_intro()
+
     cmd = ""
     while cmd != "quit":
         cmd = input()
