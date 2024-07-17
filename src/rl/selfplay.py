@@ -1,42 +1,52 @@
 import datetime
 import os
+import random
 import shutil
-import random 
 import time
-import requests
 from functools import partial
 from typing import Optional
 
 import chex
 import jax
 import jax.numpy as jnp
-import numpy as np 
 import mctx
+import numpy as np
 import pgx
+import requests
 from flax.training import train_state
+from pgx.bughouse import Action, _time_advantage
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from pgx.bughouse import Action, _time_advantage
-
-from src.utils.bpgn import write_bpgn
 from src.architectures.azresnet import AZResnet, AZResnetConfig
 from src.training.trainer import TrainerModule
+from src.utils.bpgn import write_bpgn
+
+import warnings
+
+warnings.filterwarnings("ignore")
 
 
 class TrainState(train_state.TrainState):
     batch_stats: chex.ArrayTree
+
 
 model_configs = AZResnetConfig(
     num_blocks=15,
     channels=256,
     policy_channels=4,
     value_channels=8,
-    num_policy_labels=2*64*78+1,
+    num_policy_labels=2 * 64 * 78 + 1,
 )
 net = AZResnet(model_configs)
-trainer = TrainerModule(model_class=AZResnet, model_configs=model_configs, optimizer_name="lion", optimizer_params={"learning_rate": 1}, x=jnp.ones((1, 8, 16, 32)))
-state = trainer.load_checkpoint(0)
+trainer = TrainerModule(
+    model_class=AZResnet,
+    model_configs=model_configs,
+    optimizer_name="lion",
+    optimizer_params={"learning_rate": 1},
+    x=jnp.ones((1, 8, 16, 32)),
+)
+state = trainer.load_checkpoint(1)
 
 params = {"params": state["params"], "batch_stats": state["batch_stats"]}
 forward = jax.jit(partial(net.apply, train=False))
@@ -44,6 +54,7 @@ forward = jax.jit(partial(net.apply, train=False))
 devices = jax.local_devices()
 num_devices = len(devices)
 print("Number of devices:", num_devices)
+
 
 class Config(BaseModel):
     env_id: pgx.EnvId = "bughouse"
@@ -56,6 +67,7 @@ class Config(BaseModel):
 
     class Config:
         extra = "forbid"
+
 
 config: Config = Config()
 env = pgx.make(config.env_id)
@@ -72,29 +84,28 @@ def winning_action_mask(state, rng_key):
     legal_action_mask = state.legal_action_mask
 
     def step_and_check(action, winning_action_mask):
-        winning_action_mask = jax.lax.cond(legal_action_mask[action], 
-                                             lambda: winning_action_mask.at[action].set(env.step(state, action, rng_key).rewards[0] != 0), 
-                                             lambda: winning_action_mask)
+        winning_action_mask = jax.lax.cond(
+            legal_action_mask[action],
+            lambda: winning_action_mask.at[action].set(
+                env.step(state, action, rng_key).rewards[0] != 0
+            ),
+            lambda: winning_action_mask,
+        )
         return winning_action_mask
 
     winning_action_mask = jnp.zeros(9985)
-    winning_action_mask = jax.lax.fori_loop(0, 9985, step_and_check, winning_action_mask)
+    winning_action_mask = jax.lax.fori_loop(
+        0, 9985, step_and_check, winning_action_mask
+    )
 
     return winning_action_mask
 
 
 def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.State):
-    rng_keys = jax.random.split(rng_key, config.selfplay_batch_size)
     current_player = state.current_player
-    state = jax.vmap(env.step)(state, action, rng_keys)
+    state = jax.vmap(env.step)(state, action)
 
     logits, value = forward(params, state.observation)
-    #logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
-
-    sorted_logits = jnp.sort(logits, axis=1)
-    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 50, 0, 2) * (sorted_logits[:,-1] - sorted_logits[:,-2])
-    logits = logits.at[:, 9984].set(sit_logits)
-
     # mask invalid actions
     logits = logits - jnp.max(logits, axis=-1, keepdims=True)
     logits = jnp.where(state.legal_action_mask, logits, jnp.finfo(logits.dtype).min)
@@ -115,17 +126,9 @@ def recurrent_fn(params, rng_key: jnp.ndarray, action: jnp.ndarray, state: pgx.S
 
 @partial(jax.jit, static_argnums=(2,))
 def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None):
-
     key1, key2 = jax.random.split(key)
 
     logits, value = forward(params, state.observation)
-    #logits = logits.at[:, 9984].set(jnp.max(logits, axis=1))
-    sorted_logits = jnp.sort(logits, axis=1)
-    sit_logits = sorted_logits[:,-2] + jnp.clip(jax.vmap(_time_advantage)(state) / 50, 0, 2) * (sorted_logits[:,-1] - sorted_logits[:,-2])
-    logits = logits.at[:, 9984].set(sit_logits)
-
-    #logits = jnp.where(jax.vmap(winning_action_mask)(state, jax.random.split(key2, config.selfplay_batch_size)), jnp.finfo(logits.dtype).max, logits)
-
     root = mctx.RootFnOutput(prior_logits=logits, value=value, embedding=state)
 
     policy_output = mctx.alphazero_policy(
@@ -139,7 +142,7 @@ def run_mcts(state, key, num_simulations: int, tree: Optional[mctx.Tree] = None)
         qtransform=partial(mctx.qtransform_by_min_max, min_value=-1, max_value=1),
     )
     return policy_output
-    
+
 
 if __name__ == "__main__":
     os.makedirs("data/run1", exist_ok=True)
@@ -162,21 +165,21 @@ if __name__ == "__main__":
         rng_key, sub_key = jax.random.split(rng_key)
         keys = jax.random.split(sub_key, config.selfplay_batch_size)
         state = init_fn(keys)
-        tree = None 
-        actions = [] 
-        times = [] 
+        tree = None
+        actions = []
+        times = []
 
-        obs = [] 
-        policy_tgt = [] 
-        value_tgt = [] 
+        obs = []
+        policy_tgt = []
+        value_tgt = []
 
         while ~state.terminated.all():
             rng_key, sub_key = jax.random.split(rng_key)
             policy_output = run_mcts(state, sub_key, config.num_simulations, tree)
-            #tree = mctx.get_subtree(policy_output.search_tree, policy_output.action)
+            # tree = mctx.get_subtree(policy_output.search_tree, policy_output.action)
             obs.append(state.observation.ravel())
             policy_tgt.append(policy_output.action_weights.ravel())
-            
+
             action = policy_output.action.item()
             keys = jax.random.split(sub_key, config.selfplay_batch_size)
             state = step_fn(state, policy_output.action, keys)
@@ -188,23 +191,27 @@ if __name__ == "__main__":
         reward = abs(int(state.rewards[0][0]))
         for i in range(len(obs)):
             value_tgt.append(reward)
-            reward *= -1 
-            #assert np.sum(policy_tgt[i]) == 1
+            reward *= -1
+            # assert np.sum(policy_tgt[i]) == 1
 
         value_tgt = value_tgt[::-1]
         assert value_tgt[-1] != -1
         write_bpgn(game_id, actions, times)
 
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=0)))
-        filepath = f"data/run1/training-run1-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
-        np.savez_compressed(filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt)
+        filepath = (
+            f"data/run1/game_{game_id}-{now.strftime('%Y%m%d')}-{now.strftime('%H%M')}"
+        )
+        np.savez_compressed(
+            filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt
+        )
 
-        url = f"http://ec2-3-84-181-213.compute-1.amazonaws.com:8000/upload"
+        """url = f"http://ec2-3-84-181-213.compute-1.amazonaws.com:8000/upload"
         file = {"file": open(filepath + ".npz", "rb")}
-        
-        response = requests.post(url=url, files=file) 
+
+        response = requests.post(url=url, files=file)
 
         if response.status_code == 200:
             print("Game sent successfully!")
         else:
-            print(f"Error: {response.status_code}")
+            print(f"Error: {response.status_code}")"""
