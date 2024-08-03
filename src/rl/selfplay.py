@@ -206,7 +206,9 @@ if __name__ == "__main__":
             filepath, obs=obs, policy_tgt=policy_tgt, value_tgt=value_tgt
         )
 
-        """url = f"http://ec2-3-84-181-213.compute-1.amazonaws.com:8000/upload"
+        url = (
+            "https://1682-2001-8003-1c34-8000-b487-9e12-25e6-b96.ngrok-free.app/upload"
+        )
         file = {"file": open(filepath + ".npz", "rb")}
 
         response = requests.post(url=url, files=file)
@@ -214,4 +216,4 @@ if __name__ == "__main__":
         if response.status_code == 200:
             print("Game sent successfully!")
         else:
-            print(f"Error: {response.status_code}")"""
+            print(f"Error: {response.status_code}")
