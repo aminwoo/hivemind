@@ -8,10 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9"
 chess = "^1.10.0"
-websocket-client = "^1.7.0"
 tqdm = "^4.66.2"
-isort = "^5.13.2"
-black = "^24.3.0"
 bs4 = "^0.0.2"
 flax = "^0.8.2"
 typer = "^0.12.1"
@@ -21,10 +18,9 @@ pyyaml = "^6.0.1"
 pydantic = "^2.8.2"
 jax = {extras = ["cuda12"], version = "^0.4.30"}
 wandb = "^0.17.4"
-pgx = {git = "git@github.com:aminwoo/pgx.git", rev = "main"}
-mctx = {git = "git@github.com:lowrollr/mctx-az.git", rev = "main"}
-pytest-playwright = "^0.5.1"
-playwright = "^1.45.0"
+pgx = {git = "https://github.com/aminwoo/pgx.git"}
+mctx = {git = "https://github.com/lowrollr/mctx-az.git"}
+gdown = "^5.2.0"
  
 [build-system]
 requires = ["poetry-core"]
