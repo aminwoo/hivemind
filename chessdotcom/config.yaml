@@ -2,11 +2,12 @@ login:
   username: 
   password: 
 search:
-  basetime:
+  rated: 
+  basetime: 
   minrating:
   maxrating:
   opponent:
   partner:
 engine:
-  board: 
-  iterations:
+  board: 0 
+  iterations: 400
