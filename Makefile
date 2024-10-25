@@ -1,2 +1,0 @@
-isort:
-	isort ./src ./chessdotcom/
