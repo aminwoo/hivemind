@@ -91,10 +91,10 @@ pub const FLIP: [usize; 64] = [
      0,  1,  2,  3,  4,  5,  6,  7,
 ];
 
-pub fn evaluate<T: Position>(pos: &T) -> f32 {
-    let mut score: f32;
-    let mut w_psqt = 0.0;
-    let mut b_psqt = 0.0;
+pub fn evaluate<T: Position>(pos: &T) -> i16 {
+    let mut score: i16;
+    let mut w_psqt = 0;
+    let mut b_psqt = 0;
 
     let bb_white = pos.board().white();
     let bb_black = pos.board().black();
@@ -102,13 +102,13 @@ pub fn evaluate<T: Position>(pos: &T) -> f32 {
     for square in bb_white {
         let piece_result = pos.board().piece_at(square);
         if let Some(piece) = piece_result {
-            w_psqt += PSQT_MG[piece.role as usize][FLIP[square as usize]] as f32;
+            w_psqt += PSQT_MG[piece.role as usize][FLIP[square as usize]];
         }
     }
     for square in bb_black {
         let piece_result = pos.board().piece_at(square);
         if let Some(piece) = piece_result {
-            b_psqt += PSQT_MG[piece.role as usize][square as usize] as f32;
+            b_psqt += PSQT_MG[piece.role as usize][square as usize];
         }
     }
 
@@ -142,7 +142,7 @@ pub fn evaluate<T: Position>(pos: &T) -> f32 {
     }*/
 
     if pos.turn() == Color::Black {
-        score *= -1.0;
+        score *= -1;
     }
 
     score
