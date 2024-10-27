@@ -1,3 +1,4 @@
+mod bughouse;
 mod engine;
 mod search;
 
