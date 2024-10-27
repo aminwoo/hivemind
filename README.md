@@ -44,17 +44,17 @@ pip install git+https://github.com/lowrollr/mctx-az.git
 
 ## Roadmap 
 
-# Search
+### Search
 - [x] Iterative Deepening
 - [x] Quiescence Search
 - [ ] Aspiration Windows
      
-# Move Ordering
+### Move Ordering
 
 - [x] Transposition Table Move
 - [x] Killer Move Heuristic
 - [ ] Static Exchange Evaluation
-      - [x] MVV-LVA
+- [ ]   - [x] MVV-LVA
 
 # Evaluation
 
