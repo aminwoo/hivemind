@@ -3,38 +3,20 @@ use crate::engine::transposition::{HashFlag, SearchData};
 use super::{defs::SearchRefs, Search};
 use shakmaty::{
     zobrist::{Zobrist64, ZobristHash},
-    Chess, EnPassantMode, MoveList, Position,
+    EnPassantMode, Position,
 };
-use shakmaty_syzygy::{Tablebase, Wdl};
 
 impl Search {
-    pub fn alpha_beta(
-        refs: &mut SearchRefs,
-        mut depth: i8,
-        mut alpha: i16,
-        beta: i16,
-        pv: &mut MoveList,
-    ) -> i16 {
-        let is_root = refs.search_info.ply == 0;
-
+    pub fn alpha_beta(refs: &mut SearchRefs, mut depth: i8, mut alpha: i16, beta: i16) -> i16 {
         if refs.search_info.elapsed() > refs.search_params.search_time {
             refs.search_info.terminated = true;
             return 0;
         }
-        /*if refs.pos.board().occupied().count() <= 5 {
-            println!("test");
-            let mut tables: Tablebase<Chess> = Tablebase::new();
-            tables.add_directory("tables/chess").unwrap();
 
-            let wdl = tables.probe_wdl_after_zeroing(refs.pos).unwrap();
-            match wdl {
-                Wdl::Win => return 10000,
-                Wdl::Loss => return -10000,
-                Wdl::Draw => return 0,
-                Wdl::BlessedLoss => return 0,
-                Wdl::CursedWin => return 0,
-            }
-        }*/
+        let ply = refs.search_info.ply as usize;
+        let is_root = ply == 0;
+        let is_frontier = ply == 1;
+        refs.search_info.pv_length[ply] = ply;
 
         let is_check = refs.pos.is_check();
         if is_check {
@@ -48,13 +30,12 @@ impl Search {
         refs.search_info.nodes += 1;
 
         let mut tt_value: Option<i16> = None;
-
         if refs.tt_enabled {
             if let Some(data) = refs
                 .tt
                 .probe(refs.pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal))
             {
-                tt_value = data.get(depth, refs.search_info.ply, alpha, beta);
+                tt_value = data.get(depth, ply, alpha, beta);
             }
         }
 
@@ -68,18 +49,26 @@ impl Search {
         let mut hash_flag = HashFlag::Alpha;
 
         let mut legal_moves = refs.pos.legal_moves();
-        let scores = Search::score_moves(&mut legal_moves, &refs.search_info.best_move, refs);
+        Search::sort_moves(&mut legal_moves, &refs.search_info.pv[ply][ply], refs);
 
-        for i in 0..legal_moves.len() {
-            Search::pick_move(&mut legal_moves, i, scores);
-            let mv = legal_moves.get(i).unwrap();
-
+        let mut fail_low = true;
+        let mut pvs = true;
+        for m in &legal_moves {
             let prev_pos = refs.pos.clone();
-            refs.pos.play_unchecked(mv);
+            refs.pos.play_unchecked(m);
             refs.search_info.ply += 1;
 
-            let mut node_pv: MoveList = MoveList::new();
-            let score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, &mut node_pv);
+            let mut score;
+            if pvs {
+                score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha);
+            } else {
+                score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha);
+                if score > alpha && beta - alpha > 1 {
+                    score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha)
+                }
+            };
+
+            pvs = false;
 
             *refs.pos = prev_pos;
             refs.search_info.ply -= 1;
@@ -87,34 +76,44 @@ impl Search {
             if score >= beta {
                 refs.tt.insert(
                     refs.pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal),
-                    SearchData::create(depth, refs.search_info.ply, HashFlag::Beta, beta),
+                    SearchData::create(depth, ply, HashFlag::Beta, beta),
                 );
 
-                if !mv.is_capture() {
+                if !m.is_capture() {
                     let ply = refs.search_info.ply as usize;
                     if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
-                        if mv != first_killer {
+                        if m != first_killer {
                             refs.search_info.killer_moves2[ply] =
                                 refs.search_info.killer_moves1[ply].clone();
-                            refs.search_info.killer_moves1[ply] = Some(mv.clone());
+                            refs.search_info.killer_moves1[ply] = Some(m.clone());
                         }
                     }
 
                     refs.search_info
-                        .update_history(mv.role(), mv.to(), (depth * depth).into());
+                        .update_history(m.role(), m.to(), (depth * depth).into());
+                    refs.search_info.counter_moves[m.from().unwrap() as usize][m.to() as usize] =
+                        Some(m.clone());
                 }
                 return beta;
             }
 
             if score > alpha {
+                fail_low = false;
                 alpha = score;
                 hash_flag = HashFlag::Exact;
 
-                pv.clear();
-                pv.push(mv.clone());
-                pv.extend(node_pv.iter().cloned());
+                refs.search_info.pv[ply].fill(None);
+                refs.search_info.pv[ply][ply] = Some(m.clone());
+                for next_ply in ply + 1..refs.search_info.pv_length[ply + 1] {
+                    refs.search_info.pv[ply][next_ply] =
+                        refs.search_info.pv[ply + 1][next_ply].clone();
+                }
+                refs.search_info.pv_length[ply] = refs.search_info.pv_length[ply + 1];
+            } else if is_root && fail_low {
+                return -10000;
             }
         }
+
         if legal_moves.is_empty() {
             if is_check {
                 return -9690 + (refs.search_info.ply as i16);
@@ -124,7 +123,7 @@ impl Search {
         }
         refs.tt.insert(
             refs.pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal),
-            SearchData::create(depth, refs.search_info.ply, hash_flag, alpha),
+            SearchData::create(depth, ply, hash_flag, alpha),
         );
         alpha
     }
