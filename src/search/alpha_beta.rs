@@ -7,7 +7,7 @@ use shakmaty::{
 };
 
 impl Search {
-    pub fn alpha_beta(refs: &mut SearchRefs, mut depth: i8, mut alpha: i16, beta: i16) -> i16 {
+    pub fn alpha_beta(refs: &mut SearchRefs, mut depth: i8, mut alpha: i16, mut beta: i16) -> i16 {
         if refs.search_info.elapsed() > refs.search_params.search_time {
             refs.search_info.terminated = true;
             return 0;
@@ -30,19 +30,25 @@ impl Search {
         refs.search_info.nodes += 1;
 
         let mut tt_value: Option<i16> = None;
+        let mut tt_flag: HashFlag = HashFlag::Nothing;
         if refs.tt_enabled {
             if let Some(data) = refs
                 .tt
                 .probe(refs.pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal))
             {
-                tt_value = data.get(depth, ply, alpha, beta);
+                (tt_value, tt_flag) = data.get(depth, ply, alpha, beta);
             }
         }
 
         if let Some(v) = tt_value {
             if !is_root {
+                match tt_flag {
+                    HashFlag::Exact => return v,
+                    HashFlag::Beta => alpha = std::cmp::max(alpha, v),
+                    HashFlag::Alpha => beta = std::cmp::min(beta, v),
+                    _ => (),
+                }
                 refs.search_info.tt_hits += 1;
-                return v;
             }
         }
 
