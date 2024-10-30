@@ -1,5 +1,6 @@
 mod alpha_beta;
 mod defs;
+use shakmaty::zobrist::{Zobrist64, ZobristHash};
 mod eval;
 mod iter_deep;
 mod qsearch;
@@ -13,7 +14,7 @@ use crossbeam_channel::Sender;
 
 use defs::{SearchInfo, SearchParams, SearchRefs};
 use shakmaty::{Chess, Move, Position};
-use shakmaty_syzygy::Tablebase;
+use std::collections::HashMap;
 
 pub struct Search {
     handle: Option<JoinHandle<()>>,
@@ -28,17 +29,22 @@ impl Search {
         }
     }
 
-    pub fn init(&mut self, mtx_pos: Arc<Mutex<Chess>>, mtx_tt: Arc<Mutex<TT<SearchData>>>) {
+    pub fn init(
+        &mut self,
+        mtx_pos: Arc<Mutex<Chess>>,
+        mtx_tt: Arc<Mutex<TT<SearchData>>>,
+        mtx_repetitions: Arc<Mutex<HashMap<Zobrist64, u32>>>,
+    ) {
         let (s, r) = unbounded::<String>();
         let h = thread::spawn(move || {
             let mut quit = false;
             let mut halt = true;
 
-            let mut best_move: Option<Move>;
             while !quit {
                 let cmd = r.recv().unwrap();
                 let pos = mtx_pos.lock().unwrap();
                 let mut tt = mtx_tt.lock().unwrap();
+                let mut repetitions = mtx_repetitions.lock().unwrap();
 
                 match cmd.as_str() {
                     "go" => halt = false,
@@ -50,29 +56,28 @@ impl Search {
                 if !halt && !quit {
                     let mut search_info = SearchInfo::new();
                     let mut search_params = SearchParams {
-                        depth: 10,
-                        search_time: 15000,
+                        depth: 20,
+                        search_time: 100000,
                     };
-                    let mut tables: Tablebase<Chess> = Tablebase::new();
-                    tables.add_directory("tables/chess").unwrap();
 
                     let mut search_refs = SearchRefs {
                         pos: &mut pos.clone(),
+                        repetitions: &mut repetitions,
                         search_params: &mut search_params,
                         search_info: &mut search_info,
                         tt: &mut tt,
                         tt_enabled: true,
-                        tb: &mut tables,
                     };
 
-                    best_move = Some(Search::iterative_deepening(&mut search_refs));
-                    println!(
-                        "bestmove {}",
-                        best_move
-                            .clone()
-                            .expect("Reason")
-                            .to_uci(search_refs.pos.castles().mode())
-                    );
+                    let best_move = Search::iterative_deepening(&mut search_refs);
+                    if let Some(m) = best_move {
+                        println!(
+                            "bestmove {}",
+                            m.clone().to_uci(search_refs.pos.castles().mode())
+                        );
+                    } else {
+                        println!("bestmove (none)");
+                    }
 
                     halt = true;
                 }
