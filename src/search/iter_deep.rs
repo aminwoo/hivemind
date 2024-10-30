@@ -1,11 +1,12 @@
 use super::{defs::SearchRefs, Search};
+use crate::types::Score;
 use shakmaty::{Move, Position};
 
 impl Search {
     pub fn iterative_deepening(refs: &mut SearchRefs) -> Option<Move> {
         let mut depth = 1;
-        let mut alpha = -10000;
-        let mut beta = 10000;
+        let mut alpha = -Score::INFINITY;
+        let mut beta = Score::INFINITY;
         let aspiration_window = 25;
         let mut best_move: Option<Move> = None;
 
@@ -17,8 +18,8 @@ impl Search {
             }
 
             if cp <= alpha || cp >= beta {
-                alpha = -10000;
-                beta = 10000;
+                alpha = -Score::INFINITY;
+                beta = Score::INFINITY;
                 continue;
             } else {
                 alpha = cp - aspiration_window;
