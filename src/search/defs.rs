@@ -1,9 +1,14 @@
 use crate::engine::transposition::{SearchData, TT};
-use shakmaty::{Chess, Move, MoveList, Position, Role, Square};
-use shakmaty_syzygy::{Tablebase, Wdl};
+use shakmaty::{
+    zobrist::{Zobrist64, ZobristHash},
+    EnPassantMode, Position,
+};
+use shakmaty::{Chess, Move, MoveList, Role, Square};
+use std::collections::HashMap;
 use std::time::Instant;
 
-const MAX_HISTORY: i16 = 3000;
+const MAX_HISTORY: i16 = 2000;
+const MAX_CAPTURE: i16 = 1000;
 
 pub struct SearchResult {
     pub depth: i8,
@@ -20,11 +25,15 @@ pub struct SearchInfo {
     pub cp: i16,
     pub ply: i8,
     pub tt_hits: usize,
-    pub best_move: Option<Move>,
     pub killer_moves1: Vec<Option<Move>>,
     pub killer_moves2: Vec<Option<Move>>,
-    pub history: [[i16; 64]; 7],
+    pub capture_history: [[[i16; 7]; 64]; 7],
+    pub quiet_history: [[i16; 64]; 7],
+    pub counter_moves: Vec<Vec<Option<Move>>>,
+    pub prev_move: Vec<Option<Move>>,
     pub terminated: bool,
+    pub pv: Vec<Vec<Option<Move>>>,
+    pub pv_length: [usize; 128],
 }
 
 impl SearchInfo {
@@ -35,11 +44,15 @@ impl SearchInfo {
             cp: 0,
             ply: 0,
             tt_hits: 0,
-            best_move: None,
             killer_moves1: vec![None; 128],
             killer_moves2: vec![None; 128],
-            history: [[0; 64]; 7],
+            capture_history: [[[0; 7]; 64]; 7],
+            quiet_history: [[0; 64]; 7],
+            counter_moves: vec![vec![None; 64]; 64],
+            prev_move: vec![None; 128],
             terminated: false,
+            pv: vec![vec![None; 128]; 128],
+            pv_length: [0; 128],
         }
     }
 
@@ -54,10 +67,25 @@ impl SearchInfo {
         }
     }
 
-    pub fn update_history(&mut self, role: Role, to: Square, value: i16) {
+    pub fn update_capture_history(&mut self, role: Role, to: Square, captured: Role, value: i16) {
+        let clamped_value = value.clamp(-MAX_CAPTURE, MAX_CAPTURE);
+        self.capture_history[role as usize][to as usize][captured as usize] += clamped_value
+            - self.capture_history[role as usize][to as usize][captured as usize]
+                * clamped_value.abs()
+                / MAX_CAPTURE;
+    }
+
+    pub fn get_capture_score(&self, m: &Move) -> i16 {
+        self.capture_history[m.role() as usize][m.to() as usize][m.capture().unwrap() as usize]
+    }
+    pub fn update_quiet_history(&mut self, role: Role, to: Square, value: i16) {
         let clamped_value = value.clamp(-MAX_HISTORY, MAX_HISTORY);
-        self.history[role as usize][to as usize] += clamped_value
-            - self.history[role as usize][to as usize] * clamped_value.abs() / MAX_HISTORY;
+        self.quiet_history[role as usize][to as usize] += clamped_value
+            - self.quiet_history[role as usize][to as usize] * clamped_value.abs() / MAX_HISTORY;
+    }
+
+    pub fn get_quiet_score(&self, m: &Move) -> i16 {
+        self.quiet_history[m.role() as usize][m.to() as usize]
     }
 }
 
@@ -68,9 +96,36 @@ pub struct SearchParams {
 
 pub struct SearchRefs<'a> {
     pub pos: &'a mut Chess,
+    pub repetitions: &'a mut HashMap<Zobrist64, u32>,
     pub search_params: &'a mut SearchParams,
     pub search_info: &'a mut SearchInfo,
     pub tt: &'a mut TT<SearchData>,
     pub tt_enabled: bool,
-    pub tb: &'a mut Tablebase<Chess>,
+}
+
+impl<'a> SearchRefs<'a> {
+    pub fn three_fold(&self) -> bool {
+        if let Some(&count) = self
+            .repetitions
+            .get(&self.pos.zobrist_hash(EnPassantMode::Legal))
+        {
+            count >= 3
+        } else {
+            false
+        }
+    }
+    pub fn incr_rep(&mut self) {
+        let count = self
+            .repetitions
+            .entry(self.pos.zobrist_hash(EnPassantMode::Legal))
+            .or_insert(0);
+        *count += 1;
+    }
+    pub fn decr_rep(&mut self) {
+        let count = self
+            .repetitions
+            .entry(self.pos.zobrist_hash(EnPassantMode::Legal))
+            .or_insert(0);
+        *count -= 1;
+    }
 }
