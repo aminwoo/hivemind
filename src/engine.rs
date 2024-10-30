@@ -3,6 +3,7 @@ mod about;
 pub mod transposition;
 
 use crate::search::Search;
+use crate::transposition::TranspositionTable;
 use shakmaty::{
     zobrist::{Zobrist64, ZobristHash},
     EnPassantMode, Position,
@@ -20,13 +21,13 @@ pub struct Engine {
     pos: Arc<Mutex<Chess>>,
     repetitions: Arc<Mutex<Vec<Zobrist64>>>,
     search: Search,
-    tt_search: Arc<Mutex<TT<SearchData>>>,
+    tt_search: Arc<Mutex<TranspositionTable>>,
 }
 
 impl Engine {
     pub fn new() -> Self {
-        let tt_search: Arc<Mutex<TT<SearchData>>> =
-            Arc::new(Mutex::new(TT::<SearchData>::new(1024)));
+        let tt_search: Arc<Mutex<TranspositionTable>> =
+            Arc::new(Mutex::new(TranspositionTable::default()));
         Engine {
             pos: Arc::new(Mutex::new(Chess::new())),
             repetitions: Arc::new(Mutex::new(Vec::new())),
@@ -64,7 +65,7 @@ impl Engine {
                 println!("readyok");
             }
             if cmd == "ucinewgame" {
-                self.tt_search.lock().unwrap().clear();
+                self.tt_search.lock().unwrap().clear(1);
             }
 
             if cmd.starts_with("position") {

@@ -1,10 +1,7 @@
-use crate::engine::transposition::{HashFlag, SearchData};
+use crate::transposition::Bound;
 
 use super::{defs::SearchRefs, eval::evaluate, Search};
-use shakmaty::{
-    zobrist::{Zobrist64, ZobristHash},
-    EnPassantMode, Position,
-};
+use shakmaty::Position;
 
 impl Search {
     pub fn alpha_beta(
@@ -26,11 +23,29 @@ impl Search {
         let is_frontier = ply == 1;
         let pv_node = beta - alpha > 1;
 
+        let hash = refs.get_hash();
+
+        if !is_root {
+            let hit = refs.tt.read(hash.0, ply);
+            if let Some(hit) = hit {
+                if hit.depth >= depth {
+                    refs.search_info.tt_hits += 1;
+                    match hit.bound {
+                        Bound::Exact => return hit.score,
+                        Bound::Lower => alpha = std::cmp::max(alpha, hit.score),
+                        Bound::Upper => beta = std::cmp::min(beta, hit.score),
+                    }
+                    if alpha >= beta {
+                        return hit.score;
+                    }
+                }
+            }
+        }
+
         refs.search_info.pv_length[ply] = ply;
         if ply > 0 && refs.three_fold() {
             return 0;
         }
-
         let is_check = refs.pos.is_check();
         if is_check {
             depth += 1;
@@ -38,6 +53,7 @@ impl Search {
         if depth <= 0 {
             return Search::qsearch(refs, alpha, beta);
         }
+        refs.search_info.nodes += 1;
 
         if !is_check && !pv_node {
             let static_eval = evaluate(refs.pos);
@@ -56,35 +72,10 @@ impl Search {
             }
         }
 
-        refs.search_info.nodes += 1;
-
-        let mut tt_value: Option<i16> = None;
-        let mut flag: HashFlag = HashFlag::Nothing;
-        if refs.tt_enabled {
-            if let Some(data) = refs.tt.probe(refs.pos.zobrist_hash(EnPassantMode::Legal)) {
-                (tt_value, flag) = data.get(depth, ply, alpha, beta);
-            }
-        }
-
-        if let Some(v) = tt_value {
-            if !is_root {
-                refs.search_info.tt_hits += 1;
-                match flag {
-                    HashFlag::Exact => return v,
-                    HashFlag::Beta => alpha = std::cmp::max(alpha, v),
-                    HashFlag::Alpha => beta = std::cmp::min(beta, v),
-                    HashFlag::Nothing => (),
-                }
-                if alpha >= beta {
-                    return v;
-                }
-            }
-        }
-
         let mut legal_moves = refs.pos.legal_moves();
         Search::sort_moves(&mut legal_moves, &refs.search_info.pv[ply][ply], refs);
 
-        let mut hash_flag = HashFlag::Alpha;
+        let mut bound = Bound::Upper;
         let mut fail_low = true;
         let mut pvs = true;
         for m in &legal_moves {
@@ -112,10 +103,7 @@ impl Search {
             refs.search_info.ply -= 1;
 
             if score >= beta {
-                refs.tt.insert(
-                    refs.pos.zobrist_hash::<Zobrist64>(EnPassantMode::Legal),
-                    SearchData::create(depth, ply, HashFlag::Beta, beta),
-                );
+                refs.tt.write(hash.0, depth, alpha, Bound::Lower, ply);
 
                 if m.is_capture() {
                     refs.search_info.update_capture_history(
@@ -153,7 +141,7 @@ impl Search {
             if score > alpha {
                 fail_low = false;
                 alpha = score;
-                hash_flag = HashFlag::Exact;
+                bound = Bound::Exact;
 
                 refs.search_info.pv[ply].fill(None);
                 refs.search_info.pv[ply][ply] = Some(m.clone());
@@ -175,10 +163,7 @@ impl Search {
             }
         }
 
-        refs.tt.insert(
-            refs.pos.zobrist_hash(EnPassantMode::Legal),
-            SearchData::create(depth, ply, hash_flag, alpha),
-        );
+        refs.tt.write(hash.0, depth, alpha, bound, ply);
         alpha
     }
 }

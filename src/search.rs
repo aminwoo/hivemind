@@ -5,7 +5,7 @@ mod eval;
 mod iter_deep;
 mod qsearch;
 mod sorting;
-use crate::engine::transposition::{SearchData, TT};
+use crate::transposition::TranspositionTable;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -32,7 +32,7 @@ impl Search {
     pub fn init(
         &mut self,
         mtx_pos: Arc<Mutex<Chess>>,
-        mtx_tt: Arc<Mutex<TT<SearchData>>>,
+        mtx_tt: Arc<Mutex<TranspositionTable>>,
         mtx_repetitions: Arc<Mutex<Vec<Zobrist64>>>,
     ) {
         let (s, r) = unbounded::<String>();
@@ -44,7 +44,7 @@ impl Search {
                 let cmd = r.recv().unwrap();
                 let pos = mtx_pos.lock().unwrap();
                 let mut tt = mtx_tt.lock().unwrap();
-                let mut repetitions = mtx_repetitions.lock().unwrap();
+                let repetitions = mtx_repetitions.lock().unwrap();
 
                 match cmd.as_str() {
                     "go" => halt = false,
@@ -57,12 +57,12 @@ impl Search {
                     let mut search_info = SearchInfo::new();
                     let mut search_params = SearchParams {
                         depth: 20,
-                        search_time: 100000,
+                        search_time: 5000,
                     };
 
                     let mut search_refs = SearchRefs {
                         pos: &mut pos.clone(),
-                        repetitions: &mut repetitions,
+                        repetitions: &mut repetitions.clone(),
                         search_params: &mut search_params,
                         search_info: &mut search_info,
                         tt: &mut tt,

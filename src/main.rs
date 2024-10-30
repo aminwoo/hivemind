@@ -1,6 +1,8 @@
 mod bughouse;
 mod engine;
 mod search;
+mod transposition;
+mod types;
 
 use engine::Engine;
 

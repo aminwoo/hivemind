@@ -1,4 +1,4 @@
-use crate::engine::transposition::{SearchData, TT};
+use crate::transposition::TranspositionTable;
 use shakmaty::{
     zobrist::{Zobrist64, ZobristHash},
     EnPassantMode, Position,
@@ -89,7 +89,7 @@ pub struct SearchRefs<'a> {
     pub repetitions: &'a mut Vec<Zobrist64>,
     pub search_params: &'a mut SearchParams,
     pub search_info: &'a mut SearchInfo,
-    pub tt: &'a mut TT<SearchData>,
+    pub tt: &'a mut TranspositionTable,
     pub tt_enabled: bool,
 }
 
@@ -113,5 +113,13 @@ impl<'a> SearchRefs<'a> {
     }
     pub fn decr_rep(&mut self) {
         self.repetitions.pop();
+    }
+
+    pub fn get_hash(&self) -> Zobrist64 {
+        let hash = self.repetitions.last();
+        match hash {
+            Some(&h) => h,
+            None => self.pos.zobrist_hash(EnPassantMode::Legal),
+        }
     }
 }
