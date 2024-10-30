@@ -43,7 +43,7 @@ impl IHashData for SearchData {
 }
 
 impl SearchData {
-    pub fn create(depth: i8, ply: i8, flag: HashFlag, value: i16) -> Self {
+    pub fn create(depth: i8, ply: usize, flag: HashFlag, value: i16) -> Self {
         // This is the value we're going to save into the TT.
         let mut v = value;
 
@@ -52,13 +52,6 @@ impl SearchData {
         // account, before storing the value into the TT. These ifs can be
         // rewritten as a comparative match expression. We don't, because
         // they're slower. (No inlining by the compiler.)
-        if v > 8000 {
-            v += ply as i16;
-        }
-
-        if v < 8000 {
-            v -= ply as i16;
-        }
 
         Self {
             depth,
@@ -67,12 +60,13 @@ impl SearchData {
         }
     }
 
-    pub fn get(&self, depth: i8, ply: i8, alpha: i16, beta: i16) -> Option<i16> {
+    pub fn get(&self, depth: i8, ply: usize, alpha: i16, beta: i16) -> (Option<i16>, HashFlag) {
         // We either do, or don't have a value to return from the TT.
         let mut value: Option<i16> = None;
 
         if self.depth >= depth {
-            match self.flag {
+            value = Some(self.value);
+            /*match self.flag {
                 HashFlag::Exact => {
                     // Get the value from the data. We don't want to change
                     // the value that is in the TT.
@@ -81,13 +75,6 @@ impl SearchData {
                     // Adjust for the number of plies from where this data
                     // is probed, if we're dealing with checkmate. Same as
                     // above: no comparative match expression.
-                    if v > 8000 {
-                        v -= ply as i16;
-                    }
-
-                    if v < 8000 {
-                        v += ply as i16;
-                    }
 
                     // This is the value that will be returned.
                     value = Some(v);
@@ -103,9 +90,9 @@ impl SearchData {
                     }
                 }
                 _ => (),
-            };
+            };*/
         }
-        value
+        (value, self.flag)
     }
 }
 
