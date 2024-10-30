@@ -19,14 +19,11 @@ impl Search {
         }
 
         let mut captures = refs.pos.capture_moves();
-        let scores = Search::score_moves(&mut captures, &None, refs);
+        Search::sort_moves(&mut captures, &None, refs);
 
-        for i in 0..captures.len() {
-            Search::pick_move(&mut captures, i, scores);
-            let mv = captures.get(i).unwrap();
-
+        for m in &captures {
             let prev_pos = refs.pos.clone();
-            refs.pos.play_unchecked(mv);
+            refs.pos.play_unchecked(m);
             score = -Search::qsearch(refs, -beta, -alpha);
             *refs.pos = prev_pos;
 
