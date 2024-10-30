@@ -119,6 +119,11 @@ impl Engine {
             }
 
             if cmd.starts_with("go") {
+                if let Some(token) = cmd.split_whitespace().nth(1) {
+                    if token == "movetime" {
+                        self.search.send(cmd[3..].to_string());
+                    }
+                }
                 self.search.send("go".to_string());
             }
 

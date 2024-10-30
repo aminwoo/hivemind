@@ -37,6 +37,10 @@ impl Search {
     ) {
         let (s, r) = unbounded::<String>();
         let h = thread::spawn(move || {
+            let mut search_params = SearchParams {
+                depth: 20,
+                search_time: 5000,
+            };
             let mut quit = false;
             let mut halt = true;
 
@@ -45,6 +49,14 @@ impl Search {
                 let pos = mtx_pos.lock().unwrap();
                 let mut tt = mtx_tt.lock().unwrap();
                 let repetitions = mtx_repetitions.lock().unwrap();
+
+                if cmd.starts_with("movetime") {
+                    if let Some(time_left) = cmd.split_whitespace().nth(1) {
+                        if let Ok(time_left) = time_left.parse::<u128>() {
+                            search_params.search_time = time_left;
+                        }
+                    }
+                }
 
                 match cmd.as_str() {
                     "go" => halt = false,
@@ -55,10 +67,6 @@ impl Search {
 
                 if !halt && !quit {
                     let mut search_info = SearchInfo::new();
-                    let mut search_params = SearchParams {
-                        depth: 20,
-                        search_time: 5000,
-                    };
 
                     let mut search_refs = SearchRefs {
                         pos: &mut pos.clone(),
