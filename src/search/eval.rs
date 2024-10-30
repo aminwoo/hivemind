@@ -1,6 +1,8 @@
-use shakmaty::{Color, Position};
+use shakmaty::{Bitboard, Chess, Color, Position};
 
 type Psqt = [i16; 64];
+
+const MOBILITY_BONUS: [i16; 7] = [0, 1, 5, 4, 7, 12, 2];
 
 #[rustfmt::skip]
 const KING_MG: Psqt = [
@@ -91,13 +93,33 @@ pub const FLIP: [usize; 64] = [
      0,  1,  2,  3,  4,  5,  6,  7,
 ];
 
-pub fn evaluate<T: Position>(pos: &T) -> i16 {
+pub fn calculate_mobility(pos: &Chess, occupied: Bitboard) -> i16 {
+    let mut mobility_score = 0;
+    for square in occupied {
+        let mobility_count = pos.board().attacks_from(square).count();
+        let piece = pos.board().piece_at(square);
+        if let Some(piece) = piece {
+            mobility_score += MOBILITY_BONUS[piece.role as usize] * mobility_count as i16;
+        }
+    }
+    mobility_score
+}
+
+pub fn calculate_king_safety(pos: &Chess, occupied: Bitboard) -> i16 {
+    0
+}
+
+pub fn evaluate(pos: &Chess) -> i16 {
     let mut score: i16;
     let mut w_psqt = 0;
     let mut b_psqt = 0;
 
     let bb_white = pos.board().white();
     let bb_black = pos.board().black();
+    let w_mobility = calculate_mobility(pos, bb_white);
+    let b_mobility = calculate_mobility(pos, bb_black);
+    let w_king = calculate_king_safety(pos, bb_white);
+    let b_king = calculate_king_safety(pos, bb_black);
 
     for square in bb_white {
         let piece_result = pos.board().piece_at(square);
@@ -112,34 +134,7 @@ pub fn evaluate<T: Position>(pos: &T) -> i16 {
         }
     }
 
-    score = w_psqt - b_psqt;
-
-    /*score += (pos.board().white() & pos.board().pawns()).count() as f32 * 1.0;
-    score += (pos.board().white() & pos.board().knights()).count() as f32 * 2.0;
-    score += (pos.board().white() & pos.board().bishops()).count() as f32 * 1.7;
-    score += (pos.board().white() & pos.board().rooks()).count() as f32 * 3.2;
-    score += (pos.board().white() & pos.board().queens()).count() as f32 * 4.6;
-
-    score -= (pos.board().black() & pos.board().pawns()).count() as f32 * 1.0;
-    score -= (pos.board().black() & pos.board().knights()).count() as f32 * 2.0;
-    score -= (pos.board().black() & pos.board().bishops()).count() as f32 * 1.7;
-    score -= (pos.board().black() & pos.board().rooks()).count() as f32 * 3.2;
-    score -= (pos.board().black() & pos.board().queens()).count() as f32 * 4.6;*/
-
-    /*let pockets_result = pos.pockets();
-    if let Some(pockets) = pockets_result {
-        score += *pockets.get(Color::White).get(Role::Queen) as f32 * 0.7;
-        score += *pockets.get(Color::White).get(Role::Rook) as f32 * 1.5;
-        score += *pockets.get(Color::White).get(Role::Bishop) as f32 * 1.4;
-        score += *pockets.get(Color::White).get(Role::Knight) as f32 * 2.4;
-        score += *pockets.get(Color::White).get(Role::Pawn) as f32 * 3.7;
-
-        score -= *pockets.get(Color::Black).get(Role::Queen) as f32 * 0.7;
-        score -= *pockets.get(Color::Black).get(Role::Rook) as f32 * 1.5;
-        score -= *pockets.get(Color::Black).get(Role::Bishop) as f32 * 1.4;
-        score -= *pockets.get(Color::Black).get(Role::Knight) as f32 * 2.4;
-        score -= *pockets.get(Color::Black).get(Role::Pawn) as f32 * 3.7;
-    }*/
+    score = w_psqt + w_mobility + w_king - b_psqt - b_mobility - b_king;
 
     if pos.turn() == Color::Black {
         score *= -1;
