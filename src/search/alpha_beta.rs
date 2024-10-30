@@ -78,8 +78,8 @@ impl Search {
 
         let mut bound = Bound::Upper;
         let mut fail_low = true;
-        let mut pvs = true;
-        for m in &legal_moves {
+        let mut found_pv = false;
+        for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
             let prev_pos = refs.pos.clone();
             refs.pos.play_unchecked(m);
             refs.incr_rep();
@@ -88,16 +88,38 @@ impl Search {
             refs.search_info.prev_move[ply + 1] = Some(m.clone());
 
             let mut score;
-            if pvs {
-                score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true);
-            } else {
+
+            if found_pv {
+                // In this case we've found a good move within our initial [alpha, beta] bounds
+                // so we don't care as much if the other moves can increase alpha
                 score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha, true);
                 if score > alpha && beta - alpha > 1 {
                     score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true)
                 }
-            };
-
-            pvs = false;
+            } else if moves_searched == 0 {
+                // We always search full depth on hypothesis best move
+                score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true);
+            } else {
+                // Late Move Reductions - trying to fail low
+                if moves_searched >= 4
+                    && ply >= 3
+                    && !m.is_capture()
+                    && !m.is_promotion()
+                    && !is_check
+                {
+                    score = -Search::alpha_beta(refs, depth - 2, -alpha - 1, -alpha, true);
+                } else {
+                    // When we don't do LMR we don't fail low
+                    score = alpha + 1;
+                }
+                if score > alpha {
+                    score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha, true);
+                    if score > alpha && beta - alpha > 1 {
+                        // We found a better move so re-search
+                        score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true)
+                    }
+                }
+            }
 
             refs.decr_rep();
             *refs.pos = prev_pos;
@@ -140,6 +162,7 @@ impl Search {
             }
 
             if score > alpha {
+                found_pv = true;
                 fail_low = false;
                 alpha = score;
                 bound = Bound::Exact;
