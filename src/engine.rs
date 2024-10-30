@@ -3,17 +3,22 @@ mod about;
 pub mod transposition;
 
 use crate::search::Search;
+use shakmaty::{
+    zobrist::{Zobrist64, ZobristHash},
+    EnPassantMode, Position,
+};
+use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
 use shakmaty::uci::UciMove;
-use shakmaty::Position;
 use shakmaty::{fen::Fen, CastlingMode, Chess};
 
 use transposition::{SearchData, TT};
 
 pub struct Engine {
     pos: Arc<Mutex<Chess>>,
+    repetitions: Arc<Mutex<HashMap<Zobrist64, u32>>>,
     search: Search,
     tt_search: Arc<Mutex<TT<SearchData>>>,
 }
@@ -24,14 +29,18 @@ impl Engine {
             Arc::new(Mutex::new(TT::<SearchData>::new(1024)));
         Engine {
             pos: Arc::new(Mutex::new(Chess::new())),
+            repetitions: Arc::new(Mutex::new(HashMap::new())),
             search: Search::new(),
             tt_search,
         }
     }
 
     pub fn run(&mut self) {
-        self.search
-            .init(Arc::clone(&self.pos), Arc::clone(&self.tt_search));
+        self.search.init(
+            Arc::clone(&self.pos),
+            Arc::clone(&self.tt_search),
+            Arc::clone(&self.repetitions),
+        );
         self.print_logo();
         self.print_about();
 
@@ -53,6 +62,9 @@ impl Engine {
             }
             if cmd == "isready" {
                 println!("readyok");
+            }
+            if cmd == "ucinewgame" {
+                self.tt_search.lock().unwrap().clear();
             }
 
             if cmd.starts_with("position") {
@@ -87,18 +99,28 @@ impl Engine {
                     fen_string =
                         String::from("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
                 }
-
                 let fen: Fen = fen_string.parse().unwrap();
                 let mut pos_guard = self.pos.lock().unwrap();
                 *pos_guard = fen.into_position(CastlingMode::Standard).unwrap();
+
+                let mut repetitions_guard = self.repetitions.lock().unwrap();
+
+                repetitions_guard.clear();
+                let count = repetitions_guard
+                    .entry(pos_guard.zobrist_hash(EnPassantMode::Legal))
+                    .or_insert(0);
+                *count += 1;
 
                 for mv in moves {
                     let uci: UciMove = mv.parse().unwrap();
                     let m = uci.to_move(&*pos_guard).unwrap();
                     pos_guard.play_unchecked(&m);
-                }
 
-                //self.tt_search.lock().unwrap().clear();
+                    let count = repetitions_guard
+                        .entry(pos_guard.zobrist_hash(EnPassantMode::Legal))
+                        .or_insert(0);
+                    *count += 1;
+                }
             }
 
             if cmd.starts_with("go") {
