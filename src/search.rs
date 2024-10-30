@@ -33,7 +33,7 @@ impl Search {
         &mut self,
         mtx_pos: Arc<Mutex<Chess>>,
         mtx_tt: Arc<Mutex<TT<SearchData>>>,
-        mtx_repetitions: Arc<Mutex<HashMap<Zobrist64, u32>>>,
+        mtx_repetitions: Arc<Mutex<Vec<Zobrist64>>>,
     ) {
         let (s, r) = unbounded::<String>();
         let h = thread::spawn(move || {
