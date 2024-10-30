@@ -2,11 +2,8 @@ use super::defs::SearchRefs;
 use super::{Move, Search};
 use shakmaty::{Bitboard, Color, MoveList, Position, Role};
 
-const TTMOVE_SORT_VALUE: i16 = 3000;
 const CAPTURE_BONUS: i16 = 10000;
-const KILLER_VALUE: i16 = 1000;
-const PROMOTION_VALUE: i16 = 20000;
-const COUNTER_MOVE: i16 = 4000;
+const PROMOTION_BONUS: i16 = 20000;
 
 pub const MVV_LVA: [[i16; 7]; 7] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim None, attacker None, P, N, B, R, Q, K
@@ -99,7 +96,7 @@ impl Search {
                 }
             }
             if m.is_promotion() {
-                PROMOTION_VALUE
+                PROMOTION_BONUS
             } else if m.is_capture() {
                 let piece = m.role() as usize;
                 let captured = match m.capture() {
@@ -142,57 +139,5 @@ impl Search {
             }
         });
         moves.reverse();
-    }
-    pub fn score_moves(
-        moves: &mut MoveList,
-        tt_move: &Option<Move>,
-        refs: &SearchRefs,
-    ) -> [i16; 128] {
-        let mut scores: [i16; 128] = [0; 128];
-        for (i, m) in moves.iter().enumerate() {
-            if let Some(mv) = &tt_move {
-                if mv == m {
-                    scores[i] = MVV_LVA_OFFSET + TTMOVE_SORT_VALUE;
-                    continue;
-                }
-            }
-            if m.is_promotion() {
-                scores[i] = MVV_LVA_OFFSET + PROMOTION_VALUE;
-            } else if m.is_capture() {
-                let piece = m.role() as usize;
-                let captured = match m.capture() {
-                    Some(role) => role as usize,
-                    None => 0,
-                };
-                scores[i] = MVV_LVA_OFFSET + see(refs, m) + MVV_LVA[captured][piece];
-            } else {
-                let ply = refs.search_info.ply as usize;
-                let mut is_killer = false;
-                if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
-                    if m == first_killer {
-                        scores[i] = MVV_LVA_OFFSET - KILLER_VALUE;
-                        is_killer = true;
-                    }
-                }
-                if let Some(second_killer) = &refs.search_info.killer_moves2[ply] {
-                    if m == second_killer {
-                        scores[i] = MVV_LVA_OFFSET - KILLER_VALUE;
-                        is_killer = true;
-                    }
-                }
-                if !is_killer {
-                    scores[i] = refs.search_info.quiet_history[m.role() as usize][m.to() as usize];
-                }
-            }
-        }
-        scores
-    }
-
-    pub fn pick_move(moves: &mut MoveList, start_index: usize, scores: [i16; 128]) {
-        for i in (start_index + 1)..moves.len() {
-            if scores[i] > scores[start_index] {
-                moves.swap(start_index, i);
-            }
-        }
     }
 }
