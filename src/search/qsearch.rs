@@ -4,6 +4,12 @@ use shakmaty::Position;
 
 impl Search {
     pub fn qsearch(refs: &mut SearchRefs, mut alpha: i16, beta: i16) -> i16 {
+        if (refs.search_info.nodes & 2047) == 0
+            && refs.search_info.elapsed() > refs.search_params.search_time
+        {
+            refs.search_info.terminated = true;
+            return 0;
+        }
         if refs.search_info.elapsed() > refs.search_params.search_time {
             refs.search_info.terminated = true;
             return 0;

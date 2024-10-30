@@ -14,7 +14,9 @@ impl Search {
         mut beta: i16,
         null_move: bool,
     ) -> i16 {
-        if refs.search_info.elapsed() > refs.search_params.search_time {
+        if (refs.search_info.nodes & 2047) == 0
+            && refs.search_info.elapsed() > refs.search_params.search_time
+        {
             refs.search_info.terminated = true;
             return 0;
         }
