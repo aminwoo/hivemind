@@ -104,6 +104,7 @@ impl Engine {
                 *pos_guard = fen.into_position(CastlingMode::Standard).unwrap();
 
                 let mut repetitions_guard = self.repetitions.lock().unwrap();
+                repetitions_guard.clear();
                 let hash = pos_guard.zobrist_hash(EnPassantMode::Legal);
                 repetitions_guard.push(hash);
 

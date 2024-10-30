@@ -4,20 +4,10 @@ use shakmaty::{
     EnPassantMode, Position,
 };
 use shakmaty::{Chess, Move, MoveList, Role, Square};
-use std::collections::HashMap;
 use std::time::Instant;
 
 const MAX_HISTORY: i16 = 2000;
 const MAX_CAPTURE: i16 = 1000;
-
-pub struct SearchResult {
-    pub depth: i8,
-    pub time: u128,
-    pub cp: i16,
-    pub nodes: usize,
-    pub nps: usize,
-    pub pv: MoveList,
-}
 
 pub struct SearchInfo {
     start_time: Option<Instant>,
@@ -96,7 +86,7 @@ pub struct SearchParams {
 
 pub struct SearchRefs<'a> {
     pub pos: &'a mut Chess,
-    pub repetitions: &'a mut HashMap<Zobrist64, u32>,
+    pub repetitions: &'a mut Vec<Zobrist64>,
     pub search_params: &'a mut SearchParams,
     pub search_info: &'a mut SearchInfo,
     pub tt: &'a mut TT<SearchData>,
@@ -105,27 +95,23 @@ pub struct SearchRefs<'a> {
 
 impl<'a> SearchRefs<'a> {
     pub fn three_fold(&self) -> bool {
-        if let Some(&count) = self
-            .repetitions
-            .get(&self.pos.zobrist_hash(EnPassantMode::Legal))
-        {
-            count >= 3
-        } else {
-            false
+        let mut cnt = 0;
+        let hash = self.pos.zobrist_hash(EnPassantMode::Legal);
+        for &h in self.repetitions.iter().rev() {
+            if h == hash {
+                cnt += 1;
+                if cnt > 2 {
+                    return true;
+                }
+            }
         }
+        false
     }
     pub fn incr_rep(&mut self) {
-        let count = self
-            .repetitions
-            .entry(self.pos.zobrist_hash(EnPassantMode::Legal))
-            .or_insert(0);
-        *count += 1;
+        let hash = self.pos.zobrist_hash(EnPassantMode::Legal);
+        self.repetitions.push(hash);
     }
     pub fn decr_rep(&mut self) {
-        let count = self
-            .repetitions
-            .entry(self.pos.zobrist_hash(EnPassantMode::Legal))
-            .or_insert(0);
-        *count -= 1;
+        self.repetitions.pop();
     }
 }
