@@ -18,7 +18,7 @@ use transposition::{SearchData, TT};
 
 pub struct Engine {
     pos: Arc<Mutex<Chess>>,
-    repetitions: Arc<Mutex<HashMap<Zobrist64, u32>>>,
+    repetitions: Arc<Mutex<Vec<Zobrist64>>>,
     search: Search,
     tt_search: Arc<Mutex<TT<SearchData>>>,
 }
@@ -29,7 +29,7 @@ impl Engine {
             Arc::new(Mutex::new(TT::<SearchData>::new(1024)));
         Engine {
             pos: Arc::new(Mutex::new(Chess::new())),
-            repetitions: Arc::new(Mutex::new(HashMap::new())),
+            repetitions: Arc::new(Mutex::new(Vec::new())),
             search: Search::new(),
             tt_search,
         }
@@ -104,22 +104,15 @@ impl Engine {
                 *pos_guard = fen.into_position(CastlingMode::Standard).unwrap();
 
                 let mut repetitions_guard = self.repetitions.lock().unwrap();
-
-                repetitions_guard.clear();
-                let count = repetitions_guard
-                    .entry(pos_guard.zobrist_hash(EnPassantMode::Legal))
-                    .or_insert(0);
-                *count += 1;
+                let hash = pos_guard.zobrist_hash(EnPassantMode::Legal);
+                repetitions_guard.push(hash);
 
                 for mv in moves {
                     let uci: UciMove = mv.parse().unwrap();
                     let m = uci.to_move(&*pos_guard).unwrap();
                     pos_guard.play_unchecked(&m);
-
-                    let count = repetitions_guard
-                        .entry(pos_guard.zobrist_hash(EnPassantMode::Legal))
-                        .or_insert(0);
-                    *count += 1;
+                    let hash = pos_guard.zobrist_hash(EnPassantMode::Legal);
+                    repetitions_guard.push(hash);
                 }
             }
 
