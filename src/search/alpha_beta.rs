@@ -1,4 +1,5 @@
 use crate::transposition::Bound;
+use crate::types::Score;
 
 use super::{defs::SearchRefs, eval::evaluate, Search};
 use shakmaty::Position;
@@ -151,13 +152,13 @@ impl Search {
                 }
                 refs.search_info.pv_length[ply] = refs.search_info.pv_length[ply + 1];
             } else if is_root && fail_low {
-                return -10000;
+                return -Score::INFINITY;
             }
         }
 
         if legal_moves.is_empty() {
             if is_check {
-                return -9690 + (refs.search_info.ply as i16);
+                return -Score::INFINITY + (refs.search_info.ply as i16);
             } else {
                 return 0;
             }
