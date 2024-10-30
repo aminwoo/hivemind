@@ -103,7 +103,7 @@ impl Search {
             refs.search_info.ply -= 1;
 
             if score >= beta {
-                refs.tt.write(hash.0, depth, alpha, Bound::Lower, ply);
+                refs.tt.write(hash.0, depth, score, Bound::Lower, ply);
 
                 if m.is_capture() {
                     refs.search_info.update_capture_history(
