@@ -39,7 +39,7 @@ impl Search {
         let h = thread::spawn(move || {
             let mut search_params = SearchParams {
                 depth: 20,
-                search_time: 5000,
+                search_time: 60000,
             };
             let mut quit = false;
             let mut halt = true;
