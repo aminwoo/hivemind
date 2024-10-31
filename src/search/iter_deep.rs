@@ -21,10 +21,9 @@ impl Search {
                 alpha = -Score::INFINITY;
                 beta = Score::INFINITY;
                 continue;
-            } else {
-                alpha = cp - aspiration_window;
-                beta = cp + aspiration_window;
             }
+            alpha = cp - aspiration_window;
+            beta = cp + aspiration_window;
             refs.search_info.cp = cp;
 
             let nodes = refs.search_info.nodes;
