@@ -23,9 +23,11 @@ impl Search {
         let is_root = ply == 0;
         let is_frontier = ply == 1;
         let pv_node = beta - alpha > 1;
+        if ply > 0 && refs.three_fold() {
+            return 0;
+        }
 
         let hash = refs.get_hash();
-
         let mut tt_move: Option<Move> = None;
         if !is_root {
             let hit = refs.tt.read(hash.0, ply);
@@ -43,9 +45,6 @@ impl Search {
         }
 
         refs.search_info.pv_length[ply] = ply;
-        if ply > 0 && refs.three_fold() {
-            return 0;
-        }
         let is_check = refs.pos.is_check();
         if is_check {
             depth += 1;
