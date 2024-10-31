@@ -88,11 +88,21 @@ pub fn see(refs: &SearchRefs, m: &Move) -> i16 {
 }
 
 impl Search {
-    pub fn sort_moves(moves: &mut MoveList, pv_move: &Option<Move>, refs: &SearchRefs) {
+    pub fn sort_moves(
+        moves: &mut MoveList,
+        pv_move: &Option<Move>,
+        tt_move: &Option<Move>,
+        refs: &SearchRefs,
+    ) {
         moves.sort_by_key(|m| {
             if let Some(mv) = &pv_move {
                 if mv == m {
                     return i16::MAX;
+                }
+            }
+            if let Some(mv) = &tt_move {
+                if mv == m {
+                    return i16::MAX - 1000;
                 }
             }
             if m.is_promotion() {

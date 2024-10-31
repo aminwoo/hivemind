@@ -25,7 +25,7 @@ impl Search {
         }
 
         let mut captures = refs.pos.capture_moves();
-        Search::sort_moves(&mut captures, &None, refs);
+        Search::sort_moves(&mut captures, &None, &None, refs);
 
         for m in &captures {
             let prev_pos = refs.pos.clone();
