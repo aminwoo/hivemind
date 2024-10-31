@@ -36,7 +36,7 @@ impl Search {
             };
 
             print!(
-                "info depth {} score cp {} nodes {} nps {} hashful {} time {} pv ",
+                "info depth {} score cp {} nodes {} nps {} hashfull {} time {} pv ",
                 depth,
                 cp,
                 nodes,
