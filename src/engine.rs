@@ -1,7 +1,5 @@
 mod about;
 
-pub mod transposition;
-
 use crate::search::Search;
 use crate::transposition::TranspositionTable;
 use shakmaty::{
@@ -14,8 +12,6 @@ use std::sync::{Arc, Mutex};
 
 use shakmaty::uci::UciMove;
 use shakmaty::{fen::Fen, CastlingMode, Chess};
-
-use transposition::{SearchData, TT};
 
 pub struct Engine {
     pos: Arc<Mutex<Chess>>,
@@ -119,6 +115,7 @@ impl Engine {
             }
 
             if cmd.starts_with("go") {
+                self.tt_search.lock().unwrap().clear(1);
                 if let Some(token) = cmd.split_whitespace().nth(1) {
                     if token == "movetime" {
                         self.search.send(cmd[3..].to_string());
