@@ -30,13 +30,14 @@ impl Search {
             let hit = refs.tt.read(hash.0, ply);
             if let Some(hit) = hit {
                 if hit.depth >= depth {
-                    match hit.bound {
-                        Bound::Exact => return hit.score,
-                        Bound::Lower => alpha = std::cmp::max(alpha, hit.score),
-                        Bound::Upper => beta = std::cmp::min(beta, hit.score),
-                    }
-                    if alpha >= beta {
+                    if hit.bound == Bound::Exact {
                         return hit.score;
+                    } else if hit.bound == Bound::Alpha {
+                        if hit.score <= alpha {
+                            return alpha;
+                        }
+                    } else if hit.score >= beta {
+                        return beta;
                     }
                 }
             }
@@ -78,7 +79,7 @@ impl Search {
             depth += 1;
         }
 
-        let mut bound = Bound::Upper;
+        let mut bound = Bound::Alpha;
         let mut fail_low = true;
         for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
             let prev_pos = refs.pos.clone();
@@ -122,7 +123,7 @@ impl Search {
             refs.search_info.ply -= 1;
 
             if score >= beta {
-                refs.tt.write(hash.0, depth, score, Bound::Lower, ply);
+                refs.tt.write(hash.0, depth, score, Bound::Beta, ply);
 
                 if m.is_capture() {
                     refs.search_info.update_capture_history(

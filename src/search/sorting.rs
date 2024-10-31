@@ -88,9 +88,9 @@ pub fn see(refs: &SearchRefs, m: &Move) -> i16 {
 }
 
 impl Search {
-    pub fn sort_moves(moves: &mut MoveList, tt_move: &Option<Move>, refs: &SearchRefs) {
+    pub fn sort_moves(moves: &mut MoveList, pv_move: &Option<Move>, refs: &SearchRefs) {
         moves.sort_by_key(|m| {
-            if let Some(mv) = &tt_move {
+            if let Some(mv) = &pv_move {
                 if mv == m {
                     return i16::MAX;
                 }
