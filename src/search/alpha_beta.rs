@@ -2,7 +2,7 @@ use crate::transposition::Bound;
 use crate::types::Score;
 
 use super::{defs::SearchRefs, eval::evaluate, Search};
-use shakmaty::Position;
+use shakmaty::{Move, Position};
 
 impl Search {
     pub fn alpha_beta(
@@ -26,19 +26,18 @@ impl Search {
 
         let hash = refs.get_hash();
 
+        let mut tt_move: Option<Move> = None;
         if !is_root {
             let hit = refs.tt.read(hash.0, ply);
             if let Some(hit) = hit {
                 if hit.depth >= depth {
-                    if hit.bound == Bound::Exact {
-                        return hit.score;
-                    } else if hit.bound == Bound::Alpha {
-                        if hit.score <= alpha {
-                            return alpha;
-                        }
-                    } else if hit.score >= beta {
-                        return beta;
+                    match hit.bound {
+                        Bound::Exact => return hit.score,
+                        Bound::Alpha if hit.score <= alpha => return alpha,
+                        Bound::Beta if hit.score >= beta => return beta,
+                        _ => (),
                     }
+                    tt_move = hit.m;
                 }
             }
         }
@@ -74,11 +73,17 @@ impl Search {
         }
 
         let mut legal_moves = refs.pos.legal_moves();
-        Search::sort_moves(&mut legal_moves, &refs.search_info.pv[ply][ply], refs);
+        Search::sort_moves(
+            &mut legal_moves,
+            &refs.search_info.pv[ply][ply],
+            &tt_move,
+            refs,
+        );
         if legal_moves.len() == 1 {
             depth += 1;
         }
 
+        let mut best_move: Option<Move> = None;
         let mut bound = Bound::Alpha;
         let mut fail_low = true;
         for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
@@ -123,7 +128,8 @@ impl Search {
             refs.search_info.ply -= 1;
 
             if score >= beta {
-                refs.tt.write(hash.0, depth, score, Bound::Beta, ply);
+                refs.tt
+                    .write(hash.0, depth, score, Bound::Beta, Some(m.clone()), ply);
 
                 if m.is_capture() {
                     refs.search_info.update_capture_history(
@@ -161,10 +167,11 @@ impl Search {
             if score > alpha {
                 fail_low = false;
                 alpha = score;
+                best_move = Some(m.clone());
                 bound = Bound::Exact;
 
                 refs.search_info.pv[ply].fill(None);
-                refs.search_info.pv[ply][ply] = Some(m.clone());
+                refs.search_info.pv[ply][ply] = best_move.clone();
                 for next_ply in ply + 1..refs.search_info.pv_length[ply + 1] {
                     refs.search_info.pv[ply][next_ply] =
                         refs.search_info.pv[ply + 1][next_ply].clone();
@@ -182,8 +189,8 @@ impl Search {
                 return 0;
             }
         }
+        refs.tt.write(hash.0, depth, alpha, bound, best_move, ply);
 
-        refs.tt.write(hash.0, depth, alpha, bound, ply);
         alpha
     }
 }

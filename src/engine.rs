@@ -6,7 +6,6 @@ use shakmaty::{
     zobrist::{Zobrist64, ZobristHash},
     EnPassantMode, Position,
 };
-use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
@@ -61,7 +60,7 @@ impl Engine {
                 println!("readyok");
             }
             if cmd == "ucinewgame" {
-                self.tt_search.lock().unwrap().clear(1);
+                self.tt_search.lock().unwrap().clear();
             }
 
             if cmd.starts_with("position") {
@@ -115,7 +114,6 @@ impl Engine {
             }
 
             if cmd.starts_with("go") {
-                self.tt_search.lock().unwrap().clear(1);
                 if let Some(token) = cmd.split_whitespace().nth(1) {
                     if token == "movetime" {
                         self.search.send(cmd[3..].to_string());
