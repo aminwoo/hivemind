@@ -30,7 +30,6 @@ impl Search {
             let hit = refs.tt.read(hash.0, ply);
             if let Some(hit) = hit {
                 if hit.depth >= depth {
-                    refs.search_info.tt_hits += 1;
                     match hit.bound {
                         Bound::Exact => return hit.score,
                         Bound::Lower => alpha = std::cmp::max(alpha, hit.score),
@@ -56,13 +55,13 @@ impl Search {
         }
         refs.search_info.nodes += 1;
 
-        if !is_check && !pv_node {
+        if !is_check && !pv_node && ply > 0 {
             let static_eval = evaluate(refs.pos);
             if null_move && depth >= 3 && static_eval >= beta {
                 if let Ok(new_pos) = refs.pos.clone().swap_turn() {
                     *refs.pos = new_pos;
                 }
-                let score = -Search::alpha_beta(refs, depth - 1 - 2, -beta, -beta + 1, false);
+                let score = -Search::alpha_beta(refs, depth - 3, -beta, -beta + 1, false);
                 if let Ok(new_pos) = refs.pos.clone().swap_turn() {
                     *refs.pos = new_pos;
                 }
@@ -75,10 +74,12 @@ impl Search {
 
         let mut legal_moves = refs.pos.legal_moves();
         Search::sort_moves(&mut legal_moves, &refs.search_info.pv[ply][ply], refs);
+        if legal_moves.len() == 1 {
+            depth += 1;
+        }
 
         let mut bound = Bound::Upper;
         let mut fail_low = true;
-        let mut found_pv = false;
         for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
             let prev_pos = refs.pos.clone();
             refs.pos.play_unchecked(m);
@@ -89,14 +90,7 @@ impl Search {
 
             let mut score;
 
-            if found_pv {
-                // In this case we've found a good move within our initial [alpha, beta] bounds
-                // so we don't care as much if the other moves can increase alpha
-                score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha, true);
-                if score > alpha && beta - alpha > 1 {
-                    score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true)
-                }
-            } else if moves_searched == 0 {
+            if moves_searched == 0 {
                 // We always search full depth on hypothesis best move
                 score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true);
             } else {
@@ -106,6 +100,8 @@ impl Search {
                     && !m.is_capture()
                     && !m.is_promotion()
                     && !is_check
+                    && Some(m) != refs.search_info.killer_moves1[ply].as_ref()
+                    && Some(m) != refs.search_info.killer_moves2[ply].as_ref()
                 {
                     score = -Search::alpha_beta(refs, depth - 2, -alpha - 1, -alpha, true);
                 } else {
@@ -114,7 +110,7 @@ impl Search {
                 }
                 if score > alpha {
                     score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha, true);
-                    if score > alpha && beta - alpha > 1 {
+                    if score > alpha && score < beta {
                         // We found a better move so re-search
                         score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true)
                     }
@@ -162,7 +158,6 @@ impl Search {
             }
 
             if score > alpha {
-                found_pv = true;
                 fail_low = false;
                 alpha = score;
                 bound = Bound::Exact;
