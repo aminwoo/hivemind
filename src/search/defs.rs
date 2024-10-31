@@ -100,7 +100,7 @@ impl<'a> SearchRefs<'a> {
         for &h in self.repetitions.iter().rev() {
             if h == hash {
                 cnt += 1;
-                if cnt > 2 {
+                if cnt > 1 {
                     return true;
                 }
             }
