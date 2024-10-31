@@ -1,3 +1,4 @@
+use shakmaty::Move;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::Score;
@@ -18,8 +19,8 @@ pub struct Entry {
 #[derive(Copy, Clone, PartialEq)]
 pub enum Bound {
     Exact,
-    Lower,
-    Upper,
+    Alpha,
+    Beta,
 }
 
 /// Internal representation of a transposition table entry (8 bytes).
