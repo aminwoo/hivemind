@@ -1,7 +1,7 @@
 use crate::types::Score;
 
 use shakmaty::Move;
-pub const DEFAULT_TT_SIZE: usize = 16;
+pub const DEFAULT_TT_SIZE: usize = 1024;
 
 const MEGABYTE: usize = 1024 * 1024;
 const INTERNAL_ENTRY_SIZE: usize = std::mem::size_of::<InternalEntry>();
