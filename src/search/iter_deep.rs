@@ -36,8 +36,13 @@ impl Search {
             };
 
             print!(
-                "info depth {} score cp {} nodes {} nps {} tbhits {} time {} pv ",
-                depth, cp, nodes, nps, refs.search_info.tt_hits, elapsed
+                "info depth {} score cp {} nodes {} nps {} hashful {} time {} pv ",
+                depth,
+                cp,
+                nodes,
+                nps,
+                refs.tt.hashfull(),
+                elapsed
             );
             for m in refs.search_info.pv[0].iter().flatten() {
                 let uci = m.to_uci(refs.pos.castles().mode());
