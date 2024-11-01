@@ -1,8 +1,8 @@
 use shakmaty::{Bitboard, Chess, Color, Position};
 
-type Psqt = [i16; 64];
+type Psqt = [i32; 64];
 
-const MOBILITY_BONUS: [[i16; 28]; 7] = [
+const MOBILITY_BONUS: [[i32; 28]; 7] = [
     [0; 28],
     [0; 28],
     [
@@ -23,7 +23,7 @@ const MOBILITY_BONUS: [[i16; 28]; 7] = [
     ], // Queens
     [0; 28],
 ];
-const PIECE_VALUES: [i16; 7] = [0, 100, 320, 330, 500, 900, 20000];
+const PIECE_VALUES: [i32; 7] = [0, 100, 320, 330, 500, 900, 20000];
 
 #[rustfmt::skip]
 const KING_MG: Psqt = [
@@ -114,7 +114,7 @@ pub const FLIP: [usize; 64] = [
      0,  1,  2,  3,  4,  5,  6,  7,
 ];
 
-pub fn calculate_mobility(pos: &Chess, occupied: Bitboard) -> i16 {
+pub fn calculate_mobility(pos: &Chess, occupied: Bitboard) -> i32 {
     let mut mobility_score = 0;
     for square in occupied {
         let mobility_count = pos.board().attacks_from(square).count();
@@ -127,12 +127,12 @@ pub fn calculate_mobility(pos: &Chess, occupied: Bitboard) -> i16 {
     mobility_score
 }
 
-pub fn calculate_king_safety(pos: &Chess, occupied: Bitboard) -> i16 {
+pub fn calculate_king_safety(pos: &Chess, occupied: Bitboard) -> i32 {
     0
 }
 
-pub fn evaluate(pos: &Chess) -> i16 {
-    let mut score: i16;
+pub fn evaluate(pos: &Chess) -> i32 {
+    let mut score: i32;
     let mut w_psqt = 0;
     let mut b_psqt = 0;
 

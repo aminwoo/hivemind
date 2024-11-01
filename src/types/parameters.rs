@@ -1,5 +1,5 @@
 pub const LMR_MOVES_PLAYED: usize = 3;
-pub const LMR_DEPTH: i16 = 3;
+pub const LMR_DEPTH: i32 = 3;
 
 pub const LMP_DEPTH: i32 = 4;
 pub const LMP_MARGIN: i32 = 3;
@@ -64,13 +64,13 @@ define!(
     i32 rfp_depth: 7, 1, 15;
     i32 rfp_margin: 75, 0, 150;
 
-    i16 razoring_depth: 4, 1, 10;
-    i16 razoring_margin: 220, 0, 440;
-    i16 razoring_fixed_margin: 135, 0, 270;
+    i32 razoring_depth: 4, 1, 10;
+    i32 razoring_margin: 220, 0, 440;
+    i32 razoring_fixed_margin: 135, 0, 270;
 
-    i16 fp_depth: 5, 1, 10;
-    i16 fp_margin: 130, 0, 260;
-    i16 fp_fixed_margin: 45, 0, 90;
+    i32 fp_depth: 5, 1, 10;
+    i32 fp_margin: 130, 0, 260;
+    i32 fp_fixed_margin: 45, 0, 90;
 
     i32 search_deeper_margin: 80, 0, 160;
 
@@ -78,7 +78,7 @@ define!(
     i32 see_noisy_margin: 100, 50, 150;
     i32 see_quiet_margin: 70, 50, 150;
 
-    i16 iir_depth: 4, 1, 10;
+    i32 iir_depth: 4, 1, 10;
 
     i32 aspiration_depth: 6, 1, 12;
     i32 aspiration_delta: 30, 15, 45;

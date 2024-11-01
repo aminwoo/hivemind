@@ -4,7 +4,7 @@ use crate::search::eval;
 use shakmaty::Position;
 
 impl Search {
-    pub fn qsearch(refs: &mut SearchRefs, mut alpha: i16, beta: i16) -> i16 {
+    pub fn qsearch(refs: &mut SearchRefs, mut alpha: i32, beta: i32) -> i32 {
         if (refs.search_info.nodes & 2047) == 0
             && refs.search_info.elapsed() > refs.search_params.search_time
         {

@@ -1,14 +1,14 @@
 pub struct Score;
 
 impl Score {
-    pub const DRAW: i16 = 0;
+    pub const DRAW: i32 = 0;
 
-    pub const INFINITY: i16 = 32000;
+    pub const INFINITY: i32 = 32000;
 
-    pub const MATE: i16 = Self::INFINITY - 1000;
-    pub const MATE_BOUND: i16 = Self::MATE - 500;
+    pub const MATE: i32 = Self::INFINITY - 1000;
+    pub const MATE_BOUND: i32 = Self::MATE - 500;
 
-    pub const fn mated_in(ply: usize) -> i16 {
-        -Self::MATE + ply as i16
+    pub const fn mated_in(ply: usize) -> i32 {
+        -Self::MATE + ply as i32
     }
 }

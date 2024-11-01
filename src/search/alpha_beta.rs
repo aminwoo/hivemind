@@ -8,11 +8,11 @@ use shakmaty::{Move, Position};
 impl Search {
     pub fn alpha_beta(
         refs: &mut SearchRefs,
-        mut depth: i16,
-        mut alpha: i16,
-        mut beta: i16,
+        mut depth: i32,
+        mut alpha: i32,
+        mut beta: i32,
         null_move: bool,
-    ) -> i16 {
+    ) -> i32 {
         if (refs.search_info.nodes & 2047) == 0
             && refs.search_info.elapsed() > refs.search_params.search_time
         {
@@ -31,12 +31,12 @@ impl Search {
         if !is_root {
             // Draw Detection
             if refs.three_fold() {
-                return 0;
+                return Score::DRAW;
             }
 
             // Mate Distance Pruning
-            alpha = alpha.max(-Score::MATE + ply as i16);
-            beta = beta.min(Score::MATE - (ply as i16) - 1);
+            alpha = alpha.max(-Score::MATE + ply as i32);
+            beta = beta.min(Score::MATE - (ply as i32) - 1);
             if alpha >= beta {
                 return alpha;
             }
@@ -225,7 +225,7 @@ impl Search {
 
         if legal_moves.is_empty() {
             if is_check {
-                return -Score::INFINITY + (refs.search_info.ply as i16);
+                return -Score::INFINITY + (refs.search_info.ply as i32);
             } else {
                 return 0;
             }

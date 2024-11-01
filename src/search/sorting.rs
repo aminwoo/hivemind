@@ -2,11 +2,11 @@ use super::defs::SearchRefs;
 use super::{Move, Search};
 use shakmaty::{Bitboard, MoveList, Position};
 
-const CAPTURE_BONUS: i16 = 10000;
-const PROMOTION_BONUS: i16 = 20000;
-const BAD_CAPTURE_PENALTY: i16 = -10000;
+const CAPTURE_BONUS: i32 = 10000;
+const PROMOTION_BONUS: i32 = 20000;
+const BAD_CAPTURE_PENALTY: i32 = -10000;
 
-pub const MVV_LVA: [[i16; 7]; 7] = [
+pub const MVV_LVA: [[i32; 7]; 7] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim None, attacker None, P, N, B, R, Q, K
     [0, 6, 5, 4, 3, 2, 1],       // victim P, attacker None, P, N, B, R, Q, K
     [0, 12, 11, 10, 9, 8, 7],    // victim N, attacker None, P, N, B, R, Q, K
@@ -16,13 +16,13 @@ pub const MVV_LVA: [[i16; 7]; 7] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim K, attacker None, P, N, B, R, Q, K
 ];
 
-pub const SEE_VALUE: [i16; 7] = [0, 100, 325, 325, 500, 1000, 30000];
+pub const SEE_VALUE: [i32; 7] = [0, 100, 325, 325, 500, 1000, 30000];
 
-pub fn see(refs: &SearchRefs, m: &Move) -> i16 {
+pub fn see(refs: &SearchRefs, m: &Move) -> i32 {
     let pos = &refs.pos;
     let board = pos.board();
 
-    let mut gain: [i16; 32] = [0; 32];
+    let mut gain: [i32; 32] = [0; 32];
     let mut depth = 0;
 
     let mut from_set = Bitboard::from(m.from().unwrap());
@@ -98,12 +98,12 @@ impl Search {
         moves.sort_by_key(|m| {
             if let Some(mv) = &pv_move {
                 if mv == m {
-                    return i16::MAX;
+                    return i32::MAX;
                 }
             }
             if let Some(mv) = &tt_move {
                 if mv == m {
-                    return i16::MAX - 1000;
+                    return i32::MAX - 1000;
                 }
             }
             if m.is_promotion() {

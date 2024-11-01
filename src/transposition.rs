@@ -9,13 +9,13 @@ const INTERNAL_ENTRY_SIZE: usize = std::mem::size_of::<InternalEntry>();
 #[derive(Clone)]
 pub struct Entry {
     pub m: Option<Move>,
-    pub score: i16,
-    pub depth: i16,
+    pub score: i32,
+    pub depth: i32,
     pub bound: Bound,
 }
 
 impl Entry {
-    pub const fn valid_cutoff(&self, alpha: i16, beta: i16, depth: i16) -> bool {
+    const fn valid_cutoff(&self, alpha: i32, beta: i32, depth: i32) -> bool {
         match self.bound {
             _ if depth > self.depth => false,
             Bound::Exact => true,
@@ -40,8 +40,8 @@ pub enum Bound {
 struct InternalEntry {
     key: u16,
     m: Option<Move>,
-    score: i16,
-    depth: i16,
+    score: i32,
+    depth: i32,
     bound: Bound,
     valid: bool,
 }
@@ -107,7 +107,7 @@ impl TranspositionTable {
         };
         // Adjust mate distance from "plies from the current position" to "plies from the root"
         if hit.score.abs() > Score::MATE_BOUND {
-            hit.score -= hit.score.signum() * ply as i16;
+            hit.score -= hit.score.signum() * ply as i32;
         }
         Some(hit)
     }
@@ -115,15 +115,15 @@ impl TranspositionTable {
     pub fn write(
         &mut self,
         hash: u64,
-        depth: i16,
-        mut score: i16,
+        depth: i32,
+        mut score: i32,
         bound: Bound,
         mut m: Option<Move>,
         ply: usize,
     ) {
         // Adjust mate distance from "plies from the root" to "plies from the current position"
         if score.abs() > Score::MATE_BOUND {
-            score += score.signum() * ply as i16;
+            score += score.signum() * ply as i32;
         }
 
         let key = verification_key(hash);

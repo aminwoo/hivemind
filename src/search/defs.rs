@@ -1,24 +1,24 @@
 use crate::transposition::TranspositionTable;
 use shakmaty::{
     zobrist::{Zobrist64, ZobristHash},
-    EnPassantMode, Position,
+    EnPassantMode,
 };
-use shakmaty::{Chess, Move, MoveList, Role, Square};
+use shakmaty::{Chess, Move, Role, Square};
 use std::time::Instant;
 
-const MAX_HISTORY: i16 = 2000;
-const MAX_CAPTURE: i16 = 3000;
+const MAX_HISTORY: i32 = 2000;
+const MAX_CAPTURE: i32 = 3000;
 
 pub struct SearchInfo {
     start_time: Option<Instant>,
     pub nodes: usize,
-    pub cp: i16,
+    pub cp: i32,
     pub ply: i8,
     pub tt_hits: usize,
     pub killer_moves1: Vec<Option<Move>>,
     pub killer_moves2: Vec<Option<Move>>,
-    pub capture_history: [[[i16; 7]; 64]; 7],
-    pub quiet_history: [[i16; 64]; 7],
+    pub capture_history: [[[i32; 7]; 64]; 7],
+    pub quiet_history: [[i32; 64]; 7],
     pub counter_moves: Vec<Vec<Option<Move>>>,
     pub prev_move: Vec<Option<Move>>,
     pub terminated: bool,
@@ -57,7 +57,7 @@ impl SearchInfo {
         }
     }
 
-    pub fn update_capture_history(&mut self, role: Role, to: Square, captured: Role, value: i16) {
+    pub fn update_capture_history(&mut self, role: Role, to: Square, captured: Role, value: i32) {
         let clamped_value = value.clamp(-MAX_CAPTURE, MAX_CAPTURE);
         self.capture_history[role as usize][to as usize][captured as usize] += clamped_value
             - self.capture_history[role as usize][to as usize][captured as usize]
@@ -65,22 +65,22 @@ impl SearchInfo {
                 / MAX_CAPTURE;
     }
 
-    pub fn get_capture_score(&self, m: &Move) -> i16 {
+    pub fn get_capture_score(&self, m: &Move) -> i32 {
         self.capture_history[m.role() as usize][m.to() as usize][m.capture().unwrap() as usize]
     }
-    pub fn update_quiet_history(&mut self, role: Role, to: Square, value: i16) {
+    pub fn update_quiet_history(&mut self, role: Role, to: Square, value: i32) {
         let clamped_value = value.clamp(-MAX_HISTORY, MAX_HISTORY);
         self.quiet_history[role as usize][to as usize] += clamped_value
             - self.quiet_history[role as usize][to as usize] * clamped_value.abs() / MAX_HISTORY;
     }
 
-    pub fn get_quiet_score(&self, m: &Move) -> i16 {
+    pub fn get_quiet_score(&self, m: &Move) -> i32 {
         self.quiet_history[m.role() as usize][m.to() as usize]
     }
 }
 
 pub struct SearchParams {
-    pub depth: i16,
+    pub depth: i32,
     pub search_time: u128,
 }
 
