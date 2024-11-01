@@ -10,8 +10,20 @@ const INTERNAL_ENTRY_SIZE: usize = std::mem::size_of::<InternalEntry>();
 pub struct Entry {
     pub m: Option<Move>,
     pub score: i16,
-    pub depth: i8,
+    pub depth: i16,
     pub bound: Bound,
+}
+
+impl Entry {
+    pub const fn valid_cutoff(&self, alpha: i16, beta: i16, depth: i16) -> bool {
+        match self.bound {
+            _ if depth > self.depth => false,
+            Bound::Exact => true,
+            Bound::Beta => self.score >= beta,
+            Bound::Alpha => self.score <= alpha,
+            Bound::Nothing => false,
+        }
+    }
 }
 
 /// Type of the score returned by the search.
@@ -26,11 +38,11 @@ pub enum Bound {
 /// Internal representation of a transposition table entry (8 bytes).
 #[derive(Clone)]
 struct InternalEntry {
-    key: u16, // 2 bytes
+    key: u16,
     m: Option<Move>,
-    score: i16,   // 2 bytes
-    depth: i8,    // 1 byte
-    bound: Bound, // 1 byte
+    score: i16,
+    depth: i16,
+    bound: Bound,
     valid: bool,
 }
 
@@ -103,7 +115,7 @@ impl TranspositionTable {
     pub fn write(
         &mut self,
         hash: u64,
-        depth: i8,
+        depth: i16,
         mut score: i16,
         bound: Bound,
         mut m: Option<Move>,
