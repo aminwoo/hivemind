@@ -1,4 +1,5 @@
-use crate::transposition::Bound;
+use crate::transposition::{Bound, Entry};
+use crate::types::parameters::*;
 use crate::types::Score;
 
 use super::{defs::SearchRefs, eval::evaluate, Search};
@@ -7,7 +8,7 @@ use shakmaty::{Move, Position};
 impl Search {
     pub fn alpha_beta(
         refs: &mut SearchRefs,
-        mut depth: i8,
+        mut depth: i16,
         mut alpha: i16,
         mut beta: i16,
         null_move: bool,
@@ -21,27 +22,48 @@ impl Search {
 
         let ply = refs.search_info.ply as usize;
         let is_root = ply == 0;
-        let is_frontier = ply == 1;
         let pv_node = beta - alpha > 1;
-        if ply > 0 && refs.three_fold() {
-            return 0;
+
+        let mut best_move: Option<Move> = None;
+        let mut bound = Bound::Alpha;
+        let mut fail_low = true;
+
+        if !is_root {
+            // Draw Detection
+            if refs.three_fold() {
+                return 0;
+            }
+
+            // Mate Distance Pruning
+            alpha = alpha.max(-Score::MATE + ply as i16);
+            beta = beta.min(Score::MATE - (ply as i16) - 1);
+            if alpha >= beta {
+                return alpha;
+            }
+        }
+
+        if depth <= 0 {
+            return Search::qsearch(refs, alpha, beta);
         }
 
         let hash = refs.get_hash();
         let mut tt_move: Option<Move> = None;
-        if !is_root {
-            let hit = refs.tt.read(hash.0, ply);
-            if let Some(hit) = hit {
-                if hit.depth >= depth {
-                    match hit.bound {
-                        Bound::Exact => return hit.score,
-                        Bound::Alpha if hit.score <= alpha => return alpha,
-                        Bound::Beta if hit.score >= beta => return beta,
-                        _ => (),
-                    }
-                    tt_move = hit.m;
+        let hit = refs.tt.read(hash.0, ply);
+        if let Some(hit) = hit {
+            /*    if !pv_node && hit.depth >= depth {
+                match hit.bound {
+                    Bound::Exact => return hit.score,
+                    Bound::Alpha if hit.score <= alpha => return alpha,
+                    Bound::Beta if hit.score >= beta => return beta,
+                    _ => (),
                 }
-            }
+            }*/
+            tt_move = hit.m;
+        }
+
+        // Internal Iterative Reductions
+        if !is_root && tt_move.is_none() && depth >= iir_depth() {
+            depth -= 1;
         }
 
         refs.search_info.pv_length[ply] = ply;
@@ -49,43 +71,61 @@ impl Search {
         if is_check {
             depth += 1;
         }
-        if depth <= 0 {
-            return Search::qsearch(refs, alpha, beta);
-        }
         refs.search_info.nodes += 1;
 
-        if !is_check && !pv_node && ply > 0 {
-            let static_eval = evaluate(refs.pos);
-            if null_move && depth >= 3 && static_eval >= beta {
-                if let Ok(new_pos) = refs.pos.clone().swap_turn() {
-                    *refs.pos = new_pos;
+        let eval = evaluate(refs.pos);
+        if !is_check && !pv_node && !is_root {
+            // Reverse Futility Pruning
+            //if depth < 6 && eval - 100 * depth >= beta {
+            //return eval - 100 * depth;
+            //}
+            // Razoring
+            /*if depth <= razoring_depth()
+                && eval + razoring_margin() * depth + razoring_fixed_margin() <= alpha
+            {
+                let score = Search::qsearch(refs, alpha, beta);
+                if score <= alpha {
+                    return score;
                 }
-                let score = -Search::alpha_beta(refs, depth - 3, -beta, -beta + 1, false);
+            }*/
+            // Null Move Pruning
+            if null_move && depth >= 3 && eval >= beta {
                 if let Ok(new_pos) = refs.pos.clone().swap_turn() {
+                    let prev_pos = refs.pos.clone();
                     *refs.pos = new_pos;
-                }
-
-                if score >= beta {
-                    return beta;
+                    let score = -Search::alpha_beta(refs, depth - 3, -beta, -beta + 1, false);
+                    *refs.pos = prev_pos;
+                    if score >= beta {
+                        return beta;
+                    }
                 }
             }
         }
 
         let mut legal_moves = refs.pos.legal_moves();
+        if legal_moves.len() == 1 {
+            depth += 1;
+        }
+
         Search::sort_moves(
             &mut legal_moves,
             &refs.search_info.pv[ply][ply],
             &tt_move,
             refs,
         );
-        if legal_moves.len() == 1 {
-            depth += 1;
-        }
 
-        let mut best_move: Option<Move> = None;
-        let mut bound = Bound::Alpha;
-        let mut fail_low = true;
         for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
+            /*if !is_root && moves_searched > 0 && alpha > -Score::MATE_BOUND {
+                // Futility Pruning
+                if !pv_node
+                    && !is_check
+                    && !m.is_capture()
+                    && depth <= fp_depth()
+                    && eval + fp_margin() * depth + fp_fixed_margin() < alpha
+                {
+                    break;
+                }
+            }*/
             let prev_pos = refs.pos.clone();
             refs.pos.play_unchecked(m);
             refs.incr_rep();
@@ -99,8 +139,9 @@ impl Search {
                 // We always search full depth on hypothesis best move
                 score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true);
             } else {
-                // Late Move Reductions - trying to fail low
-                if moves_searched >= 4
+                // Late Move Reductions - try to fail low
+                if moves_searched >= LMR_MOVES_PLAYED
+                    && depth >= LMR_DEPTH
                     && ply >= 3
                     && !m.is_capture()
                     && !m.is_promotion()
@@ -150,7 +191,7 @@ impl Search {
                     refs.search_info.update_quiet_history(
                         m.role(),
                         m.to(),
-                        (depth * depth + depth - 1).into(),
+                        depth * depth + depth - 1,
                     );
                     if let Some(prev_m) = &refs.search_info.prev_move[ply] {
                         refs.search_info.counter_moves[prev_m.from().unwrap() as usize]
@@ -164,11 +205,12 @@ impl Search {
             }
 
             if score > alpha {
-                fail_low = false;
                 alpha = score;
                 best_move = Some(m.clone());
+                fail_low = false;
                 bound = Bound::Exact;
 
+                // Update PV Table
                 refs.search_info.pv[ply].fill(None);
                 refs.search_info.pv[ply][ply] = best_move.clone();
                 for next_ply in ply + 1..refs.search_info.pv_length[ply + 1] {
@@ -189,7 +231,6 @@ impl Search {
             }
         }
         refs.tt.write(hash.0, depth, alpha, bound, best_move, ply);
-
         alpha
     }
 }
