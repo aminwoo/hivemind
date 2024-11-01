@@ -7,7 +7,7 @@ use shakmaty::{Chess, Move, MoveList, Role, Square};
 use std::time::Instant;
 
 const MAX_HISTORY: i16 = 2000;
-const MAX_CAPTURE: i16 = 1000;
+const MAX_CAPTURE: i16 = 3000;
 
 pub struct SearchInfo {
     start_time: Option<Instant>,
@@ -80,7 +80,7 @@ impl SearchInfo {
 }
 
 pub struct SearchParams {
-    pub depth: i8,
+    pub depth: i16,
     pub search_time: u128,
 }
 
