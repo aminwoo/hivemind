@@ -2,9 +2,10 @@ use super::defs::SearchRefs;
 use super::{Move, Search};
 use shakmaty::{Bitboard, MoveList, Position};
 
-const CAPTURE_BONUS: i32 = 10000;
-const PROMOTION_BONUS: i32 = 20000;
-const BAD_CAPTURE_PENALTY: i32 = -10000;
+const BAD_CAPTURE: i32 = -200_000_000;
+const GOOD_CAPTURE: i32 = 200_000_000;
+const KILLER_BONUS: i32 = 100_000_000;
+const HASH_MOVE: i32 = 300_000_000;
 
 pub const MVV_LVA: [[i32; 7]; 7] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim None, attacker None, P, N, B, R, Q, K
@@ -103,47 +104,45 @@ impl Search {
             }
             if let Some(mv) = &tt_move {
                 if mv == m {
-                    return i32::MAX - 1000;
+                    return HASH_MOVE;
                 }
             }
-            if m.is_promotion() {
-                PROMOTION_BONUS
-            } else if m.is_capture() {
+
+            if m.is_capture() {
                 let piece = m.role() as usize;
                 let captured = match m.capture() {
                     Some(role) => role as usize,
                     None => 0,
                 };
                 let see_value = see(refs, m);
-                let capture_score = refs.search_info.get_capture_score(m);
+                let history = refs.search_info.get_capture_score(m);
                 let mvv = MVV_LVA[captured][piece];
                 if see_value < 0 {
-                    return BAD_CAPTURE_PENALTY + see_value + capture_score + mvv;
+                    return BAD_CAPTURE + see_value + history + mvv;
                 }
-                return CAPTURE_BONUS + see_value + capture_score + mvv;
-            } else {
-                let ply = refs.search_info.ply as usize;
-                if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
-                    if m == first_killer {
-                        return 6000;
-                    }
-                }
-                if let Some(second_killer) = &refs.search_info.killer_moves2[ply] {
-                    if m == second_killer {
-                        return 5000;
-                    }
-                }
-                if let Some(prev_m) = &refs.search_info.prev_move[ply] {
-                    if let Some(counter) = &refs.search_info.counter_moves
-                        [prev_m.from().unwrap() as usize][prev_m.to() as usize]
-                    {
-                        if m == counter {
-                            return 4000;
-                        }
-                    }
-                }
-                refs.search_info.get_quiet_score(m)
+                return GOOD_CAPTURE + see_value + history + mvv;
             }
+            let ply = refs.search_info.ply as usize;
+            if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
+                if m == first_killer {
+                    return KILLER_BONUS;
+                }
+            }
+            if let Some(second_killer) = &refs.search_info.killer_moves2[ply] {
+                if m == second_killer {
+                    return KILLER_BONUS - 1;
+                }
+            }
+            if let Some(prev_m) = &refs.search_info.prev_move[ply] {
+                if let Some(counter) = &refs.search_info.counter_moves
+                    [prev_m.from().unwrap() as usize][prev_m.to() as usize]
+                {
+                    if m == counter {
+                        return 4000;
+                    }
+                }
+            }
+            refs.search_info.get_quiet_score(m)
         });
         moves.reverse();
     }

@@ -1,6 +1,6 @@
 mod alpha_beta;
 mod defs;
-use shakmaty::zobrist::{Zobrist64, ZobristHash};
+use shakmaty::zobrist::Zobrist64;
 mod eval;
 mod iter_deep;
 mod qsearch;
@@ -14,7 +14,6 @@ use crossbeam_channel::Sender;
 
 use defs::{SearchInfo, SearchParams, SearchRefs};
 use shakmaty::{Chess, Move, Position};
-use std::collections::HashMap;
 
 pub struct Search {
     handle: Option<JoinHandle<()>>,
