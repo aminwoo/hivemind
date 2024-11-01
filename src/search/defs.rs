@@ -1,3 +1,4 @@
+use super::history::History;
 use crate::transposition::TranspositionTable;
 use shakmaty::{
     zobrist::{Zobrist64, ZobristHash},
@@ -14,9 +15,9 @@ pub struct SearchInfo {
     pub nodes: usize,
     pub cp: i32,
     pub ply: i8,
-    pub tt_hits: usize,
     pub killer_moves1: Vec<Option<Move>>,
     pub killer_moves2: Vec<Option<Move>>,
+    pub killers: Vec<Option<Move>>,
     pub capture_history: [[[i32; 7]; 64]; 7],
     pub quiet_history: [[i32; 64]; 7],
     pub counter_moves: Vec<Vec<Option<Move>>>,
@@ -24,6 +25,7 @@ pub struct SearchInfo {
     pub terminated: bool,
     pub pv: Vec<Vec<Option<Move>>>,
     pub pv_length: [usize; 128],
+    pub history: History,
 }
 
 impl SearchInfo {
@@ -33,9 +35,9 @@ impl SearchInfo {
             nodes: 0,
             cp: 0,
             ply: 0,
-            tt_hits: 0,
             killer_moves1: vec![None; 128],
             killer_moves2: vec![None; 128],
+            killers: vec![None; 128],
             capture_history: [[[0; 7]; 64]; 7],
             quiet_history: [[0; 64]; 7],
             counter_moves: vec![vec![None; 64]; 64],
@@ -43,6 +45,7 @@ impl SearchInfo {
             terminated: false,
             pv: vec![vec![None; 128]; 128],
             pv_length: [0; 128],
+            history: History::default(),
         }
     }
 

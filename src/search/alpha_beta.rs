@@ -3,7 +3,7 @@ use crate::types::parameters::*;
 use crate::types::Score;
 
 use super::{defs::SearchRefs, eval::evaluate, Search};
-use shakmaty::{Move, Position};
+use shakmaty::{Move, MoveList, Position};
 
 impl Search {
     pub fn alpha_beta(
@@ -27,6 +27,9 @@ impl Search {
         let mut best_move: Option<Move> = None;
         let mut bound = Bound::Alpha;
         let mut fail_low = true;
+
+        let mut captures = MoveList::default();
+        let mut quiets = MoveList::default();
 
         if !is_root {
             // Draw Detection
@@ -76,18 +79,18 @@ impl Search {
         let eval = evaluate(refs.pos);
         if !is_check && !pv_node && !is_root {
             // Reverse Futility Pruning
-            //if depth < 6 && eval - 100 * depth >= beta {
-            //return eval - 100 * depth;
-            //}
+            if depth < rfp_depth() && eval - rfp_margin() * depth >= beta {
+                return eval;
+            }
             // Razoring
-            /*if depth <= razoring_depth()
+            if depth <= razoring_depth()
                 && eval + razoring_margin() * depth + razoring_fixed_margin() <= alpha
             {
                 let score = Search::qsearch(refs, alpha, beta);
                 if score <= alpha {
                     return score;
                 }
-            }*/
+            }
             // Null Move Pruning
             if null_move && depth >= 3 && eval >= beta {
                 if let Ok(new_pos) = refs.pos.clone().swap_turn() {
@@ -115,7 +118,7 @@ impl Search {
         );
 
         for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
-            /*if !is_root && moves_searched > 0 && alpha > -Score::MATE_BOUND {
+            if !is_root && moves_searched > 0 && alpha > -Score::MATE_BOUND {
                 // Futility Pruning
                 if !pv_node
                     && !is_check
@@ -125,7 +128,8 @@ impl Search {
                 {
                     break;
                 }
-            }*/
+            }
+
             let prev_pos = refs.pos.clone();
             refs.pos.play_unchecked(m);
             refs.incr_rep();
@@ -170,34 +174,7 @@ impl Search {
             if score >= beta {
                 refs.tt
                     .write(hash.0, depth, score, Bound::Beta, Some(m.clone()), ply);
-
-                if m.is_capture() {
-                    refs.search_info.update_capture_history(
-                        m.role(),
-                        m.to(),
-                        m.capture().unwrap(),
-                        1,
-                    );
-                } else {
-                    let ply = refs.search_info.ply as usize;
-                    if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
-                        if m != first_killer {
-                            refs.search_info.killer_moves2[ply] =
-                                refs.search_info.killer_moves1[ply].clone();
-                            refs.search_info.killer_moves1[ply] = Some(m.clone());
-                        }
-                    }
-
-                    refs.search_info.update_quiet_history(
-                        m.role(),
-                        m.to(),
-                        depth * depth + depth - 1,
-                    );
-                    if let Some(prev_m) = &refs.search_info.prev_move[ply] {
-                        refs.search_info.counter_moves[prev_m.from().unwrap() as usize]
-                            [prev_m.to() as usize] = Some(m.clone());
-                    }
-                }
+                Search::update_ordering_heuristics(refs, depth, m.clone(), captures, quiets);
                 return beta;
             } else if m.is_capture() {
                 refs.search_info
@@ -211,15 +188,15 @@ impl Search {
                 bound = Bound::Exact;
 
                 // Update PV Table
-                refs.search_info.pv[ply].fill(None);
-                refs.search_info.pv[ply][ply] = best_move.clone();
-                for next_ply in ply + 1..refs.search_info.pv_length[ply + 1] {
-                    refs.search_info.pv[ply][next_ply] =
-                        refs.search_info.pv[ply + 1][next_ply].clone();
-                }
-                refs.search_info.pv_length[ply] = refs.search_info.pv_length[ply + 1];
+                Search::update_pv(refs, best_move.clone(), ply);
             } else if is_root && fail_low {
                 return -Score::INFINITY;
+            }
+
+            if m.is_capture() {
+                captures.push(m.clone());
+            } else {
+                quiets.push(m.clone());
             }
         }
 
@@ -227,10 +204,38 @@ impl Search {
             if is_check {
                 return -Score::INFINITY + (refs.search_info.ply as i32);
             } else {
-                return 0;
+                return Score::DRAW;
             }
         }
         refs.tt.write(hash.0, depth, alpha, bound, best_move, ply);
         alpha
+    }
+
+    pub fn update_ordering_heuristics(
+        refs: &mut SearchRefs,
+        depth: i32,
+        best_move: Move,
+        captures: MoveList,
+        quiets: MoveList,
+    ) {
+        if best_move.is_capture() {
+            refs.search_info
+                .history
+                .update_capture(refs.pos.clone(), best_move, captures, depth);
+        } else {
+            refs.search_info.killers[refs.search_info.ply as usize] = Some(best_move.clone());
+            refs.search_info
+                .history
+                .update_main(refs.pos.turn(), best_move, quiets, depth);
+        }
+    }
+
+    pub fn update_pv(refs: &mut SearchRefs, best_move: Option<Move>, ply: usize) {
+        refs.search_info.pv[ply].fill(None);
+        refs.search_info.pv[ply][ply] = best_move.clone();
+        for next_ply in ply + 1..refs.search_info.pv_length[ply + 1] {
+            refs.search_info.pv[ply][next_ply] = refs.search_info.pv[ply + 1][next_ply].clone();
+        }
+        refs.search_info.pv_length[ply] = refs.search_info.pv_length[ply + 1];
     }
 }

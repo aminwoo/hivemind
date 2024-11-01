@@ -1,5 +1,6 @@
 use super::defs::SearchRefs;
 use super::{Move, Search};
+use crate::types::parameters::*;
 use shakmaty::{Bitboard, MoveList, Position};
 
 const BAD_CAPTURE: i32 = -200_000_000;
@@ -98,9 +99,7 @@ impl Search {
     ) {
         moves.sort_by_key(|m| {
             if let Some(mv) = &pv_move {
-                if mv == m {
-                    return i32::MAX;
-                }
+                if mv == m {}
             }
             if let Some(mv) = &tt_move {
                 if mv == m {
@@ -115,7 +114,11 @@ impl Search {
                     None => 0,
                 };
                 let see_value = see(refs, m);
-                let history = refs.search_info.get_capture_score(m);
+                let history = refs
+                    .search_info
+                    .history
+                    .get_capture(refs.pos.turn(), m.clone())
+                    .expect("Not capture");
                 let mvv = MVV_LVA[captured][piece];
                 if see_value < 0 {
                     return BAD_CAPTURE + see_value + history + mvv;
@@ -123,26 +126,17 @@ impl Search {
                 return GOOD_CAPTURE + see_value + history + mvv;
             }
             let ply = refs.search_info.ply as usize;
-            if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
-                if m == first_killer {
+            if let Some(killer) = &refs.search_info.killers[ply] {
+                if m == killer {
                     return KILLER_BONUS;
                 }
             }
-            if let Some(second_killer) = &refs.search_info.killer_moves2[ply] {
-                if m == second_killer {
-                    return KILLER_BONUS - 1;
-                }
-            }
-            if let Some(prev_m) = &refs.search_info.prev_move[ply] {
-                if let Some(counter) = &refs.search_info.counter_moves
-                    [prev_m.from().unwrap() as usize][prev_m.to() as usize]
-                {
-                    if m == counter {
-                        return 4000;
-                    }
-                }
-            }
-            refs.search_info.get_quiet_score(m)
+            ordering_main()
+                * refs
+                    .search_info
+                    .history
+                    .get_main(refs.pos.turn(), m.clone())
+                    .expect("Non drop")
         });
         moves.reverse();
     }

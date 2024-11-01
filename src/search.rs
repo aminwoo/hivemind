@@ -1,10 +1,11 @@
 mod alpha_beta;
 mod defs;
-use shakmaty::zobrist::Zobrist64;
 mod eval;
+mod history;
 mod iter_deep;
 mod qsearch;
 mod sorting;
+
 use crate::transposition::TranspositionTable;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -13,6 +14,7 @@ use crossbeam_channel::unbounded;
 use crossbeam_channel::Sender;
 
 use defs::{SearchInfo, SearchParams, SearchRefs};
+use shakmaty::zobrist::Zobrist64;
 use shakmaty::{Chess, Move, Position};
 
 pub struct Search {
