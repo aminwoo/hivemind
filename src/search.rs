@@ -38,7 +38,7 @@ impl Search {
         let (s, r) = unbounded::<String>();
         let h = thread::spawn(move || {
             let mut search_params = SearchParams {
-                depth: 20,
+                depth: 99,
                 search_time: 60000,
             };
             let mut quit = false;
