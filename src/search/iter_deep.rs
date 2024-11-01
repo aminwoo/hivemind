@@ -7,24 +7,30 @@ impl Search {
         let mut depth = 1;
         let mut alpha = -Score::INFINITY;
         let mut beta = Score::INFINITY;
-        let aspiration_window = 25;
+        let delta = 25;
         let mut best_move: Option<Move> = None;
+        let mut score;
 
         refs.search_info.start();
         while depth <= refs.search_params.depth {
-            let cp = Search::alpha_beta(refs, depth, alpha, beta, true);
+            if depth <= 5 {
+                score = Search::alpha_beta(refs, depth, -Score::INFINITY, Score::INFINITY, true);
+            } else {
+                score = Search::alpha_beta(refs, depth, alpha, beta, true);
+            }
             if refs.search_info.terminated {
                 break;
             }
 
-            if cp <= alpha || cp >= beta {
+            if score <= alpha || score >= beta {
                 alpha = -Score::INFINITY;
                 beta = Score::INFINITY;
                 continue;
             }
-            alpha = cp - aspiration_window;
-            beta = cp + aspiration_window;
-            refs.search_info.cp = cp;
+            alpha = (score - delta).max(-Score::INFINITY);
+            beta = (score + delta).min(Score::INFINITY);
+
+            refs.search_info.cp = score;
 
             let nodes = refs.search_info.nodes;
             let elapsed = refs.search_info.elapsed();
@@ -37,7 +43,7 @@ impl Search {
             print!(
                 "info depth {} score cp {} nodes {} nps {} hashfull {} time {} pv ",
                 depth,
-                cp,
+                score,
                 nodes,
                 nps,
                 refs.tt.hashfull(),
