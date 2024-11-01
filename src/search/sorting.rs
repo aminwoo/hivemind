@@ -1,9 +1,10 @@
 use super::defs::SearchRefs;
 use super::{Move, Search};
-use shakmaty::{Bitboard, Color, MoveList, Position, Role};
+use shakmaty::{Bitboard, MoveList, Position};
 
 const CAPTURE_BONUS: i16 = 10000;
 const PROMOTION_BONUS: i16 = 20000;
+const BAD_CAPTURE_PENALTY: i16 = -10000;
 
 pub const MVV_LVA: [[i16; 7]; 7] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim None, attacker None, P, N, B, R, Q, K
@@ -117,9 +118,9 @@ impl Search {
                 let capture_score = refs.search_info.get_capture_score(m);
                 let mvv = MVV_LVA[captured][piece];
                 if see_value < 0 {
-                    return see_value + mvv;
+                    return BAD_CAPTURE_PENALTY + see_value + capture_score + mvv;
                 }
-                return CAPTURE_BONUS + see_value + capture_score;
+                return CAPTURE_BONUS + see_value + capture_score + mvv;
             } else {
                 let ply = refs.search_info.ply as usize;
                 if let Some(first_killer) = &refs.search_info.killer_moves1[ply] {
@@ -137,11 +138,7 @@ impl Search {
                         [prev_m.from().unwrap() as usize][prev_m.to() as usize]
                     {
                         if m == counter {
-                            /*println!("{:?}", refs.pos.board());
-                            println!("{:?}", prev_m);
-                            println!("{:?}", m);
-                            println!();*/
-                            return 3000;
+                            return 4000;
                         }
                     }
                 }
