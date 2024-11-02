@@ -8,9 +8,10 @@ use shakmaty::{
 };
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use shakmaty::uci::UciMove;
-use shakmaty::{fen::Fen, CastlingMode, Chess};
+use shakmaty::{fen::Fen, perft, CastlingMode, Chess};
 
 pub struct Engine {
     pos: Arc<Mutex<Chess>>,
@@ -120,6 +121,27 @@ impl Engine {
                     }
                 }
                 self.search.send("go".to_string());
+            }
+            if cmd == "stop" {
+                self.search.send("stop".to_string());
+            }
+            if cmd.starts_with("perft") {
+                if let Some(depth) = cmd.split_whitespace().nth(1) {
+                    if let Ok(depth) = depth.parse::<u32>() {
+                        let pos_guard = self.pos.lock().unwrap();
+                        let now = Instant::now();
+                        let nodes = perft(&pos_guard.clone(), depth);
+
+                        let elapsed_time = now.elapsed();
+
+                        println!(
+                            "Nodes {} | Elapsed {:.3}s | NPS {:.3} kN/s",
+                            nodes,
+                            elapsed_time.as_secs_f64(),
+                            nodes as f64 / (elapsed_time.as_secs_f64() * 1000.0)
+                        )
+                    }
+                }
             }
 
             cmd = String::new();
