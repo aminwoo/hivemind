@@ -11,16 +11,6 @@ const GOOD_CAPTURE: i32 = 200_000_000;
 const KILLER_BONUS: i32 = 100_000_000;
 const HASH_MOVE: i32 = 300_000_000;
 
-pub const MVV_LVA: [[i32; 7]; 7] = [
-    [0, 0, 0, 0, 0, 0, 0],       // victim None, attacker None, P, N, B, R, Q, K
-    [0, 6, 5, 4, 3, 2, 1],       // victim P, attacker None, P, N, B, R, Q, K
-    [0, 12, 11, 10, 9, 8, 7],    // victim N, attacker None, P, N, B, R, Q, K
-    [0, 18, 17, 16, 15, 14, 13], // victim B, attacker None, P, N, B, R, Q, K
-    [0, 24, 23, 22, 21, 20, 19], // victim R, attacker None, P, N, B, R, Q, K
-    [0, 30, 29, 28, 27, 26, 25], // victim Q, attacker None, P, N, B, R, Q, K
-    [0, 0, 0, 0, 0, 0, 0],       // victim K, attacker None, P, N, B, R, Q, K
-];
-
 pub const SEE_VALUE: [i32; 7] = [0, 100, 400, 400, 650, 1200, 0];
 
 pub fn least_valuable_attacker(board: &Board, attackers: Bitboard) -> Option<Role> {
