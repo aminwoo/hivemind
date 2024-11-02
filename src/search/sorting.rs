@@ -21,7 +21,7 @@ pub const MVV_LVA: [[i32; 7]; 7] = [
     [0, 0, 0, 0, 0, 0, 0],       // victim K, attacker None, P, N, B, R, Q, K
 ];
 
-pub const SEE_VALUE: [i32; 7] = [0, 100, 325, 325, 500, 1000, 30000];
+pub const SEE_VALUE: [i32; 7] = [0, 100, 400, 400, 650, 1200, 0];
 
 pub fn least_valuable_attacker(board: &Board, attackers: Bitboard) -> Option<Role> {
     Role::ALL
@@ -106,20 +106,18 @@ impl Search {
             }
 
             if m.is_capture() {
-                let piece = m.role() as usize;
                 let captured = match m.capture() {
                     Some(role) => role as usize,
                     None => 0,
                 };
-                let see_value = see(refs.pos, m, 0);
+                let see_value = see(refs.pos, m, 0).expect("Error calculating SEE");
                 let history = refs
                     .search_info
                     .history
                     .get_capture(refs.pos.turn(), m.clone())
                     .expect("Expected move to be a capture");
-                let mvv = MVV_LVA[captured][piece];
-
-                if !see_value.expect("Error computing SEE") {
+                let mvv = 32 * SEE_VALUE[captured];
+                if !see_value {
                     return BAD_CAPTURE + history + mvv;
                 }
                 return GOOD_CAPTURE + history + mvv;
@@ -135,7 +133,7 @@ impl Search {
                     .search_info
                     .history
                     .get_main(refs.pos.turn(), m.clone())
-                    .expect("Couldn't get from square")
+                    .expect("Error getting FROM square")
         });
         moves.reverse();
     }
@@ -167,6 +165,6 @@ mod tests {
         let uci: UciMove = "e1e5".parse().unwrap();
         let mv = uci.to_move(&pos).unwrap();
 
-        assert_eq!(see(&pos, &mv, 0), Some(true));
+        assert_eq!(see(&pos, &mv, 101), Some(false));
     }
 }
