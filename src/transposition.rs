@@ -15,7 +15,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    const fn valid_cutoff(&self, alpha: i32, beta: i32, depth: i32) -> bool {
+    pub const fn valid_cutoff(&self, alpha: i32, beta: i32, depth: i32) -> bool {
         match self.bound {
             _ if depth > self.depth => false,
             Bound::Exact => true,
@@ -144,6 +144,17 @@ impl TranspositionTable {
             bound,
             valid: true,
         };
+    }
+
+    pub fn prefetch(&self, hash: u64) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+
+            let index = self.index(hash);
+            let ptr = self.vector.as_ptr().add(index).cast();
+            _mm_prefetch::<_MM_HINT_T0>(ptr);
+        }
     }
 
     fn index(&self, hash: u64) -> usize {
