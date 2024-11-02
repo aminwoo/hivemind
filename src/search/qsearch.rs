@@ -28,7 +28,7 @@ impl Search {
         Search::sort_moves(&mut captures, &None, &None, refs);
 
         for m in &captures {
-            if !in_check && see(refs, m) < 0 {
+            if !in_check && !see(refs.pos, m, 0).expect("Error computing SEE") {
                 continue;
             }
 
