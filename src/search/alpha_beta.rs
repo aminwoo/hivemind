@@ -1,4 +1,4 @@
-use crate::transposition::{Bound, Entry};
+use crate::transposition::Bound;
 use crate::types::parameters::*;
 use crate::types::Score;
 
