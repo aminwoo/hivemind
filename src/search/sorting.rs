@@ -1,7 +1,10 @@
 use super::defs::SearchRefs;
 use super::{Move, Search};
 use crate::types::parameters::*;
-use shakmaty::{Bitboard, MoveList, Position};
+use shakmaty::{
+    attacks::{bishop_attacks, rook_attacks},
+    Bitboard, Board, Chess, Color, MoveList, Position, Role,
+};
 
 const BAD_CAPTURE: i32 = -200_000_000;
 const GOOD_CAPTURE: i32 = 200_000_000;
@@ -20,74 +23,69 @@ pub const MVV_LVA: [[i32; 7]; 7] = [
 
 pub const SEE_VALUE: [i32; 7] = [0, 100, 325, 325, 500, 1000, 30000];
 
-pub fn see(refs: &SearchRefs, m: &Move) -> i32 {
-    let pos = &refs.pos;
+pub fn least_valuable_attacker(board: &Board, attackers: Bitboard) -> Option<Role> {
+    Role::ALL
+        .into_iter()
+        .find(|&attacker| (attackers & board.by_role(attacker)).any())
+}
+
+pub fn see(pos: &Chess, mv: &Move, threshold: i32) -> Option<bool> {
+    if mv.is_promotion() || mv.is_castle() {
+        return Some(true);
+    }
+
     let board = pos.board();
+    let mut balance = SEE_VALUE[mv.capture()? as usize] - threshold;
+    if balance < 0 {
+        return Some(false);
+    }
 
-    let mut gain: [i32; 32] = [0; 32];
-    let mut depth = 0;
+    balance -= SEE_VALUE[mv.role() as usize];
+    if balance >= 0 {
+        return Some(true);
+    }
 
-    let mut from_set = Bitboard::from(m.from().unwrap());
     let mut occupied = board.occupied();
+    occupied.remove(mv.from()?);
+    occupied.set(mv.to(), true);
 
-    let mut target = 0;
-    let mut attacker = m.role() as usize;
-    if let Some(role) = m.capture() {
-        target = role as usize;
-    }
-    gain[depth] = SEE_VALUE[target];
+    let mut stm = pos.turn().other();
+    let mut attackers = (board.attacks_to(mv.to(), Color::White, occupied)
+        | board.attacks_to(mv.to(), Color::Black, occupied))
+        & occupied;
 
-    let mut attackers;
+    let diagonal = board.bishops() | board.queens();
+    let orthogonal = board.rooks() | board.queens();
+
     loop {
-        depth += 1;
-        gain[depth] = SEE_VALUE[attacker] - gain[depth - 1];
-        occupied ^= from_set;
-
-        if depth & 1 == 1 {
-            attackers = board.attacks_to(m.to(), pos.turn().other(), occupied) & occupied;
-        } else {
-            attackers = board.attacks_to(m.to(), pos.turn(), occupied) & occupied;
+        let our_attackers = attackers & board.by_color(stm);
+        if our_attackers.is_empty() {
+            break;
+        }
+        let attacker =
+            least_valuable_attacker(board, our_attackers).expect("Expected at least 1 attacker");
+        if attacker == Role::King && (attackers & board.by_color(stm.other())).any() {
+            break;
         }
 
-        from_set = attackers & board.pawns();
-        if from_set.any() {
-            from_set = from_set.isolate_first();
-            attacker = 1;
-            continue;
+        occupied ^= (board.by_role(attacker) & our_attackers).isolate_first();
+        stm = stm.other();
+
+        balance = -balance - 1 - SEE_VALUE[attacker as usize];
+        if balance >= 0 {
+            break;
         }
-        from_set = attackers & board.knights();
-        if from_set.any() {
-            from_set = from_set.isolate_first();
-            attacker = 2;
-            continue;
+
+        if [Role::Pawn, Role::Bishop, Role::Queen].contains(&attacker) {
+            attackers |= bishop_attacks(mv.to(), occupied) & diagonal;
         }
-        from_set = attackers & board.bishops();
-        if from_set.any() {
-            from_set = from_set.isolate_first();
-            attacker = 3;
-            continue;
+        if [Role::Rook, Role::Queen].contains(&attacker) {
+            attackers |= rook_attacks(mv.to(), occupied) & orthogonal;
         }
-        from_set = attackers & board.rooks();
-        if from_set.any() {
-            from_set = from_set.isolate_first();
-            attacker = 4;
-            continue;
-        }
-        from_set = attackers & board.queens();
-        if from_set.any() {
-            from_set = from_set.isolate_first();
-            attacker = 5;
-            continue;
-        }
-        break;
+        attackers &= occupied;
     }
 
-    depth -= 1;
-    while depth > 0 {
-        gain[depth - 1] = -std::cmp::max(-gain[depth - 1], gain[depth]);
-        depth -= 1;
-    }
-    gain[0]
+    Some(stm != pos.turn())
 }
 
 impl Search {
@@ -113,17 +111,18 @@ impl Search {
                     Some(role) => role as usize,
                     None => 0,
                 };
-                let see_value = see(refs, m);
+                let see_value = see(refs.pos, m, 0);
                 let history = refs
                     .search_info
                     .history
                     .get_capture(refs.pos.turn(), m.clone())
                     .expect("Expected move to be a capture");
                 let mvv = MVV_LVA[captured][piece];
-                if see_value < 0 {
-                    return BAD_CAPTURE + see_value + history + mvv;
+
+                if !see_value.expect("Error computing SEE") {
+                    return BAD_CAPTURE + history + mvv;
                 }
-                return GOOD_CAPTURE + see_value + history + mvv;
+                return GOOD_CAPTURE + history + mvv;
             }
             let ply = refs.search_info.ply as usize;
             if let Some(killer) = &refs.search_info.killers[ply] {
@@ -139,5 +138,35 @@ impl Search {
                     .expect("Couldn't get from square")
         });
         moves.reverse();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::search::sorting::see;
+    use shakmaty::fen::Fen;
+    use shakmaty::uci::UciMove;
+    use shakmaty::{CastlingMode, Chess};
+    #[test]
+    fn test_see1() {
+        let fen_string = String::from("1k1r3q/1ppn3p/p4b2/4p3/8/P2N2P1/1PP1R1BP/2K1Q3 w - - ");
+        let fen: Fen = fen_string.parse().unwrap();
+        let pos: Chess = fen.into_position(CastlingMode::Standard).unwrap();
+
+        let uci: UciMove = "d3e5".parse().unwrap();
+        let mv = uci.to_move(&pos).unwrap();
+
+        assert_eq!(see(&pos, &mv, -225), Some(true));
+    }
+    #[test]
+    fn test_see2() {
+        let fen_string = String::from("1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - ");
+        let fen: Fen = fen_string.parse().unwrap();
+        let pos: Chess = fen.into_position(CastlingMode::Standard).unwrap();
+
+        let uci: UciMove = "e1e5".parse().unwrap();
+        let mv = uci.to_move(&pos).unwrap();
+
+        assert_eq!(see(&pos, &mv, 0), Some(true));
     }
 }
