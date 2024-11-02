@@ -118,7 +118,7 @@ impl Search {
                     .search_info
                     .history
                     .get_capture(refs.pos.turn(), m.clone())
-                    .expect("Not capture");
+                    .expect("Expected move to be a capture");
                 let mvv = MVV_LVA[captured][piece];
                 if see_value < 0 {
                     return BAD_CAPTURE + see_value + history + mvv;
@@ -136,7 +136,7 @@ impl Search {
                     .search_info
                     .history
                     .get_main(refs.pos.turn(), m.clone())
-                    .expect("Non drop")
+                    .expect("Couldn't get from square")
         });
         moves.reverse();
     }
