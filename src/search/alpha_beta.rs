@@ -1,18 +1,14 @@
 use crate::transposition::Bound;
-use crate::types::parameters::*;
-use crate::types::Score;
+use crate::types::{parameters::*, Score, MAX_PLY};
 
-use super::{defs::SearchRefs, eval::evaluate, Search};
-use shakmaty::{Move, MoveList, Position};
+use super::{defs::SearchRefs, Search};
+use shakmaty::{Move, MoveList};
 
 impl Search {
-    pub fn alpha_beta(
-        refs: &mut SearchRefs,
-        mut depth: i32,
-        mut alpha: i32,
-        mut beta: i32,
-        null_move: bool,
-    ) -> i32 {
+    pub fn alpha_beta(refs: &mut SearchRefs, mut depth: i32, mut alpha: i32, mut beta: i32) -> i32 {
+        let ply = refs.search_info.ply as usize;
+        refs.search_info.pv[ply].fill(None);
+
         if (refs.search_info.nodes & 2047) == 0
             && refs.search_info.elapsed() > refs.search_params.search_time
         {
@@ -20,11 +16,10 @@ impl Search {
             return 0;
         }
 
-        let ply = refs.search_info.ply as usize;
         let is_root = ply == 0;
         let pv_node = beta - alpha > 1;
         let original_alpha = alpha;
-        let in_check = refs.pos.is_check();
+        let in_check = refs.board.in_check();
 
         let mut best_score: i32 = -Score::INFINITY;
         let mut best_move: Option<Move> = None;
@@ -33,11 +28,9 @@ impl Search {
         let mut captures = MoveList::default();
         let mut quiets = MoveList::default();
 
-        refs.search_info.pv[ply].fill(None);
-
         if !is_root {
             // Draw Detection
-            if refs.three_fold() {
+            if refs.board.three_fold() {
                 return Score::DRAW;
             }
 
@@ -49,136 +42,64 @@ impl Search {
             }
         }
 
+        if ply >= MAX_PLY - 1 {
+            return refs.board.evaluate();
+        }
+
         if depth <= 0 && !in_check {
             return Search::qsearch(refs, alpha, beta);
         }
         depth = depth.max(0);
 
-        let mut tt_move: Option<Move> = None;
-        let hit = refs.tt.read(refs.get_hash().0, ply);
-        if let Some(hit) = hit {
-            if !pv_node && hit.valid_cutoff(alpha, beta, depth) {
-                return hit.score;
-            }
-            tt_move = hit.m;
-        }
-
-        // Internal Iterative Reductions
-        if !is_root && tt_move.is_none() && depth >= iir_depth() {
-            depth -= 1;
-        }
-
-        refs.search_info.pv_length[ply] = ply;
-        if in_check {
-            depth += 1;
-        }
         refs.search_info.nodes += 1;
+        refs.search_info.sel_depth = refs.search_info.sel_depth.max(ply);
+        refs.search_info.pv_length[ply] = ply;
 
-        let eval = evaluate(refs.pos);
-        if !in_check && !pv_node && !is_root {
-            // Reverse Futility Pruning
-            if depth < rfp_depth() && eval - rfp_margin() * depth >= beta {
-                return eval;
-            }
-            // Razoring
-            if depth <= razoring_depth()
-                && eval + razoring_margin() * depth + razoring_fixed_margin() <= alpha
-            {
-                let score = Search::qsearch(refs, alpha, beta);
-                if score <= alpha {
-                    return score;
-                }
-            }
-            // Null Move Pruning
-            if null_move && depth >= 3 && eval >= beta {
-                if let Ok(new_pos) = refs.pos.clone().swap_turn() {
-                    let prev_pos = refs.pos.clone();
-                    *refs.pos = new_pos;
-                    let score = -Search::alpha_beta(refs, depth - 3, -beta, -beta + 1, false);
-                    *refs.pos = prev_pos;
-                    if score >= beta {
-                        return beta;
-                    }
-                }
-            }
-        }
+        let mut moves = refs.board.legal_moves();
+        Search::sort_moves(&mut moves, &refs.search_info.pv[ply][ply], &None, refs);
 
-        let mut legal_moves = refs.pos.legal_moves();
-        if legal_moves.len() == 1 {
-            depth += 1;
-        }
-
-        Search::sort_moves(
-            &mut legal_moves,
-            &refs.search_info.pv[ply][ply],
-            &tt_move,
-            refs,
-        );
-
-        for (moves_searched, m) in (&legal_moves).into_iter().enumerate() {
-            if !is_root && moves_searched > 0 && alpha > -Score::MATE_BOUND {
-                // Futility Pruning
-                if !pv_node
-                    && !in_check
-                    && !m.is_capture()
-                    && depth <= fp_depth()
-                    && eval + fp_margin() * depth + fp_fixed_margin() < alpha
-                {
-                    break;
-                }
-            }
-
-            let prev_pos = refs.pos.clone();
-            refs.pos.play_unchecked(m);
-            refs.incr_rep();
-            refs.tt.prefetch(refs.get_hash().0);
-
+        for (moves_searched, mv) in (&moves).into_iter().enumerate() {
+            refs.board.make_move::<false>(mv);
             refs.search_info.ply += 1;
-            refs.search_info.prev_move[ply + 1] = Some(m.clone());
 
             let mut score;
             if moves_searched == 0 {
                 // We always search full depth on hypothesis best move
-                score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true);
+                score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha);
             } else {
                 // Late Move Reductions - try to fail low
                 if moves_searched >= LMR_MOVES_PLAYED
                     && depth >= LMR_DEPTH
                     && ply >= 3
-                    && !m.is_capture()
-                    && !m.is_promotion()
+                    && !mv.is_capture()
+                    && !mv.is_promotion()
                     && !in_check
-                    && Some(m) != refs.search_info.killers[ply].as_ref()
+                    && Some(mv) != refs.search_info.killers[ply].as_ref()
                 {
-                    score = -Search::alpha_beta(refs, depth - 2, -alpha - 1, -alpha, true);
+                    score = -Search::alpha_beta(refs, depth - 2, -alpha - 1, -alpha);
                 } else {
                     // When we don't do LMR we don't fail low
                     score = alpha + 1;
                 }
                 if score > alpha {
-                    score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha, true);
+                    score = -Search::alpha_beta(refs, depth - 1, -alpha - 1, -alpha);
                     if score > alpha && score < beta {
                         // We found a better move so re-search
-                        score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha, true)
+                        score = -Search::alpha_beta(refs, depth - 1, -beta, -alpha);
                     }
                 }
             }
 
-            refs.decr_rep();
-            *refs.pos = prev_pos;
+            refs.board.undo_move();
             refs.search_info.ply -= 1;
 
             if score > best_score {
                 best_score = score;
-                best_move = Some(m.clone());
+                best_move = Some(mv.clone());
 
                 if score > alpha {
                     alpha = score;
                     Search::update_pv(refs, best_move.clone(), ply);
-
-                    fail_low = false;
-                } else if is_root && fail_low {
-                    return -Score::INFINITY;
                 }
             }
 
@@ -186,14 +107,14 @@ impl Search {
                 break;
             }
 
-            if m.is_capture() {
-                captures.push(m.clone());
+            if mv.is_capture() {
+                captures.push(mv.clone());
             } else {
-                quiets.push(m.clone());
+                quiets.push(mv.clone());
             }
         }
 
-        if legal_moves.is_empty() {
+        if moves.is_empty() {
             return if in_check {
                 Score::mated_in(ply)
             } else {
@@ -210,14 +131,12 @@ impl Search {
             Search::update_ordering_heuristics(
                 refs,
                 depth,
-                best_move.clone().expect("Move that caused beta cutoff"),
+                best_move.clone().expect("Move should not be None"),
                 captures,
                 quiets,
             );
         }
 
-        refs.tt
-            .write(refs.get_hash().0, depth, best_score, bound, best_move, ply);
         best_score
     }
 
@@ -231,12 +150,12 @@ impl Search {
         if best_move.is_capture() {
             refs.search_info
                 .history
-                .update_capture(refs.pos.clone(), best_move, captures, depth);
+                .update_capture(refs.board.chess(), best_move, captures, depth);
         } else {
             refs.search_info.killers[refs.search_info.ply as usize] = Some(best_move.clone());
             refs.search_info
                 .history
-                .update_main(refs.pos.turn(), best_move, quiets, depth);
+                .update_main(refs.board.turn(), best_move, quiets, depth);
         }
     }
 
