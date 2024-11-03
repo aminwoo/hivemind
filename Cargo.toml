@@ -2,6 +2,7 @@
 name = "hivemind"
 version = "0.1.0"
 edition = "2021"
+build = "build/build.rs"
 
 [dependencies]
 crossbeam-channel = "0.5.13"
@@ -12,4 +13,9 @@ shakmaty-syzygy = "0.25.1"
 [[bin]]
 name = "hivemind"
 path = "src/main.rs"
+
+[profile.release]
+lto = "fat"
+panic = "abort"
+codegen-units = 1
 
