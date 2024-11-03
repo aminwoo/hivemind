@@ -20,7 +20,7 @@ pub fn least_valuable_attacker(board: &Board, attackers: Bitboard) -> Option<Rol
 }
 
 pub fn see(pos: &Chess, mv: &Move, threshold: i32) -> Option<bool> {
-    if mv.is_promotion() || mv.is_castle() {
+    if mv.is_promotion() || mv.is_castle() || mv.is_en_passant() {
         return Some(true);
     }
 
@@ -36,7 +36,7 @@ pub fn see(pos: &Chess, mv: &Move, threshold: i32) -> Option<bool> {
     }
 
     let mut occupied = board.occupied();
-    occupied.remove(mv.from()?);
+    let _ = occupied.remove(mv.from()?);
     occupied.set(mv.to(), true);
 
     let mut stm = pos.turn().other();
@@ -100,11 +100,11 @@ impl Search {
                     Some(role) => role as usize,
                     None => 0,
                 };
-                let see_value = see(refs.pos, m, 0).expect("Error calculating SEE");
+                let see_value = see(&refs.board.chess(), m, 0).expect("Error calculating SEE");
                 let history = refs
                     .search_info
                     .history
-                    .get_capture(refs.pos.turn(), m.clone())
+                    .get_capture(refs.board.turn(), m.clone())
                     .expect("Expected move to be a capture");
                 let mvv = 32 * SEE_VALUE[captured];
                 if !see_value {
@@ -122,7 +122,7 @@ impl Search {
                 * refs
                     .search_info
                     .history
-                    .get_main(refs.pos.turn(), m.clone())
+                    .get_main(refs.board.turn(), m.clone())
                     .expect("Error getting FROM square")
         });
         moves.reverse();
@@ -144,7 +144,7 @@ mod tests {
         let uci: UciMove = "d3e5".parse().unwrap();
         let mv = uci.to_move(&pos).unwrap();
 
-        assert_eq!(see(&pos, &mv, -225), Some(true));
+        assert_eq!(see(&pos, &mv, -300), Some(true));
     }
     #[test]
     fn test_see2() {
@@ -155,6 +155,6 @@ mod tests {
         let uci: UciMove = "e1e5".parse().unwrap();
         let mv = uci.to_move(&pos).unwrap();
 
-        assert_eq!(see(&pos, &mv, 101), Some(false));
+        assert_eq!(see(&pos, &mv, 100), Some(false));
     }
 }
