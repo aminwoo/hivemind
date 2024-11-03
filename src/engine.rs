@@ -1,21 +1,20 @@
 mod about;
 
-use crate::search::Search;
+use crate::board::Board;
 use crate::transposition::TranspositionTable;
-use shakmaty::{
-    zobrist::{Zobrist64, ZobristHash},
-    EnPassantMode, Position,
+use crate::{
+    benchmark::{benchmark, perft},
+    search::Search,
+    types::Score,
 };
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use shakmaty::uci::UciMove;
-use shakmaty::{fen::Fen, perft, CastlingMode, Chess};
+use shakmaty::Chess;
 
 pub struct Engine {
-    pos: Arc<Mutex<Chess>>,
-    repetitions: Arc<Mutex<Vec<Zobrist64>>>,
+    board: Arc<Mutex<Board>>,
     search: Search,
     tt_search: Arc<Mutex<TranspositionTable>>,
 }
@@ -25,19 +24,15 @@ impl Engine {
         let tt_search: Arc<Mutex<TranspositionTable>> =
             Arc::new(Mutex::new(TranspositionTable::default()));
         Engine {
-            pos: Arc::new(Mutex::new(Chess::new())),
-            repetitions: Arc::new(Mutex::new(Vec::new())),
+            board: Arc::new(Mutex::new(Board::starting_position())),
             search: Search::new(),
             tt_search,
         }
     }
 
     pub fn run(&mut self) {
-        self.search.init(
-            Arc::clone(&self.pos),
-            Arc::clone(&self.tt_search),
-            Arc::clone(&self.repetitions),
-        );
+        self.search
+            .init(Arc::clone(&self.board), Arc::clone(&self.tt_search));
         self.print_logo();
         self.print_about();
 
@@ -96,21 +91,11 @@ impl Engine {
                     fen_string =
                         String::from("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
                 }
-                let fen: Fen = fen_string.parse().unwrap();
-                let mut pos_guard = self.pos.lock().unwrap();
-                *pos_guard = fen.into_position(CastlingMode::Standard).unwrap();
-
-                let mut repetitions_guard = self.repetitions.lock().unwrap();
-                repetitions_guard.clear();
-                let hash = pos_guard.zobrist_hash(EnPassantMode::Legal);
-                repetitions_guard.push(hash);
+                let mut board_guard = self.board.lock().unwrap();
+                *board_guard = Board::new(&fen_string).unwrap();
 
                 for mv in moves {
-                    let uci: UciMove = mv.parse().unwrap();
-                    let m = uci.to_move(&*pos_guard).unwrap();
-                    pos_guard.play_unchecked(&m);
-                    let hash = pos_guard.zobrist_hash(EnPassantMode::Legal);
-                    repetitions_guard.push(hash);
+                    board_guard.play_uci(&mv);
                 }
             }
 
@@ -127,10 +112,9 @@ impl Engine {
             }
             if cmd.starts_with("perft") {
                 if let Some(depth) = cmd.split_whitespace().nth(1) {
-                    if let Ok(depth) = depth.parse::<u32>() {
-                        let pos_guard = self.pos.lock().unwrap();
+                    if let Ok(depth) = depth.parse::<i32>() {
                         let now = Instant::now();
-                        let nodes = perft(&pos_guard.clone(), depth);
+                        let nodes = perft(&Chess::default(), depth);
 
                         let elapsed_time = now.elapsed();
 
@@ -142,6 +126,30 @@ impl Engine {
                         )
                     }
                 }
+            }
+
+            if cmd.starts_with("bench") {
+                if let Some(depth) = cmd.split_whitespace().nth(1) {
+                    if let Ok(depth) = depth.parse::<i32>() {
+                        let pos = Chess::new();
+                        let mut nodes = 0;
+                        let now = Instant::now();
+
+                        benchmark(&pos, -Score::INFINITY, Score::INFINITY, depth, &mut nodes);
+
+                        let elapsed_time = now.elapsed();
+                        println!(
+                            "Nodes {} | Elapsed {:.3}s | NPS {:.3} kN/s",
+                            nodes,
+                            elapsed_time.as_secs_f64(),
+                            nodes as f64 / (elapsed_time.as_secs_f64() * 1000.0)
+                        )
+                    }
+                }
+            }
+            if cmd == "eval" {
+                let board_guard = self.board.lock().unwrap();
+                println!("{}", board_guard.evaluate());
             }
 
             cmd = String::new();
