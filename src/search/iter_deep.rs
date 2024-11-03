@@ -1,6 +1,6 @@
 use super::{defs::SearchRefs, Search};
 use crate::types::Score;
-use shakmaty::{Move, Position};
+use shakmaty::Move;
 
 impl Search {
     pub fn iterative_deepening(refs: &mut SearchRefs) -> Option<Move> {
@@ -14,9 +14,9 @@ impl Search {
         refs.search_info.start();
         while depth <= refs.search_params.depth {
             if depth <= 5 {
-                score = Search::alpha_beta(refs, depth, -Score::INFINITY, Score::INFINITY, true);
+                score = Search::alpha_beta(refs, depth, -Score::INFINITY, Score::INFINITY);
             } else {
-                score = Search::alpha_beta(refs, depth, alpha, beta, true);
+                score = Search::alpha_beta(refs, depth, alpha, beta);
             }
             if refs.search_info.terminated {
                 break;
@@ -35,22 +35,24 @@ impl Search {
             let nodes = refs.search_info.nodes;
             let elapsed = refs.search_info.elapsed();
             let nps = if elapsed > 0 {
-                nodes / elapsed as usize * 1000
+                (nodes as f64 / elapsed as f64) * 1000.0
             } else {
-                0
+                0.0
             };
+            let sel_depth = refs.search_info.sel_depth;
 
             print!(
-                "info depth {} score cp {} nodes {} nps {} hashfull {} time {} pv ",
+                "info depth {} seldepth {} score cp {} nodes {} nps {:.0} hashfull {} time {} pv ",
                 depth,
+                sel_depth,
                 score,
                 nodes,
                 nps,
                 refs.tt.hashfull(),
                 elapsed
             );
-            for m in refs.search_info.pv[0].iter().flatten() {
-                let uci = m.to_uci(refs.pos.castles().mode());
+            for mv in refs.search_info.pv[0].iter().flatten() {
+                let uci = refs.board.to_uci(mv);
                 print!("{} ", uci);
             }
             println!();
