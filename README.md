@@ -9,17 +9,7 @@
 </div>
 
 ## Overview
-Bughouse is a chess variant where two teams of two play against each other on two chess boards. Each team sits next to each other and the boards are arranged such that one player has white and the other has black. 
-
-Once the game starts the boards play in parallel and captured pieces are exchanged in the teams - which can be dropped on empty squares like in shogi. These added complexities can result in mayhem, with each board frantically trying to deliver checkmate. 
-
-This project was born out of a desire to provide a method of analysis to the bughouse community and advance the knowledge of this relatively unstudied game.
-
-This repo features 
-* Utilises for downloading and parsing bughouse games from chess.com and fics
-* A modified architecture of the one presented in the AlphaZero paper which includes more recent advancements 
-* Training scripts which supports both supervised learning and reinforcement learning using gumbel alphazero
-* A client to play and test out the network
+Crazyhouse is a chess variant in which captured enemy pieces can be reintroduced, or dropped, into the game as one's own. It was derived as a two-player, single-board variant of bughouse chess.
 
 ## Installation
 
