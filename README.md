@@ -4,7 +4,7 @@
   
   <h3>HiveMind</h3>
 
-  A free and strong UCI bughouse engine derived from Reckless and Rustic.
+  A free UCI Crazyhouse engine derived from Reckless and Rustic.
 
 </div>
 
