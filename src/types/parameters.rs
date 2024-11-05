@@ -1,4 +1,4 @@
-pub const LMR_MOVES_PLAYED: usize = 3;
+pub const LMR_MOVES_PLAYED: i32 = 3;
 pub const LMR_DEPTH: i32 = 3;
 
 pub const LMP_DEPTH: i32 = 4;
