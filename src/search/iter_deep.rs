@@ -1,34 +1,53 @@
 use super::{defs::SearchRefs, Search};
+use crate::types::parameters::*;
 use crate::types::Score;
 use shakmaty::Move;
 
 impl Search {
+    pub fn aspiration_search(refs: &mut SearchRefs, mut score: i32, depth: i32) -> i32 {
+        refs.board.set_ply(0);
+        if depth <= aspiration_depth() {
+            return Search::alpha_beta(refs, depth, -Score::INFINITY, Score::INFINITY);
+        }
+
+        let mut delta = (aspiration_delta() - depth).max(10);
+        let mut alpha = (score - delta).max(-Score::INFINITY);
+        let mut beta = (score + delta).min(Score::INFINITY);
+        let mut fail_high_count = 0;
+
+        loop {
+            let adjusted_depth = (depth - fail_high_count).max(1);
+            score = Search::alpha_beta(refs, adjusted_depth, alpha, beta);
+
+            if refs.search_info.terminated {
+                return 0;
+            }
+
+            if score <= alpha {
+                alpha = (alpha - delta).max(-Score::INFINITY);
+                beta = (alpha + beta) / 2;
+                fail_high_count = 0;
+            } else if score >= beta {
+                beta = (beta + delta).min(Score::INFINITY);
+                fail_high_count += 1;
+            } else {
+                return score;
+            }
+
+            delta += delta / 2;
+        }
+    }
+
     pub fn iterative_deepening(refs: &mut SearchRefs) -> Option<Move> {
-        let mut depth = 1;
-        let mut alpha = -Score::INFINITY;
-        let mut beta = Score::INFINITY;
-        let delta = 25;
         let mut best_move: Option<Move> = None;
-        let mut score;
+        let mut score = 0;
 
         refs.search_info.start();
-        while depth <= refs.search_params.depth {
-            if depth <= 5 {
-                score = Search::alpha_beta(refs, depth, -Score::INFINITY, Score::INFINITY);
-            } else {
-                score = Search::alpha_beta(refs, depth, alpha, beta);
-            }
+        for depth in 1..refs.search_params.depth {
+            score = Search::aspiration_search(refs, score, depth);
             if refs.search_info.terminated {
                 break;
             }
-
-            if score <= alpha || score >= beta {
-                alpha = -Score::INFINITY;
-                beta = Score::INFINITY;
-                continue;
-            }
-            alpha = (score - delta).max(-Score::INFINITY);
-            beta = (score + delta).min(Score::INFINITY);
 
             refs.search_info.cp = score;
 
@@ -58,7 +77,6 @@ impl Search {
             println!();
 
             best_move = refs.search_info.pv[0][0].clone();
-            depth += 1;
         }
         best_move
     }
