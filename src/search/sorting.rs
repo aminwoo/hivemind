@@ -10,8 +10,9 @@ const BAD_CAPTURE: i32 = -200_000_000;
 const GOOD_CAPTURE: i32 = 200_000_000;
 const KILLER_BONUS: i32 = 100_000_000;
 const HASH_MOVE: i32 = 300_000_000;
+const DROP_MOVE: i32 = 100_000;
 
-pub const SEE_VALUE: [i32; 7] = [0, 100, 400, 400, 650, 1200, 0];
+pub const SEE_VALUES: [i32; 7] = [0, 100, 400, 400, 650, 1200, 0];
 
 pub fn least_valuable_attacker(board: &Board, attackers: Bitboard) -> Option<Role> {
     Role::ALL
@@ -19,18 +20,33 @@ pub fn least_valuable_attacker(board: &Board, attackers: Bitboard) -> Option<Rol
         .find(|&attacker| (attackers & board.by_role(attacker)).any())
 }
 
+pub fn move_value(mv: &Move) -> i32 {
+    if mv.is_en_passant() {
+        return SEE_VALUES[Role::Pawn as usize];
+    }
+
+    if let Some(capture) = mv.capture() {
+        SEE_VALUES[capture as usize]
+    } else {
+        0
+    }
+}
+
 pub fn see(pos: &Chess, mv: &Move, threshold: i32) -> Option<bool> {
-    if mv.is_promotion() || mv.is_castle() || mv.is_en_passant() {
+    if matches!(mv, Move::Put { .. }) {
+        return Some(true);
+    }
+    if mv.is_promotion() || mv.is_castle() {
         return Some(true);
     }
 
     let board = pos.board();
-    let mut balance = SEE_VALUE[mv.capture()? as usize] - threshold;
+    let mut balance = move_value(mv) - threshold;
     if balance < 0 {
         return Some(false);
     }
 
-    balance -= SEE_VALUE[mv.role() as usize];
+    balance -= SEE_VALUES[mv.role() as usize];
     if balance >= 0 {
         return Some(true);
     }
@@ -61,7 +77,7 @@ pub fn see(pos: &Chess, mv: &Move, threshold: i32) -> Option<bool> {
         occupied ^= (board.by_role(attacker) & our_attackers).isolate_first();
         stm = stm.other();
 
-        balance = -balance - 1 - SEE_VALUE[attacker as usize];
+        balance = -balance - 1 - SEE_VALUES[attacker as usize];
         if balance >= 0 {
             break;
         }
@@ -100,30 +116,47 @@ impl Search {
                     Some(role) => role as usize,
                     None => 0,
                 };
-                let see_value = see(&refs.board.chess(), m, 0).expect("Error calculating SEE");
+                let see_value = see(&refs.board.state(), m, 0).expect("Error calculating SEE");
                 let history = refs
                     .search_info
                     .history
-                    .get_capture(refs.board.turn(), m.clone())
+                    .get_capture(refs.board.turn(), &m)
                     .expect("Expected move to be a capture");
-                let mvv = 32 * SEE_VALUE[captured];
+                let mvv = 32 * SEE_VALUES[captured];
                 if !see_value {
                     return BAD_CAPTURE + history + mvv;
                 }
                 return GOOD_CAPTURE + history + mvv;
             }
-            let ply = refs.search_info.ply as usize;
+            let ply = refs.board.ply() as usize;
             if let Some(killer) = &refs.search_info.killers[ply] {
                 if m == killer {
                     return KILLER_BONUS;
                 }
             }
+
+            if matches!(m, Move::Put { .. }) {
+                return DROP_MOVE;
+            }
+
+            let piece = m.role();
+            let continuations = [1, 2].map(|ply| refs.board.tail_move(ply));
             ordering_main()
                 * refs
                     .search_info
                     .history
-                    .get_main(refs.board.turn(), m.clone())
+                    .get_main(refs.board.turn(), m)
                     .expect("Error getting FROM square")
+                + ordering_counter()
+                    * refs
+                        .search_info
+                        .history
+                        .get_counter(&continuations[0], piece, m)
+                + ordering_followup()
+                    * refs
+                        .search_info
+                        .history
+                        .get_followup(&continuations[1], piece, m)
         });
         moves.reverse();
     }
