@@ -1,14 +1,14 @@
 use crate::types::Score;
 
 use shakmaty::Move;
-pub const DEFAULT_TT_SIZE: usize = 1024;
+pub const DEFAULT_TT_SIZE: usize = 512;
 
 const MEGABYTE: usize = 1024 * 1024;
 const INTERNAL_ENTRY_SIZE: usize = std::mem::size_of::<InternalEntry>();
 
 #[derive(Clone)]
 pub struct Entry {
-    pub m: Option<Move>,
+    pub mv: Option<Move>,
     pub score: i32,
     pub depth: i32,
     pub bound: Bound,
@@ -39,7 +39,7 @@ pub enum Bound {
 #[derive(Clone)]
 struct InternalEntry {
     key: u16,
-    m: Option<Move>,
+    mv: Option<Move>,
     score: i32,
     depth: i32,
     bound: Bound,
@@ -50,7 +50,7 @@ impl Default for InternalEntry {
     fn default() -> Self {
         Self {
             key: 0,
-            m: None,
+            mv: None,
             score: 0,
             depth: 0,
             bound: Bound::Nothing,
@@ -100,7 +100,7 @@ impl TranspositionTable {
         }
 
         let mut hit = Entry {
-            m: entry.m,
+            mv: entry.mv,
             depth: entry.depth,
             score: entry.score,
             bound: entry.bound,
@@ -118,7 +118,7 @@ impl TranspositionTable {
         depth: i32,
         mut score: i32,
         bound: Bound,
-        mut m: Option<Move>,
+        mut mv: Option<Move>,
         ply: usize,
     ) {
         // Adjust mate distance from "plies from the root" to "plies from the current position"
@@ -130,15 +130,15 @@ impl TranspositionTable {
         let index = self.index(hash);
 
         let entry = self.vector[index].clone();
-        if m.is_none() && entry.key == key {
-            if let Some(old_m) = entry.m {
-                m = Some(old_m);
+        if mv.is_none() && entry.key == key {
+            if let Some(old_m) = entry.mv {
+                mv = Some(old_m);
             }
         }
 
         self.vector[index] = InternalEntry {
             key,
-            m,
+            mv,
             depth,
             score,
             bound,
