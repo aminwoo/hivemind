@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::unbounded;
 use crossbeam_channel::Sender;
 
+use crate::types::parameters::Parameters;
 use defs::{SearchInfo, SearchParams, SearchRefs};
 use shakmaty::zobrist::Zobrist64;
 use shakmaty::Move;
@@ -66,6 +67,7 @@ impl Search {
 
                     let mut search_refs = SearchRefs {
                         board: &mut board.clone(),
+                        params: Parameters::default(),
                         search_params: &mut search_params,
                         search_info: &mut search_info,
                         tt: &mut tt,
