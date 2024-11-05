@@ -54,6 +54,7 @@ impl Network {
 
     pub fn commit(&mut self) {
         match (&self.adds[..], &self.subs[..]) {
+            (&[add], &[]) => self.add1(add),
             (&[add], &[sub]) => self.add1_sub1(add, sub),
             (&[add], &[sub1, sub2]) => self.add1_sub2(add, sub1, sub2),
             (&[add1, add2], &[sub1, sub2]) => self.add2_sub2(add1, add2, sub1, sub2),
@@ -63,6 +64,14 @@ impl Network {
 
         self.adds.clear();
         self.subs.clear();
+    }
+
+    fn add1(&mut self, add: FtIndex) {
+        let accumulators = &mut self.stack[self.index];
+        for i in 0..HIDDEN_SIZE {
+            accumulators[0][i] += ft!(add.0, i);
+            accumulators[1][i] += ft!(add.1, i);
+        }
     }
 
     fn add1_sub1(&mut self, add: FtIndex, sub: FtIndex) {
