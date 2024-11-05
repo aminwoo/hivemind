@@ -1,5 +1,6 @@
 use crate::nnue::Network;
 use crate::types::Score;
+use crate::types::MAX_PLY;
 use shakmaty::{
     fen::{Fen, ParseFenError},
     uci::UciMove,
@@ -7,13 +8,15 @@ use shakmaty::{
     CastlingMode, Chess, Color, EnPassantMode, Move, MoveList, Position, Role, Square,
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Board {
     pos: Chess,
     nnue: Network,
     state_stack: Vec<Chess>,
-    move_stack: Vec<Move>,
+    move_stack: Vec<Option<Move>>,
     history: Vec<u64>,
+    ply: usize,
+    eval_stack: [i32; MAX_PLY],
 }
 
 impl Board {
@@ -38,16 +41,20 @@ impl Board {
             state_stack,
             move_stack,
             history,
+            ply: 0,
+            eval_stack: [0; MAX_PLY],
         })
     }
+
     pub fn starting_position() -> Self {
         Self::new("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
-    pub fn parse_uci(&self, uci_move: &str) -> Move {
-        let uci: UciMove = uci_move.parse().unwrap();
-        uci.to_move(&self.pos).unwrap()
-    }
 
+    pub fn has_non_pawn_material(&self) -> bool {
+        let our_pieces = self.pos.us();
+        (self.pos.board().by_role(Role::Pawn) | self.pos.board().by_role(Role::King)) & our_pieces
+            != our_pieces
+    }
     pub fn play_uci(&mut self, uci_move: &str) {
         let moves = self.legal_moves();
         for mv in moves {
@@ -55,6 +62,12 @@ impl Board {
                 self.make_move::<true>(&mv);
                 break;
             }
+        }
+    }
+    pub fn tail_move(&self, index: usize) -> Option<Move> {
+        match self.move_stack.len().checked_sub(index) {
+            Some(index) => self.move_stack[index].clone(),
+            None => None,
         }
     }
     pub fn get_hash(&self) -> u64 {
@@ -77,14 +90,23 @@ impl Board {
         self.pos.capture_moves()
     }
 
-    pub fn chess(&self) -> Chess {
+    pub fn state(&self) -> Chess {
         self.pos.clone()
+    }
+
+    pub fn set_ply(&mut self, ply: usize) {
+        self.ply = ply;
+    }
+
+    pub fn ply(&self) -> usize {
+        self.ply
     }
 
     pub fn make_move<const IN_PLACE: bool>(&mut self, mv: &Move) {
         self.state_stack.push(self.pos.clone());
         if !IN_PLACE {
             self.nnue.push();
+            self.ply += 1;
         }
 
         let stm = self.pos.turn();
@@ -98,12 +120,12 @@ impl Board {
             } => {
                 self.remove_piece(stm, *role, *from);
 
-                if let Some(capture) = mv.capture() {
-                    self.remove_piece(stm.other(), capture, *to);
+                if let Some(capture) = capture {
+                    self.remove_piece(stm.other(), *capture, *to);
                 }
 
-                if let Some(promotion) = mv.promotion() {
-                    self.add_piece(stm, promotion, *to);
+                if let Some(promotion) = promotion {
+                    self.add_piece(stm, *promotion, *to);
                 } else {
                     self.add_piece(stm, *role, *to);
                 }
@@ -148,20 +170,43 @@ impl Board {
                     _ => (),
                 }
             }
-            Move::Put { role, to } => {}
+            Move::Put { role, to } => {
+                self.add_piece(stm, *role, *to);
+            }
         }
 
         self.pos.play_unchecked(mv);
         self.nnue.commit();
 
-        self.move_stack.push(mv.clone());
+        self.move_stack.push(Some(mv.clone()));
         self.history.push(self.get_hash());
     }
+
     pub fn undo_move(&mut self) {
         self.nnue.pop();
         let _mv = self.move_stack.pop();
         self.pos = self.state_stack.pop().unwrap();
         self.history.pop();
+        self.ply -= 1;
+    }
+
+    pub fn make_null_move(&mut self) {
+        self.state_stack.push(self.pos.clone());
+        if let Ok(pos) = self.pos.clone().swap_turn() {
+            self.pos = pos;
+        }
+        self.move_stack.push(None);
+        self.ply += 1;
+    }
+
+    pub fn undo_null_move(&mut self) {
+        self.pos = self.state_stack.pop().unwrap();
+        let _mv = self.move_stack.pop();
+        self.ply -= 1;
+    }
+
+    pub fn is_last_move_null(&self) -> bool {
+        self.move_stack.last().is_none()
     }
 
     pub fn evaluate(&self) -> i32 {
@@ -187,9 +232,25 @@ impl Board {
         false
     }
 
+    pub fn set_eval(&mut self, ply: usize, eval: i32) {
+        self.eval_stack[ply] = eval;
+    }
+
+    pub fn is_improving(&self) -> bool {
+        let improving = || {
+            let mut previous = self.eval_stack[self.ply - 2];
+            if previous == -Score::INFINITY && self.ply >= 4 {
+                previous = self.eval_stack[self.ply - 4];
+            }
+            self.eval_stack[self.ply] > previous
+        };
+        self.ply < 2 || (!self.in_check() && improving())
+    }
+
     fn add_piece(&mut self, color: Color, piece: Role, square: Square) {
         self.nnue.activate(color, piece, square);
     }
+
     fn remove_piece(&mut self, color: Color, piece: Role, square: Square) {
         self.nnue.deactivate(color, piece, square);
     }
