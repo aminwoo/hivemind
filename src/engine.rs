@@ -34,7 +34,6 @@ impl Engine {
         self.search
             .init(Arc::clone(&self.board), Arc::clone(&self.tt_search));
         self.print_logo();
-        self.print_about();
 
         let mut cmd = String::new();
         let mut quit = false;
@@ -50,6 +49,7 @@ impl Engine {
                 self.search.send("quit".to_string());
             }
             if cmd == "uci" {
+                self.print_options();
                 println!("uciok");
             }
             if cmd == "isready" {
