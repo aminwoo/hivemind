@@ -30,10 +30,6 @@ Node* Node::get_best_child() {
                        return sqrtVisits * prior / (1.0f + childVisit);
                    });
 
-
-    /*std::vector<float> qValues = childValueSum / (1.0f + childVisits); */
-    /*std::vector<float> uValues = sqrt(visits) * childPriors / (1.0f + childVisits);*/
-
     for (size_t i = 0; i < numChildren; i++) {
         float value = qValues[i] + c * uValues[i];
         if (value > bestValue) {

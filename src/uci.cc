@@ -16,8 +16,6 @@ void UCI::stop() {
 }
 
 void UCI::position(istringstream& is) {
-    //stop(); 
-
     string token, fen;
     is >> token;
 
@@ -29,8 +27,6 @@ void UCI::position(istringstream& is) {
 }
 
 void UCI::go(istringstream& is) {
-    //stop(); 
-
     string token;
     is >> token >> token;
 

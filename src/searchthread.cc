@@ -49,14 +49,6 @@ void SearchThread::run_iteration(Board& board, Engine& engine) {
         return;
     }
 
-    
-    /*std::cout << actionSide << std::endl;*/
-    /*std::cout << "Value estimate: " << valueOutput[0] << std::endl;*/
-    /*for (int i = 0; i < NB_POLICY_VALUES(); i++) {*/
-    /*    std::cout << policyOutput[i] << ' ';*/
-    /*}*/
-    /*std::cout << std::endl;*/
-
     std::vector<std::pair<int, Stockfish::Move>> actions = board.legal_moves(actionSide);
     if (actions.size() && actionSide != root->get_action_side() && board.side_to_move(0) == board.side_to_move(1)) { 
         actions.emplace_back(0, Stockfish::MOVE_NULL);
@@ -64,11 +56,6 @@ void SearchThread::run_iteration(Board& board, Engine& engine) {
 
     // Softmax 
     std::vector<float> priors = get_normalized_probablity(policyOutput, actions, board);
-
-    /*for (size_t i = 0; i < priors.size(); i++) {*/
-    /*    std::cout << board.uci_move(actions[i].first, actions[i].second) << ' ' << priors[i] << std::endl;*/
-    /*}*/
-
 
     float value = valueOutput[0];
     if (actions.empty()) {

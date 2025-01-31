@@ -16,9 +16,6 @@ public:
         if (severity == Severity::kERROR || severity == Severity::kINTERNAL_ERROR) {
             std::cerr << "TensorRT error: " << msg << std::endl;
         }
-        /*if (severity != Severity::kINFO) {*/
-        /*    std::cout << msg << std::endl;*/
-        /*}*/
     }
 };
 

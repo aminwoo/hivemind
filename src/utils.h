@@ -72,8 +72,6 @@ inline std::vector<float> get_normalized_probablity(float* policyOutput, std::ve
             uci.pop_back();
         }
 
-        /*std::cout << uci << ' ' << mirror_move(uci) << std::endl;*/
-
         if (board.side_to_move(action.first) == Stockfish::BLACK) {
             probs[i] = policyOutput[POLICY_INDEX[mirror_move(uci)]]; 
         }
