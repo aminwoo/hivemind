@@ -65,9 +65,6 @@ inline std::vector<float> get_normalized_probablity(float* policyOutput, std::ve
         std::pair<int, Stockfish::Move> action = actions[i]; 
         std::string uci = board.uci_move(action.first, action.second);
 
-        if (uci.back() == 'r' || uci.back() == 'b') {
-            probs[i] = -std::numeric_limits<float>::infinity(); 
-        }
         if (uci.back() == 'q') {
             uci.pop_back();
         }
@@ -77,6 +74,10 @@ inline std::vector<float> get_normalized_probablity(float* policyOutput, std::ve
         }
         else {
             probs[i] = policyOutput[POLICY_INDEX[uci]];
+        }
+
+        if (uci.back() == 'r' || uci.back() == 'b') {
+            probs[i] = -std::numeric_limits<float>::infinity(); 
         }
     }
 
