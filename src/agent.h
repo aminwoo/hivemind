@@ -1,8 +1,6 @@
 #ifndef AGENT_H
 #define AGENT_H
 
-#include <iomanip>
-
 #include "searchthread.h"
 #include "board.h"
 #include "node.h"
