@@ -14,11 +14,12 @@
 
 class Board {
     private:
+
+    public: 
         std::unique_ptr<Stockfish::Position> pos[2];
         Stockfish::StateListPtr states[2];
         const std::string startingFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"; 
 
-    public: 
         Board();
         Board(const Board& board);
         ~Board(); 
@@ -35,7 +36,7 @@ class Board {
         void set(std::string fen); 
         void push_move(int board_num, Stockfish::Move move);
         void pop_move(int board_num);
-        std::vector<Stockfish::Move> legal_moves(int board_num);
+        std::vector<std::pair<int, Stockfish::Move>> legal_moves(int board_num);
         std::vector<std::pair<int, Stockfish::Move>> legal_moves(Stockfish::Color side);
 
         void add_to_hand(int board_num, Stockfish::Piece p) {
@@ -129,6 +130,10 @@ class Board {
             // Concatenate board_num and move_str without a space
             return oss.str() + move_str;
         }
+
+        bool is_checkmate(Stockfish::Color side);
+
+        bool check_mate_in_one(Stockfish::Color side);
 };
 
 #endif

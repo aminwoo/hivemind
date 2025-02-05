@@ -88,40 +88,67 @@ void Board::pop_move(int board_num) {
     states[board_num]->pop_back();
 }
 
-std::vector<Stockfish::Move> Board::legal_moves(int board_num) {
-    std::vector<Stockfish::Move> legal_moves;
+std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(int board_num) {
+    std::vector<std::pair<int, Stockfish::Move>> legal_moves;
     for(const Stockfish::ExtMove& move : Stockfish::MoveList<Stockfish::LEGAL>(*pos[board_num])) {
-        legal_moves.emplace_back(move);
+        legal_moves.emplace_back(board_num, move);
     }
     return legal_moves;
 }
 
 std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color side) {
     std::vector<std::pair<int, Stockfish::Move>> moves;
+
+    if (is_checkmate(side)) {
+        return {};
+    }
     
-    bool mated;
     if (pos[0]->side_to_move() == side) {
-        mated = true; 
         for (const Stockfish::ExtMove& move : Stockfish::MoveList<Stockfish::LEGAL>(*pos[0])) {
-            mated = false; 
             moves.emplace_back(0, move);
-        }
-        if (mated) {
-            return {}; 
         }
     }
 
     if (pos[1]->side_to_move() == ~side) {
-        mated = true; 
         for (const Stockfish::ExtMove& move : Stockfish::MoveList<Stockfish::LEGAL>(*pos[1])) {
-            mated = false; 
             moves.emplace_back(1, move);
-        }
-        if (mated) {
-            return {}; 
         }
     }
     return moves;
+}
+
+bool Board::is_checkmate(Stockfish::Color side) {
+    if (pos[0]->side_to_move() == side && pos[0]->checkers()) {
+        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[0]);
+        if (!legalMoves.size())
+            return true;
+    }
+
+    if (pos[1]->side_to_move() == ~side && pos[1]->checkers()) {
+        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[1]);
+        if (!legalMoves.size())
+            return true;
+
+    }
+
+    return false;
+}
+
+bool Board::check_mate_in_one(Stockfish::Color side) {
+    // Edge case where team can make two consecutive moves 
+    // e.g take one piece from one board and mate on the other
+
+    // Get all legal moves for the given side
+    std::vector<std::pair<int, Stockfish::Move>> actions = legal_moves(side);
+    for (const auto& action : actions) {
+        push_move(action.first, action.second);
+        if (is_checkmate(~side)) {
+            pop_move(action.first);
+            return true;
+        }
+        pop_move(action.first);
+    }
+    return false;
 }
 
 Board::~Board() {
