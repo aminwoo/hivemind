@@ -1,5 +1,8 @@
 #include "searchthread.h"
 #include "utils.h"
+#include <string>
+#include <iomanip>
+
 
 
 SearchThread::SearchThread() {
@@ -49,16 +52,35 @@ void SearchThread::run_iteration(Board& board, Engine& engine) {
         return;
     }
 
-    std::vector<std::pair<int, Stockfish::Move>> actions = board.legal_moves(actionSide);
-    if (actions.size() && actionSide != root->get_action_side() && board.side_to_move(0) == board.side_to_move(1)) { 
+    std::vector<std::pair<int, Stockfish::Move>> actions; 
+    actions = board.legal_moves(actionSide);
+    /*if (leaf == root) {*/
+    /*    actions = board.legal_moves(0);*/
+    /*}*/
+    /*else {*/
+    /*    actions = board.legal_moves(actionSide);*/
+    /*}*/
+
+
+    if (!actions.empty() && actionSide != root->get_action_side() && board.side_to_move(0) == board.side_to_move(1)) { 
         actions.emplace_back(0, Stockfish::MOVE_NULL);
     }
 
     // Softmax 
     std::vector<float> priors = get_normalized_probablity(policyOutput, actions, board);
 
+    /*if (leaf == root) {*/
+    /*    for (size_t i = 0; i < priors.size(); i++) {*/
+    /*        std::cout << board.uci_move(actions[i].first, actions[i].second) << ' ' << priors[i] << std::endl;*/
+    /*    }*/
+    /*}*/
+    /*std::cout << *board.pos[0] << std::endl;*/
+    /*for (size_t i = 0; i < priors.size(); i++) {*/
+    /*    std::cout << board.uci_move(actions[i].first, actions[i].second) << ' ' << priors[i] << std::endl;*/
+    /*}*/
+
     float value = valueOutput[0];
-    if (actions.empty()) {
+    if (actions.empty() || board.check_mate_in_one(~actionSide)) {
         value = -1;
     }
     else {
@@ -132,9 +154,38 @@ void SearchThread::backup_leaf_node(Board& board, float value, std::vector<Node*
 }
 
 void run_search_thread(SearchThread *t, Board& board, Engine& engine) {
-    for (int i = 0; i < 99999; i++) {
+    std::string bestMove = "none";
+
+    for (int i = 0; i < 999999; i++) {
         t->run_iteration(board, engine);
         t->get_search_info()->increment_nodes(1); 
+        /*Node* root = t->get_root_node();*/
+        /**/
+        /*if (i > 0 && i % 200 == 0) {*/
+        /*    SearchInfo* searchInfo = t->get_search_info();*/
+        /*    std::vector<Node*> pv = root->get_principle_variation(); */
+        /**/
+        /*    std::pair<int, Stockfish::Move> action = pv[0]->get_action(); */
+        /*    std::string uci = board.uci_move(action.first, action.second);*/
+        /**/
+        /*    if (uci != bestMove) {*/
+        /*        bestMove = uci;*/
+        /*        std::cout << std::setprecision(3) << std::fixed;*/
+        /*        std::cout << "Q value " << -pv[0]->Q();*/
+        /*        std::cout << " nodes " <<  searchInfo->get_nodes_searched();*/
+        /*        std::cout << " collisions " << searchInfo->get_collisions();*/
+        /*        std::cout << " pv ";*/
+        /*        for (Node* node : pv) {*/
+        /*            std::pair<int, Stockfish::Move> action = node->get_action(); */
+        /*            std::cout << board.uci_move(action.first, action.second) << " ";*/
+        /**/
+        /*        }*/
+        /*        std::cout << std::endl; */
+        /*    }*/
+        /**/
+        /*}*/
+
+
         if (t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() || !t->is_running()) {
             break; 
         }
