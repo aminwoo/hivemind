@@ -134,23 +134,6 @@ bool Board::is_checkmate(Stockfish::Color side) {
     return false;
 }
 
-bool Board::check_mate_in_one(Stockfish::Color side) {
-    // Edge case where team can make two consecutive moves 
-    // e.g take one piece from one board and mate on the other
-
-    // Get all legal moves for the given side
-    std::vector<std::pair<int, Stockfish::Move>> actions = legal_moves(side);
-    for (const auto& action : actions) {
-        push_move(action.first, action.second);
-        if (is_checkmate(~side)) {
-            pop_move(action.first);
-            return true;
-        }
-        pop_move(action.first);
-    }
-    return false;
-}
-
 Board::~Board() {
     
 }
