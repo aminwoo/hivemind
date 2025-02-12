@@ -4,12 +4,12 @@
 #include <mutex>
 
 struct SearchInfo {
+    std::mutex mtx;
     std::chrono::time_point<std::chrono::steady_clock>  start;
     int move_time; 
     int nodes = 0;
     int maxDepth = 0;  
     int collisions = 0; 
-    std::mutex mtx;
 
     SearchInfo(std::chrono::time_point<std::chrono::steady_clock>  start, int move_time) : start(start), move_time(move_time) {};
     ~SearchInfo() {}; 
