@@ -11,11 +11,15 @@
 ## Overview
 Bughouse is a four player chess variant where players exchange captured pieces which can be dropped on empty squares. The large game tree and complexities around coordination between players makes Bughouse a challenging domain for traditional Chess algorithms. HiveMind is a two board engine which uses a policy network and Monte Carlo tree search (MCTS) to narrow down the search space and coordinate both boards. 
 
-# Prerequisites 
-This project requires installation of CUDA Toolkit and TensorRT. 
+# Prerequisites
 
-CUDA Toolkit Installation steps 
+This project requires the installation of the CUDA Toolkit and TensorRT for inference.
 
+---
+
+## CUDA Toolkit Installation Steps
+
+Follow these steps to install the CUDA Toolkit:
 ```
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin
 mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600
@@ -26,7 +30,7 @@ apt-get update
 apt-get -y install cuda-toolkit-12-8
 ```
 
-TensorRT Installation steps 
+## TensorRT Installation Steps 
 ```
 wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.8.0/local_repo/nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb
 os="ubuntu2204"
