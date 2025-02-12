@@ -3,7 +3,7 @@
 #include <string>
 #include <iomanip>
 
-
+const int batchSize = 8; 
 
 SearchThread::SearchThread() {
 
@@ -23,27 +23,38 @@ void SearchThread::set_search_info(SearchInfo* info) {
 
 void SearchThread::set_root_node(Node* node) {
     root = node; 
+    root->set_value(0.0f);
 }
 
 Node* SearchThread::get_root_node() {
     return root; 
 }
 
-void SearchThread::run_iteration(Board& board, Engine& engine) {
-    // Create new leaf node from best trajectory
-    trajectoryBuffer.clear();
-    Node* leaf = add_leaf_node(board, trajectoryBuffer); 
+void SearchThread::add_trajectory_buffer() {
+    trajectoryBuffers.push_back(std::vector<Node*>()); 
+}
 
-    // Side of team to play
-    Stockfish::Color actionSide = leaf->get_action_side();
+void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine) {
+    float* inputPlanes = new float[batchSize * NB_INPUT_VALUES()];
+    float* valueOutput = new float[batchSize];
+    float* policyOutput = new float[batchSize * NB_POLICY_VALUES()];
 
-    // Run inference
-    float* inputPlanes = new float[NB_INPUT_VALUES()];
-    float* valueOutput = new float[1];
-    float* policyOutput = new float[NB_POLICY_VALUES()];
-    board_to_planes(board, inputPlanes, actionSide, actionSide != root->get_action_side());
+    std::vector<Node*> leafs; 
+    for (int i = 0; i < batchSize; i++) {
+        // Create new leaf node from best trajectory
+        trajectoryBuffers[i].clear();
+        Node* leaf = add_leaf_node(boards[i], trajectoryBuffers[i]); 
+        leafs.push_back(leaf);
 
-    if (!engine.runInference(inputPlanes, valueOutput, policyOutput)) {
+        // Side of team to play
+        Stockfish::Color actionSide = leaf->get_action_side();
+
+        // Run inference
+        board_to_planes(boards[i], inputPlanes + (i * NB_INPUT_VALUES()), actionSide, actionSide != root->get_action_side());
+    }
+
+
+    if (!engine->runInference(inputPlanes, valueOutput, policyOutput)) {
         std::cerr << "Inference failed" << std::endl;
 
         delete[] inputPlanes;
@@ -52,42 +63,30 @@ void SearchThread::run_iteration(Board& board, Engine& engine) {
         return;
     }
 
-    std::vector<std::pair<int, Stockfish::Move>> actions; 
-    actions = board.legal_moves(actionSide);
-    /*if (leaf == root) {*/
-    /*    actions = board.legal_moves(0);*/
-    /*}*/
-    /*else {*/
-    /*    actions = board.legal_moves(actionSide);*/
-    /*}*/
+    for (int i = 0; i < batchSize; i++) {
+        // Side of team to play
+        Stockfish::Color actionSide = leafs[i]->get_action_side();
 
+        std::vector<std::pair<int, Stockfish::Move>> actions; 
+        actions = boards[i].legal_moves(actionSide);
 
-    if (!actions.empty() && actionSide != root->get_action_side() && board.side_to_move(0) == board.side_to_move(1)) { 
-        actions.emplace_back(0, Stockfish::MOVE_NULL);
+        if (!actions.empty() && actionSide != root->get_action_side() && boards[i].side_to_move(0) == boards[i].side_to_move(1)) { 
+            actions.emplace_back(0, Stockfish::MOVE_NULL);
+        }
+
+        // Softmax 
+        std::vector<float> priors = get_normalized_probablity(policyOutput + (i * NB_POLICY_VALUES()), actions, boards[i]);
+
+        float value = valueOutput[i];
+        if (actions.empty()) {
+            value = -1.0f + (0.005f * leafs[i]->get_depth());
+        }
+        else {
+            expand_leaf_node(leafs[i], actions, priors); 
+        }
+        
+        backup_leaf_node(boards[i], value, trajectoryBuffers[i]);
     }
-
-    // Softmax 
-    std::vector<float> priors = get_normalized_probablity(policyOutput, actions, board);
-
-    /*if (leaf == root) {*/
-    /*    for (size_t i = 0; i < priors.size(); i++) {*/
-    /*        std::cout << board.uci_move(actions[i].first, actions[i].second) << ' ' << priors[i] << std::endl;*/
-    /*    }*/
-    /*}*/
-    /*std::cout << *board.pos[0] << std::endl;*/
-    /*for (size_t i = 0; i < priors.size(); i++) {*/
-    /*    std::cout << board.uci_move(actions[i].first, actions[i].second) << ' ' << priors[i] << std::endl;*/
-    /*}*/
-
-    float value = valueOutput[0];
-    if (actions.empty() || board.check_mate_in_one(~actionSide)) {
-        value = -1;
-    }
-    else {
-        expand_leaf_node(leaf, actions, priors); 
-    }
-    
-    backup_leaf_node(board, value, trajectoryBuffer);
 
     // Clean up allocated memory
     delete[] inputPlanes;
@@ -97,29 +96,42 @@ void SearchThread::run_iteration(Board& board, Engine& engine) {
 
 
 Node* SearchThread::add_leaf_node(Board& board, std::vector<Node*>& trajectoryBuffer) {
-    Node* curr = root;
+    Node* currentNode = root;
     while (true) {
-        trajectoryBuffer.emplace_back(curr); 
-        if (!curr->get_is_expanded()) {
+        currentNode->lock();
+
+        trajectoryBuffer.emplace_back(currentNode); 
+        if (!currentNode->get_is_expanded()) {
+            currentNode->unlock();
             break; 
         }
-        Node* bestChild = curr->get_best_child();
-        curr = bestChild; 
-        std::pair<int, Stockfish::Move> action = curr->get_action(); 
+
+        Node* bestChild = currentNode->get_best_child();
+        currentNode->apply_virtual_loss_to_child(currentNode->get_best_child_idx()); 
+        currentNode->unlock();
+
+        currentNode = bestChild; 
+        std::pair<int, Stockfish::Move> action = currentNode->get_action(); 
         if (action.second != Stockfish::MOVE_NULL) {
             board.push_move(action.first, action.second);
         }
     }
-    if (curr->is_added()) {
+
+    currentNode->lock();
+    if (currentNode->is_added()) {
         searchInfo->increment_colllisions(1);
     }
     else {
-        curr->set_is_added(true); 
+        currentNode->set_is_added(true); 
     }
-    return curr;
+    currentNode->unlock();
+
+    return currentNode;
 }
 
 void SearchThread::expand_leaf_node(Node* leaf, std::vector<std::pair<int, Stockfish::Move>> actions, std::vector<float> priors) {
+    leaf->lock(); 
+
     if (!leaf->get_is_expanded()) {
         size_t num_children = actions.size(); 
         for (size_t i = 0; i < num_children; i++) {
@@ -131,17 +143,27 @@ void SearchThread::expand_leaf_node(Node* leaf, std::vector<std::pair<int, Stock
         }
     }
     leaf->get_best_child();
+    leaf->apply_virtual_loss_to_child(leaf->get_best_child_idx()); 
+
+    leaf->unlock(); 
 }
 
 void SearchThread::backup_leaf_node(Board& board, float value, std::vector<Node*>& trajectoryBuffer) {
     for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
         Node* node = *it;
+
+        node->lock();
+
         if (node->get_is_expanded()) {
             node->update(node->get_best_child_idx(), value); 
+            node->revert_virtual_loss(node->get_best_child_idx()); 
         }
         else {
             node->update_terminal(value);
         }
+
+        node->unlock(); 
+
         value = -value;
 
         if (node != root) {
@@ -153,41 +175,26 @@ void SearchThread::backup_leaf_node(Board& board, float value, std::vector<Node*
     }
 }
 
-void run_search_thread(SearchThread *t, Board& board, Engine& engine) {
-    std::string bestMove = "none";
+void run_search_thread(SearchThread *t, Board& board, Engine* engine) {
+    Node* root = t->get_root_node();
 
-    for (int i = 0; i < 999999; i++) {
-        t->run_iteration(board, engine);
-        t->get_search_info()->increment_nodes(1); 
-        /*Node* root = t->get_root_node();*/
-        /**/
-        /*if (i > 0 && i % 200 == 0) {*/
-        /*    SearchInfo* searchInfo = t->get_search_info();*/
-        /*    std::vector<Node*> pv = root->get_principle_variation(); */
-        /**/
-        /*    std::pair<int, Stockfish::Move> action = pv[0]->get_action(); */
-        /*    std::string uci = board.uci_move(action.first, action.second);*/
-        /**/
-        /*    if (uci != bestMove) {*/
-        /*        bestMove = uci;*/
-        /*        std::cout << std::setprecision(3) << std::fixed;*/
-        /*        std::cout << "Q value " << -pv[0]->Q();*/
-        /*        std::cout << " nodes " <<  searchInfo->get_nodes_searched();*/
-        /*        std::cout << " collisions " << searchInfo->get_collisions();*/
-        /*        std::cout << " pv ";*/
-        /*        for (Node* node : pv) {*/
-        /*            std::pair<int, Stockfish::Move> action = node->get_action(); */
-        /*            std::cout << board.uci_move(action.first, action.second) << " ";*/
-        /**/
-        /*        }*/
-        /*        std::cout << std::endl; */
-        /*    }*/
-        /**/
-        /*}*/
+    std::vector<Board> boards; 
+    for (int i = 0; i < batchSize; i++) {
+        t->add_trajectory_buffer(); 
+        boards.emplace_back(board);
+    }
 
+    for (int i = 0; i < 99999; i++) {
+        t->run_iteration(boards, engine);
+        t->get_search_info()->increment_nodes(batchSize); 
 
-        if (t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() || !t->is_running()) {
-            break; 
+        if (!((i + 1) & 15)) {
+            root->lock(); 
+            if (root->Q() > 0.8 || t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() || !t->is_running()) {
+                root->unlock(); 
+                break; 
+            }
+            root->unlock(); 
         }
     } 
 }
