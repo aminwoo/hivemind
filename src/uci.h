@@ -1,5 +1,9 @@
-#ifndef UCI_H
-#define UCI_H
+#pragma once
+
+#include <thread>
+#include <sstream>
+#include <vector>
+#include <memory>
 
 #include "board.h"
 #include "constants.h"
@@ -28,5 +32,3 @@ public:
     void position(std::istringstream& is);
     void loop();
 };
-
-#endif
