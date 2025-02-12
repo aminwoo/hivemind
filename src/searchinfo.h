@@ -1,58 +1,62 @@
-#ifndef SEARCHINFO_H
-#define SEARCHINFO_H
+#pragma once
 
 #include <mutex>
+#include <chrono>
+#include <algorithm>
 
 struct SearchInfo {
     std::mutex mtx;
-    std::chrono::time_point<std::chrono::steady_clock>  start;
+    std::chrono::time_point<std::chrono::steady_clock> start;
     int move_time; 
     int nodes = 0;
     int maxDepth = 0;  
     int collisions = 0; 
 
-    SearchInfo(std::chrono::time_point<std::chrono::steady_clock>  start, int move_time) : start(start), move_time(move_time) {};
-    ~SearchInfo() {}; 
+    // Constructor initializes the start time and move time.
+    SearchInfo(std::chrono::time_point<std::chrono::steady_clock> start, int move_time)
+        : start(start), move_time(move_time) {}
+    
+    ~SearchInfo() = default;
 
-    int get_move_time() {
+    // Returns the move time.
+    int get_move_time() const {
         return move_time; 
     }
 
-    double elapsed() {
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
-        return elapsed.count(); 
+    // Returns the elapsed time in milliseconds since start.
+    double elapsed() const {
+        auto elapsed_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+        return elapsed_duration.count(); 
     }
 
-    inline int get_nodes_searched() {
+    inline int get_nodes_searched() const {
         return nodes; 
     }
 
-    inline int get_max_depth() {
+    inline int get_max_depth() const {
         return maxDepth; 
     }
 
-    inline int get_collisions() {
+    inline int get_collisions() const {
         return collisions; 
     }
 
+    // Safely increments the node counter.
     inline void increment_nodes(int value) {
-        mtx.lock();
+        std::lock_guard<std::mutex> lock(mtx);
         nodes += value; 
-        mtx.unlock(); 
     }
 
-    inline void increment_colllisions(int value) {
-        mtx.lock();
+    // Safely increments the collisions counter.
+    inline void increment_collisions(int value) {
+        std::lock_guard<std::mutex> lock(mtx);
         collisions += value; 
-        mtx.unlock(); 
     }
 
+    // Safely updates the maximum depth encountered.
     inline void set_max_depth(int depth) {
-        mtx.lock();
+        std::lock_guard<std::mutex> lock(mtx);
         maxDepth = std::max(maxDepth, depth);
-        mtx.unlock(); 
     }
-
 };
-
-#endif
