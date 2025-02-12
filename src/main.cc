@@ -6,12 +6,23 @@
 #include "Fairy-Stockfish/src/piece.h"
 #include "Fairy-Stockfish/src/types.h"
 #include <iostream>
+#include <cuda_runtime.h>
 
 std::unordered_map<std::string, int> POLICY_INDEX; 
 
 using namespace std; 
 
 int main() {
+    int deviceCount = 0;
+    cudaError_t error_id = cudaGetDeviceCount(&deviceCount);
+    if (error_id != cudaSuccess) {
+        std::cerr << "cudaGetDeviceCount failed: " 
+                  << cudaGetErrorString(error_id) << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    std::cout << "Number of available GPUs: " << deviceCount << std::endl;
+
     Stockfish::pieceMap.init();
     Stockfish::variants.init();
     Stockfish::Bitboards::init();
@@ -25,5 +36,9 @@ int main() {
     }
 
     UCI uci;
+    std::vector<int> deviceIds(deviceCount);
+    iota(deviceIds.begin(), deviceIds.end(), 0);
+
+    uci.initializeEngines(deviceIds);
     uci.loop();
 }
