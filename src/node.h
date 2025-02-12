@@ -2,6 +2,7 @@
 #define NODE_H
 
 #include <vector>
+#include <mutex>
 #include <math.h>
 
 #include "Fairy-Stockfish/src/types.h"
@@ -10,8 +11,12 @@
 #include "constants.h"
 #include "utils.h"
 
+
 class Node {
     private:
+        std::mutex mtx;
+
+        std::vector<float> qValues;
         std::vector<float> childValueSum;
         std::vector<float> childPriors;
         std::vector<int> childVisits; 
@@ -19,6 +24,7 @@ class Node {
         std::pair<int, Stockfish::Move> action; 
         int bestChildIdx = -1; 
         float valueSum = -1.0f; 
+        int m_depth = 0; 
         int m_visits = 0; 
         bool m_is_added = false; 
         bool m_is_expanded = false;
@@ -31,6 +37,7 @@ class Node {
         void update(size_t childIdx, float value) {
             childValueSum[childIdx] += value; 
             childVisits[childIdx]++; 
+            qValues[childIdx] = childValueSum[childIdx] / (1.0f + childVisits[childIdx]);
             valueSum += value; 
             m_visits++; 
         }
@@ -40,9 +47,24 @@ class Node {
             m_visits++; 
         }
 
+        void lock();
+        void unlock();
+
+        void apply_virtual_loss_to_child(int childIdx);
+
+        void revert_virtual_loss(int childIdx); 
+
         std::vector<Node*> get_principle_variation();
         
         Node* get_best_child(); 
+
+        void set_depth(int value) {
+            m_depth = value; 
+        }
+
+        int get_depth() {
+            return m_depth; 
+        }
 
         bool is_added() {
             return m_is_added; 
@@ -60,12 +82,16 @@ class Node {
             bestChildIdx = value; 
         }
 
+        bool is_terminal() const;
+
         void add_child(std::shared_ptr<Node> child, std::pair<int, Stockfish::Move> action, float prior) {
             childValueSum.push_back(-1.0f);
             childPriors.push_back(prior);
             childVisits.push_back(0);
             child->set_action(action); 
+            child->set_depth(this->get_depth() + 1);
             children.emplace_back(child); 
+            qValues.push_back(-1.0f);
         }
 
         std::vector<std::shared_ptr<Node>> get_children() {
@@ -78,6 +104,10 @@ class Node {
 
         void set_is_expanded(bool value) {
             m_is_expanded = value;
+        }
+
+        void set_value(float value) {
+            valueSum = value;
         }
 
         std::pair<int, Stockfish::Move> get_action() {
@@ -120,5 +150,7 @@ class Node {
             return valueSum / (1.0f + m_visits);
         }
 };
+
+float get_current_cput(float visits);
 
 #endif

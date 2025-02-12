@@ -2,24 +2,28 @@
 #include <limits>
 #include <algorithm>
 
+void Node::apply_virtual_loss_to_child(int childIdx) {
+    assert (m_is_expanded); 
+    assert (children.size() > 0);
+    assert (childVisits.size() > 0); 
+    assert (childIdx < childVisits.size()); 
+    qValues[childIdx] = (double(qValues[childIdx]) * childVisits[childIdx] - 1) / double(childVisits[childIdx] + 1);
+    ++childVisits[childIdx];
+    ++m_visits;
+}
+
+void Node::revert_virtual_loss(int childIdx) {
+    qValues[childIdx] = (double(qValues[childIdx]) * childVisits[childIdx] + 1) / (childVisits[childIdx] - 1);
+    --childVisits[childIdx];
+    --m_visits;
+}
+
 Node* Node::get_best_child() {
     Node* bestChild = nullptr; 
     float bestValue = -std::numeric_limits<float>::infinity();
-    float c = 2.5; 
-    assert(visits >= 0); 
-
+    float c = get_current_cput(m_visits); 
     size_t numChildren = children.size(); 
-
-    std::vector<float> qValues(numChildren);
     std::vector<float> uValues(numChildren);
-
-    // Calculate qValues = childValueSum / (1.0f + childVisits)
-    std::transform(childValueSum.begin(), childValueSum.end(),
-                   childVisits.begin(),
-                   qValues.begin(),
-                   [](float valueSum, float visit) -> float {
-                       return valueSum / (1.0f + visit);
-                   });
 
     // Calculate uValues = sqrt(visits) * childPriors / (1.0f + childVisits)
     float sqrtVisits = std::sqrt(m_visits);
@@ -43,21 +47,44 @@ Node* Node::get_best_child() {
 
 std::vector<Node*> Node::get_principle_variation() {
     std::vector<Node*> pv; 
-    Node* curr = this; 
-    for (int i = 0; i < 10; i++) {
-        if (curr->get_children().empty()) {
-            break; 
-        }
-        Node* mostVisitedChild; 
+    Node* currentNode = this; 
+    while (currentNode != nullptr) {
+        currentNode->lock();
+
+        Node* mostVisitedChild = nullptr; 
         int mostVisits = 0; 
-        for (auto& child: curr->get_children()) {
+        for (auto& child: currentNode->get_children()) {
             if (child->get_visits() > mostVisits) {
                 mostVisits = child->get_visits(); 
                 mostVisitedChild = child.get(); 
             }
         }
+        if (mostVisitedChild == nullptr) {
+            currentNode->unlock();
+            break; 
+        }
+
         pv.emplace_back(mostVisitedChild); 
-        curr = mostVisitedChild;
+        currentNode->unlock();
+        currentNode = mostVisitedChild;
     }
     return pv; 
+}
+
+void Node::lock()
+{
+    mtx.lock();
+}
+
+void Node::unlock()
+{
+    mtx.unlock();
+}
+
+
+float get_current_cput(float visits)
+{
+    float cpuctInit = 2.5f; 
+    float cpuctBase = 19652.0f; 
+    return log((visits + cpuctBase + 1) / cpuctBase) + cpuctInit;
 }
