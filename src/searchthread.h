@@ -1,15 +1,10 @@
-#ifndef SEARCHTHREAD_H
-#define SEARCHTHREAD_H
+#pragma once
 
 #include "board.h"
 #include "node.h"
 #include "searchinfo.h"
 #include "engine.h"
 #include "planes.h"
-#include <chrono> 
-#include <mutex>
-#include <math.h>
-
 
 class Node;
 
@@ -39,4 +34,3 @@ private:
 
 void run_search_thread(SearchThread *t, Board& board, Engine* engine);
 
-#endif
