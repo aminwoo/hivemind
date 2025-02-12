@@ -2,6 +2,9 @@
 #include "utils.h"
 #include <string>
 #include <iomanip>
+#include <chrono> 
+#include <mutex>
+#include <math.h>
 
 const int batchSize = 8; 
 
@@ -119,7 +122,7 @@ Node* SearchThread::add_leaf_node(Board& board, std::vector<Node*>& trajectoryBu
 
     currentNode->lock();
     if (currentNode->is_added()) {
-        searchInfo->increment_colllisions(1);
+        searchInfo->increment_collisions(1);
     }
     else {
         currentNode->set_is_added(true); 
