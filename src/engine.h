@@ -21,13 +21,16 @@ public:
 
 class Engine {
 public:
-    Engine();
+    Engine(int deviceId);
     ~Engine();
 
     bool loadNetwork(const std::string& onnxFile, const std::string& engineFile);
     bool runInference(float* inputPlanes, float* valueOutput, float* policyOutput);
 
 private:
+    // The GPU id that this Engine instance is bound to.
+    int m_deviceId;
+    
     std::unique_ptr<nvinfer1::ICudaEngine> m_engine = nullptr;
     std::unique_ptr<nvinfer1::IExecutionContext> m_context = nullptr;
     Logger m_logger;

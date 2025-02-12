@@ -1,9 +1,10 @@
 #include "engine.h"
 
-Engine::Engine() {
-    // Initialize CUDA (if needed)
-    cudaSetDevice(0);
-    cudaStreamCreate(&m_cudaStream); // Create CUDA stream once
+Engine::Engine(int deviceId) : m_deviceId(deviceId) {
+    // Set the current CUDA device to the one passed in
+    cudaSetDevice(m_deviceId);
+    // Create a CUDA stream on this device
+    cudaStreamCreate(&m_cudaStream);
 }
 
 Engine::~Engine() {
@@ -70,9 +71,9 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
 
     auto profile = builder->createOptimizationProfile();
     const char* inputTensorName = network->getInput(0)->getName();
-    profile->setDimensions(inputTensorName, nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4{1, 32, 8, 16});
-    profile->setDimensions(inputTensorName, nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4{1, 32, 8, 16});
-    profile->setDimensions(inputTensorName, nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4{1, 32, 8, 16});
+    profile->setDimensions(inputTensorName, nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4{8, 32, 8, 16});
+    profile->setDimensions(inputTensorName, nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4{8, 32, 8, 16});
+    profile->setDimensions(inputTensorName, nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4{8, 32, 8, 16});
     config->addOptimizationProfile(profile);
 
     m_engine.reset(builder->buildEngineWithConfig(*network, *config));
@@ -138,13 +139,13 @@ bool Engine::initializeResources() {
     }
 
     // Define input and output sizes
-    const int batchSize = 1;
+    const int batchSize = 8;
     const int inputChannels = 32;
     const int inputHeight = 8;
     const int inputWidth = 16;
     const int inputSize = batchSize * inputChannels * inputHeight * inputWidth;
 
-    const int valueOutputSize = 1;
+    const int valueOutputSize = batchSize;
     const int policyOutputChannels = 73;
     const int policyOutputHeight = 8;
     const int policyOutputWidth = 16;
@@ -173,14 +174,17 @@ bool Engine::runInference(float* inputPlanes, float* valueOutput, float* policyO
         return false;
     }
 
+    // Ensure the correct device is set for this thread.
+    cudaSetDevice(m_deviceId);
+
     // Define input and output sizes
-    const int batchSize = 1;
+    const int batchSize = 8;
     const int inputChannels = 32;
     const int inputHeight = 8;
     const int inputWidth = 16;
     const int inputSize = batchSize * inputChannels * inputHeight * inputWidth;
 
-    const int valueOutputSize = 1;
+    const int valueOutputSize = batchSize;
     const int policyOutputChannels = 73;
     const int policyOutputHeight = 8;
     const int policyOutputWidth = 16;
