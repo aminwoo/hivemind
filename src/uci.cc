@@ -66,14 +66,40 @@ void UCI::stop() {
 }
 
 void UCI::position(istringstream& is) {
-    string token, fen;
+    std::string token;
     is >> token;
-
-    while (is >> token) {
-        fen += token + " ";
+    
+    // Set the board position
+    if (token == "startpos") {
+        // Use a predefined starting FEN for the initial position.
+        board.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     }
-
-    board.set(fen); 
+    else if (token == "fen") {
+        // Build the FEN string from the next six tokens.
+        std::string fen;
+        for (int i = 0; i < 6; ++i) {
+            is >> token;
+            fen += token + " ";
+        }
+        board.set(fen);
+    }
+    else {
+        // Unrecognized position command; you might want to handle this error.
+        return;
+    }
+    
+    // Apply moves if they are provided.
+    if (is >> token && token == "moves") {
+        // Parse move list (if any)
+        while (is >> token) {
+            int boardNum = token[0] - '1'; // '1' becomes 0, '2' becomes 1.
+            std::string moveStr = token.substr(1); // Extract move string without board indicator
+            Stockfish::Move m = Stockfish::UCI::to_move(*board.pos[boardNum], moveStr);
+            if (m == Stockfish::MOVE_NONE)
+                break;  // Stop if an invalid move is encountered.
+            board.push_move(boardNum, m);
+        }
+    }
 }
 
 void UCI::go(std::istringstream& is) {
@@ -81,7 +107,7 @@ void UCI::go(std::istringstream& is) {
     // Consume the first two tokens (e.g. "go" and "movetime")
     is >> token >> token;
     
-    int move_time = std::stoi(token);
+    int moveTime = std::stoi(token);
     ongoingSearch = true;
     agent->set_is_running(true);
 
@@ -100,10 +126,28 @@ void UCI::go(std::istringstream& is) {
 
     // Launch the search thread using a lambda that calls Agent::run_search,
     // passing in the board, the collection of engines, and the move time.
-    mainSearchThread = new std::thread([this, enginePtrs, move_time]() {
-        agent->run_search(board, enginePtrs, move_time);
+    mainSearchThread = new std::thread([this, enginePtrs, moveTime]() {
+        agent->run_search(board, enginePtrs, moveTime, teamSide);
     });
 }
+
+void UCI::team(std::istringstream& is) {
+  // Expect input in the format: "team <side>"
+  std::string side;
+  is >> side; 
+
+  // Set team side based on the side token.
+  if (side == "white") {
+    teamSide = Stockfish::WHITE;
+  } else if (side == "black") {
+    teamSide = Stockfish::BLACK;
+  } else {
+    return;
+  }
+
+  //std::cout << "Team side set to: " << teamSide << std::endl;
+}
+
 
 void UCI::loop() {
     string token, cmd;
@@ -119,6 +163,7 @@ void UCI::loop() {
 
         if (token == "uci")             cout << "uciok"  << endl;
         else if (token == "go")         go(is);
+        else if (token == "team")       team(is);
         else if (token == "position")   position(is);
         else if (token == "stop")       stop();
 
