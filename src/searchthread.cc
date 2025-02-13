@@ -84,6 +84,9 @@ void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine) {
         if (actions.empty()) {
             value = -1.0f + (0.005f * leafs[i]->get_depth());
         }
+        else if (boards[i].is_draw(0)) {
+            value = -0.1f; 
+        }
         else {
             expand_leaf_node(leafs[i], actions, priors); 
         }
