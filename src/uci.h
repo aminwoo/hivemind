@@ -16,6 +16,7 @@ private:
     std::thread* mainSearchThread;
     std::unique_ptr<Agent> agent;
     Board board;
+    Stockfish::Color teamSide = Stockfish::WHITE;
     std::vector<std::unique_ptr<Engine>> engines;
     bool ongoingSearch = false;
 
@@ -28,6 +29,7 @@ public:
     void initializeEngines(const std::vector<int>& deviceIds);
 
     void go(std::istringstream& is);
+    void team(std::istringstream& is);
     void stop();
     void position(std::istringstream& is);
     void loop();
