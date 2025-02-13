@@ -38,7 +38,7 @@ public:
      * @param engines A vector of engine pointers to use during the search.
      * @param move_time The allotted time for move calculation.
      */
-    void run_search(Board& board, const std::vector<Engine*>& engines, int move_time);
+    void run_search(Board& board, const std::vector<Engine*>& engines, int move_time, Stockfish::Color side);
 
     /**
      * @brief Sets the running state of the agent.

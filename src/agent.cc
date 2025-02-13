@@ -19,17 +19,18 @@ Agent::~Agent() {
     }
 }
 
-void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int move_time) {
+void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, Stockfish::Color side) {
     // Determine which side to move.
-    Stockfish::Color side = board.side_to_move(0);
-    if (board.is_checkmate(side)) {
+    // Stockfish::Color side = board.side_to_move(0);
+
+    if (board.legal_moves(side).empty()) {
         std::cout << "bestmove (none)" << std::endl;
         return;
     }
 
     // Create the root node and search info for the search.
     Node* root = new Node(side);
-    SearchInfo* searchInfo = new SearchInfo(std::chrono::steady_clock::now(), move_time);
+    SearchInfo* searchInfo = new SearchInfo(std::chrono::steady_clock::now(), moveTime);
 
     // Allocate an array of thread pointers (one per search thread).
     std::thread** threads = new std::thread*[numberOfThreads];
