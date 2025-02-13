@@ -7,20 +7,20 @@
 struct SearchInfo {
     std::mutex mtx;
     std::chrono::time_point<std::chrono::steady_clock> start;
-    int move_time; 
+    int moveTime; 
     int nodes = 0;
     int maxDepth = 0;  
     int collisions = 0; 
 
     // Constructor initializes the start time and move time.
-    SearchInfo(std::chrono::time_point<std::chrono::steady_clock> start, int move_time)
-        : start(start), move_time(move_time) {}
+    SearchInfo(std::chrono::time_point<std::chrono::steady_clock> start, int moveTime)
+        : start(start), moveTime(moveTime) {}
     
     ~SearchInfo() = default;
 
     // Returns the move time.
     int get_move_time() const {
-        return move_time; 
+        return moveTime; 
     }
 
     // Returns the elapsed time in milliseconds since start.
