@@ -1460,7 +1460,7 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
       Piece unpromotedCaptured = unpromoted_piece_on(capsq);
       remove_piece(capsq);
 
-      st->pieceToHand = capturedPromoted ? make_piece(~color_of(captured), PAWN) : captured;
+      st->pieceToHand = capturedPromoted ? make_piece(color_of(captured), PAWN) : captured;
 
       if (type_of(m) == EN_PASSANT)
           board[capsq] = NO_PIECE;
