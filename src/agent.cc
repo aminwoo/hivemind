@@ -19,7 +19,7 @@ Agent::~Agent() {
     }
 }
 
-void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, Stockfish::Color side) {
+void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, Stockfish::Color side, bool canSit) {
     // Determine which side to move.
     // Stockfish::Color side = board.side_to_move(0);
 
@@ -57,7 +57,7 @@ void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int mo
         // Create a new thread for the search.
         // Note: run_search_thread is assumed to be a function that accepts a SearchThread*,
         // a Board reference, and an Engine reference.
-        threads[i] = new std::thread(run_search_thread, searchThreads[i], std::ref(board), engine);
+        threads[i] = new std::thread(run_search_thread, searchThreads[i], std::ref(board), engine, canSit);
     }
 
     // Wait for all threads to finish.

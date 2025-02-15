@@ -17,6 +17,7 @@ private:
     std::unique_ptr<Agent> agent;
     Board board;
     Stockfish::Color teamSide = Stockfish::WHITE;
+    bool canSit = false;
     std::vector<std::unique_ptr<Engine>> engines;
     bool ongoingSearch = false;
 
@@ -30,6 +31,7 @@ public:
 
     void go(std::istringstream& is);
     void team(std::istringstream& is);
+    void mode(std::istringstream& is);
     void stop();
     void position(std::istringstream& is);
     void loop();

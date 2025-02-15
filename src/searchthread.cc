@@ -37,7 +37,7 @@ void SearchThread::add_trajectory_buffer() {
     trajectoryBuffers.push_back(std::vector<Node*>()); 
 }
 
-void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine) {
+void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine, bool canSit) {
     float* inputPlanes = new float[batchSize * NB_INPUT_VALUES()];
     float* valueOutput = new float[batchSize];
     float* policyOutput = new float[batchSize * NB_POLICY_VALUES()];
@@ -52,8 +52,9 @@ void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine) {
         // Side of team to play
         Stockfish::Color actionSide = leaf->get_action_side();
 
-        // Run inference
-        board_to_planes(boards[i], inputPlanes + (i * NB_INPUT_VALUES()), actionSide, actionSide != root->get_action_side());
+        bool sit = (actionSide == root->get_action_side()) == canSit;
+        // Run inference 
+        board_to_planes(boards[i], inputPlanes + (i * NB_INPUT_VALUES()), actionSide, sit);
     }
 
 
@@ -70,10 +71,11 @@ void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine) {
         // Side of team to play
         Stockfish::Color actionSide = leafs[i]->get_action_side();
 
+        bool sit = (actionSide == root->get_action_side()) == canSit;
         std::vector<std::pair<int, Stockfish::Move>> actions; 
         actions = boards[i].legal_moves(actionSide);
 
-        if (!actions.empty() && actionSide != root->get_action_side() && boards[i].side_to_move(0) == boards[i].side_to_move(1)) { 
+        if (!actions.empty() && sit && boards[i].side_to_move(0) == boards[i].side_to_move(1)) { 
             actions.emplace_back(0, Stockfish::MOVE_NULL);
         }
 
@@ -181,7 +183,7 @@ void SearchThread::backup_leaf_node(Board& board, float value, std::vector<Node*
     }
 }
 
-void run_search_thread(SearchThread *t, Board& board, Engine* engine) {
+void run_search_thread(SearchThread *t, Board& board, Engine* engine, bool canSit) {
     Node* root = t->get_root_node();
 
     std::vector<Board> boards; 
@@ -191,7 +193,7 @@ void run_search_thread(SearchThread *t, Board& board, Engine* engine) {
     }
 
     for (int i = 0; i < 99999; i++) {
-        t->run_iteration(boards, engine);
+        t->run_iteration(boards, engine, canSit);
         t->get_search_info()->increment_nodes(batchSize); 
 
         if (!((i + 1) & 15)) {

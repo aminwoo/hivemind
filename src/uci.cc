@@ -127,7 +127,7 @@ void UCI::go(std::istringstream& is) {
     // Launch the search thread using a lambda that calls Agent::run_search,
     // passing in the board, the collection of engines, and the move time.
     mainSearchThread = new std::thread([this, enginePtrs, moveTime]() {
-        agent->run_search(board, enginePtrs, moveTime, teamSide);
+        agent->run_search(board, enginePtrs, moveTime, teamSide, canSit);
     });
 }
 
@@ -148,6 +148,20 @@ void UCI::team(std::istringstream& is) {
   //std::cout << "Team side set to: " << teamSide << std::endl;
 }
 
+void UCI::mode(std::istringstream& is) {
+  // Expect input in the format: "set mode <go/sit>"
+  std::string token;
+  is >> token >> token; 
+
+  if (token == "sit") {
+    canSit = true;
+  } else if (token == "go") {
+    canSit = false;
+  } else {
+    return;
+  }
+}
+
 
 void UCI::loop() {
     string token, cmd;
@@ -164,6 +178,7 @@ void UCI::loop() {
         if (token == "uci")             cout << "uciok"  << endl;
         else if (token == "go")         go(is);
         else if (token == "team")       team(is);
+        else if (token == "set")        mode(is);
         else if (token == "position")   position(is);
         else if (token == "stop")       stop();
 

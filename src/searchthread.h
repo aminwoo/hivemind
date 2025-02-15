@@ -22,7 +22,7 @@ public:
     void expand_leaf_node(Node* leaf, std::vector<std::pair<int, Stockfish::Move>> actions, std::vector<float> priors);
     void backup_leaf_node(Board& board, float value, std::vector<Node*>& trajectoryBuffer);
 
-    void run_iteration(std::vector<Board>& boards, Engine* engine);
+    void run_iteration(std::vector<Board>& boards, Engine* engine, bool canSit);
     bool is_running(); 
 
 private: 
@@ -32,5 +32,5 @@ private:
     std::vector<std::vector<Node*>> trajectoryBuffers; 
 };
 
-void run_search_thread(SearchThread *t, Board& board, Engine* engine);
+void run_search_thread(SearchThread *t, Board& board, Engine* engine, bool canSit);
 
