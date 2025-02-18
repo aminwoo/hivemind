@@ -38,6 +38,7 @@ tag="10.8.0-cuda-12.8"
 dpkg -i nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb
 cp /var/nv-tensorrt-local-repo-${os}-${tag}/*-keyring.gpg /usr/share/keyrings/
 apt-get update
+apt-get install tensorrt
 ```
 
 ## Compiling and Running HiveMind
