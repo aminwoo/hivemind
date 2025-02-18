@@ -77,8 +77,7 @@ void UCI::position(istringstream& is) {
     else if (token == "fen") {
         // Build the FEN string from the next six tokens.
         std::string fen;
-        for (int i = 0; i < 6; ++i) {
-            is >> token;
+        while (is >> token) {
             fen += token + " ";
         }
         board.set(fen);
