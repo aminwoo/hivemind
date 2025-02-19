@@ -2,23 +2,24 @@
 #include <limits>
 #include <algorithm>
 
-void Node::apply_virtual_loss_to_child(int childIdx) {
+void Node::apply_virtual_loss_to_child(int childIdx) 
+{
     assert (m_is_expanded); 
     assert (children.size() > 0);
     assert (childVisits.size() > 0); 
     assert (childIdx < childVisits.size()); 
-    qValues[childIdx] = (double(qValues[childIdx]) * childVisits[childIdx] - 1) / double(childVisits[childIdx] + 1);
     ++childVisits[childIdx];
     ++m_visits;
 }
 
-void Node::revert_virtual_loss(int childIdx) {
-    qValues[childIdx] = (double(qValues[childIdx]) * childVisits[childIdx] + 1) / (childVisits[childIdx] - 1);
+void Node::revert_virtual_loss(int childIdx) 
+{
     --childVisits[childIdx];
     --m_visits;
 }
 
-Node* Node::get_best_child() {
+Node* Node::get_best_child() 
+{
     Node* bestChild = nullptr; 
     float bestValue = -std::numeric_limits<float>::infinity();
     float c = get_current_cput(m_visits); 
@@ -45,7 +46,8 @@ Node* Node::get_best_child() {
     return bestChild;
 }
 
-std::vector<Node*> Node::get_principle_variation() {
+std::vector<Node*> Node::get_principle_variation() 
+{
     std::vector<Node*> pv; 
     Node* currentNode = this; 
     while (currentNode != nullptr) {
