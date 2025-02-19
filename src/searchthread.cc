@@ -84,10 +84,10 @@ void SearchThread::run_iteration(std::vector<Board>& boards, Engine* engine, boo
 
         float value = valueOutput[i];
         if (actions.empty()) {
-            value = -1.0f + (0.005f * leafs[i]->get_depth());
+            value = -1.0f;
         }
         else if (boards[i].is_draw(0)) {
-            value = -0.1f; 
+            value = 0.0f; 
         }
         else {
             expand_leaf_node(leafs[i], actions, priors); 
@@ -198,7 +198,7 @@ void run_search_thread(SearchThread *t, Board& board, Engine* engine, bool canSi
 
         if (!((i + 1) & 15)) {
             root->lock(); 
-            if (root->Q() > 0.8 || t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() || !t->is_running()) {
+            if (root->Q() > 0.95 || t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() || !t->is_running()) {
                 root->unlock(); 
                 break; 
             }
