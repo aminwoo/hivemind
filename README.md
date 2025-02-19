@@ -48,6 +48,10 @@ cmake .
 make
 ./hivemind
 ```
+### Running from release
+```
+LD_LIBRARY_PATH=. ./hivemind
+```
 
 
 ## Acknowledgements
