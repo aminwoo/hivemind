@@ -30,7 +30,7 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
 
     // Define the file names for the network.
     // Adjust these filenames as needed.
-    const std::string onnxFile = "./networks/model.onnx";
+    const std::string onnxFile = "./model.onnx";
     const std::string engineFile = "engine.trt";
 
     // For each device ID, create a new Engine, load the network, and store it.
