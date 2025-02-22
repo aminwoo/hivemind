@@ -6,31 +6,32 @@
 #include "engine.h"
 #include "planes.h"
 
+using namespace std;
+
 class Node;
 
 class SearchThread {
+private: 
+    Node* root; 
+    bool running = false; 
+    MapWithMutex* mapWithMutex;
+    SearchInfo* searchInfo;
+    vector<vector<pair<Node*, int>>> trajectoryBuffers; 
+
 public: 
-    SearchThread(); 
-    ~SearchThread(); 
+    SearchThread(MapWithMutex* mapWithMutex); 
+
     Node* get_root_node(); 
     SearchInfo* get_search_info();
     void add_trajectory_buffer(); 
     void set_search_info(SearchInfo* info);
     void set_root_node(Node* node);
     void set_is_running(bool value); 
-    Node* add_leaf_node(Board& board, std::vector<Node*>& trajectoryBuffer); 
-    void expand_leaf_node(Node* leaf, std::vector<std::pair<int, Stockfish::Move>> actions, std::vector<float> priors);
-    void backup_leaf_node(Board& board, float value, std::vector<Node*>& trajectoryBuffer);
-
-    void run_iteration(std::vector<Board>& boards, Engine* engine, bool canSit);
+    Node* add_leaf_node(Board& board, vector<pair<Node*, int>>& trajectoryBuffer); 
+    void expand_leaf_node(Node* leaf, vector<pair<int, Stockfish::Move>> actions, vector<float> priors);
+    void backup_leaf_node(Board& board, float value, vector<pair<Node*, int>>& trajectoryBuffer);
+    void run_iteration(vector<Board>& boards, Engine* engine, bool canSit);
     bool is_running(); 
-
-private: 
-    Node* root; 
-    bool running = false; 
-    SearchInfo* searchInfo;
-    std::vector<std::vector<Node*>> trajectoryBuffers; 
 };
 
-void run_search_thread(SearchThread *t, Board& board, Engine* engine, bool canSit);
-
+void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool canSit);

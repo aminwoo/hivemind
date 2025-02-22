@@ -1,5 +1,6 @@
 #include "uci.h"
 #include "constants.h"
+#include "zobrist.h"
 #include "Fairy-Stockfish/src/bitboard.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
