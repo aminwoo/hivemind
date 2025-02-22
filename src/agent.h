@@ -19,6 +19,8 @@ private:
     std::vector<SearchThread*> searchThreads;///< Container for search threads.
     std::mutex mtx;                          ///< Mutex for thread safety.
     bool running;                            ///< Flag indicating if the agent is running.
+    MapWithMutex mapWithMutex;
+    shared_ptr<Node> rootNode;
 
 public:
     /**
@@ -31,6 +33,10 @@ public:
      * @brief Destructor to clean up resources.
      */
     ~Agent();
+
+    shared_ptr<Node> get_root_node_from_tree(unsigned long hash_key, Stockfish::Color side); 
+
+    void clear_table();
 
     /**
      * @brief Runs the search operation on the given board using provided engines.

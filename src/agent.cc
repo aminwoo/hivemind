@@ -2,14 +2,19 @@
 #include <iomanip>
 #include <vector>
 #include <mutex>
+#include <thread>
+#include <iostream>
+#include <cassert>
 
+using namespace std;
 
 Agent::Agent(int numThreads)
-    : numberOfThreads(numThreads), running(false)
-{
+    : numberOfThreads(numThreads), running(false) {
+    mapWithMutex.hashTable.reserve(1e6);
+
     // Create the specified number of SearchThread instances.
     for (int i = 0; i < numberOfThreads; i++) {
-        searchThreads.push_back(new SearchThread());
+        searchThreads.push_back(new SearchThread(&mapWithMutex));
     }
 }
 
@@ -19,36 +24,42 @@ Agent::~Agent() {
     }
 }
 
-void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, Stockfish::Color side, bool canSit) {
-    // Determine which side to move.
-    // Stockfish::Color side = board.side_to_move(0);
-
+void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color side, bool canSit) {
     if (board.legal_moves(side).empty()) {
-        std::cout << "bestmove (none)" << std::endl;
+        cout << "bestmove (none)" << endl;
         return;
     }
 
-    // Create the root node and search info for the search.
-    Node* root = new Node(side);
-    SearchInfo* searchInfo = new SearchInfo(std::chrono::steady_clock::now(), moveTime);
+    // Create the rootNode node and search info for the search.
+    rootNode = get_root_node_from_tree(board.hash_key(), side);
+    if (rootNode == nullptr) {
+        rootNode = make_shared<Node>(side);
+        NodeKey key { board.hash_key(), side };
+        mapWithMutex.hashTable.insert({ key, rootNode });
+    }
+
+    SearchInfo* searchInfo = new SearchInfo(chrono::steady_clock::now(), moveTime);
 
     // Allocate an array of thread pointers (one per search thread).
-    std::thread** threads = new std::thread*[numberOfThreads];
+    thread** threads = new thread*[numberOfThreads];
 
     // Ensure that there is at least one engine available.
     if (engines.empty()) {
-        std::cerr << "Error: No engines available for search." << std::endl;
-        delete root;
+        cerr << "Error: No engines available for search." << endl;
         delete searchInfo;
         delete[] threads;
         return;
     }
 
+    if (mapWithMutex.hashTable.size() >= 1e6) {
+        clear_table();
+    }
+
     // Launch search threads.
     // Here, we assign an engine to each thread in a round-robin manner.
     for (int i = 0; i < numberOfThreads; i++) {
-        // Set the root node and search info for the thread's search state.
-        searchThreads[i]->set_root_node(root);
+        // Set the rootNode node and search info for the thread's search state.
+        searchThreads[i]->set_root_node(rootNode.get());
         searchThreads[i]->set_search_info(searchInfo);
 
         // Choose an engine from the provided collection.
@@ -57,7 +68,7 @@ void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int mo
         // Create a new thread for the search.
         // Note: run_search_thread is assumed to be a function that accepts a SearchThread*,
         // a Board reference, and an Engine reference.
-        threads[i] = new std::thread(run_search_thread, searchThreads[i], std::ref(board), engine, canSit);
+        threads[i] = new thread(run_search_thread, searchThreads[i], ref(board), engine, canSit);
     }
 
     // Wait for all threads to finish.
@@ -66,34 +77,54 @@ void Agent::run_search(Board& board, const std::vector<Engine*>& engines, int mo
     }
 
     // Retrieve the principal variation from the search.
-    std::vector<Node*> pv = root->get_principle_variation(); 
-    std::cout << std::setprecision(3) << std::fixed;
-    std::cout << "info time " << (searchInfo->elapsed() / 1000);
-    std::cout << " Q value " << -pv[0]->Q();
-    std::cout << " nodes " <<  searchInfo->get_nodes_searched();
-    std::cout << " nps " <<  searchInfo->get_nodes_searched() / (searchInfo->elapsed() / 1000);
-    std::cout << " collisions " << searchInfo->get_collisions();
-    std::cout << " pv ";
-    for (Node* node : pv) {
-        std::pair<int, Stockfish::Move> action = node->get_action(); 
-        std::cout << board.uci_move(action.first, action.second) << " ";
+    cout << setprecision(3) << fixed;
+    cout << "info time " << (searchInfo->elapsed() / 1000);
+    cout << " Q value " << rootNode->Q();
+    cout << " nodes " << searchInfo->get_nodes_searched();
+    cout << " nps " << searchInfo->get_nodes_searched() / (searchInfo->elapsed() / 1000);
+    cout << " collisions " << searchInfo->get_collisions();
+
+    vector<pair<int, Stockfish::Move>> pv = rootNode->get_principle_variation();
+    cout << " pv ";
+    for (auto action : pv) {
+        cout << board.uci_move(action.first, action.second) << " ";
     }
-    std::cout << std::endl; 
+    cout << endl;
 
     // Print the best move.
-    std::pair<int, Stockfish::Move> action = pv[0]->get_action(); 
-    std::cout << "bestmove " << board.uci_move(action.first, action.second) << std::endl;
+    cout << "bestmove " << board.uci_move(pv[0].first, pv[0].second) << endl;
 
     // Clean up dynamically allocated resources.
-    delete root; 
-    delete searchInfo; 
+    delete searchInfo;
     delete[] threads;
+}
+
+shared_ptr<Node> Agent::get_root_node_from_tree(unsigned long hash_key, Stockfish::Color side) {
+    {
+        NodeKey key { hash_key, side };
+
+        lock_guard<mutex> lock(mapWithMutex.mtx);
+        auto it = mapWithMutex.hashTable.find(key);
+        if (it != mapWithMutex.hashTable.end()) {
+            return it->second.lock();
+        } else {
+            clear_table();
+            return nullptr; 
+        }
+    }
+}
+
+
+void Agent::clear_table() {
+    // Clear all remaining nodes of the former rootNode node.
+    mapWithMutex.hashTable.clear();
+    assert(mapWithMutex.hashTable.size() == 0);
 }
 
 void Agent::set_is_running(bool value) {
     mtx.lock();
-    running = value; 
-    mtx.unlock(); 
+    running = value;
+    mtx.unlock();
 
     for (int i = 0; i < numberOfThreads; i++) {
         searchThreads[i]->set_is_running(value);
@@ -101,6 +132,5 @@ void Agent::set_is_running(bool value) {
 }
 
 bool Agent::is_running() {
-    return running; 
+    return running;
 }
-
