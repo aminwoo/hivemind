@@ -1,5 +1,7 @@
 #pragma once
 
+#include "zobrist.h"
+
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -24,14 +26,16 @@ class Board {
 
         Board();
         Board(const Board& board);
-        ~Board(); 
 
         /**
-         * @brief Generates a hash key for the board.
-         * @return std::string Concatenated position keys as a hash.
-         */
-        std::string hash_key() {
-            return std::to_string(pos[0]->key()) + std::to_string(pos[1]->key()); 
+        * @brief Generates a hash key for the board.
+        * @return long unsigned int Combined hash of the positions.
+        */
+        unsigned long hash_key() {
+            auto k0 = pos[0]->key() ^ Stockfish::Zobrist::ply[game_ply(0)];
+            auto k1 = pos[1]->key() ^ Stockfish::Zobrist::ply[game_ply(1)];;
+            // Combines the two keys using a hash_combine technique.
+            return k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
         }
 
         /**
