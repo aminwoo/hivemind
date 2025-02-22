@@ -12,7 +12,7 @@ using namespace std;
 
 
 UCI::UCI() : mainSearchThread(nullptr) {
-    // Other initialization code as needed.
+
 }
 
 UCI::~UCI() {
