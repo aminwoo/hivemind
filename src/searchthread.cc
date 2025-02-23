@@ -33,7 +33,7 @@ void SearchThread::add_trajectory_buffer() {
     trajectoryBuffers.push_back(vector<pair<Node*, int>>());
 }
 
-void SearchThread::run_iteration(vector<Board>& boards, Engine* engine, bool canSit) {
+void SearchThread::run_iteration(vector<Board>& boards, Engine* engine, bool hasNullMove) {
     float* inputPlanes = new float[batchSize * NB_INPUT_VALUES()];
     float* valueOutput = new float[batchSize];
     float* policyOutput = new float[batchSize * NB_POLICY_VALUES()];
@@ -47,7 +47,7 @@ void SearchThread::run_iteration(vector<Board>& boards, Engine* engine, bool can
 
         // Side of team to play
         Stockfish::Color actionSide = leaf->get_action_side();
-        bool sit = (actionSide == root->get_action_side()) == canSit;
+        bool sit = (actionSide == root->get_action_side()) == hasNullMove;
         // Run inference
         board_to_planes(boards[i], inputPlanes + (i * NB_INPUT_VALUES()), actionSide, sit);
     }
@@ -63,7 +63,7 @@ void SearchThread::run_iteration(vector<Board>& boards, Engine* engine, bool can
     for (int i = 0; i < batchSize; i++) {
         // Side of team to play
         Stockfish::Color actionSide = leafs[i]->get_action_side();
-        bool sit = (actionSide == root->get_action_side()) == canSit;
+        bool sit = (actionSide == root->get_action_side()) == hasNullMove;
 
         vector<pair<int, Stockfish::Move>> actions = boards[i].legal_moves(actionSide);
         if (!actions.empty() && sit && boards[i].side_to_move(0) == boards[i].side_to_move(1)) {
@@ -119,7 +119,7 @@ Node* SearchThread::add_leaf_node(Board& board, vector<pair<Node*, int>>& trajec
         }
 
         {
-            NodeKey key { board.hash_key(), ~currentNode->get_action_side() };
+            NodeKey key { board.hash_key(), ~currentNode->get_action_side(), nextNode->has_null_move() };
 
             // Check the transposition table before continuing:
             lock_guard<mutex> lock(mapWithMutex->mtx);
@@ -128,6 +128,8 @@ Node* SearchThread::add_leaf_node(Board& board, vector<pair<Node*, int>>& trajec
                 // A node with this board state already exists.
                 shared_ptr<Node> transpositionNode = it->second.lock();
                 if (transpositionNode && transpositionNode.get() != currentNode && transpositionNode->is_expanded()) {
+                    assert(transpositionNode->get_action_side() == ~currentNode->get_action_side());
+                    assert(transpositionNode->has_null_move() == nextNode->has_null_move());
                     // Assign the found transposition node to the parent's child slot.
                     currentNode->set_child(childIdx, transpositionNode);
                     nextNode = transpositionNode;
@@ -179,7 +181,7 @@ void SearchThread::backup_leaf_node(Board& board, float value, vector<pair<Node*
         int boardNum = it->second;
 
         node->lock();
-        node->set_hash_key(board.hash_key());
+        //node->set_hash_key(board.hash_key());
 
         if (node->is_expanded()) {
             node->update(node->get_best_child_idx(), value);
@@ -195,7 +197,7 @@ void SearchThread::backup_leaf_node(Board& board, float value, vector<pair<Node*
     }
 }
 
-void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool canSit) {
+void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool hasNullMove) {
     Node* root = t->get_root_node();
     vector<Board> boards;
     for (int i = 0; i < batchSize; i++) {
@@ -204,7 +206,7 @@ void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool canSi
     }
 
     for (int i = 0; i < 99999; i++) {
-        t->run_iteration(boards, engine, canSit);
+        t->run_iteration(boards, engine, hasNullMove);
         t->get_search_info()->increment_nodes(batchSize);
 
         if (!((i + 1) & 15)) {

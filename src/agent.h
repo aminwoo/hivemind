@@ -34,7 +34,7 @@ public:
      */
     ~Agent();
 
-    shared_ptr<Node> get_root_node_from_tree(unsigned long hash_key, Stockfish::Color side); 
+    shared_ptr<Node> get_root_node_from_tree(NodeKey key); 
 
     void clear_table();
 
@@ -44,7 +44,7 @@ public:
      * @param engines A vector of engine pointers to use during the search.
      * @param move_time The allotted time for move calculation.
      */
-    void run_search(Board& board, const std::vector<Engine*>& engines, int move_time, Stockfish::Color side, bool canSit);
+    void run_search(Board& board, const std::vector<Engine*>& engines, int move_time, Stockfish::Color side, bool hasNullMove);
 
     /**
      * @brief Sets the running state of the agent.

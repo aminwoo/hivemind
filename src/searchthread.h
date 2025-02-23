@@ -30,8 +30,8 @@ public:
     Node* add_leaf_node(Board& board, vector<pair<Node*, int>>& trajectoryBuffer); 
     void expand_leaf_node(Node* leaf, vector<pair<int, Stockfish::Move>> actions, vector<float> priors);
     void backup_leaf_node(Board& board, float value, vector<pair<Node*, int>>& trajectoryBuffer);
-    void run_iteration(vector<Board>& boards, Engine* engine, bool canSit);
+    void run_iteration(vector<Board>& boards, Engine* engine, bool hasNullMove);
     bool is_running(); 
 };
 
-void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool canSit);
+void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool hasNullMove);

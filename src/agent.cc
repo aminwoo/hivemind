@@ -24,17 +24,19 @@ Agent::~Agent() {
     }
 }
 
-void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color side, bool canSit) {
+void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color side, bool hasNullMove) {
     if (board.legal_moves(side).empty()) {
         cout << "bestmove (none)" << endl;
         return;
     }
 
     // Create the rootNode node and search info for the search.
-    rootNode = get_root_node_from_tree(board.hash_key(), side);
+    //rootNode = make_shared<Node>(side);
+    //clear_table();
+    NodeKey key { board.hash_key(), side, hasNullMove };
+    rootNode = get_root_node_from_tree(key);
     if (rootNode == nullptr) {
         rootNode = make_shared<Node>(side);
-        NodeKey key { board.hash_key(), side };
         mapWithMutex.hashTable.insert({ key, rootNode });
     }
 
@@ -51,10 +53,6 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
         return;
     }
 
-    if (mapWithMutex.hashTable.size() >= 1e6) {
-        clear_table();
-    }
-
     // Launch search threads.
     // Here, we assign an engine to each thread in a round-robin manner.
     for (int i = 0; i < numberOfThreads; i++) {
@@ -68,7 +66,7 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
         // Create a new thread for the search.
         // Note: run_search_thread is assumed to be a function that accepts a SearchThread*,
         // a Board reference, and an Engine reference.
-        threads[i] = new thread(run_search_thread, searchThreads[i], ref(board), engine, canSit);
+        threads[i] = new thread(run_search_thread, searchThreads[i], ref(board), engine, hasNullMove);
     }
 
     // Wait for all threads to finish.
@@ -99,10 +97,8 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     delete[] threads;
 }
 
-shared_ptr<Node> Agent::get_root_node_from_tree(unsigned long hash_key, Stockfish::Color side) {
+shared_ptr<Node> Agent::get_root_node_from_tree(NodeKey key) {
     {
-        NodeKey key { hash_key, side };
-
         lock_guard<mutex> lock(mapWithMutex.mtx);
         auto it = mapWithMutex.hashTable.find(key);
         if (it != mapWithMutex.hashTable.end()) {

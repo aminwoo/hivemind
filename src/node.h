@@ -11,29 +11,30 @@
 #include "constants.h"
 #include "utils.h"
 
-struct NodeKey
-{
+struct NodeKey {
     unsigned long key;
     Stockfish::Color color;
+    bool hasNullMove;  
 
-    bool operator==(const NodeKey &other) const
-    {
-        return key == other.key && color == other.color;
+    bool operator==(const NodeKey &other) const {
+        return key == other.key &&
+               color == other.color &&
+               hasNullMove == other.hasNullMove;
     }
 };
 
 namespace std {
     template <>
-    struct hash<NodeKey>
-    {
-        std::size_t operator()(const NodeKey &k) const
-        {
+    struct hash<NodeKey> {
+        std::size_t operator()(const NodeKey &k) const {
             std::size_t h1 = std::hash<unsigned long>()(k.key);
             std::size_t h2 = std::hash<int>()(static_cast<int>(k.color));
-            return h1 ^ (h2 << 1); 
+            std::size_t h3 = std::hash<bool>()(k.hasNullMove);
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
         }
     };
 }
+
 
 
 class Node;
@@ -104,6 +105,14 @@ public:
     }
 
     std::shared_ptr<Node> get_best_child();
+
+    bool has_null_move() {
+        for (const auto& action : actions) {
+            if (action.second == Stockfish::MOVE_NULL)
+                return true;
+        }
+        return false; 
+    }
 
     void set_depth(int value) {
         m_depth = value;
