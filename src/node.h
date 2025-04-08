@@ -141,7 +141,7 @@ public:
     bool is_terminal() const;
 
     void set_child(int childIdx, std::shared_ptr<Node> child) {
-        children[childIdx] = child;
+        children[childIdx] = atomic_load(&child);
     }
 
     Node* add_child(std::shared_ptr<Node> child, float prior) {

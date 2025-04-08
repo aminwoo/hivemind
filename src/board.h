@@ -241,7 +241,7 @@ class Board {
         bool is_checkmate(Stockfish::Color side);
         bool check_mate_in_one(Stockfish::Color side);
 
-        bool is_draw(int ply) {
-            return pos[0]->is_draw(ply) || pos[1]->is_draw(ply); 
+        bool is_draw() {
+            return pos[0]->is_draw(game_ply(0)) || pos[1]->is_draw(game_ply(1)); 
         }
 };

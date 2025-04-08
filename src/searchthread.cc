@@ -66,6 +66,7 @@ void SearchThread::run_iteration(vector<Board>& boards, Engine* engine, bool has
         bool sit = (actionSide == root->get_action_side()) == hasNullMove;
 
         vector<pair<int, Stockfish::Move>> actions = boards[i].legal_moves(actionSide);
+
         if (!actions.empty() && sit && boards[i].side_to_move(0) == boards[i].side_to_move(1)) {
             actions.emplace_back(0, Stockfish::MOVE_NULL);
         }
@@ -76,7 +77,7 @@ void SearchThread::run_iteration(vector<Board>& boards, Engine* engine, bool has
         float value = valueOutput[i];
         if (actions.empty())
             value = -1.0f;
-        else if (boards[i].is_draw(0))
+        else if (boards[i].is_draw())
             value = 0.0f;
         else
             expand_leaf_node(leafs[i], actions, priors);
@@ -116,28 +117,6 @@ Node* SearchThread::add_leaf_node(Board& board, vector<pair<Node*, int>>& trajec
             boardNum = action.first;
         } else {
             boardNum = -1;
-        }
-
-        {
-            NodeKey key { board.hash_key(), ~currentNode->get_action_side(), nextNode->has_null_move() };
-
-            // Check the transposition table before continuing:
-            lock_guard<mutex> lock(mapWithMutex->mtx);
-            auto it = mapWithMutex->hashTable.find(key);
-            if (it != mapWithMutex->hashTable.end()) {
-                // A node with this board state already exists.
-                shared_ptr<Node> transpositionNode = it->second.lock();
-                if (transpositionNode && transpositionNode.get() != currentNode && transpositionNode->is_expanded()) {
-                    assert(transpositionNode->get_action_side() == ~currentNode->get_action_side());
-                    assert(transpositionNode->has_null_move() == nextNode->has_null_move());
-                    // Assign the found transposition node to the parent's child slot.
-                    currentNode->set_child(childIdx, transpositionNode);
-                    nextNode = transpositionNode;
-                }
-            } else {
-                // Otherwise, insert nextNodePtr into the table.
-                mapWithMutex->hashTable.insert({ key, nextNode });
-            }
         }
 
         currentNode->apply_virtual_loss_to_child(childIdx);
@@ -181,7 +160,6 @@ void SearchThread::backup_leaf_node(Board& board, float value, vector<pair<Node*
         int boardNum = it->second;
 
         node->lock();
-        //node->set_hash_key(board.hash_key());
 
         if (node->is_expanded()) {
             node->update(node->get_best_child_idx(), value);
@@ -199,25 +177,23 @@ void SearchThread::backup_leaf_node(Board& board, float value, vector<pair<Node*
 
 void run_search_thread(SearchThread* t, Board& board, Engine* engine, bool hasNullMove) {
     Node* root = t->get_root_node();
+
     vector<Board> boards;
     for (int i = 0; i < batchSize; i++) {
         t->add_trajectory_buffer();
         boards.emplace_back(board);
     }
 
-    for (int i = 0; i < 99999; i++) {
+    for (int i = 1; i < 99999; i++) {
         t->run_iteration(boards, engine, hasNullMove);
         t->get_search_info()->increment_nodes(batchSize);
 
-        if (!((i + 1) & 15)) {
-            root->lock();
-            if (root->Q() > 0.99 ||
+        if (!(i & 15)) {
+            if (root->Q() > 0.90 ||
                 t->get_search_info()->elapsed() > t->get_search_info()->get_move_time() ||
                 !t->is_running()) {
-                root->unlock();
                 break;
             }
-            root->unlock();
         }
     }
 }

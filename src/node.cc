@@ -4,8 +4,7 @@
 
 const double VIRTUAL_LOSS = 0.0; // Tunable parameter
 
-void Node::apply_virtual_loss_to_child(int childIdx) 
-{
+void Node::apply_virtual_loss_to_child(int childIdx) {
     assert (m_is_expanded); 
     assert (children.size() > 0);
     assert (childVisits.size() > 0); 
@@ -18,8 +17,7 @@ void Node::apply_virtual_loss_to_child(int childIdx)
     qValues[childIdx] = childValueSum[childIdx] / (1.0f + childVisits[childIdx]);
 }
 
-void Node::revert_virtual_loss(int childIdx) 
-{
+void Node::revert_virtual_loss(int childIdx) {
     --childVisits[childIdx];
     --m_visits;
 
@@ -27,8 +25,7 @@ void Node::revert_virtual_loss(int childIdx)
     qValues[childIdx] = childValueSum[childIdx] / (1.0f + childVisits[childIdx]);
 }
 
-std::shared_ptr<Node> Node::get_best_child() 
-{
+std::shared_ptr<Node> Node::get_best_child() {
     std::shared_ptr<Node> bestChild = nullptr; 
     float bestValue = -std::numeric_limits<float>::infinity();
     float c = get_current_cput(m_visits); 
@@ -56,8 +53,7 @@ std::shared_ptr<Node> Node::get_best_child()
 }
 
 
-std::vector<std::pair<int, Stockfish::Move>> Node::get_principle_variation() 
-{
+std::vector<std::pair<int, Stockfish::Move>> Node::get_principle_variation() {
     std::vector<std::pair<int, Stockfish::Move>> pv;
     Node* currentNode = this;
     
@@ -122,19 +118,16 @@ std::vector<std::pair<int, Stockfish::Move>> Node::get_principle_variation()
     return pv;
 }
 
-void Node::lock()
-{
+void Node::lock() {
     mtx.lock();
 }
 
-void Node::unlock()
-{
+void Node::unlock() {
     mtx.unlock();
 }
 
 
-float get_current_cput(float visits)
-{
+float get_current_cput(float visits) {
     float cpuctInit = 2.5f; 
     float cpuctBase = 19652.0f; 
     return log((visits + cpuctBase + 1) / cpuctBase) + cpuctInit;

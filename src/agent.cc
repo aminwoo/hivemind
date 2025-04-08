@@ -31,14 +31,7 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     }
 
     // Create the rootNode node and search info for the search.
-    //rootNode = make_shared<Node>(side);
-    //clear_table();
-    NodeKey key { board.hash_key(), side, hasNullMove };
-    rootNode = get_root_node_from_tree(key);
-    if (rootNode == nullptr) {
-        rootNode = make_shared<Node>(side);
-        mapWithMutex.hashTable.insert({ key, rootNode });
-    }
+    rootNode = make_shared<Node>(side);
 
     SearchInfo* searchInfo = new SearchInfo(chrono::steady_clock::now(), moveTime);
 
