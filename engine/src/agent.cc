@@ -1,11 +1,13 @@
 #include "agent.h"
-#include "joint_action.h"
-#include <iomanip>
-#include <vector>
-#include <iostream>
+
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <vector>
+
+#include "joint_action.h"
 
 using namespace std;
 
@@ -26,23 +28,19 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     // Check for mate in 1 on either board before starting search
     auto legalMoves = board.legal_moves(teamSide);
     for (const auto& [boardNum, move] : legalMoves) {
-        // Make the move
         if (boardNum == 0) {
             board.make_moves(move, Stockfish::MOVE_NULL);
         } else {
             board.make_moves(Stockfish::MOVE_NULL, move);
         }
         
-        // Check if this move results in checkmate for opponent
         if (board.is_checkmate(~teamSide)) {
-            // Unmake the move before returning
             if (boardNum == 0) {
                 board.unmake_moves(move, Stockfish::MOVE_NULL);
             } else {
                 board.unmake_moves(Stockfish::MOVE_NULL, move);
             }
             
-            // Format the bestmove output
             string moveStr = board.uci_move(boardNum, move);
             string moveA = (boardNum == 0) ? moveStr : "pass";
             string moveB = (boardNum == 1) ? moveStr : "pass";
@@ -52,7 +50,6 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
             return;
         }
         
-        // Unmake the move
         if (boardNum == 0) {
             board.unmake_moves(move, Stockfish::MOVE_NULL);
         } else {
