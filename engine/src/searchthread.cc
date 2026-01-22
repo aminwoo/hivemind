@@ -1,10 +1,12 @@
 #include "searchthread.h"
-#include "utils.h"
-#include "joint_action.h"
-#include <string>
-#include <iomanip>
+
 #include <chrono>
-#include <math.h>
+#include <cmath>
+#include <iomanip>
+#include <string>
+
+#include "joint_action.h"
+#include "utils.h"
 
 using namespace std;
 
@@ -62,10 +64,6 @@ void SearchThread::backup(Board& board, float value) {
     }
 }
 
-// =====================================================
-// Single-Threaded MCTS with Progressive Widening
-// =====================================================
-
 /**
  * @brief Runs a single MCTS iteration using joint action progressive widening.
  * 
@@ -79,21 +77,24 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     trajectoryBuffer.clear();
     Node* leaf = select_and_expand(board);
 
+    // Update max depth reached in this search
+    searchInfo->set_max_depth(leaf->get_depth());
+
     // Check for draw (50-move rule, threefold repetition, insufficient material)
     if (board.is_draw()) {
         backup(board, 0.0f);
         return;
     }
 
-    // Get the action side for this leaf
-    Stockfish::Color actionSide = leaf->get_action_side();
+    // Get the team to play for this leaf
+    Stockfish::Color teamToPlay = leaf->get_team_to_play();
     
     // For neural network input: sitting plane is active when team has time advantage
     // and it's the same side as root (our team's perspective)
-    bool sitPlaneActive = (actionSide == root->get_action_side()) == teamHasTimeAdvantage;
+    bool sitPlaneActive = (teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
 
     // Run neural network inference
-    board_to_planes(board, obs, actionSide, sitPlaneActive);
+    board_to_planes(board, obs, teamToPlay, sitPlaneActive);
 
     if (!engine->runInference(obs, value, piA, piB)) {
         cerr << "Inference failed" << endl;
@@ -106,16 +107,16 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     
     // Get moves for our team's color on each board
     // Check for checkmate: if it's our turn and we have no moves while in check
-    if (board.side_to_move(0) == actionSide) {
-        actionsA = board.legal_moves(0);
-        if (actionsA.empty() && board.is_in_check(0)) {
+    if (board.side_to_move(BOARD_A) == teamToPlay) {
+        actionsA = board.legal_moves(BOARD_A);
+        if (actionsA.empty() && board.is_in_check(BOARD_A)) {
             backup(board, -1.0f);  // Checkmate - we lose
             return;
         }
     }
-    if (board.side_to_move(1) == ~actionSide) {
-        actionsB = board.legal_moves(1);
-        if (actionsB.empty() && board.is_in_check(1)) {
+    if (board.side_to_move(BOARD_B) == ~teamToPlay) {
+        actionsB = board.legal_moves(BOARD_B);
+        if (actionsB.empty() && board.is_in_check(BOARD_B)) {
             backup(board, -1.0f);  // Checkmate - we lose
             return;
         }

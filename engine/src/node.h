@@ -1,14 +1,14 @@
 #pragma once
 
-#include <vector>
-#include <math.h>
+#include <cmath>
 #include <memory>
+#include <vector>
 
-#include "Fairy-Stockfish/src/types.h"
 #include "board.h"
 #include "constants.h"
-#include "utils.h"
 #include "joint_action.h"
+#include "utils.h"
+#include "Fairy-Stockfish/src/types.h"
 
 class Node {
 private:
@@ -31,10 +31,10 @@ private:
     int m_visits = 0;
     bool m_is_expanded = false;
 
-    Stockfish::Color actionSide;
+    Stockfish::Color teamToPlay;
 
 public:
-    Node(Stockfish::Color actionSide) : actionSide(actionSide) {}
+    Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) {}
     ~Node() = default;
 
 
@@ -50,12 +50,6 @@ public:
         valueSum += value;
         m_visits++;
     }
-
-    std::shared_ptr<Node> get_child(int childIdx) {
-        return children[childIdx];
-    }
-
-    std::shared_ptr<Node> get_best_child();
 
     void set_depth(int value) {
         m_depth = value;
@@ -74,24 +68,6 @@ public:
     }
 
     bool is_terminal() const;
-
-    void set_child(int childIdx, std::shared_ptr<Node> child) {
-        children[childIdx] = child;
-    }
-
-    Node* add_child(std::shared_ptr<Node> child, float prior) {
-        childValueSum.push_back(-1.0f);
-        childPriors.push_back(prior);
-        childVisits.push_back(0);
-        child->set_depth(get_depth() + 1);
-        children.emplace_back(child);
-        qValues.push_back(-1.0f);
-        return child.get();
-    }
-
-    // =====================================================
-    // Joint Action / Progressive Widening Methods
-    // =====================================================
 
     /**
      * @brief Initializes the lazy priority queue generator for joint actions.
@@ -142,38 +118,23 @@ public:
             return nullptr;
         }
 
-        // 1. Get next best candidate (sorted by jointPrior)
         JointActionCandidate candidate = candidateGenerator.getNext();
         
-        // 2. Instantiate the child
-        auto child = std::make_shared<Node>(~actionSide);
+        auto child = std::make_shared<Node>(~teamToPlay);
         child->set_depth(m_depth + 1);
         
-        // 3. Optimized FPU Calculation
-        // We use the "Parent-Relative" strategy.
-        // If we have visits, use the current average value (Q).
-        // If we have no visits (root expansion), use 0.0 (Neutral).
         float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
 
-        /**
-         * FPU REDUCTION CONSTANT (c)
-         * For 400 iterations in Bughouse, start with 0.4f.
-         * - Higher (0.6): More "trust" in your SL model; searches deeper but narrower.
-         * - Lower (0.2): More exploration; better for finding "engine-y" tactical shots.
-         */
         const float fpuReduction = 0.4f;
         float fpuValue = parentQ - fpuReduction;
 
-        // Clamp value to ensure it stays in the valid Chess/Bughouse range [-1, 1]
         fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
 
-        // 4. Initialize child and node-tracking vectors
         child->set_value(fpuValue);
         
-        // Using back_push on these vectors to maintain synchronization with 'children'
         childValueSum.push_back(fpuValue);
         childPriors.push_back(candidate.jointPrior);
-        childVisits.push_back(0); // Explicitly 0, as it hasn't been "visited" by a rollout yet
+        childVisits.push_back(0);
         children.push_back(child);
         qValues.push_back(fpuValue);
         
@@ -222,16 +183,16 @@ public:
         valueSum = value;
     }
 
-    Stockfish::Color get_action_side() {
-        return actionSide;
+    Stockfish::Color get_team_to_play() {
+        return teamToPlay;
     }
 
-    Stockfish::Color get_child_action_side() {
-        return children[bestChildIdx]->get_action_side();
+    Stockfish::Color get_child_team_to_play() {
+        return children[bestChildIdx]->get_team_to_play();
     }
 
-    void set_action_side(Stockfish::Color value) {
-        actionSide = value;
+    void set_team_to_play(Stockfish::Color value) {
+        teamToPlay = value;
     }
 
     int get_visits() {
@@ -255,4 +216,4 @@ public:
     }
 };
 
-float get_current_cput(float visits);
+float get_current_cput(float totalVisits);
