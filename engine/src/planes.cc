@@ -117,7 +117,7 @@ inline void set_plane_castling_rights_board(PlaneData& p, int boardIdx) {
     }
 }
 
-void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color us, bool has_time_advantage=false) {
+void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color us, bool hasTimeAdvantage=false) {
     // Initialize all to 0
     std::fill_n(inputPlanes, NB_INPUT_VALUES(), 0.0f); 
     PlaneData planeData(board, inputPlanes, us);
@@ -130,7 +130,7 @@ void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color us, bool
     set_plane_color_info_board(planeData, 0);       
     planeData.set_plane_to_value(1.0f);             // Constant plane
     set_plane_castling_rights_board(planeData, 0);  
-    planeData.set_plane_to_value(has_time_advantage ? 1.0f : 0.0f); 
+    planeData.set_plane_to_value(hasTimeAdvantage ? 1.0f : 0.0f); 
     
     // Process Board 1 (Channels 32-63)
     set_plane_pieces_board(planeData, 1);           
@@ -140,5 +140,5 @@ void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color us, bool
     set_plane_color_info_board(planeData, 1);       
     planeData.set_plane_to_value(1.0f);             // Constant plane
     set_plane_castling_rights_board(planeData, 1);  
-    planeData.set_plane_to_value(has_time_advantage ? 1.0f : 0.0f);
+    planeData.set_plane_to_value(hasTimeAdvantage ? 1.0f : 0.0f);
 }

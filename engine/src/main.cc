@@ -49,7 +49,7 @@ int main(int argc, char* argv[]) {
             cerr << "No ONNX file found in ./networks" << endl;
             return EXIT_FAILURE;
         }
-        const std::string engineFile = getEnginePath(onnxFile);
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", BATCH_SIZE, 0, "v1");
         
         if (!engine.loadNetwork(onnxFile, engineFile)) {
             cerr << "Failed to load engine" << endl;
@@ -58,6 +58,13 @@ int main(int argc, char* argv[]) {
         
         int iterations = (argc > 2) ? stoi(argv[2]) : 1000;
         benchmark_inference(engine, iterations);
+        return EXIT_SUCCESS;
+    }
+
+    // Check for perft benchmark flag
+    if (argc > 1 && string(argv[1]) == "perft") {
+        int depth = (argc > 2) ? stoi(argv[2]) : 5;
+        benchmark_movegen(depth);
         return EXIT_SUCCESS;
     }
 

@@ -12,7 +12,6 @@
 
 using namespace std;
 
-
 UCI::UCI() : mainSearchThread(nullptr) {
 
 }
@@ -36,10 +35,10 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
         std::cerr << "Error: No ONNX file found in ./networks directory." << std::endl;
         return;
     }
-    const std::string engineFile = getEnginePath(onnxFile);
-
     // For each device ID, create a new Engine, load the network, and store it.
     for (int deviceId : deviceIds) {
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", BATCH_SIZE, deviceId, "v1");
+        
         // Create a new engine instance on the given GPU.
         auto enginePtr = std::make_unique<Engine>(deviceId);
         
