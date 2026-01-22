@@ -1,5 +1,4 @@
 #pragma once
-
 #include <limits>
 #include <vector>
 #include <cmath>
@@ -87,61 +86,6 @@ inline std::string mirror_move(std::string& uciMove) {
         }
     }
     return moveMirrored;
-}
-
-/**
- * @brief Computes normalized probabilities for a set of chess moves with PASS move rebalancing.
- *
- * Processes policy network outputs for given actions by adjusting UCI move strings based on board state,
- * applying penalties, and setting the logit of the single PASS move equal to the highest non-PASS logit before normalization.
- *
- * @param policyOutput Array of raw policy outputs.
- * @param actions Vector of action pairs (identifier and move).
- * @param board Current board state.
- * @return std::vector<float> Normalized probability distribution over actions.
- */
-inline std::vector<float> get_normalized_probability(float* policyOutput,
-std::vector<std::pair<int, Stockfish::Move>> actions,
-Board& board) {
-    size_t length = actions.size();
-    std::vector<float> logits(length);
-
-    // Process each action to extract raw logits and identify the PASS move
-    for (size_t i = 0; i < length; i++) {
-        std::pair<int, Stockfish::Move> action = actions[i];
-        std::string uci = board.uci_move(action.first, action.second);
-        
-        // Treat queen underpromotion as default move
-        if (uci.back() == 'q') {
-            uci.pop_back();
-        }
-        
-        // Mirror move for Black's perspective
-        if (board.side_to_move(action.first) == Stockfish::BLACK) {
-            logits[i] = policyOutput[POLICY_INDEX[mirror_move(uci)]];
-        } else {
-            logits[i] = policyOutput[POLICY_INDEX[uci]];
-        }
-        
-        // Rook or bishop underpromotions should be ignored
-        if (uci.back() == 'r' || uci.back() == 'b') {
-            logits[i] = -std::numeric_limits<float>::infinity();
-        }
-    }
-    
-    // Calculate softmax on the adjusted logits
-    std::vector<float> probs(length);
-    double sum = 0.0;
-    for (size_t i = 0; i < logits.size(); ++i) {
-        probs[i] = exp(logits[i]);
-        sum += probs[i];
-    }
-    
-    // Normalize probabilities
-    for (size_t i = 0; i < probs.size(); ++i) {
-        probs[i] /= sum;
-    }
-    return probs;
 }
 
 /**

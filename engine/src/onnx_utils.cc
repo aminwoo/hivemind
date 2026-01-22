@@ -22,7 +22,14 @@ std::string findLatestOnnxFile(const std::string& directory) {
     return latestFile;
 }
 
-std::string getEnginePath(const std::string& onnxPath) {
-    size_t lastDot = onnxPath.find_last_of(".");
-    return onnxPath.substr(0, lastDot) + ".engine";
+std::string getEnginePath(const std::string& onnxPath, const std::string& precision,
+                          int batchSize, int deviceId, const std::string& version) {
+    fs::path onnx(onnxPath);
+    std::string modelName = onnx.stem().string();
+    std::string directory = onnx.parent_path().string();
+    
+    std::string engineName = modelName + "_" + precision + "_b" + std::to_string(batchSize) 
+                           + "_gpu" + std::to_string(deviceId) + "_" + version + ".engine";
+    
+    return directory.empty() ? engineName : directory + "/" + engineName;
 }
