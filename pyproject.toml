@@ -1,0 +1,31 @@
+[project]
+name = "hivemind"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chess>=1.11.2",
+    "cloudscraper>=1.2.71",
+    "einops>=0.8.1",
+    "matplotlib>=3.10.8",
+    "onnx>=1.20.1",
+    "onnxscript>=0.5.7",
+    "onnxsim>=0.4.36",
+    "pandas>=2.3.3",
+    "polars>=1.37.1",
+    "pytest>=9.0.2",
+    "rtpt>=0.0.4",
+    "tensorboard>=2.20.0",
+    "timm>=1.0.24",
+    "torch>=2.9.1",
+    "torchvision>=0.24.1",
+]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu130"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
