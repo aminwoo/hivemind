@@ -1,3 +1,14 @@
+<div align="center">
+  
+  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/d42c6a6e-ab2e-4d7a-bf90-4876d59c9558)
+  
+  <h3>HiveMind</h3>
+
+  A free & strong UCI Bughouse engine.
+
+</div>
+
+```
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-ubuntu2404.pin
 sudo mv cuda-ubuntu2404.pin /etc/apt/preferences.d/cuda-repository-pin-600
 wget https://developer.download.nvidia.com/compute/cuda/13.0.2/local_installers/cuda-repo-ubuntu2404-13-0-local_13.0.2-580.95.05-1_amd64.deb
@@ -13,11 +24,13 @@ sudo dpkg -i nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb
 sudo cp /var/nv-tensorrt-local-repo-${os}-${tag}/*-keyring.gpg /usr/share/keyrings/
 sudo apt-get update
 sudo apt-get install tensorrt
+```
 
-
+```
 $$M = k \cdot N^{\alpha}$$$k$ (Widening Constant): Set this between $1.0$ and $2.0$.$\alpha$ (Widening Factor): Set this around $0.5$.
+```
 
-
+```
 trtexec \
     --onnx=model-2.40025-0.604-0001-v3.0.onnx \
     --fp16 \
@@ -26,8 +39,7 @@ trtexec \
     --duration=10 \
     --avgTiming=100 \
     --dumpProfile
-
-
+```
 
 # Bughouse Chess Input Representation
 The neural network uses a **64-channel input representation** (64×8×8) to encode the complete game state for bughouse chess.
