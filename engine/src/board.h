@@ -10,7 +10,7 @@
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
 #include "Fairy-Stockfish/src/types.h"
-#include "Fairy-Stockfish/src/uci.h"
+#include "Fairy-Stockfish/src/stubs.h"
 
 /**
  * @brief Represents a chess board with dual perspectives.
@@ -250,5 +250,9 @@ class Board {
 
         bool is_draw() {
             return pos[0]->is_draw(game_ply(0)) || pos[1]->is_draw(game_ply(1)); 
+        }
+
+        bool is_draw(int board_num) {
+            return pos[board_num]->is_draw(game_ply(board_num));
         }
 };

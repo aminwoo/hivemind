@@ -25,12 +25,9 @@
 #include <thread>
 #include <vector>
 
-#include "material.h"
-#include "movepick.h"
-#include "pawns.h"
 #include "position.h"
-#include "search.h"
 #include "thread_win32_osx.h"
+#include "stubs.h"
 
 namespace Stockfish {
 

@@ -7,7 +7,7 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(hivemind_tests test_move_gen.cc)
+add_executable(hivemind_tests test_move_gen.cc test_draw_detection.cc)
 target_link_libraries(hivemind_tests PRIVATE hivemind_lib gtest_main)
 
 include(GoogleTest)
