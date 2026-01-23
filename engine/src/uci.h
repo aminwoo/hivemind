@@ -34,5 +34,6 @@ public:
     void setoption(std::istringstream& is);
     void stop();
     void position(std::istringstream& is);
+    void policy();
     void loop();
 };
