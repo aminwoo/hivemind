@@ -20,18 +20,26 @@
 
 #include <algorithm> // For std::count
 #include "movegen.h"
-#include "partner.h"
-#include "search.h"
 #include "thread.h"
-#include "uci.h"
-#include "syzygy/tbprobe.h"
-#include "tt.h"
-#include "xboard.h"
+#include "stubs.h"
 
 namespace Stockfish {
 
 ThreadPool Threads; // Global object
 
+/// Thread::search() is the main search function
+/// Stubbed for minimal move generation - we don't use the search
+
+void Thread::search() {
+  // Empty stub - search not implemented for minimal move generation
+}
+
+/// MainThread::search() is the main thread search function  
+/// Stubbed for minimal move generation
+
+void MainThread::search() {
+  // Empty stub - search not implemented for minimal move generation
+}
 
 /// Thread constructor launches the thread and waits until it goes to sleep
 /// in idle_loop(). Note that 'searching' and 'exit' should be already set.
@@ -56,22 +64,16 @@ Thread::~Thread() {
 
 
 /// Thread::clear() reset histories, usually before a new game
+/// Simplified for minimal move generation
 
 void Thread::clear() {
-
-  counterMoves.fill(MOVE_NONE);
-  mainHistory.fill(0);
-  lowPlyHistory.fill(0);
-  captureHistory.fill(0);
-
-  for (bool inCheck : { false, true })
-      for (StatsType c : { NoCaptures, Captures })
-      {
-          for (auto& to : continuationHistory[inCheck][c])
-                for (auto& h : to)
-                      h->fill(0);
-          continuationHistory[inCheck][c][NO_PIECE][0]->fill(Search::CounterMovePruneThreshold - 1);
-      }
+  // History tables removed for minimal move generation
+  // counterMoves.fill(MOVE_NONE);
+  // mainHistory.fill(0);
+  // lowPlyHistory.fill(0);
+  // captureHistory.fill(0);
+  
+  // Continuation history removed
 }
 
 
@@ -97,28 +99,20 @@ void Thread::wait_for_search_finished() {
 
 /// Thread::idle_loop() is where the thread is parked, blocked on the
 /// condition variable, when it has no work to do.
+/// Simplified for minimal move generation
 
 void Thread::idle_loop() {
 
-  // If OS already scheduled us on a different group than 0 then don't overwrite
-  // the choice, eventually we are one of many one-threaded processes running on
-  // some Windows NUMA hardware, for instance in fishtest. To make it simple,
-  // just check if running threads are below a threshold, in this case all this
-  // NUMA machinery is not needed.
-  if (Options["Threads"] > 8)
-      WinProcGroup::bindThisThread(idx);
+  // Windows NUMA binding removed for minimal move generation
+  // if (Options["Threads"] > 8)
+  //     WinProcGroup::bindThisThread(idx);
 
   while (true)
   {
       std::unique_lock<std::mutex> lk(mutex);
       searching = false;
       cv.notify_one(); // Wake up anyone waiting for search finished
-      // Start ponder search from separate thread to prevent deadlock
-      if (Threads.size() && this == Threads.main() && XBoard::stateMachine && XBoard::stateMachine->ponderMove)
-      {
-          NativeThread t(&XBoard::StateMachine::ponder, XBoard::stateMachine);
-          t.detach();
-      }
+      // XBoard ponder search removed for minimal move generation
       cv.wait(lk, [&]{ return searching; });
 
       if (exit)
@@ -133,6 +127,7 @@ void Thread::idle_loop() {
 /// ThreadPool::set() creates/destroys threads to match the requested number.
 /// Created and launched threads will immediately go to sleep in idle_loop.
 /// Upon resizing, threads are recreated to allow for binding if necessary.
+/// Simplified for minimal move generation
 
 void ThreadPool::set(size_t requested) {
 
@@ -152,11 +147,9 @@ void ThreadPool::set(size_t requested) {
           push_back(new Thread(size()));
       clear();
 
-      // Reallocate the hash with the new threadpool size
-      //TT.resize(size_t(Options["Hash"]));
-
-      // Init thread number dependent search params.
-      Search::init();
+      // Hash table and search init removed for minimal move generation
+      // TT.resize(size_t(Options["Hash"]));
+      // Search::init();
   }
 }
 
@@ -176,6 +169,7 @@ void ThreadPool::clear() {
 
 /// ThreadPool::start_thinking() wakes up main thread waiting in idle_loop() and
 /// returns immediately. Main thread will wake up other threads and start the search.
+/// Simplified for minimal move generation - we don't actually use this for search
 
 void ThreadPool::start_thinking(Position& pos, StateListPtr& states,
                                 const Search::LimitsType& limits, bool ponderMode) {
@@ -185,51 +179,19 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states,
   main()->stopOnPonderhit = stop = abort = false;
   increaseDepth = true;
   main()->ponder = ponderMode;
-  Search::Limits = limits;
-  Search::RootMoves rootMoves;
+  
+  // Search functionality removed for minimal move generation
+  // We only keep the setup code if needed
 
-  for (const auto& m : MoveList<LEGAL>(pos))
-      if (   (limits.searchmoves.empty() || std::count(limits.searchmoves.begin(), limits.searchmoves.end(), m))
-          && (limits.banmoves.empty() || !std::count(limits.banmoves.begin(), limits.banmoves.end(), m)))
-          rootMoves.emplace_back(m);
-
-  // Add virtual drops
-  if (pos.two_boards() && Partner.opptime && limits.time[pos.side_to_move()] > Partner.opptime + 1000)
-  {
-      if (pos.checkers())
-      {
-          for (const auto& m : MoveList<EVASIONS>(pos))
-              if (pos.virtual_drop(m) && pos.legal(m))
-                  rootMoves.emplace_back(m);
-      }
-      else
-      {
-          for (const auto& m : MoveList<QUIETS>(pos))
-              if (pos.virtual_drop(m) && pos.legal(m))
-                  rootMoves.emplace_back(m);
-      }
-  }
-
-  if (!rootMoves.empty())
-      Tablebases::rank_root_moves(pos, rootMoves);
-
-  // After ownership transfer 'states' becomes empty, so if we stop the search
-  // and call 'go' again without setting a new position states.get() == NULL.
   assert(states.get() || setupStates.get());
 
   if (states.get())
-      setupStates = std::move(states); // Ownership transfer, states is now empty
+      setupStates = std::move(states); // Ownership transfer
 
-  // We use Position::set() to set root position across threads. But there are
-  // some StateInfo fields (previous, pliesFromNull, capturedPiece) that cannot
-  // be deduced from a fen string, so set() clears them and they are set from
-  // setupStates->back() later. The rootState is per thread, earlier states are shared
-  // since they are read-only.
   for (Thread* th : *this)
   {
       th->nodes = th->tbHits = th->nmpMinPly = th->bestMoveChanges = 0;
       th->rootDepth = th->completedDepth = 0;
-      th->rootMoves = rootMoves;
       th->rootPos.set(pos.variant(), pos.fen(), pos.is_chess960(), &th->rootState, th);
       th->rootState = setupStates->back();
   }
@@ -237,34 +199,13 @@ void ThreadPool::start_thinking(Position& pos, StateListPtr& states,
   main()->start_searching();
 }
 
+/// Find best thread - simplified for minimal move generation
+/// Just returns the main thread since we don't do real search
+
 Thread* ThreadPool::get_best_thread() const {
 
     Thread* bestThread = front();
-    std::map<Move, int64_t> votes;
-    Value minScore = VALUE_NONE;
-
-    // Find minimum score of all threads
-    for (Thread* th: *this)
-        minScore = std::min(minScore, th->rootMoves[0].score);
-
-    // Vote according to score and depth, and select the best thread
-    for (Thread* th : *this)
-    {
-        votes[th->rootMoves[0].pv[0]] +=
-            (th->rootMoves[0].score - minScore + 14) * int(th->completedDepth);
-
-        if (abs(bestThread->rootMoves[0].score) >= VALUE_TB_WIN_IN_MAX_PLY)
-        {
-            // Make sure we pick the shortest mate / TB conversion or stave off mate the longest
-            if (th->rootMoves[0].score > bestThread->rootMoves[0].score)
-                bestThread = th;
-        }
-        else if (   th->rootMoves[0].score >= VALUE_TB_WIN_IN_MAX_PLY
-                 || (   th->rootMoves[0].score > VALUE_TB_LOSS_IN_MAX_PLY
-                     && votes[th->rootMoves[0].pv[0]] > votes[bestThread->rootMoves[0].pv[0]]))
-            bestThread = th;
-    }
-
+    // Voting and score comparison removed for minimal move generation
     return bestThread;
 }
 
