@@ -40,10 +40,12 @@ struct JointActionCandidate {
           priorA(pA), priorB(pB),
           idxA(iA), idxB(iB) {
         // Sitting rules:
-        // 1. Disallow double sitting: both boards cannot sit simultaneously if both are on turn
-        // 2. If team is behind on time: a board cannot sit if diagonal players are on turn
-        bool bothSitting = (mA == Stockfish::MOVE_NULL && mB == Stockfish::MOVE_NULL);
-        bool isInvalidSit = bothSitting && (boardAOnTurn && boardBOnTurn || !teamHasTimeAdvantage);
+        // 1. Up on time: cannot double-sit if both boards are on turn
+        // 2. Down on time: cannot double-sit at all
+        bool bothSitting = (mA == Stockfish::MOVE_NULL) && (mB == Stockfish::MOVE_NULL);
+        bool bothOnTurn = boardAOnTurn && boardBOnTurn;
+        
+        bool isInvalidSit = bothSitting && (teamHasTimeAdvantage ? bothOnTurn : true);
         
         jointPrior = isInvalidSit ? 0.0f : pA * pB;
     }
@@ -180,6 +182,25 @@ public:
      */
     bool hasNext() const {
         return !heap.empty();
+    }
+
+    /**
+     * @brief Peek at the next best candidate without consuming it.
+     * 
+     * Returns the next candidate that would be returned by getNext(),
+     * but doesn't modify any state. This is a true peek operation.
+     * Note: For efficiency, this only checks the top of heap. If the top
+     * has zero jointPrior (invalid), returns empty candidate - the caller
+     * should handle this by falling through to getNext() which properly skips.
+     */
+    JointActionCandidate peekNext() const {
+        if (heap.empty()) {
+            return JointActionCandidate();
+        }
+        
+        // Return the top candidate - caller should check jointPrior
+        // We can't skip invalid candidates here without modifying state
+        return heap.top();
     }
 
     /**

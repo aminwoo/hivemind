@@ -4,13 +4,13 @@
 
 namespace Stockfish {
   namespace Zobrist {
+    // Ply-based Zobrist keys for position hashing (specific to this project)
+    // Other Zobrist keys are defined in Fairy-Stockfish's position.cpp
     const int MAX_PLY = 1024;
     extern Key ply[MAX_PLY];
-    extern Key psq[PIECE_NB][SQUARE_NB];
-    extern Key enpassant[FILE_NB];
-    extern Key castling[CASTLING_RIGHT_NB];
-    extern Key side, noPawns;
-    extern Key inHand[PIECE_NB][SQUARE_NB];
-    extern Key checks[COLOR_NB][CHECKS_NB];
+    
+    // Time advantage key for MCGS transposition detection
+    // Positions with different time advantage states are treated as distinct
+    extern Key timeAdvantage;
   }
 }

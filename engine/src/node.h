@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -38,9 +39,16 @@ private:
     bool m_is_expanded = false;
 
     Stockfish::Color teamToPlay;
+    
+    // MCGS (Monte Carlo Graph Search) support
+    uint64_t positionHash = 0;  // Zobrist hash for transposition detection
+    std::atomic<bool> isTransposition{false};  // True if this node was found via transposition
+    std::atomic<int> inFlightCount{0};  // Number of in-flight evaluations (for MCGS backup)
 
 public:
     Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) {}
+    Node(Stockfish::Color teamToPlay, uint64_t hash) 
+        : teamToPlay(teamToPlay), positionHash(hash) {}
     ~Node() = default;
 
     // Lock the node for exclusive access
@@ -126,37 +134,75 @@ public:
     }
 
     /**
+     * @brief Peek at the next joint action without consuming it.
+     * Thread-safe: uses internal locking.
+     * @return The next action that would be expanded, or empty if none available.
+     */
+    JointActionCandidate peek_next_joint_action() {
+        std::lock_guard<std::mutex> guard(nodeMutex);
+        return candidateGenerator.peekNext();
+    }
+
+    /**
      * @brief Expands the next joint action candidate using a Parent-Relative FPU strategy.
      * Thread-safe: uses internal locking.
+     * 
+     * MCGS Enhancement: Can accept an existing node from the transposition table.
+     * If existingNode is provided, it will be used instead of creating a new node.
+     * 
+     * @param existingNode Optional node from transposition table to reuse
+     * @param positionHash Hash of the resulting position for MCGS
+     * @param outAction Output parameter for the action that was actually expanded
+     * @return The child node (new or existing)
      */
-    std::shared_ptr<Node> expand_next_joint_child() {
+    std::shared_ptr<Node> expand_next_joint_child(std::shared_ptr<Node> existingNode,
+                                                   uint64_t positionHash,
+                                                   JointActionCandidate& outAction) {
         std::lock_guard<std::mutex> guard(nodeMutex);
         if (!candidateGenerator.hasNext()) {
             return nullptr;
         }
 
         JointActionCandidate candidate = candidateGenerator.getNext();
+        outAction = candidate;  // Return the actual action used
         
-        auto child = std::make_shared<Node>(~teamToPlay);
-        child->set_depth(m_depth + 1);
+        std::shared_ptr<Node> child;
+        float childQ;
         
-        float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
-
-        float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
-
-        fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
-
-        child->set_value(fpuValue);
+        if (existingNode) {
+            // MCGS: Reuse existing node from transposition table
+            child = existingNode;
+            child->set_transposition(true);
+            childQ = existingNode->Q();
+        } else {
+            // Create new node
+            child = std::make_shared<Node>(~teamToPlay, positionHash);
+            child->set_depth(m_depth + 1);
+            
+            float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
+            float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
+            fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
+            child->set_value(fpuValue);
+            childQ = fpuValue;
+        }
         
-        childValueSum.push_back(fpuValue);
+        childValueSum.push_back(childQ);
         childPriors.push_back(candidate.jointPrior);
-        childVisits.push_back(0);
+        childVisits.push_back(existingNode ? existingNode->get_visits() : 0);
         virtualLoss.push_back(0);
         children.push_back(child);
-        qValues.push_back(fpuValue);
+        qValues.push_back(childQ);
         
         expandedCount++;
         return child;
+    }
+    
+    /**
+     * @brief Simplified expand without MCGS (for backwards compatibility).
+     */
+    std::shared_ptr<Node> expand_next_joint_child() {
+        JointActionCandidate unused;
+        return expand_next_joint_child(nullptr, 0, unused);
     }
 
     /**
@@ -311,5 +357,109 @@ public:
 
     float Q() {
         return valueSum / (1.0f + m_visits);
+    }
+    
+    // =============================================================================
+    // MCGS (Monte Carlo Graph Search) Methods
+    // =============================================================================
+    
+    /**
+     * @brief Get the position hash for this node.
+     * Used for transposition table lookups.
+     */
+    uint64_t get_hash() const {
+        return positionHash;
+    }
+    
+    /**
+     * @brief Set the position hash for this node.
+     */
+    void set_hash(uint64_t hash) {
+        positionHash = hash;
+    }
+    
+    /**
+     * @brief Check if this node was reached via transposition.
+     */
+    bool is_transposition() const {
+        return isTransposition.load(std::memory_order_relaxed);
+    }
+    
+    /**
+     * @brief Mark this node as reached via transposition.
+     */
+    void set_transposition(bool value) {
+        isTransposition.store(value, std::memory_order_relaxed);
+    }
+    
+    /**
+     * @brief Increment in-flight evaluation count (for batched MCGS).
+     * Used to track pending backups through this node.
+     */
+    void increment_in_flight() {
+        inFlightCount.fetch_add(1, std::memory_order_relaxed);
+    }
+    
+    /**
+     * @brief Decrement in-flight evaluation count.
+     */
+    void decrement_in_flight() {
+        inFlightCount.fetch_sub(1, std::memory_order_relaxed);
+    }
+    
+    /**
+     * @brief Get current in-flight evaluation count.
+     */
+    int get_in_flight() const {
+        return inFlightCount.load(std::memory_order_relaxed);
+    }
+    
+    /**
+     * @brief Atomically try to set this node as an existing child, returning the child index.
+     * Used for MCGS when the same position is reached through different paths.
+     * 
+     * @param existingNode The node already in the transposition table
+     * @return The index of the child that was added, or -1 if already exists
+     */
+    int try_add_transposition_child(std::shared_ptr<Node> existingNode, float prior) {
+        std::lock_guard<std::mutex> guard(nodeMutex);
+        
+        // Check if this child already exists (same hash)
+        for (size_t i = 0; i < children.size(); i++) {
+            if (children[i] && children[i]->get_hash() == existingNode->get_hash()) {
+                return static_cast<int>(i);  // Already exists
+            }
+        }
+        
+        // Add as new child
+        float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
+        float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
+        fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
+        
+        childValueSum.push_back(fpuValue);
+        childPriors.push_back(prior);
+        childVisits.push_back(existingNode->get_visits());  // Use existing visits
+        virtualLoss.push_back(0);
+        children.push_back(existingNode);
+        qValues.push_back(existingNode->Q());  // Use existing Q value
+        
+        int idx = static_cast<int>(children.size() - 1);
+        expandedCount++;
+        
+        return idx;
+    }
+    
+    /**
+     * @brief Get a child by position hash.
+     * @return Pair of (child pointer, child index), or (nullptr, -1) if not found
+     */
+    std::pair<std::shared_ptr<Node>, int> get_child_by_hash(uint64_t hash) {
+        std::lock_guard<std::mutex> guard(nodeMutex);
+        for (size_t i = 0; i < children.size(); i++) {
+            if (children[i] && children[i]->get_hash() == hash) {
+                return {children[i], static_cast<int>(i)};
+            }
+        }
+        return {nullptr, -1};
     }
 };
