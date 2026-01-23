@@ -168,11 +168,6 @@ void SearchThread::run_batch_iteration(Board& board, Engine* engine, bool teamHa
         ctx.isTerminal = false;
         ctx.leafHash = board.hash_key(teamHasTimeAdvantage);  // Store hash for MCGS transposition lookup
         
-        // MCGS: Transposition detection is currently disabled
-        // The transposition table requires shared_ptr management of all nodes,
-        // which would need significant refactoring. For now, we use standard MCTS.
-        // TODO: Implement full MCGS with proper node lifecycle management
-        
         ctx.boardState = std::make_unique<Board>(board);  // Copy board state for later processing
         
         // Convert board to planes for this batch slot
