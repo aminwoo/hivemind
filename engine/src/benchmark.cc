@@ -50,24 +50,20 @@ void benchmark_inference(Engine& engine, int iterations) {
     delete[] piB;
 }
 
-static long long perft(Board& board, int boardNum, int depth) {
+static long long perft(Board& board, int depth) {
     if (depth == 0) return 1;
     
-    auto moves = board.legal_moves(boardNum);
-    if (depth == 1) return moves.size();
+    auto movesA = board.legal_moves(BOARD_A);
+    auto movesB = board.legal_moves(BOARD_B);
+    
+    if (depth == 1) return movesA.size() * movesB.size();
     
     long long nodes = 0;
-    for (const auto& move : moves) {
-        if (boardNum == BOARD_A) {
-            board.make_moves(move, Stockfish::MOVE_NONE);
-        } else {
-            board.make_moves(Stockfish::MOVE_NONE, move);
-        }
-        nodes += perft(board, boardNum, depth - 1);
-        if (boardNum == BOARD_A) {
-            board.unmake_moves(move, Stockfish::MOVE_NONE);
-        } else {
-            board.unmake_moves(Stockfish::MOVE_NONE, move);
+    for (const auto& moveA : movesA) {
+        for (const auto& moveB : movesB) {
+            board.make_moves(moveA, moveB);
+            nodes += perft(board, depth - 1);
+            board.unmake_moves(moveA, moveB);
         }
     }
     return nodes;
@@ -77,10 +73,10 @@ void benchmark_movegen(int depth) {
     Board board;
     
     // Warmup
-    perft(board, BOARD_A, 3);
+    perft(board, 2);
     
     auto start = chrono::high_resolution_clock::now();
-    long long nodes = perft(board, BOARD_A, depth);
+    long long nodes = perft(board, depth);
     auto end = chrono::high_resolution_clock::now();
     
     double total_ms = chrono::duration<double, milli>(end - start).count();
