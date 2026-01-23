@@ -6,6 +6,7 @@
 #include "engine.h"
 #include "planes.h"
 #include "joint_action.h"
+#include "transposition_table.h"
 
 using namespace std;
 
@@ -39,9 +40,12 @@ struct LeafContext {
     bool sitPlaneActive;
     bool isTerminal;     // True if this is a terminal node (draw/checkmate)
     float terminalValue; // Value to use for terminal nodes
+    bool isTransposition; // True if this leaf was found via transposition table (MCGS)
+    uint64_t leafHash;    // Hash of the leaf position for transposition lookup
     
     LeafContext() : leaf(nullptr), teamToPlay(Stockfish::WHITE), 
-                    sitPlaneActive(false), isTerminal(false), terminalValue(0.0f) {}
+                    sitPlaneActive(false), isTerminal(false), terminalValue(0.0f),
+                    isTransposition(false), leafHash(0) {}
     
     // Move constructor
     LeafContext(LeafContext&& other) noexcept = default;
@@ -56,6 +60,7 @@ class SearchThread {
 private: 
     Node* root; 
     SearchInfo* searchInfo;
+    TranspositionTable* transpositionTable;  // Shared across all search threads (MCGS)
     
     // Trajectory stores entries for backup and move undoing
     vector<TrajectoryEntry> trajectoryBuffer;
@@ -77,19 +82,22 @@ public:
     SearchInfo* get_search_info();
     void set_search_info(SearchInfo* info);
     void set_root_node(Node* node);
+    void set_transposition_table(TranspositionTable* table);
+    TranspositionTable* get_transposition_table();
     
-    // MCTS with joint action progressive widening
-    Node* select_and_expand(Board& board);
+    // MCGS (Monte Carlo Graph Search) with joint action progressive widening
+    Node* select_and_expand(Board& board, bool teamHasTimeAdvantage);
     void expand_leaf_node(Node* leaf, 
                           const vector<Stockfish::Move>& actionsA,
                           const vector<Stockfish::Move>& actionsB,
                           const vector<float>& priorsA,
                           const vector<float>& priorsB,
-                          bool teamHasTimeAdvantage);
+                          bool teamHasTimeAdvantage,
+                          uint64_t positionHash = 0);
     void backup(vector<TrajectoryEntry>& trajectory, 
                 Board& board, float value);
     
-    // Minibatch MCTS - collects BATCH_SIZE leaves, runs batched inference, processes results
+    // Minibatch MCGS - collects BATCH_SIZE leaves, runs batched inference, processes results
     void run_batch_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage);
     
     // Single iteration (legacy, calls run_batch_iteration internally)
