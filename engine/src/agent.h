@@ -8,22 +8,26 @@
 #include "node.h"
 #include "engine.h"
 #include "search_params.h"
+#include "transposition_table.h"
 
 /**
- * @brief Manages multi-threaded MCTS search for Bughouse.
+ * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
  *
  * Runs multiple search threads in parallel, each with its own engine instance.
- * All threads share the same search tree with thread-safe node operations.
+ * All threads share the same search graph with thread-safe node operations.
+ * Uses a transposition table to detect when different move sequences reach
+ * the same position, enabling more efficient value estimation.
  */
 class Agent {
 private:
     std::vector<SearchThread*> searchThreads;
     std::atomic<bool> running;                            
     shared_ptr<Node> rootNode;
+    std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
 
 public:
     /**
-     * @brief Constructs a multi-threaded Agent.
+     * @brief Constructs a multi-threaded Agent with MCGS support.
      */
     Agent();
 

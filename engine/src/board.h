@@ -29,13 +29,16 @@ class Board {
 
         /**
         * @brief Generates a hash key for the board.
+        * @param teamHasTimeAdvantage Whether the team to move has time advantage (affects sitting rules)
         * @return long unsigned int Combined hash of the positions.
         */
-        unsigned long hash_key() {
+        unsigned long hash_key(bool teamHasTimeAdvantage = false) {
             auto k0 = pos[0]->key() ^ Stockfish::Zobrist::ply[game_ply(0)];
-            auto k1 = pos[1]->key() ^ Stockfish::Zobrist::ply[game_ply(1)];;
+            auto k1 = pos[1]->key() ^ Stockfish::Zobrist::ply[game_ply(1)];
             // Combines the two keys using a hash_combine technique.
-            return k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
+            auto combined = k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
+            // XOR in time advantage key if team is up on time
+            return teamHasTimeAdvantage ? (combined ^ Stockfish::Zobrist::timeAdvantage) : combined;
         }
 
         /**

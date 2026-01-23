@@ -111,6 +111,14 @@ void UCI::go(std::istringstream& is) {
     is >> token >> token;
     
     int moveTime = std::stoi(token);
+    
+    // Wait for any previous search to complete before starting a new one
+    if (mainSearchThread && mainSearchThread->joinable()) {
+        mainSearchThread->join();
+        delete mainSearchThread;
+        mainSearchThread = nullptr;
+    }
+    
     ongoingSearch = true;
     agent->set_is_running(true);
 
