@@ -8,10 +8,7 @@
 #include <functional>
 #include <numeric>
 #include "Fairy-Stockfish/src/types.h"
-
-// Progressive Widening hyperparameters
-constexpr float PW_COEFFICIENT = 3.0f;     
-constexpr float PW_EXPONENT = 0.5f;   
+#include "search_params.h"
 
 /**
  * @brief Represents a joint action candidate for Bughouse MCTS.
@@ -43,23 +40,10 @@ struct JointActionCandidate {
           priorA(pA), priorB(pB),
           idxA(iA), idxB(iB) {
         // Sitting rules:
-        // 1. Both boards cannot sit simultaneously if both are on turn
-        // 2. If team has time advantage: a board may sit even if on turn
-        // 3. If team is behind on time: a board may only sit if NOT on turn
-        bool isInvalidSit = false;
+        // 1. Disallow double sitting: both boards cannot sit simultaneously if both are on turn
+        // 2. If team is behind on time: a board cannot sit if diagonal players are on turn
         bool bothSitting = (mA == Stockfish::MOVE_NULL && mB == Stockfish::MOVE_NULL);
-        
-        // Rule 1: Both boards cannot sit simultaneously if both are on turn
-        if (bothSitting && boardAOnTurn && boardBOnTurn) {
-            isInvalidSit = true;
-        }
-        
-        // Rule 2 & 3: Check individual board sitting validity
-        if (!teamHasTimeAdvantage) {
-            // Behind on time: can only sit if NOT on turn
-            if (boardAOnTurn && mA == Stockfish::MOVE_NULL) isInvalidSit = true;
-            if (boardBOnTurn && mB == Stockfish::MOVE_NULL) isInvalidSit = true;
-        }
+        bool isInvalidSit = bothSitting && (boardAOnTurn && boardBOnTurn || !teamHasTimeAdvantage);
         
         jointPrior = isInvalidSit ? 0.0f : pA * pB;
     }
@@ -255,17 +239,3 @@ public:
         return sortedActionsA.empty() || sortedActionsB.empty();
     }
 };
-
-/**
- * @brief Calculates the number of allowed children based on progressive widening.
- * 
- * Formula: m = ceil(PW_COEFFICIENT * n^PW_EXPONENT)
- * Where n is the visit count of the current node.
- * 
- * @param visitCount Current visit count of the node
- * @return int Number of children allowed to be expanded
- */
-inline int get_allowed_children(int visitCount) {
-    if (visitCount <= 0) return 1;
-    return static_cast<int>(std::ceil(PW_COEFFICIENT * std::pow(static_cast<float>(visitCount), PW_EXPONENT)));
-}

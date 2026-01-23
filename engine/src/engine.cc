@@ -175,6 +175,9 @@ bool Engine::initializeResources() {
 }
 
 bool Engine::runInference(float* obs, float* value, float* piA, float* piB) {
+    // Thread-safe: serialize inference calls
+    std::lock_guard<std::mutex> lock(m_inferenceMutex);
+    
     if (!m_engine || !m_context) {
         std::cerr << "Engine or context not loaded" << std::endl;
         return false;

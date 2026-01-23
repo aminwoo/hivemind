@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <memory>
 #include <string>
 
 #include "joint_action.h"
@@ -11,11 +12,14 @@
 using namespace std;
 
 SearchThread::SearchThread() {
-    // Pre-allocate inference buffers
+    // Pre-allocate inference buffers for batch processing
     obs = new float[BATCH_SIZE * NB_INPUT_VALUES()];
     value = new float[BATCH_SIZE];
     piA = new float[BATCH_SIZE * NB_POLICY_VALUES()];
     piB = new float[BATCH_SIZE * NB_POLICY_VALUES()];
+    
+    // Reserve space for batch contexts
+    batchContexts.reserve(BATCH_SIZE);
 }
 
 SearchThread::~SearchThread() {
@@ -42,108 +46,237 @@ Node* SearchThread::get_root_node() {
     return root;
 }
 
-void SearchThread::backup(Board& board, float value) {
+void SearchThread::backup(vector<TrajectoryEntry>& trajectory, 
+                          Board& board, float valueToBackup) {
     // Process nodes in reverse order (from leaf to root)
-    for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
-        Node* node = it->first;
+    for (auto it = trajectory.rbegin(); it != trajectory.rend(); ++it) {
+        Node* node = it->node;
+        int childIdx = it->selectedChildIdx;
 
-        if (node->is_expanded()) {
-            node->update(node->get_best_child_idx(), value);
+        if (childIdx >= 0) {
+            // Internal node - use the stored child index
+            node->update(childIdx, valueToBackup);
+            // Remove virtual loss after real update
+            node->remove_virtual_loss(childIdx);
         } else {
-            node->update_terminal(value);
+            // Root or leaf without child selection
+            node->update_terminal(valueToBackup);
         }
-        value = -value;
+        valueToBackup = -valueToBackup;
     }
     
-    // Undo all moves made during selection (skip root which has no incoming action)
-    for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
-        const JointActionCandidate& action = it->second;
-        if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
-            board.unmake_moves(action.moveA, action.moveB);
-        }
-    }
+    // Note: moves are already undone during batch collection, no need to undo here
 }
 
 /**
- * @brief Runs a single MCTS iteration using joint action progressive widening.
+ * @brief Runs a minibatch of MCTS iterations.
  * 
- * This implements the dual-head architecture for Bughouse where:
- * - The action space is the Cartesian product of moves on Board A and Board B
- * - Progressive widening limits breadth to focus on depth
- * - Joint prior P(a|s) = P_A(a_A|s) * P_B(a_B|s)
+ * This collects BATCH_SIZE leaf nodes, runs batched neural network inference,
+ * then expands and backs up all leaves. This better utilizes GPU parallelism.
+ */
+void SearchThread::run_batch_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
+    batchContexts.clear();
+    int validInferenceCount = 0;
+    int batchCollisions = 0;
+    
+    // Phase 1: Collect BATCH_SIZE leaf nodes
+    for (int i = 0; i < BATCH_SIZE; i++) {
+        LeafContext ctx;
+        trajectoryBuffer.clear();
+        
+        // Select and expand to get a leaf node
+        Node* leaf = select_and_expand(board);
+        
+        // Check if this leaf was already selected in this batch (collision)
+        for (const auto& prevCtx : batchContexts) {
+            if (prevCtx.leaf == leaf) {
+                batchCollisions++;
+                break;
+            }
+        }
+        
+        // Update max depth reached in this search
+        searchInfo->set_max_depth(leaf->get_depth());
+        
+        // Store trajectory
+        ctx.trajectory = trajectoryBuffer;
+        ctx.leaf = leaf;
+        ctx.teamToPlay = leaf->get_team_to_play();
+        ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
+        
+        // Check for terminal states
+        if (board.is_draw()) {
+            ctx.isTerminal = true;
+            ctx.terminalValue = 0.0f;
+            batchContexts.push_back(std::move(ctx));
+            
+            // Undo moves for this trajectory so we can do another selection
+            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+                const JointActionCandidate& action = it->action;
+                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
+                    board.unmake_moves(action.moveA, action.moveB);
+                }
+            }
+            continue;
+        }
+        
+        // Check for checkmate on each board
+        bool isCheckmate = false;
+        Stockfish::Color teamToPlay = ctx.teamToPlay;
+        
+        if (board.side_to_move(BOARD_A) == teamToPlay) {
+            auto movesA = board.legal_moves(BOARD_A);
+            if (movesA.empty() && board.is_in_check(BOARD_A)) {
+                //cerr << "Checkmate on board A: " << board.fen(BOARD_A) << "|" << board.fen(BOARD_B) << endl;
+                ctx.isTerminal = true;
+                ctx.terminalValue = -1.0f;
+                isCheckmate = true;
+            }
+        }
+        if (!isCheckmate && board.side_to_move(BOARD_B) == ~teamToPlay) {
+            auto movesB = board.legal_moves(BOARD_B);
+            if (movesB.empty() && board.is_in_check(BOARD_B)) {
+                //cerr << "Checkmate on board B: " << board.fen(BOARD_A) << "|" << board.fen(BOARD_B) << endl;
+                ctx.isTerminal = true;
+                ctx.terminalValue = -1.0f;
+                isCheckmate = true;
+            }
+        }
+        
+        if (isCheckmate) {
+            batchContexts.push_back(std::move(ctx));
+            
+            // Undo moves
+            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+                const JointActionCandidate& action = it->action;
+                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
+                    board.unmake_moves(action.moveA, action.moveB);
+                }
+            }
+            continue;
+        }
+        
+        // This leaf needs neural network inference
+        ctx.isTerminal = false;
+        ctx.boardState = std::make_unique<Board>(board);  // Copy board state for later processing
+        
+        // Convert board to planes for this batch slot
+        board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(), 
+                        ctx.teamToPlay, ctx.sitPlaneActive);
+        validInferenceCount++;
+        
+        batchContexts.push_back(std::move(ctx));
+        
+        // Undo moves to restore board for next selection
+        for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+            const JointActionCandidate& action = it->action;
+            if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
+                board.unmake_moves(action.moveA, action.moveB);
+            }
+        }
+    }
+    
+    // Phase 2: Run batched neural network inference (only if we have non-terminal leaves)
+    if (validInferenceCount > 0) {
+        if (!engine->runInference(obs, value, piA, piB)) {
+            cerr << "Batch inference failed" << endl;
+            // Backup all as 0.0 and remove virtual loss
+            for (auto& ctx : batchContexts) {
+                if (ctx.boardState) {
+                    backup(ctx.trajectory, *ctx.boardState, 0.0f);
+                } else {
+                    // Terminal node - backup and remove virtual loss
+                    for (auto it = ctx.trajectory.rbegin(); it != ctx.trajectory.rend(); ++it) {
+                        Node* node = it->node;
+                        int childIdx = it->selectedChildIdx;
+                        if (childIdx >= 0) {
+                            node->update(childIdx, 0.0f);
+                            node->remove_virtual_loss(childIdx);
+                        } else {
+                            node->update_terminal(0.0f);
+                        }
+                    }
+                }
+            }
+            searchInfo->increment_nodes(BATCH_SIZE);
+            return;
+        }
+    }
+    
+    // Phase 3: Process results and backup
+    int inferenceIdx = 0;
+    for (auto& ctx : batchContexts) {
+        if (ctx.isTerminal) {
+            // Terminal node - backup the terminal value and remove virtual loss
+            float val = ctx.terminalValue;
+            for (auto it = ctx.trajectory.rbegin(); it != ctx.trajectory.rend(); ++it) {
+                Node* node = it->node;
+                int childIdx = it->selectedChildIdx;
+                if (childIdx >= 0) {
+                    node->update(childIdx, val);
+                    node->remove_virtual_loss(childIdx);
+                } else {
+                    node->update_terminal(val);
+                }
+                val = -val;
+            }
+        } else {
+            // Non-terminal node - process NN output and expand
+            float* batchValue = value + inferenceIdx;
+            float* batchPiA = piA + inferenceIdx * NB_POLICY_VALUES();
+            float* batchPiB = piB + inferenceIdx * NB_POLICY_VALUES();
+            
+            Board& leafBoard = *ctx.boardState;
+            
+            // Get legal moves for each board
+            vector<Stockfish::Move> actionsA;
+            vector<Stockfish::Move> actionsB;
+            
+            if (leafBoard.side_to_move(BOARD_A) == ctx.teamToPlay) {
+                actionsA = leafBoard.legal_moves(BOARD_A);
+            }
+            if (leafBoard.side_to_move(BOARD_B) == ~ctx.teamToPlay) {
+                actionsB = leafBoard.legal_moves(BOARD_B);
+            }
+            
+            vector<float> priorsA;
+            vector<float> priorsB;
+            
+            if (actionsA.empty()) {
+                actionsA.push_back(Stockfish::MOVE_NULL);
+                priorsA.push_back(1.0f);
+            } else {
+                actionsA.push_back(Stockfish::MOVE_NULL);
+                priorsA = get_normalized_probability(batchPiA, actionsA, 0, leafBoard);
+            }
+            
+            if (actionsB.empty()) {
+                actionsB.push_back(Stockfish::MOVE_NULL);
+                priorsB.push_back(1.0f);
+            } else {
+                actionsB.push_back(Stockfish::MOVE_NULL);
+                priorsB = get_normalized_probability(batchPiB, actionsB, 1, leafBoard);
+            }
+            
+            // Expand leaf node
+            expand_leaf_node(ctx.leaf, actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
+            
+            // Backup value
+            backup(ctx.trajectory, leafBoard, *batchValue);
+            
+            inferenceIdx++;
+        }
+    }
+    
+    searchInfo->increment_nodes(BATCH_SIZE);
+    searchInfo->increment_collisions(batchCollisions);
+}
+
+/**
+ * @brief Single iteration interface - calls run_batch_iteration.
  */
 void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
-    // Select and expand using progressive widening
-    trajectoryBuffer.clear();
-    Node* leaf = select_and_expand(board);
-
-    // Update max depth reached in this search
-    searchInfo->set_max_depth(leaf->get_depth());
-
-    // Check for draw (50-move rule, threefold repetition, insufficient material)
-    if (board.is_draw()) {
-        backup(board, 0.0f);
-        return;
-    }
-
-    // Get the team to play for this leaf
-    Stockfish::Color teamToPlay = leaf->get_team_to_play();
-    
-    // For neural network input: sitting plane is active when team has time advantage
-    // and it's the same side as root (our team's perspective)
-    bool sitPlaneActive = (teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
-
-    // Run neural network inference
-    board_to_planes(board, obs, teamToPlay, sitPlaneActive);
-
-    if (!engine->runInference(obs, value, piA, piB)) {
-        cerr << "Inference failed" << endl;
-        backup(board, 0.0f);
-        return;
-    }
-
-    vector<Stockfish::Move> actionsA;
-    vector<Stockfish::Move> actionsB;
-    
-    // Get moves for our team's color on each board
-    // Check for checkmate: if it's our turn and we have no moves while in check
-    if (board.side_to_move(BOARD_A) == teamToPlay) {
-        actionsA = board.legal_moves(BOARD_A);
-        if (actionsA.empty() && board.is_in_check(BOARD_A)) {
-            backup(board, -1.0f);  // Checkmate - we lose
-            return;
-        }
-    }
-    if (board.side_to_move(BOARD_B) == ~teamToPlay) {
-        actionsB = board.legal_moves(BOARD_B);
-        if (actionsB.empty() && board.is_in_check(BOARD_B)) {
-            backup(board, -1.0f);  // Checkmate - we lose
-            return;
-        }
-    }
-
-    vector<float> priorsA;
-    vector<float> priorsB;
-    
-    if (actionsA.empty()) {
-        actionsA.push_back(Stockfish::MOVE_NULL);
-        priorsA.push_back(1.0f);
-    } else {
-        actionsA.push_back(Stockfish::MOVE_NULL);
-        priorsA = get_normalized_probability(piA, actionsA, 0, board);
-    }
-    
-    if (actionsB.empty()) {
-        actionsB.push_back(Stockfish::MOVE_NULL);
-        priorsB.push_back(1.0f);
-    } else {
-        actionsB.push_back(Stockfish::MOVE_NULL);
-        priorsB = get_normalized_probability(piB, actionsB, 1, board);
-    }
-
-    // Expand and backup
-    expand_leaf_node(leaf, actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
-    backup(board, value[0]);
+    run_batch_iteration(board, engine, teamHasTimeAdvantage);
 }
 
 /**
@@ -154,8 +287,8 @@ Node* SearchThread::select_and_expand(Board& board) {
     shared_ptr<Node> nextNode;
     int childIdx;
 
-    // Root node has no incoming action
-    trajectoryBuffer.emplace_back(currentNode, JointActionCandidate());
+    // Root node has no incoming action, -1 means no child selected yet
+    trajectoryBuffer.emplace_back(currentNode, JointActionCandidate(), -1);
 
     while (true) {
         // If not expanded, this is a leaf node
@@ -168,11 +301,16 @@ Node* SearchThread::select_and_expand(Board& board) {
             nextNode = currentNode->expand_next_joint_child();
             if (nextNode) {
                 childIdx = currentNode->get_expanded_count() - 1;
-                currentNode->set_best_child_idx(childIdx);
+                
+                // Apply virtual loss to discourage re-selection in same batch
+                currentNode->apply_virtual_loss(childIdx);
+                
+                // Update the parent trajectory entry with the selected child index
+                trajectoryBuffer.back().selectedChildIdx = childIdx;
                 
                 JointActionCandidate action = currentNode->get_joint_action(childIdx);
                 board.make_moves(action.moveA, action.moveB);
-                trajectoryBuffer.emplace_back(nextNode.get(), action);
+                trajectoryBuffer.emplace_back(nextNode.get(), action, -1);
                 
                 // Return the newly expanded leaf
                 return nextNode.get();
@@ -180,16 +318,23 @@ Node* SearchThread::select_and_expand(Board& board) {
         }
 
         // Standard PUCT selection among expanded children
-        nextNode = currentNode->get_best_expanded_child();
-        if (!nextNode) {
+        auto [selectedChild, selectedIdx] = currentNode->get_best_expanded_child_with_idx();
+        if (!selectedChild || selectedIdx < 0) {
             break;  // No children available
         }
-        childIdx = currentNode->get_best_child_idx();
+        nextNode = selectedChild;
+        childIdx = selectedIdx;
+        
+        // Apply virtual loss to discourage re-selection in same batch
+        currentNode->apply_virtual_loss(childIdx);
+        
+        // Update the parent trajectory entry with the selected child index
+        trajectoryBuffer.back().selectedChildIdx = childIdx;
 
         JointActionCandidate action = currentNode->get_joint_action(childIdx);
         board.make_moves(action.moveA, action.moveB);
         
-        trajectoryBuffer.emplace_back(nextNode.get(), action);
+        trajectoryBuffer.emplace_back(nextNode.get(), action, -1);
         currentNode = nextNode.get();
     }
 
@@ -198,6 +343,7 @@ Node* SearchThread::select_and_expand(Board& board) {
 
 /**
  * @brief Expands a leaf node with joint action candidates using lazy priority queue.
+ * Thread-safe: Uses atomic try_init_and_expand to prevent race conditions.
  * @param teamHasTimeAdvantage If true, team is up on time and can sit when on turn
  */
 void SearchThread::expand_leaf_node(Node* leaf,
@@ -206,17 +352,7 @@ void SearchThread::expand_leaf_node(Node* leaf,
                                     const vector<float>& priorsA,
                                     const vector<float>& priorsB,
                                     bool teamHasTimeAdvantage) {
-    if (!leaf->is_expanded()) {
-        leaf->init_joint_generator(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
-        
-        if (leaf->has_joint_candidates()) {
-            shared_ptr<Node> firstChild = leaf->expand_next_joint_child();
-            if (firstChild) {
-                leaf->set_is_expanded(true);
-                leaf->set_best_child_idx(0);
-            }
-        }
-    } else {
-        leaf->get_best_expanded_child();
-    }
+    // Atomically try to initialize and expand if not already done
+    // This is safe for concurrent access from multiple threads
+    leaf->try_init_and_expand(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
 }
