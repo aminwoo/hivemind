@@ -202,23 +202,29 @@ public:
      * @brief Get the next best joint action candidate.
      * 
      * Pops the current best from the heap and pushes the next candidates.
+     * Skips candidates with zero jointPrior (invalid sitting combinations).
      */
     JointActionCandidate getNext() {
-        if (heap.empty()) {
-            return JointActionCandidate();
+        while (!heap.empty()) {
+            JointActionCandidate best = heap.top();
+            heap.pop();
+            
+            // Push adjacent candidates (i+1, j) and (i, j+1)
+            pushCandidate(best.idxA + 1, best.idxB);
+            pushCandidate(best.idxA, best.idxB + 1);
+            
+            // Skip invalid sitting combinations (jointPrior == 0)
+            if (best.jointPrior <= 0.0f) {
+                continue;
+            }
+            
+            // Cache for random access
+            generatedCandidates.push_back(best);
+            
+            return best;
         }
         
-        JointActionCandidate best = heap.top();
-        heap.pop();
-        
-        // Push adjacent candidates (i+1, j) and (i, j+1)
-        pushCandidate(best.idxA + 1, best.idxB);
-        pushCandidate(best.idxA, best.idxB + 1);
-        
-        // Cache for random access
-        generatedCandidates.push_back(best);
-        
-        return best;
+        return JointActionCandidate();
     }
 
     /**
