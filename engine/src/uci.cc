@@ -7,6 +7,8 @@
 
 #include <memory>
 #include "onnx_utils.h"
+#include "planes.h"
+#include "utils.h"
 
 #include "uci.h"
 
@@ -165,6 +167,78 @@ void UCI::send_uci_response() {
     cout << "uciok" << endl;
 }
 
+void UCI::policy() {
+    if (engines.empty()) {
+        cerr << "Error: No engines have been initialized!" << endl;
+        return;
+    }
+
+    // Allocate inference buffers
+    float* obs = new float[BATCH_SIZE * NB_INPUT_VALUES()];
+    float* value = new float[BATCH_SIZE];
+    float* piA = new float[BATCH_SIZE * NB_POLICY_VALUES()];
+    float* piB = new float[BATCH_SIZE * NB_POLICY_VALUES()];
+
+    // Convert board to planes
+    board_to_planes(board, obs, teamSide, teamHasTimeAdvantage);
+
+    // Run inference
+    Engine* engine = engines[0].get();
+    if (!engine->runInference(obs, value, piA, piB)) {
+        cerr << "Inference failed" << endl;
+        delete[] obs;
+        delete[] value;
+        delete[] piA;
+        delete[] piB;
+        return;
+    }
+
+    cout << "Value: " << value[0] << endl;
+    cout << endl;
+
+    // Board A policy
+    cout << "Board A (" << board.fen(BOARD_A) << "):" << endl;
+    if (board.side_to_move(BOARD_A) == teamSide) {
+        vector<Stockfish::Move> actionsA = board.legal_moves(BOARD_A);
+        actionsA.push_back(Stockfish::MOVE_NULL);  // Add sit option
+        vector<float> priorsA = get_normalized_probability(piA, actionsA, BOARD_A, board);
+        
+        // Sort by probability (descending)
+        vector<size_t> indices = argsort(priorsA);
+        for (size_t idx : indices) {
+            string moveStr = (actionsA[idx] == Stockfish::MOVE_NULL) 
+                            ? "pass" : board.uci_move(BOARD_A, actionsA[idx]);
+            cout << "  " << moveStr << ": " << priorsA[idx] << endl;
+        }
+    } else {
+        cout << "  (not our turn)" << endl;
+    }
+    cout << endl;
+
+    // Board B policy
+    cout << "Board B (" << board.fen(BOARD_B) << "):" << endl;
+    if (board.side_to_move(BOARD_B) == ~teamSide) {
+        vector<Stockfish::Move> actionsB = board.legal_moves(BOARD_B);
+        actionsB.push_back(Stockfish::MOVE_NULL);  // Add sit option
+        vector<float> priorsB = get_normalized_probability(piB, actionsB, BOARD_B, board);
+        
+        // Sort by probability (descending)
+        vector<size_t> indices = argsort(priorsB);
+        for (size_t idx : indices) {
+            string moveStr = (actionsB[idx] == Stockfish::MOVE_NULL) 
+                            ? "pass" : board.uci_move(BOARD_B, actionsB[idx]);
+            cout << "  " << moveStr << ": " << priorsB[idx] << endl;
+        }
+    } else {
+        cout << "  (not our turn)" << endl;
+    }
+
+    delete[] obs;
+    delete[] value;
+    delete[] piA;
+    delete[] piB;
+}
+
 
 void UCI::loop() {
     string token, cmd;
@@ -184,6 +258,7 @@ void UCI::loop() {
         else if (token == "setoption")  setoption(is);
         else if (token == "position")   position(is);
         else if (token == "stop")       stop();
+        else if (token == "policy")     policy();
 
     } while (token != "quit"); // Command line args are one-shot
 }

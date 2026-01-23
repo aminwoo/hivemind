@@ -10,7 +10,7 @@
 #include "Fairy-Stockfish/src/types.h"
 
 // Progressive Widening hyperparameters
-constexpr float PW_COEFFICIENT = 1.5f;     
+constexpr float PW_COEFFICIENT = 3.0f;     
 constexpr float PW_EXPONENT = 0.5f;   
 
 /**

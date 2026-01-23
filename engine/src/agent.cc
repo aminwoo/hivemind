@@ -71,8 +71,8 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     searchThread->set_search_info(&searchInfo);
     running = true;
 
-    // Run search iterations until time is up
-    while (searchInfo.elapsed() < moveTime) {
+    // Run search iterations until time is up or stop is called
+    while (running && searchInfo.elapsed() < moveTime) {
         searchThread->run_iteration(board, engine, teamHasTimeAdvantage);
         searchInfo.increment_nodes(1);
     }

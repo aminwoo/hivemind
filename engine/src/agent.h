@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <vector>
 #include "searchthread.h"
 #include "board.h"
@@ -14,7 +15,7 @@
 class Agent {
 private:
     SearchThread* searchThread;
-    bool running;                            
+    std::atomic<bool> running;                            
     shared_ptr<Node> rootNode;
 
 public:
