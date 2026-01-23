@@ -17,6 +17,7 @@ set(SOURCES
     src/agent.cc
     src/onnx_utils.cc
     src/benchmark.cc
+    src/zobrist.cc
 )
 
 # For finding FindTensorRT.cmake

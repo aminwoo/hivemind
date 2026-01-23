@@ -4,15 +4,17 @@
 
 /**
  * @file search_params.h
- * @brief Centralized search hyperparameters for MCTS tuning.
+ * @brief Centralized search hyperparameters for MCGS tuning.
  * 
- * All tunable MCTS search parameters are defined here for easy experimentation.
+ * All tunable MCGS (Monte Carlo Graph Search) parameters are defined here 
+ * for easy experimentation. MCGS extends MCTS by using a transposition table
+ * to detect when different move sequences reach the same position.
  */
 
 namespace SearchParams {
 
 // =============================================================================
-// Batch MCTS Parameters
+// Batch MCGS Parameters
 // =============================================================================
 
 /// Number of leaves to collect before batched neural network inference
@@ -23,6 +25,26 @@ constexpr int NUM_SEARCH_THREADS = 2;
 
 /// Virtual loss amount applied during batch selection to reduce collisions
 constexpr int VIRTUAL_LOSS = 1;
+
+// =============================================================================
+// MCGS (Monte Carlo Graph Search) Parameters
+// =============================================================================
+
+/// Enable transposition table for graph-based search
+/// When true, positions reached through different paths share the same node
+constexpr bool ENABLE_TRANSPOSITIONS = true;
+
+/// Initial capacity for transposition table (number of positions)
+/// Higher values reduce rehashing overhead but use more memory
+constexpr size_t TT_INITIAL_CAPACITY = 100000;
+
+/// Maximum transposition table size (0 = unlimited)
+/// Prevents unbounded memory growth in long games
+constexpr size_t TT_MAX_SIZE = 0;
+
+/// Minimum visit count for a node to be used as a transposition
+/// Higher values ensure more reliable Q-value estimates before sharing
+constexpr int TT_MIN_VISITS = 0;
 
 // =============================================================================
 // PUCT (Polynomial Upper Confidence Trees) Parameters

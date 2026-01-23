@@ -14,6 +14,10 @@
 using namespace std;
 
 Agent::Agent() : running(false) {
+    // Create the transposition table for MCGS
+    transpositionTable = std::make_unique<TranspositionTable>();
+    transpositionTable->reserve(100000);  // Reserve space for ~100K positions
+    
     // Create multiple search threads
     for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
         searchThreads.push_back(new SearchThread());
@@ -66,18 +70,23 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     }
 
     // Create the root node and search info
-    rootNode = make_shared<Node>(teamSide);
+    rootNode = make_shared<Node>(teamSide, board.hash_key(teamHasTimeAdvantage));  // MCGS: store root hash
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTime);
+    
+    // MCGS: Clear and set up transposition table for new search
+    transpositionTable->clear();
+    transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
 
     if (engines.size() < static_cast<size_t>(SearchParams::NUM_SEARCH_THREADS)) {
         cerr << "Warning: Not enough engines for all threads. Need " 
              << SearchParams::NUM_SEARCH_THREADS << ", have " << engines.size() << endl;
     }
 
-    // Set up all search threads with shared root node and search info
+    // Set up all search threads with shared root node, search info, and transposition table
     for (auto* st : searchThreads) {
         st->set_root_node(rootNode.get());
         st->set_search_info(&searchInfo);
+        st->set_transposition_table(transpositionTable.get());  // MCGS
     }
     
     running = true;
@@ -112,6 +121,8 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     int depth = searchInfo.get_max_depth();
     int collisions = searchInfo.get_collisions();
     int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
+    size_t tbhits = transpositionTable->getHits();
+    int hashfull = transpositionTable->getFullness();
     
     // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
     // cp = C * tan(k * Q), where C=180 and k=1.56 (tuned for Bughouse)
@@ -126,7 +137,8 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
          << " score cp " << cpScore
          << " nodes " << nodes 
          << " nps " << nps
-         << " collisions " << collisions
+         << " hashfull " << hashfull
+         << " tbhits " << tbhits
          << " time " << static_cast<int>(elapsedMs) << endl;
     
     string bestMoveStr = extract_best_move(board);
