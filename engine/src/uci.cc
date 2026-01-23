@@ -47,9 +47,6 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
         // Attempt to load the network (build or deserialize).
         if (!enginePtr->loadNetwork(onnxFile, engineFile)) {
             std::cerr << "Error: Failed to load engine on device " << deviceId << std::endl;
-            // Depending on your error-handling strategy, you might choose to:
-            // - continue to try loading for other devices, or
-            // - abort the initialization (e.g., by returning or throwing an exception).
         } else {
             std::cout << "Engine successfully loaded on device " << deviceId << std::endl;
             engines.push_back(std::move(enginePtr));
@@ -87,7 +84,6 @@ void UCI::position(istringstream& is) {
         board.set(fen);
     }
     else {
-        // Unrecognized position command; you might want to handle this error.
         return;
     }
     
