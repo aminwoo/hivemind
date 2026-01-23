@@ -12,8 +12,6 @@
 #include <iostream>
 #include <cuda_runtime.h>
 
-std::unordered_map<std::string, int> POLICY_INDEX; 
-
 using namespace std; 
 
 int main(int argc, char* argv[]) {
@@ -33,11 +31,7 @@ int main(int argc, char* argv[]) {
     Stockfish::Position::init();
     Stockfish::Threads.set(1);
 
-    for (int i = 0; i < NB_POLICY_VALUES(); i++) {
-        if (POLICY_INDEX.find(UCI_MOVES[i]) == POLICY_INDEX.end()) {
-            POLICY_INDEX[UCI_MOVES[i]] = i; 
-        }
-    }
+    init_policy_index();
 
     // Check for benchmark flag
     if (argc > 1 && string(argv[1]) == "bench") {
