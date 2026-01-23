@@ -6,8 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Ofast -DNDEBUG -DNNUE_EMBEDDING_OFF")
 
 # Add source files
-set(SOURCES
-    src/main.cc
+set(LIB_SOURCES
     src/engine.cc
     src/board.cc
     src/node.cc
@@ -18,6 +17,7 @@ set(SOURCES
     src/onnx_utils.cc
     src/benchmark.cc
     src/zobrist.cc
+    src/globals.cc
 )
 
 # For finding FindTensorRT.cmake
@@ -30,8 +30,15 @@ find_package(Threads REQUIRED)
 find_package(TensorRT REQUIRED)
 find_package(CUDA REQUIRED)
 
-add_executable(${PROJECT_NAME} ${SOURCES})
 add_subdirectory(src/Fairy-Stockfish)
 
-target_include_directories(${PROJECT_NAME} PUBLIC ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME} PUBLIC ${CUDA_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${TensorRT_LIBRARIES} Fairy-Stockfish Threads::Threads)
+add_library(${PROJECT_NAME}_lib STATIC ${LIB_SOURCES})
+target_include_directories(${PROJECT_NAME}_lib PUBLIC ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CUDA_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${TensorRT_LIBRARIES} Fairy-Stockfish Threads::Threads)
+
+add_executable(${PROJECT_NAME} src/main.cc)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
+
+include(CTest)
+enable_testing()
+add_subdirectory(tests)
