@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 #include <iostream>
 #include <fstream>
+#include <mutex>
 #include <vector>
 #include <stdexcept>
 #include <chrono>
@@ -20,6 +21,12 @@ public:
     }
 };
 
+/**
+ * @brief TensorRT inference engine wrapper.
+ * 
+ * Thread-safe: inference calls are serialized via mutex.
+ * Multiple search threads can safely share an engine instance.
+ */
 class Engine {
 public:
     Engine(int deviceId);
@@ -29,6 +36,9 @@ public:
     bool runInference(float* obs, float* value, float* piA, float* piB);
 
 private:
+    // Mutex for thread-safe inference
+    std::mutex m_inferenceMutex;
+    
     // The GPU id that this Engine instance is bound to.
     int m_deviceId;
     

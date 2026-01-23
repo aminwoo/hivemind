@@ -1,26 +1,29 @@
 #pragma once
 
 #include <atomic>
+#include <thread>
 #include <vector>
 #include "searchthread.h"
 #include "board.h"
 #include "node.h"
 #include "engine.h"
+#include "search_params.h"
 
 /**
- * @brief Manages MCTS search for Bughouse.
+ * @brief Manages multi-threaded MCTS search for Bughouse.
  *
- * Single-threaded agent that runs MCTS with joint action progressive widening.
+ * Runs multiple search threads in parallel, each with its own engine instance.
+ * All threads share the same search tree with thread-safe node operations.
  */
 class Agent {
 private:
-    SearchThread* searchThread;
+    std::vector<SearchThread*> searchThreads;
     std::atomic<bool> running;                            
     shared_ptr<Node> rootNode;
 
 public:
     /**
-     * @brief Constructs a single-threaded Agent.
+     * @brief Constructs a multi-threaded Agent.
      */
     Agent();
 

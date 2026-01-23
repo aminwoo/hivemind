@@ -5,18 +5,26 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 #include "joint_action.h"
+#include "search_params.h"
 
 using namespace std;
 
 Agent::Agent() : running(false) {
-    searchThread = new SearchThread();
+    // Create multiple search threads
+    for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
+        searchThreads.push_back(new SearchThread());
+    }
 }
 
 Agent::~Agent() {
-    delete searchThread;
+    for (auto* st : searchThreads) {
+        delete st;
+    }
+    searchThreads.clear();
 }
 
 void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color teamSide, bool teamHasTimeAdvantage) {
@@ -61,20 +69,39 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     rootNode = make_shared<Node>(teamSide);
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTime);
 
-    if (engines.empty()) {
-        cerr << "Error: No engines available for search." << endl;
-        return;
+    if (engines.size() < static_cast<size_t>(SearchParams::NUM_SEARCH_THREADS)) {
+        cerr << "Warning: Not enough engines for all threads. Need " 
+             << SearchParams::NUM_SEARCH_THREADS << ", have " << engines.size() << endl;
     }
 
-    Engine* engine = engines[0];
-    searchThread->set_root_node(rootNode.get());
-    searchThread->set_search_info(&searchInfo);
+    // Set up all search threads with shared root node and search info
+    for (auto* st : searchThreads) {
+        st->set_root_node(rootNode.get());
+        st->set_search_info(&searchInfo);
+    }
+    
     running = true;
 
-    // Run search iterations until time is up or stop is called
-    while (running && searchInfo.elapsed() < moveTime) {
-        searchThread->run_iteration(board, engine, teamHasTimeAdvantage);
-        searchInfo.increment_nodes(1);
+    // Launch worker threads
+    vector<thread> workers;
+    for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
+        // Each thread gets its own engine (or shares if not enough)
+        Engine* engine = engines[i % engines.size()];
+        SearchThread* st = searchThreads[i];
+        
+        workers.emplace_back([this, &board, engine, st, moveTime, teamHasTimeAdvantage, &searchInfo]() {
+            // Each thread needs its own copy of the board for traversal
+            Board localBoard(board);
+            
+            while (running && searchInfo.elapsed() < moveTime) {
+                st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+            }
+        });
+    }
+    
+    // Wait for all threads to complete
+    for (auto& worker : workers) {
+        worker.join();
     }
 
     running = false;
@@ -83,6 +110,7 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     double elapsedMs = searchInfo.elapsed();
     int nodes = searchInfo.get_nodes_searched();
     int depth = searchInfo.get_max_depth();
+    int collisions = searchInfo.get_collisions();
     int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
     
     // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
@@ -98,6 +126,7 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
          << " score cp " << cpScore
          << " nodes " << nodes 
          << " nps " << nps
+         << " collisions " << collisions
          << " time " << static_cast<int>(elapsedMs) << endl;
     
     string bestMoveStr = extract_best_move(board);
