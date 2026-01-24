@@ -1,11 +1,30 @@
 add_library(Fairy-Stockfish
+    ./src/benchmark.cpp
+    ./src/bitbase.cpp
     ./src/bitboard.cpp
+    ./src/endgame.cpp
+    ./src/evaluate.cpp
+    ./src/material.cpp
     ./src/misc.cpp
     ./src/movegen.cpp
+    ./src/movepick.cpp
     ./src/parser.cpp
+    ./src/partner.cpp
+    ./src/pawns.cpp
     ./src/position.cpp
     ./src/piece.cpp
+    ./src/psqt.cpp
+    ./src/search.cpp
     ./src/thread.cpp
+    ./src/timeman.cpp
+    ./src/tt.cpp
+    ./src/tune.cpp
+    ./src/uci.cpp
+    ./src/ucioption.cpp
     ./src/variant.cpp
-    ./src/stubs.cpp
+    ./src/xboard.cpp
+    ./src/nnue/evaluate_nnue.cpp
+    ./src/nnue/features/half_ka_v2_variants.cpp
+    ./src/nnue/features/half_ka_v2.cpp
+    ./src/syzygy/tbprobe.cpp
 )

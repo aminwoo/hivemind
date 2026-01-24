@@ -97,9 +97,6 @@ public:
     void backup(vector<TrajectoryEntry>& trajectory, 
                 Board& board, float value);
     
-    // Minibatch MCGS - collects BATCH_SIZE leaves, runs batched inference, processes results
-    void run_batch_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage);
-    
-    // Single iteration (legacy, calls run_batch_iteration internally)
+    // Minibatch MCGS - collects SearchParams::BATCH_SIZE leaves, runs batched inference, processes results
     void run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage);
 };

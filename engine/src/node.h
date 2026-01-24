@@ -164,6 +164,7 @@ public:
         }
 
         JointActionCandidate candidate = candidateGenerator.getNext();
+        
         outAction = candidate;  // Return the actual action used
         
         std::shared_ptr<Node> child;
@@ -229,7 +230,7 @@ public:
         // Try to expand the first child
         if (candidateGenerator.hasNext()) {
             JointActionCandidate candidate = candidateGenerator.getNext();
-            
+        
             auto child = std::make_shared<Node>(~teamToPlay);
             child->set_depth(m_depth + 1);
             
@@ -289,6 +290,10 @@ public:
 
     std::vector<std::shared_ptr<Node>> get_children() {
         return children;
+    }
+
+    const std::vector<float>& get_child_value_sums() const {
+        return childValueSum;
     }
 
     bool is_expanded() {
@@ -358,10 +363,6 @@ public:
     float Q() {
         return valueSum / (1.0f + m_visits);
     }
-    
-    // =============================================================================
-    // MCGS (Monte Carlo Graph Search) Methods
-    // =============================================================================
     
     /**
      * @brief Get the position hash for this node.
