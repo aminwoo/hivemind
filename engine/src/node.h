@@ -365,6 +365,55 @@ public:
     }
     
     /**
+     * @brief Apply Dirichlet noise to child priors for exploration.
+     * @param noise Dirichlet noise vector (same size as children)
+     * @param epsilon Mixing factor (prior = (1 - epsilon) * prior + epsilon * noise)
+     */
+    void apply_dirichlet_noise(const std::vector<float>& noise, float epsilon) {
+        std::lock_guard<std::mutex> guard(nodeMutex);
+        if (noise.size() != childPriors.size()) return;
+        
+        for (size_t i = 0; i < childPriors.size(); ++i) {
+            childPriors[i] = (1.0f - epsilon) * childPriors[i] + epsilon * noise[i];
+        }
+    }
+    
+    /**
+     * @brief Get the number of children that have been expanded.
+     */
+    size_t get_num_children() const {
+        return children.size();
+    }
+    
+    /**
+     * @brief Get the visit counts for all expanded children.
+     * Used for extracting MCTS policy distributions.
+     */
+    std::vector<int> get_child_visits() const {
+        std::lock_guard<std::mutex> guard(nodeMutex);
+        return childVisits;
+    }
+    
+    /**
+     * @brief Get the joint action and visit count for each child.
+     * Returns vector of (JointActionCandidate, visit_count) pairs.
+     * Used for extracting MCTS policy distributions for training.
+     */
+    std::vector<std::pair<JointActionCandidate, int>> get_child_action_visits() const {
+        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::vector<std::pair<JointActionCandidate, int>> result;
+        result.reserve(children.size());
+        
+        for (size_t i = 0; i < children.size(); ++i) {
+            JointActionCandidate action = candidateGenerator.getGenerated(i);
+            int visits = (i < childVisits.size()) ? childVisits[i] : 0;
+            result.emplace_back(action, visits);
+        }
+        
+        return result;
+    }
+    
+    /**
      * @brief Get the position hash for this node.
      * Used for transposition table lookups.
      */

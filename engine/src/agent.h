@@ -10,6 +10,8 @@
 #include "search_params.h"
 #include "transposition_table.h"
 #include "globals.h"
+#include "joint_action.h"
+#include "rl/rl_settings.h"
 
 /**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
@@ -45,6 +47,19 @@ public:
      * @param teamHasTimeAdvantage If true, team is ahead on time and can double-sit.
      */
     void run_search(Board& board, const std::vector<Engine*>& engines, int move_time, Stockfish::Color side, bool teamHasTimeAdvantage);
+
+    /**
+     * @brief Runs a silent search for self-play (no UCI output).
+     * @param board The board on which to perform the search.
+     * @param engines A vector of engine pointers to use during the search.
+     * @param targetNodes The number of MCTS iterations to run.
+     * @param side The side to move.
+     * @param teamHasTimeAdvantage If true, team is ahead on time.
+     * @param settings RL settings for Dirichlet noise and temperature.
+     * @param temperature Temperature for move selection (0 = greedy, >0 = stochastic).
+     * @return The best joint action found.
+     */
+    JointActionCandidate run_search_silent(Board& board, const std::vector<Engine*>& engines, size_t targetNodes, Stockfish::Color side, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature);
 
     /**
      * @brief Extracts the best move from the root node after search.
@@ -86,5 +101,14 @@ public:
      */
     TranspositionTable* getTranspositionTable() const {
         return transpositionTable.get();
+    }
+    
+    /**
+     * @brief Get the root node after search for extracting visit distributions.
+     * Used for AlphaZero-style training data generation.
+     * @return Shared pointer to the root node, or nullptr if no search has been run.
+     */
+    std::shared_ptr<Node> get_root_node() const {
+        return rootNode;
     }
 };

@@ -18,6 +18,9 @@ set(LIB_SOURCES
     src/benchmark.cc
     src/zobrist.cc
     src/globals.cc
+    src/rl/gamepgn.cc
+    src/rl/selfplay.cc
+    src/rl/training_data_writer.cc
 )
 
 # For finding FindTensorRT.cmake
