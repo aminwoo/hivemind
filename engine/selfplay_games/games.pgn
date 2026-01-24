@@ -1,0 +1,389 @@
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "1"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "1-0"]
+[PlyCount "134"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1e2e4 1e7e5 2d2d4 1b1c3 2d7d5 1b8c6 2c1f4 1g1f3 2g8f6 1g8f6 2e2e3 1f1c4 2c8f5
+1f8e7 2f1d3 1d2d4 2f5d3 1e5d4 2c2d3 1c4f7 2e7e6 1e8f7 2b1c3 1f3d4 2f8b4 1h8f8
+2B@g3 1B@b3 2P@a3 1B@e6 2P@d2 2a3b2 2a1b1 1P@h6 2b4c3 1g7h6 2d2c3 1c1h6 1c6d4
+1d1d4 2P@d6 1e6b3 2P@e5 1a2b3 1B@c5 1d4d2 2d6e5 1f7g8 2f4e5 1P@g7 1f8f7 1N@g5
+1f7g7 1h6g7 1g8g7 2R@c1 2B@a4 1e4e5 2b8c6 1d8f8 2b1c1 2b2c1q 2d1c1 1R@f7 1f8f7
+1g5f7 1g7f7 1e5f6 2P@d2 1e7f6 2c1d2 1c3e4 2N@b1 1c5e7 2d2d1 1e4f6 2Q@d2 1e7f6
+2d1d2 2b1d2 2e1d2 2N@e4 2d3e4 2f6e4 2d2e2 2e4c3 2e2f1 1Q@h5 1P@g6 1h5h7 1P@g7
+2B@d3 2P@e2 2c3e2 2g1e2 2d3e2 2f1e2 1N@h8 1f7e7 1h8g6 1e7d8 1h7g8 1B@e8 2P@d3
+2e2d3 1P@e7 1f6e7 1g6e7 1R@e5 1P@e3 1e5e7 1P@d6 2B@c4 1c7d6 2d3d2 1d2d6 1P@d2
+1d6d2 1N@e4 2P@c3 2d2c3 2P@b4 2c3c2 2B@d3 2c2c1 2P@b2 2c1b2 1g8e8 1e7e8 2B@a3
+2b2a1 1a1a7 1e4d2 2P@b2 1-0
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "2"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "86"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1b1c3 1d7d5 2e2e4 1g1f3 2e7e5 1b8c6 1d2d4 1c8g4 1c1g5 1f7f6 2g1f3 1g5h4 2b8c6
+1e7e6 2f1c4 1e2e3 2f8e7 1f8b4 2b1c3 1f1e2 2g8f6 1g8e7 2d2d4 1e1g1 2e5d4 1e7f5
+2c4f7 1P@h3 2e8f7 1g4f3 2f3d4 1e2f3 2h8f8 1f5h4 1B@g3 1h4f3 2B@h6 1d1f3 2g7h6
+1b4c3 2c1h6 1b2c3 2c6d4 1P@e4 2N@e5 1f3g4 2f7g8 1d8e7 2B@c4 1N@b5 2B@e6 1P@f5
+2d1d4 1g4h5 2N@g4 1g7g6 1h5e2 1P@f3 1g2f3 1e4f3 1e2f3 1N@g5 1f3g2 2e5g4 2B@c5
+2c4e6 2d7e6 1B@f3 2d4d8 1b5c7 2f6g4 1e8f7 1N@h6 1f7g7 1c7e6 1e7e6 1h6f5 1e6f5
+1B@h6 1g7h6 1g3f4 1N@e2 1g1h1 1f3g2 1h1g2 1Q@f3 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "3"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "1/2-1/2"]
+[PlyCount "93"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1d2d4 1d7d5 2d2d4 1b1c3 2d7d5 1g8f6 2c1f4 1c1g5 2b8c6 1h7h6 2e2e3 1g5f6 2g8f6
+1e7f6 2b1d2 1e2e3 1b8c6 1f1d3 1f8b4 1g1e2 1c8g4 1e1g1 2N@e4 1b4c3 2g1f3 1b2c3
+2e4f2 1e8g8 2e1f2 1f2f3 1g4h5 1e2f4 2f6g4 1h5g6 2f2e2 1d3g6 1f7g6 1f4g6 1N@e7
+1g6f8 1d8f8 1a1b1 2R@f2 1e7f5 2e2e1 1d1d3 1c6e7 1b1b7 1f5h4 1b7c7 1f6f5 2f2f3
+2d1f3 1N@e5 2P@f2 1f8f6 2e1d1 1c7e7 2B@e4 1f6e7 2d2e4 2d5e4 2f3e4 1N@g6 2B@d5
+1h4g6 2e4d3 1e5g6 1e7f6 2P@c4 2d3d2 2N@e4 2d2e2 2N@c3 2b2c3 2e4c3 2d1d2 2c3e2
+2f1e2 1Q@h8 2c4c3 1g8f7 2d2c3 1h8a8 1f7g6 1a8d5 1P@e6 1d5e5 1f6f7 1e5g3 1g6f6
+1g3e5 1f6g6 1/2-1/2
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "4"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "110"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1e2e4 1g8f6 2e2e4 1b1c3 2e7e6 1d7d5 2b1c3 1e4d5 2d7d5 1e7e6 2e4d5 1f1b5 2e6d5
+2g1f3 2g8f6 2f1b5 2b8c6 2d1e2 2P@e4 1c7c6 2f3e5 1d5c6 2c8d7 1b8c6 2b5c6 1d2d4
+2b7c6 1f8b4 2d2d4 1g1f3 2P@h3 1N@e4 1B@h4 1b4c3 1b2c3 1e4c3 2e5f7 1h4f6 2h3g2
+1g7f6 2h1g1 1d1d3 2d8e7 1c3b5 2f7h8 1d3b5 2N@f3 2e2f3 2e4f3 1N@c3 2P@e5 1b5d3
+2B@h5 1P@e2 2P@f7 1d3e2 2h5f7 1c3e2 2h8f7 1P@g7 2P@g3 1h8g8 2N@d6 1Q@f8 2c7d6
+1g8f8 2f7d6 1g7f8q 2e7d6 1e8f8 1P@g7 1f8e7 2P@f7 1P@d6 2e8f7 1d8d6 1N@g8 1e7d8
+1g8f6 1R@d1 1e1e2 1c6d4 1f3d4 1d1d4 1g7g8q 1B@f8 2N@g5 1P@c7 2f7e8 1d8c7 2Q@f7
+1f6e8 2e8d8 1c7b8 1e8d6 1d4d6 1g8f8 2N@b7 2d8c7 2e5d6 2f8d6 1Q@c4 1e2f3 2b7d6
+2g3f2 1B@e2 2e1f2 1f3g3 2N@g4 1c4g4 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "5"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "1-0"]
+[PlyCount "86"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1d2d4 1d7d5 2e2e4 1g1f3 2e7e5 1b8c6 2g1f3 1c1f4 2b8c6 1g8f6 2f1c4 1e2e3 2f8c5
+1c8g4 2d2d3 1b1d2 2g8f6 1e7e6 2b1c3 1f1e2 2e8g8 1f8b4 2e1g1 1e1g1 2d7d6 1h7h5
+2c1g5 1h2h3 2c8g4 1b4d2 2c3d5 1f3d2 2f6d5 1g4f5 2g5d8 1N@g5 2d5f4 1d8e7 2N@f6
+2g7f6 2d8f6 2B@g7 2f6g7 2g8g7 2h2h3 2g4h3 2g2h3 1P@e5 2f8g8 1f6e4 2f3g5 1d2e4
+1d5e4 1B@d6 2g7f8 1c7d6 2d1g4 1e5d6 1e7d7 1N@c7 1e8f8 1c7a8 1B@f6 2g8g5 2N@d7
+1N@c5 2f8e8 1Q@e8 2d7f6 2e8d8 2g4g5 1c5d7 1e8d7 2f4h3 2g1h1 2h3g5 2f1g1 1P@e7
+2R@h3 1c6e7 2B@h2 1d6e7 1f6e7 2h3h2 2h1h2 2Q@h3 1-0
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "6"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "54"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1e2e4 1e7e5 2e2e4 1b1c3 2g8f6 1b8c6 1f1c4 1f8c5 2b1c3 1g1f3 2d7d5 1g8f6 1d2d4
+1c5d4 1c4f7 1e8f7 1e1g1 1h8f8 1c3d5 1d7d6 2e4d5 1c2c3 2f6d5 2c3d5 2d8d5 1P@h3
+2g1f3 1P@h6 2c8g4 1h3g2 2B@b3 1f3g5 2d5e4 1f7g8 2d1e2 1h6g7 2e4g6 1N@h3 1g5h3
+1c8h3 1N@h6 1g8g7 1h6f5 1g7f7 2N@e5 1f5h6 2g4f3 1f7e8 1N@g7 1e8d7 1f1e1 2e5g6
+2f3e2 1Q@h1 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "7"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "169"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1e2e4 1e7e6 2e2e4 1b1c3 1d7d5 1e4d5 1e6d5 1d2d4 1g8f6 1g1f3 1b8c6 1f1b5 2e7e6
+1f8e7 2b1c3 1f3e5 2d7d5 1e8g8 2g1f3 1b5c6 1b7c6 1e1g1 1c6c5 1f1e1 1c5d4 1d1d4
+2b8c6 1c7c5 2e4d5 1d4h4 2e6d5 1f6e4 2d2d4 2f8b4 2f1b5 2d8e7 2P@e5 2N@e4 2P@d6
+1P@g5 2c7d6 1e4g5 2B@h4 1P@h6 2P@f6 1g7h6 2c1d2 1h4h6 2b4c3 1P@g7 2b2c3 1h6g7
+2P@h3 1g8g7 2h1g1 1N@h5 2h3g2 1g7g8 2P@h6 2g8h6 2d2h6 2e4c3 2d1d3 2c3b5 2d3b5
+1P@g7 2d6e5 1N@h3 2d4e5 1g1f1 1B@h6 1g7f8q 1d8f8 1B@f6 1P@g7 1f6e7 1f8e7 1P@f6
+1g7f6 1c3d5 2B@c3 1c8a6 2P@d2 1P@d3 2c3a1 1e7e6 2P@d6 1d5f6 1g8h8 1c1g5 1h3g5
+2N@d4 2f3d4 2e7e5 2Q@e3 2R@f1 2g1f1 2g2f1q 2b5f1 2a1d4 2e3e5 2d4e5 2f1e2 1e5f7
+1e6f7 1R@e8 1N@g8 1e8a8 1R@h1 1R@g1 2R@g1 1N@d2 2B@f1 1f1e2 1P@f3 1g2f3 1d2f3
+2g1f1 2e2f1 1P@g7 1f7g7 2e5d6 2f1e2 2P@e4 2N@b5 1B@e3 1f3g1 1e1g1 1Q@f3 1e2d2
+1g5e4 1d3e4 1f3e2 2N@g2 2e1f1 1d2c1 1R@d1 2c8h3 2b5d6 2e8d7 2B@g4 2h3g4 2e2g4
+2d7d6 2g4g2 2d6c5 2f2f3 2e4f3 2g2f3 2c5b6 2f3e3 2d5d4 2e3b3 2b6c7 2h6f4 2c7d7
+2b3d5 2d7e8 2P@d7 2e8f8 2f4d6 2P@e7 2P@c7 2e7d6 2c7c8q 2f8e7 2R@e8 1g1d1 1h1d1 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "8"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "126"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1e2e4 1e7e6 2e2e4 1b1c3 2e7e6 1d7d5 2b1c3 1e4d5 2d7d6 1e6d5 2d2d4 1d2d4 2f8e7
+1b8c6 1g1f3 1f8b4 2g1f3 1f1b5 2b8c6 1d8e7 2d4d5 1d1e2 2e6d5 1e7e2 2e4d5 1b5e2
+2c6e5 1g8f6 1c1g5 1P@a3 2f3e5 1P@d2 2d6e5 1a3b2 2f1b5 1a1d1 2e8f8 1b4c3 1d2c3
+1N@e4 2P@h6 1g5f6 2B@f6 1e4f6 2N@h5 1N@e5 2Q@g6 2h6g7 2f6g7 2h5g7 2g6g7 1c6e5
+1d4e5 1f6e4 2N@h5 1N@h5 2N@h4 2h5g7 2h4g2 1Q@g6 2e1f1 1h5f4 2g2f4 2h1g1 2c8h3
+1g6f5 2P@g2 1f4d5 2f4g2 1P@d2 2B@h6 1e1f1 2g8h6 2c1h6 2g2e3 2f1e2 2P@f3 2e2d2
+2N@f1 2b5f1 2e3f1 2g1f1 2e7g5 2h6g5 2d8g5 2Q@e3 2g5g7 2f1g1 2h3g4 2g1g4 2g7g4
+2d1f3 2g4b4 1N@e3 2e3e5 1d5e3 2P@e3 2f2e3 2N@c4 2d2e2 2c4e5 1f5f3 1e2f3 1B@b5
+2N@e6 1B@d3 2f8e8 1b5d3 1c2d3 2e6c7 2e8d8 1P@e2 2c7a8 1f3e2 2Q@d2 2e2d2 2e5f3
+1R@e1 2d2e2 1d1e1 2B@c4 1d2e1q 1f1e1 1P@d2 1e1f1 1Q@e1 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "9"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "1-0"]
+[PlyCount "110"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1e2e4 1d7d5 2d2d4 1e4d5 2e7e6 1e7e6 2g1f3 1b1c3 2b8c6 1e6d5 2c1f4 1d2d4 2g8f6
+1g8f6 2e2e3 1g1f3 2f6d5 1b8c6 2b1d2 1f1b5 2d5f4 1f8b4 2e3f4 1e1g1 1e8g8 1b5c6
+1b7c6 1f3e5 2N@d5 1b4c3 2B@g5 1b2c3 2P@e3 1f6e4 2f2e3 2d5e3 2g5d8 1B@f3 2e3d1
+1P@h3 2a1d1 1P@h6 1h3g2 1f3g2 2c6d8 1N@h3 2P@f2 1g2h3 1c8h3 1B@f3 1d8f6 2N@b4
+2f1d3 2b4d3 2c2d3 1B@g2 2P@c2 1N@g5 2d1c1 1c1g5 1e4g5 1Q@g3 2N@b4 1f6h6 2B@e2
+1g2h3 1g5h3 1g1h1 1N@f5 1g3g2 2B@d1 1h3f4 2e1g1 2d1e2 2f1e1 1B@g5 2b4d3 1f4g2
+2e1e2 1g5h6 2d3c1 1g7h6 2e2e1 1f3g2 2Q@d1 1B@g7 2B@c4 1R@g4 1g8h8 1g4g7 1f5g7
+1P@f6 1Q@g5 1f6g7 1g5g7 1d1g4 2N@e2 1g7g4 2c4e2 1e5g4 2c1e2 1f8g8 2g1h1 1B@f6
+1N@g7 1g4h6 1a8f8 2d1e1 2f3e1 2Q@g1 1-0
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "10"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "118"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1d2d4 1d7d5 1g1f3 1g8f6 1b1c3 1c8f5 2d2d4 1c1g5 2e7e6 1e7e6 2g1f3 1e2e3 2d7d6
+1f8e7 2b1c3 1f1d3 2g8f6 1f6e4 2e2e4 1g5e7 2b8c6 1d8e7 2d4d5 1d3e4 2e6d5 1d5e4
+2e4d5 1f3e5 2d8e7 1e8g8 2f1e2 1P@g4 2B@h5 1f5g6 2d5c6 1h2h4 2h5f3 1P@f3 1g2f3
+1N@g2 1e1d2 1g2h4 1f3e4 2P@d7 2f6d7 2c6d7 2c8d7 2g2f3 2P@g2 1N@g5 2h1g1 1h1h4
+2N@h3 1b8c6 2g1g2 1P@h6 2N@h4 1g7h6 2g2g3 1P@g7 2P@g2 1c6e5 1d4e5 1f7f6 1g7f8q
+1a8f8 1N@d5 1e6d5 1c3d5 1g5e4 1d2c1 1e7e5 2c1e3 1h4h6 2R@g1 1P@d2 2e1d2 1d1d2
+2g1d1 1e4d2 2a1d1 1h6g6 2P@d4 1h7g6 2Q@e4 1Q@d3 2d4c3 2b2c3 2N@f1 1d2e4 1f2f4
+2d1f1 2g2f1n 2e2f1 2B@e1 1P@d2 2d2e1 1d3d2 2e7e4 1e5b2 2f3e4 1c1b2 2P@g2 1N@c4
+1b2b3 1e4d2 1b3c3 1Q@b2 1c3d3 1P@e4 1d3e2 1B@f3 1e2f2 1R@g2 2f1g2 1f2e1 2h4g2
+1P@f2 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "11"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "1-0"]
+[PlyCount "156"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1d2d4 1d7d5 2d2d4 1b1c3 2d7d5 1b8c6 2b1c3 1g1f3 2g8f6 1c8g4 2c1g5 1c1f4 2c8f5
+1g8f6 2e2e3 1e2e3 1e7e6 1f1e2 1f8d6 1f3e5 2e7e6 1g4e2 2g1f3 1d1e2 2f8e7 1e8g8
+2f1b5 1e1g1 1f6e4 1f2f3 2b8d7 1e4c3 2f3e5 1b2c3 2e8g8 1f7f6 2b5d7 2f6d7 2g5e7
+2d8e7 2e5d7 1e5c6 2e7d7 1b7c6 2B@f6 2g7f6 2N@h6 2g8h8 2N@h5 1B@h3 2B@g7 1d6f4
+2h5g7 1e3f4 2N@h4 1B@f7 2g7f5 2e6f5 2h1g1 1h3e6 2B@g7 1f7e6 2B@f4 1e2e6 1B@f7
+1N@e7 2P@g5 1d8e7 2f4g5 1e6e7 2f6g5 1N@f5 2N@e5 2d7e6 2B@d7 2e6h6 2d7f5 2h4f5
+2e5g4 2h6g6 2c3d5 2B@a5 2c2c3 2N@e4 2g4e5 2g7e5 2d4e5 2e4f2 2e1f2 2f5e3 2d5e3
+2Q@f4 2d1f3 2f4f3 2g2f3 2a5b6 2a1e1 2b6e3 2e1e3 2a8d8 2e3e2 2d8d3 2g1g3 2d3d1
+2f3f4 2g5f4 2g3g6 2f7g6 2e5e6 2h8g7 2e6e7 2f8e8 2f2f3 2d1f1 2f3g4 2h7h5 2g4g5
+2f1g1 2g5f4 2g6g5 2f4e3 2e8e7 2e3d3 2e7e2 2d3e2 2h5h4 2e2d3 2g5g4 2d3c4 2g4g3
+2h2g3 2h4g3 2c4b3 2g3g2 2b3c4 2g1f1 2c4b3 2g2g1q 2b3c4 2g1f2 2c4b3 2f1e1 2b3c4
+2f2e3 2c4b3 2e1e2 2b3c4 2e3e4 2c4b3 2e4c2 2b3c4 2e2e4 2c4d5 2c2d3 2d5c5 2d3c4 1-0
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "12"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "98"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1d2d4 1d7d5 2e2e4 1g1f3 2d7d5 1g8f6 2e4d5 1b1c3 2e7e6 1b8c6 2b1c3 1c1g5 2e6d5
+1c8g4 2g1f3 1e2e3 2b8c6 1f6e4 2f1b5 1c3e4 2g8f6 1d5e4 2f3e5 1d4d5 2N@h4 1e4f3
+2h1g1 1g2f3 2d8e7 1c6e5 2d2d4 1f1e2 2P@h3 2b5c6 2b7c6 1N@g2 2d1e2 1e1f1 2h3g2
+1g4h3 2c1g5 1f1g1 2h7h6 2g5h4 2c8d7 2h4f6 2g7f6 1g2e3 2e5d7 1B@b5 2e7e2 2e1e2
+2e8d7 1B@d7 1Q@g3 1Q@g2 1g3g2 1h3g2 1N@f4 1N@h3 2g1g2 1f4h3 2a8e8 1g2h3 2N@e5
+1g5e3 2e8e5 2d4e5 2N@d4 1P@g2 2e2d1 1N@g3 2f8b4 1g2h1q 1g1h1 1P@g2 1h1g1 2P@g7
+2h8e8 1R@h1 2N@f8 1g3h1 2d7c8 1g2h1q 1g1h1 1d7b5 1e2b5 1c7c6 2Q@a8 1B@f1 2N@b8
+1h3f1 1b5f1 2B@d7 2c8d8 2a8b8 2d8e7 2b8e8 0-1
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "13"]
+[Variant "bughouse"]
+[WhiteTeam "TimeAdvTeam"]
+[BlackTeam "NoAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "1-0"]
+[PlyCount "100"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "true"]
+
+1g1f3 1d7d5 2d2d4 1b1c3 2d7d5 1b8c6 2g1f3 1d2d4 2b8c6 1c8g4 2c1f4 1c1f4 2c8g4
+1e7e6 2e2e3 1e2e3 2e7e6 1f8d6 2f1e2 1f4d6 2f8d6 1c7d6 2f3e5 1f1e2 2g4e2 1g8f6
+2d1e2 1B@h4 2d6e5 1B@e7 2d4e5 2f7f6 2e5f6 2d8f6 2b1c3 2g8e7 2B@g5 2f6f7 2f4c7
+1P@e5 2e8g8 1f6e4 2c7d6 1h4e7 2e7f5 1d8e7 2d6f8 1e5d6 2a8f8 1e4d6 2B@g4 1B@c5
+2B@b4 1B@b4 2e1g1 1c5b4 2c6e5 1c6b4 2c3d5 2e5g4 2d5b4 1B@c5 2P@h3 1b4c2 2B@f3
+1d1c2 2B@h5 1P@c7 2g2h3 1c5d6 2g4e5 1c7d6 2f3h5 2N@f3 2h5f3 2e5f3 2e2f3 1B@a4
+2N@e5 1B@c6 2B@g2 2e5f3 2g2f3 1a4c6 1b7c6 2f5h4 2g5h4 2f7f3 2P@g2 2f3g2 2g1g2
+1P@b7 2B@f3 1a8d8 2g2g1 1Q@c8 1R@c7 1c8d8 1e7d8 2R@h1 1-0
+
+[Event "SelfPlay"]
+[Site "Hivemind"]
+[Date "2026.01.24"]
+[Round "14"]
+[Variant "bughouse"]
+[WhiteTeam "NoAdvTeam"]
+[BlackTeam "TimeAdvTeam"]
+[WhiteA "EngineA1"]
+[BlackA "EngineA2"]
+[WhiteB "EngineB1"]
+[BlackB "EngineB2"]
+[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[Result "0-1"]
+[PlyCount "78"]
+[TimeControl "-"]
+[WhiteTeamTimeAdvantage "false"]
+
+1d2d4 1e7e6 2e2e4 1b1c3 2e7e5 1b8c6 1e2e4 1d7d5 2b1c3 1g1f3 2g8f6 1g8f6 2g1f3
+1e4e5 2f8c5 1f6e4 1f1d3 1f8b4 1c1d2 1e4f2 2f1c4 1e1f2 2d7d5 1c6d4 2c4d5 1h1f1
+2c5f2 1b4c5 2e1f2 1P@e3 2e8g8 2h1f1 2b8c6 2f2g1 2c8g4 1d4f3 2d5c6 1d1f3 2b7c6
+1N@g5 2P@h6 1f3g4 2N@f4 2h6g7 2g8g7 1B@f5 2d2d4 1d3f5 2N@h3 1e6f5 2g2h3 1g4g5
+2f4h3 1d8g5 2g1h1 1B@b5 2N@f2 2f1f2 2h3f2 1P@c6 2h1g2 1R@g3 2g4h3 2g2g1 2f8g8
+1N@g4 2B@h6 1f2e2 2g7h8 2P@g7 2g8g7 2h6g7 2h8g7 1c5e3 2c1h6 1d2e3 2g7h6 2Q@g5 0-1
+
