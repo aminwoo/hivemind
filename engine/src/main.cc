@@ -1,6 +1,6 @@
 #include "uci.h"
 #include "constants.h"
-#include "zobrist.h"
+#include "globals.h"
 #include "engine.h"
 #include "onnx_utils.h"
 #include "benchmark.h"
@@ -11,8 +11,17 @@
 #include "Fairy-Stockfish/src/types.h"
 #include <iostream>
 #include <cuda_runtime.h>
+#include <cstring>
 
 using namespace std; 
+
+void printUsage(const char* progName) {
+    cout << "Usage: " << progName << " [options]" << endl;
+    cout << "Options:" << endl;
+    cout << "  --log <level>   Set log level: none, info, debug (default: none)" << endl;
+    cout << "  bench [iters]   Run inference benchmark" << endl;
+    cout << "  perft [depth]   Run move generation benchmark" << endl;
+}
 
 int main(int argc, char* argv[]) {
     int deviceCount = 0;
@@ -24,6 +33,23 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "Number of available GPUs: " << deviceCount << std::endl;
+
+    // Parse --log argument first (can appear anywhere)
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "--help") == 0) || (strcmp(argv[i], "-h") == 0)) {
+            printUsage(argv[0]);
+            return EXIT_SUCCESS;
+        }
+        if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+            g_logLevel = parseLogLevel(argv[i + 1]);
+            // Remove these args from consideration
+            for (int j = i; j + 2 < argc; j++) {
+                argv[j] = argv[j + 2];
+            }
+            argc -= 2;
+            i--;  // Recheck this position
+        }
+    }
 
     Stockfish::pieceMap.init();
     Stockfish::variants.init();
