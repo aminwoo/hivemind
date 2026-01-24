@@ -34,13 +34,13 @@ Agent::~Agent() {
 }
 
 void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color teamSide, bool teamHasTimeAdvantage) {
-    if (board.legal_moves(teamSide).empty()) {
+    if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty()) {
         cout << "bestmove (none)" << endl;
         return;
     }
 
     // Check for mate in 1 on either board before starting search
-    auto legalMoves = board.legal_moves(teamSide);
+    auto legalMoves = board.legal_moves(teamSide, teamHasTimeAdvantage);
     for (const auto& [boardNum, move] : legalMoves) {
         if (boardNum == 0) {
             board.make_moves(move, Stockfish::MOVE_NONE);
@@ -48,7 +48,8 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
             board.make_moves(Stockfish::MOVE_NONE, move);
         }
         
-        if (board.is_checkmate(~teamSide)) {
+        // Check if opponent is checkmated - opponent's time advantage is inverse of ours
+        if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
             if (boardNum == 0) {
                 board.unmake_moves(move, Stockfish::MOVE_NONE);
             } else {
@@ -139,7 +140,7 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     int cpScore = static_cast<int>(C * std::tan(k * q));
     
     // Extract principal variation (PV) - sequence of most visited moves
-    string pv = extract_pv(board, 15);  // Extract up to 15 moves
+    string pv = extract_pv(board, 30);  // Extract up to 20 moves
     
     // Output UCI info string
     cout << "info depth " << depth 
@@ -154,22 +155,6 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
         cout << " pv " << pv;
     }
     cout << endl;
-    
-    // If debug log level, print all candidate moves with Q and visits
-    if (logLevel == LOG_DEBUG && rootNode && rootNode->is_expanded()) {
-        auto children = rootNode->get_children();
-        cout << "Candidate moves (joint actions) with Q values and visits:" << endl;
-        for (size_t i = 0; i < children.size(); ++i) {
-            JointActionCandidate action = rootNode->get_joint_action(static_cast<int>(i));
-            string moveA = (action.moveA == Stockfish::MOVE_NONE) ? "pass" : board.uci_move(0, action.moveA);
-            string moveB = (action.moveB == Stockfish::MOVE_NONE) ? "pass" : board.uci_move(1, action.moveB);
-            float q = children[i]->Q();
-            int visits = children[i]->get_visits();
-            cout << "  (" << moveA << ", " << moveB << ")"
-                 << "  Q: " << std::fixed << std::setprecision(3) << q
-                 << "  Visits: " << visits << endl;
-        }
-    }
 
     string bestMoveStr = extract_best_move(board);
     cout << "bestmove " << bestMoveStr << endl;
@@ -235,6 +220,21 @@ string Agent::extract_pv(Board& board, int maxDepth) {
         auto children = currentNode->get_children();
         if (children.empty()) {
             break;
+        }
+        
+        // If debug log level, print all candidate moves at this PV node
+        if (g_logLevel == LOG_DEBUG) {
+            cout << "PV depth " << depth << " candidates:" << endl;
+            for (size_t i = 0; i < children.size(); ++i) {
+                JointActionCandidate candAction = currentNode->get_joint_action(static_cast<int>(i));
+                string candMoveA = (candAction.moveA == Stockfish::MOVE_NONE) ? "pass" : tempBoard.uci_move(0, candAction.moveA);
+                string candMoveB = (candAction.moveB == Stockfish::MOVE_NONE) ? "pass" : tempBoard.uci_move(1, candAction.moveB);
+                float candQ = children[i]->Q();
+                int candVisits = children[i]->get_visits();
+                cout << "  (" << candMoveA << ", " << candMoveB << ")"
+                     << "  Q: " << std::fixed << std::setprecision(3) << candQ
+                     << "  Visits: " << candVisits << endl;
+            }
         }
         
         // Find child with most visits
