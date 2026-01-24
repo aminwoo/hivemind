@@ -151,7 +151,16 @@ void UCI::setoption(std::istringstream& is) {
     if (token != "value") return;
     std::string value;
     is >> value;
-    if (name == "Team") {
+    if (name == "Hash") {
+        // Parse hash size in MB (1 - 33554432 MB)
+        size_t sizeMB = std::stoull(value);
+        
+        // Set hash size via Agent (which owns the transposition table)
+        if (agent) {
+            agent->setHashSize(sizeMB);
+            std::cout << "info string Hash table set to " << sizeMB << " MB" << std::endl;
+        }
+    } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
         } else if (value == "black") {
@@ -169,6 +178,7 @@ void UCI::setoption(std::istringstream& is) {
 void UCI::send_uci_response() {
     cout << "id name hivemind" << endl;
     cout << "id author aminwoo\n" << endl;
+    cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "uciok" << endl;

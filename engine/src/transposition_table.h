@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -32,9 +33,11 @@ private:
     mutable std::atomic<size_t> hits{0};
     mutable std::atomic<size_t> misses{0};
     std::atomic<size_t> insertions{0};
+    mutable std::atomic<size_t> rejections{0};  // Count of insertions rejected due to full table
     
-    // Capacity for fullness calculation
-    size_t reservedCapacity{100000};
+    // Capacity settings
+    size_t maxCapacity{1000000};     // Hard limit - no insertions beyond this (prevents OOM)
+    size_t reservedCapacity{100000}; // Reserved capacity for hashfull calculation
 
 public:
     TranspositionTable() = default;
@@ -65,22 +68,34 @@ public:
      * @brief Insert or retrieve a node for a position hash.
      * 
      * If the hash already exists, returns the existing node (no insertion).
+     * If the table is at max capacity, returns the passed node without storing it.
      * Otherwise, inserts the new node and returns it.
      * Thread-safe with exclusive lock on writes.
      * 
      * @param hash The Zobrist hash of the position
      * @param node The node to insert if hash not present
-     * @return The node now associated with the hash (may be existing or new)
+     * @return The node now associated with the hash (existing, new, or passed if full)
      */
     std::shared_ptr<Node> insertOrGet(uint64_t hash, std::shared_ptr<Node> node) {
         std::unique_lock<std::shared_mutex> lock(rwMutex);
-        auto [it, inserted] = table.try_emplace(hash, node);
-        if (inserted) {
-            insertions.fetch_add(1, std::memory_order_relaxed);
-        } else {
+        
+        // Check if hash already exists first
+        auto it = table.find(hash);
+        if (it != table.end()) {
             hits.fetch_add(1, std::memory_order_relaxed);
+            return it->second;
         }
-        return it->second;
+        
+        // Check if we've reached max capacity
+        if (table.size() >= maxCapacity) {
+            rejections.fetch_add(1, std::memory_order_relaxed);
+            return node;  // Return the node without storing - caller can still use it
+        }
+        
+        // Insert the new node
+        table.emplace(hash, node);
+        insertions.fetch_add(1, std::memory_order_relaxed);
+        return node;
     }
     
     /**
@@ -105,6 +120,7 @@ public:
         hits.store(0, std::memory_order_relaxed);
         misses.store(0, std::memory_order_relaxed);
         insertions.store(0, std::memory_order_relaxed);
+        rejections.store(0, std::memory_order_relaxed);
     }
     
     /**
@@ -137,6 +153,21 @@ public:
     }
     
     /**
+     * @brief Get rejection count (insertions blocked due to full table).
+     */
+    size_t getRejections() const {
+        return rejections.load(std::memory_order_relaxed);
+    }
+    
+    /**
+     * @brief Check if table is at maximum capacity.
+     */
+    bool isFull() const {
+        std::shared_lock<std::shared_mutex> lock(rwMutex);
+        return table.size() >= maxCapacity;
+    }
+    
+    /**
      * @brief Get hit rate as a percentage.
      */
     float getHitRate() const {
@@ -155,16 +186,37 @@ public:
     void reserve(size_t capacity) {
         std::unique_lock<std::shared_mutex> lock(rwMutex);
         reservedCapacity = capacity;
-        table.reserve(capacity);
+        table.reserve(std::min(capacity, maxCapacity));
+    }
+    
+    /**
+     * @brief Set maximum capacity (hard limit to prevent OOM).
+     * 
+     * @param capacity Maximum number of entries allowed
+     */
+    void setMaxCapacity(size_t capacity) {
+        std::unique_lock<std::shared_mutex> lock(rwMutex);
+        maxCapacity = capacity;
+        reservedCapacity = std::min(reservedCapacity, maxCapacity);
+    }
+    
+    /**
+     * @brief Get maximum capacity.
+     */
+    size_t getMaxCapacity() const {
+        return maxCapacity;
     }
     
     /**
      * @brief Get fullness as permille (0-1000) like UCI hashfull.
+     * 
+     * Based on maxCapacity (hard limit), not reservedCapacity.
+     * Returns 0 when empty, 1000 when full.
      */
     int getFullness() const {
         std::shared_lock<std::shared_mutex> lock(rwMutex);
-        if (reservedCapacity == 0) return 0;
+        if (maxCapacity == 0) return 0;
         size_t currentSize = table.size();
-        return static_cast<int>((currentSize * 1000) / reservedCapacity);
+        return static_cast<int>((currentSize * 1000) / maxCapacity);
     }
 };
