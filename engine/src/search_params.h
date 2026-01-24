@@ -126,11 +126,11 @@ constexpr float FPU_REDUCTION = 0.4f;
 /// Coefficient for progressive widening formula
 /// m = ceil(PW_COEFFICIENT * n^PW_EXPONENT)
 /// where m = allowed children, n = visit count
-constexpr float PW_COEFFICIENT = 2.0f;
+constexpr float PW_COEFFICIENT = 1.0f;
 
 /// Exponent for progressive widening formula
 /// Lower values slow down the expansion rate
-constexpr float PW_EXPONENT = 0.5f;
+constexpr float PW_EXPONENT = 0.3f;
 
 // =============================================================================
 // Dirichlet Noise Parameters (aligned with CrazyAra for root exploration)
