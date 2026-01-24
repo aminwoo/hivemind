@@ -10,7 +10,7 @@
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
 #include "Fairy-Stockfish/src/types.h"
-#include "Fairy-Stockfish/src/stubs.h"
+#include "Fairy-Stockfish/src/uci.h"
 
 /**
  * @brief Represents a chess board with dual perspectives.
@@ -230,7 +230,7 @@ class Board {
          * @return std::string The UCI move string.
          */
         std::string uci_move(int board_num, Stockfish::Move move) { 
-            if (move == Stockfish::MOVE_NULL) {
+            if (move == Stockfish::MOVE_NONE) {
                 return "pass";
             }
 

@@ -39,15 +39,12 @@ struct JointActionCandidate {
         : moveA(mA), moveB(mB),
           priorA(pA), priorB(pB),
           idxA(iA), idxB(iB) {
-        // Sitting rules:
-        // 1. Up on time: cannot double-sit if both boards are on turn
-        // 2. Down on time: cannot double-sit at all
-        bool bothSitting = (mA == Stockfish::MOVE_NULL) && (mB == Stockfish::MOVE_NULL);
+
+        bool bothSitting = (mA == Stockfish::MOVE_NONE) && (mB == Stockfish::MOVE_NONE);
         bool bothOnTurn = boardAOnTurn && boardBOnTurn;
-        
         bool isInvalidSit = bothSitting && (teamHasTimeAdvantage ? bothOnTurn : true);
         
-        jointPrior = isInvalidSit ? 0.0f : pA * pB;
+        jointPrior = isInvalidSit ? -1.0f : pA * pB;
     }
 
     // For max-heap comparison (we want highest jointPrior first)
@@ -103,13 +100,19 @@ private:
         }
         visited.insert(key);
         
-        heap.emplace(
+        // Create candidate to check if it's valid
+        JointActionCandidate candidate(
             sortedActionsA[idxA], sortedPriorsA[idxA], idxA,
             sortedActionsB[idxB], sortedPriorsB[idxB], idxB,
             boardAOnTurn,
             boardBOnTurn,
             teamHasTimeAdvantage
         );
+        
+        // Only push valid candidates (jointPrior != -1.0f)
+        if (candidate.jointPrior >= 0.0f) {
+            heap.push(candidate);
+        }
     }
 
 public:
@@ -174,7 +177,14 @@ public:
         }
         
         // Initialize heap with the best pair (0, 0)
+        // If (0, 0) is invalid (e.g., double pass), also try (1, 0) and (0, 1)
         pushCandidate(0, 0);
+        
+        // If (0, 0) was invalid and not pushed, ensure we have alternatives
+        if (heap.empty()) {
+            pushCandidate(1, 0);
+            pushCandidate(0, 1);
+        }
     }
 
     /**
@@ -207,29 +217,24 @@ public:
      * @brief Get the next best joint action candidate.
      * 
      * Pops the current best from the heap and pushes the next candidates.
-     * Skips candidates with zero jointPrior (invalid sitting combinations).
+     * Invalid candidates are never pushed to the heap, so no filtering needed here.
      */
     JointActionCandidate getNext() {
-        while (!heap.empty()) {
-            JointActionCandidate best = heap.top();
-            heap.pop();
-            
-            // Push adjacent candidates (i+1, j) and (i, j+1)
-            pushCandidate(best.idxA + 1, best.idxB);
-            pushCandidate(best.idxA, best.idxB + 1);
-            
-            // Skip invalid sitting combinations (jointPrior == 0)
-            if (best.jointPrior <= 0.0f) {
-                continue;
-            }
-            
-            // Cache for random access
-            generatedCandidates.push_back(best);
-            
-            return best;
+        if (heap.empty()) {
+            return JointActionCandidate();
         }
         
-        return JointActionCandidate();
+        JointActionCandidate best = heap.top();
+        heap.pop();
+        
+        // Push adjacent candidates (i+1, j) and (i, j+1)
+        pushCandidate(best.idxA + 1, best.idxB);
+        pushCandidate(best.idxA, best.idxB + 1);
+        
+        // Cache for random access
+        generatedCandidates.push_back(best);
+        
+        return best;
     }
 
     /**

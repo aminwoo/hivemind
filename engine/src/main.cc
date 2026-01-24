@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
             cerr << "No ONNX file found in ./networks" << endl;
             return EXIT_FAILURE;
         }
-        const std::string engineFile = getEnginePath(onnxFile, "fp16", BATCH_SIZE, 0, "v1");
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v1");
         
         if (!engine.loadNetwork(onnxFile, engineFile)) {
             cerr << "Failed to load engine" << endl;

@@ -14,9 +14,11 @@
 using namespace std;
 
 Agent::Agent() : running(false) {
-    // Create the transposition table for MCGS
-    transpositionTable = std::make_unique<TranspositionTable>();
-    transpositionTable->reserve(100000);  // Reserve space for ~100K positions
+    // Create the transposition table for MCGS (if enabled)
+    if (SearchParams::ENABLE_MCGS) {
+        transpositionTable = std::make_unique<TranspositionTable>();
+        transpositionTable->reserve(SearchParams::TT_INITIAL_CAPACITY);
+    }
     
     // Create multiple search threads
     for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
@@ -41,16 +43,16 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     auto legalMoves = board.legal_moves(teamSide);
     for (const auto& [boardNum, move] : legalMoves) {
         if (boardNum == 0) {
-            board.make_moves(move, Stockfish::MOVE_NULL);
+            board.make_moves(move, Stockfish::MOVE_NONE);
         } else {
-            board.make_moves(Stockfish::MOVE_NULL, move);
+            board.make_moves(Stockfish::MOVE_NONE, move);
         }
         
         if (board.is_checkmate(~teamSide)) {
             if (boardNum == 0) {
-                board.unmake_moves(move, Stockfish::MOVE_NULL);
+                board.unmake_moves(move, Stockfish::MOVE_NONE);
             } else {
-                board.unmake_moves(Stockfish::MOVE_NULL, move);
+                board.unmake_moves(Stockfish::MOVE_NONE, move);
             }
             
             string moveStr = board.uci_move(boardNum, move);
@@ -63,9 +65,9 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
         }
         
         if (boardNum == 0) {
-            board.unmake_moves(move, Stockfish::MOVE_NULL);
+            board.unmake_moves(move, Stockfish::MOVE_NONE);
         } else {
-            board.unmake_moves(Stockfish::MOVE_NULL, move);
+            board.unmake_moves(Stockfish::MOVE_NONE, move);
         }
     }
 
@@ -73,9 +75,11 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     rootNode = make_shared<Node>(teamSide, board.hash_key(teamHasTimeAdvantage));  // MCGS: store root hash
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTime);
     
-    // MCGS: Clear and set up transposition table for new search
-    transpositionTable->clear();
-    transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
+    // MCGS: Clear and set up transposition table for new search (if enabled)
+    if (SearchParams::ENABLE_MCGS && transpositionTable) {
+        transpositionTable->clear();
+        transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
+    }
 
     if (engines.size() < static_cast<size_t>(SearchParams::NUM_SEARCH_THREADS)) {
         cerr << "Warning: Not enough engines for all threads. Need " 
@@ -86,7 +90,9 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     for (auto* st : searchThreads) {
         st->set_root_node(rootNode.get());
         st->set_search_info(&searchInfo);
-        st->set_transposition_table(transpositionTable.get());  // MCGS
+        if (SearchParams::ENABLE_MCGS) {
+            st->set_transposition_table(transpositionTable.get());  // MCGS
+        }
     }
     
     running = true;
@@ -121,8 +127,8 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     int depth = searchInfo.get_max_depth();
     int collisions = searchInfo.get_collisions();
     int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-    size_t tbhits = transpositionTable->getHits();
-    int hashfull = transpositionTable->getFullness();
+    size_t tbhits = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getHits() : 0;
+    int hashfull = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
     
     // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
     // cp = C * tan(k * Q), where C=180 and k=1.56 (tuned for Bughouse)
@@ -132,6 +138,9 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
     float q = rootNode->Q();
     int cpScore = static_cast<int>(C * std::tan(k * q));
     
+    // Extract principal variation (PV) - sequence of most visited moves
+    string pv = extract_pv(board, 15);  // Extract up to 15 moves
+    
     // Output UCI info string
     cout << "info depth " << depth 
          << " score cp " << cpScore
@@ -139,8 +148,29 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
          << " nps " << nps
          << " hashfull " << hashfull
          << " tbhits " << tbhits
-         << " time " << static_cast<int>(elapsedMs) << endl;
+         << " time " << static_cast<int>(elapsedMs);
     
+    if (!pv.empty()) {
+        cout << " pv " << pv;
+    }
+    cout << endl;
+    
+    // If debug log level, print all candidate moves with Q and visits
+    if (logLevel == LOG_DEBUG && rootNode && rootNode->is_expanded()) {
+        auto children = rootNode->get_children();
+        cout << "Candidate moves (joint actions) with Q values and visits:" << endl;
+        for (size_t i = 0; i < children.size(); ++i) {
+            JointActionCandidate action = rootNode->get_joint_action(static_cast<int>(i));
+            string moveA = (action.moveA == Stockfish::MOVE_NONE) ? "pass" : board.uci_move(0, action.moveA);
+            string moveB = (action.moveB == Stockfish::MOVE_NONE) ? "pass" : board.uci_move(1, action.moveB);
+            float q = children[i]->Q();
+            int visits = children[i]->get_visits();
+            cout << "  (" << moveA << ", " << moveB << ")"
+                 << "  Q: " << std::fixed << std::setprecision(3) << q
+                 << "  Visits: " << visits << endl;
+        }
+    }
+
     string bestMoveStr = extract_best_move(board);
     cout << "bestmove " << bestMoveStr << endl;
 }
@@ -175,11 +205,72 @@ string Agent::extract_best_move(Board& board) {
     }
 
     JointActionCandidate action = rootNode->get_joint_action(bestIdx);
-    string moveA = (action.moveA == Stockfish::MOVE_NULL || action.moveA == Stockfish::MOVE_NONE) 
+    string moveA = (action.moveA == Stockfish::MOVE_NONE) 
                     ? "pass" : board.uci_move(0, action.moveA);
-    string moveB = (action.moveB == Stockfish::MOVE_NULL || action.moveB == Stockfish::MOVE_NONE) 
+    string moveB = (action.moveB == Stockfish::MOVE_NONE) 
                     ? "pass" : board.uci_move(1, action.moveB);
     return "(" + moveA + "," + moveB + ")";
+}
+
+/**
+ * @brief Extracts the principal variation (PV) by following most-visited children.
+ * @param board The current board position
+ * @param maxDepth Maximum number of moves to extract
+ * @return Space-separated sequence of joint moves in format "(moveA,moveB) (moveA,moveB) ..."
+ */
+string Agent::extract_pv(Board& board, int maxDepth) {
+    if (!rootNode || !rootNode->is_expanded()) {
+        return "";
+    }
+    
+    Board tempBoard = board;  // Make a copy to simulate moves
+    Node* currentNode = rootNode.get();
+    string pv;
+    
+    for (int depth = 0; depth < maxDepth; depth++) {
+        if (!currentNode || !currentNode->is_expanded()) {
+            break;
+        }
+        
+        auto children = currentNode->get_children();
+        if (children.empty()) {
+            break;
+        }
+        
+        // Find child with most visits
+        int bestIdx = 0;
+        int maxVisits = 0;
+        
+        for (size_t i = 0; i < children.size(); i++) {
+            int visits = children[i]->get_visits();
+            if (visits > maxVisits) {
+                maxVisits = visits;
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        
+        // Get the joint action for this move
+        JointActionCandidate action = currentNode->get_joint_action(bestIdx);
+        
+        // Format move string
+        string moveA = (action.moveA == Stockfish::MOVE_NONE) 
+                        ? "pass" : tempBoard.uci_move(0, action.moveA);
+        string moveB = (action.moveB == Stockfish::MOVE_NONE) 
+                        ? "pass" : tempBoard.uci_move(1, action.moveB);
+        
+        if (!pv.empty()) {
+            pv += " ";
+        }
+        pv += "(" + moveA + "," + moveB + ")";
+        
+        // Apply moves to temp board for next iteration
+        tempBoard.make_moves(action.moveA, action.moveB);
+        
+        // Move to best child
+        currentNode = children[bestIdx].get();
+    }
+    
+    return pv;
 }
 
 void Agent::set_is_running(bool value) {

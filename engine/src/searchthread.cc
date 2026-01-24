@@ -13,13 +13,13 @@ using namespace std;
 
 SearchThread::SearchThread() : transpositionTable(nullptr) {
     // Pre-allocate inference buffers for batch processing
-    obs = new float[BATCH_SIZE * NB_INPUT_VALUES()];
-    value = new float[BATCH_SIZE];
-    piA = new float[BATCH_SIZE * NB_POLICY_VALUES()];
-    piB = new float[BATCH_SIZE * NB_POLICY_VALUES()];
-    
+    obs = new float[SearchParams::BATCH_SIZE * NB_INPUT_VALUES()];
+    value = new float[SearchParams::BATCH_SIZE];
+    piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
+    piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
+
     // Reserve space for batch contexts
-    batchContexts.reserve(BATCH_SIZE);
+    batchContexts.reserve(SearchParams::BATCH_SIZE);
 }
 
 SearchThread::~SearchThread() {
@@ -79,16 +79,16 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
 /**
  * @brief Runs a minibatch of MCTS iterations.
  * 
- * This collects BATCH_SIZE leaf nodes, runs batched neural network inference,
+ * This collects SearchParams::BATCH_SIZE leaf nodes, runs batched neural network inference,
  * then expands and backs up all leaves. This better utilizes GPU parallelism.
  */
-void SearchThread::run_batch_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
+void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
     batchContexts.clear();
     int validInferenceCount = 0;
     int batchCollisions = 0;
     
-    // Phase 1: Collect BATCH_SIZE leaf nodes
-    for (int i = 0; i < BATCH_SIZE; i++) {
+    // Phase 1: Collect SearchParams::BATCH_SIZE leaf nodes
+    for (int i = 0; i < SearchParams::BATCH_SIZE; i++) {
         LeafContext ctx;
         trajectoryBuffer.clear();
         
@@ -208,7 +208,7 @@ void SearchThread::run_batch_iteration(Board& board, Engine* engine, bool teamHa
                     }
                 }
             }
-            searchInfo->increment_nodes(BATCH_SIZE);
+            searchInfo->increment_nodes(SearchParams::BATCH_SIZE);
             return;
         }
     }
@@ -253,25 +253,25 @@ void SearchThread::run_batch_iteration(Board& board, Engine* engine, bool teamHa
             vector<float> priorsB;
             
             if (actionsA.empty()) {
-                actionsA.push_back(Stockfish::MOVE_NULL);
+                actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA.push_back(1.0f);
             } else {
-                actionsA.push_back(Stockfish::MOVE_NULL);
+                actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA = get_normalized_probability(batchPiA, actionsA, 0, leafBoard);
             }
             
             if (actionsB.empty()) {
-                actionsB.push_back(Stockfish::MOVE_NULL);
+                actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB.push_back(1.0f);
             } else {
-                actionsB.push_back(Stockfish::MOVE_NULL);
+                actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB = get_normalized_probability(batchPiB, actionsB, 1, leafBoard);
             }
             
             // Expand leaf node and register in transposition table (MCGS)
             expand_leaf_node(ctx.leaf, actionsA, actionsB, priorsA, priorsB, 
                              teamHasTimeAdvantage, ctx.leafHash);
-            
+                
             // Backup value
             backup(ctx.trajectory, leafBoard, *batchValue);
             
@@ -279,15 +279,8 @@ void SearchThread::run_batch_iteration(Board& board, Engine* engine, bool teamHa
         }
     }
     
-    searchInfo->increment_nodes(BATCH_SIZE);
+    searchInfo->increment_nodes(SearchParams::BATCH_SIZE);
     searchInfo->increment_collisions(batchCollisions);
-}
-
-/**
- * @brief Single iteration interface - calls run_batch_iteration.
- */
-void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
-    run_batch_iteration(board, engine, teamHasTimeAdvantage);
 }
 
 /**
@@ -330,8 +323,8 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
                 uint64_t childHash = board.hash_key(teamHasTimeAdvantage);
                 nextNode->set_hash(childHash);
                 
-                // Register in transposition table (for stats tracking)
-                if (transpositionTable) {
+                // Register in transposition table (for stats tracking, if MCGS enabled)
+                if (SearchParams::ENABLE_MCGS && transpositionTable) {
                     transpositionTable->insertOrGet(childHash, nextNode);
                 }
                 
