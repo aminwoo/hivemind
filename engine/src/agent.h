@@ -19,17 +19,32 @@
  * the same position, enabling more efficient value estimation.
  */
 class Agent {
+public:
+    enum LogLevel {
+        LOG_NONE = 0,
+        LOG_INFO = 1,
+        LOG_DEBUG = 2
+    };
+
 private:
     std::vector<SearchThread*> searchThreads;
     std::atomic<bool> running;                            
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
 
+    LogLevel logLevel = LOG_NONE;
+
 public:
     /**
      * @brief Constructs a multi-threaded Agent with MCGS support.
      */
     Agent();
+    /**
+     * @brief Set the log level for debug/info output.
+     */
+    void set_log_level(LogLevel level) { logLevel = level; }
+
+    LogLevel get_log_level() const { return logLevel; }
 
     /**
      * @brief Destructor to clean up resources.
@@ -51,6 +66,14 @@ public:
      * @return String representation of the best joint move.
      */
     std::string extract_best_move(Board& board);
+
+    /**
+     * @brief Extracts the principal variation (PV) by following most-visited children.
+     * @param board The current board position.
+     * @param maxDepth Maximum number of moves to extract in the PV.
+     * @return Space-separated sequence of joint moves.
+     */
+    std::string extract_pv(Board& board, int maxDepth);
 
     /**
      * @brief Sets the running state of the agent.
