@@ -39,7 +39,7 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
     }
     // For each device ID, create a new Engine, load the network, and store it.
     for (int deviceId : deviceIds) {
-        const std::string engineFile = getEnginePath(onnxFile, "fp16", BATCH_SIZE, deviceId, "v1");
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v1");
         
         // Create a new engine instance on the given GPU.
         auto enginePtr = std::make_unique<Engine>(deviceId);
@@ -76,18 +76,21 @@ void UCI::position(istringstream& is) {
         board.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     }
     else if (token == "fen") {
-        // Build the FEN string from the next six tokens.
+        // Build the FEN string until we hit "moves" or end of stream
         std::string fen;
-        while (is >> token) {
+        while (is >> token && token != "moves") {
             fen += token + " ";
         }
         board.set(fen);
+        
+        if (token == "moves") {
+            is.seekg(-6, std::ios_base::cur);  
+        }
     }
     else {
         return;
     }
     
-    // Apply moves if they are provided.
     if (is >> token && token == "moves") {
         // Parse move list (if any)
         while (is >> token) {
@@ -178,10 +181,10 @@ void UCI::policy() {
     }
 
     // Allocate inference buffers
-    float* obs = new float[BATCH_SIZE * NB_INPUT_VALUES()];
-    float* value = new float[BATCH_SIZE];
-    float* piA = new float[BATCH_SIZE * NB_POLICY_VALUES()];
-    float* piB = new float[BATCH_SIZE * NB_POLICY_VALUES()];
+    float* obs = new float[SearchParams::BATCH_SIZE * NB_INPUT_VALUES()];
+    float* value = new float[SearchParams::BATCH_SIZE];
+    float* piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
+    float* piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
 
     // Convert board to planes
     board_to_planes(board, obs, teamSide, teamHasTimeAdvantage);
@@ -204,13 +207,13 @@ void UCI::policy() {
     cout << "Board A (" << board.fen(BOARD_A) << "):" << endl;
     if (board.side_to_move(BOARD_A) == teamSide) {
         vector<Stockfish::Move> actionsA = board.legal_moves(BOARD_A);
-        actionsA.push_back(Stockfish::MOVE_NULL);  // Add sit option
+        actionsA.push_back(Stockfish::MOVE_NONE);  // Add sit option
         vector<float> priorsA = get_normalized_probability(piA, actionsA, BOARD_A, board);
         
         // Sort by probability (descending)
         vector<size_t> indices = argsort(priorsA);
         for (size_t idx : indices) {
-            string moveStr = (actionsA[idx] == Stockfish::MOVE_NULL) 
+            string moveStr = (actionsA[idx] == Stockfish::MOVE_NONE) 
                             ? "pass" : board.uci_move(BOARD_A, actionsA[idx]);
             cout << "  " << moveStr << ": " << priorsA[idx] << endl;
         }
@@ -223,13 +226,13 @@ void UCI::policy() {
     cout << "Board B (" << board.fen(BOARD_B) << "):" << endl;
     if (board.side_to_move(BOARD_B) == ~teamSide) {
         vector<Stockfish::Move> actionsB = board.legal_moves(BOARD_B);
-        actionsB.push_back(Stockfish::MOVE_NULL);  // Add sit option
+        actionsB.push_back(Stockfish::MOVE_NONE);  // Add sit option
         vector<float> priorsB = get_normalized_probability(piB, actionsB, BOARD_B, board);
         
         // Sort by probability (descending)
         vector<size_t> indices = argsort(priorsB);
         for (size_t idx : indices) {
-            string moveStr = (actionsB[idx] == Stockfish::MOVE_NULL) 
+            string moveStr = (actionsB[idx] == Stockfish::MOVE_NONE) 
                             ? "pass" : board.uci_move(BOARD_B, actionsB[idx]);
             cout << "  " << moveStr << ": " << priorsB[idx] << endl;
         }

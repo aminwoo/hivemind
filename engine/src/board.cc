@@ -154,7 +154,7 @@ bool Board::is_checkmate(Stockfish::Color side) {
 void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
     Stockfish::Piece p;
     
-    if (moveA != Stockfish::MOVE_NULL && moveA != Stockfish::MOVE_NONE) {
+    if (moveA != Stockfish::MOVE_NONE) {
         states[0]->emplace_back();
         pos[0]->do_move(moveA, states[0]->back());
         p = states[0]->back().pieceToHand; 
@@ -163,7 +163,7 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         }
     }
     
-    if (moveB != Stockfish::MOVE_NULL && moveB != Stockfish::MOVE_NONE) {
+    if (moveB != Stockfish::MOVE_NONE) {
         states[1]->emplace_back();
         pos[1]->do_move(moveB, states[1]->back());
         p = states[1]->back().pieceToHand; 
@@ -174,7 +174,7 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
 }
 
 void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
-    if (moveB != Stockfish::MOVE_NULL && moveB != Stockfish::MOVE_NONE) {
+    if (moveB != Stockfish::MOVE_NONE) {
         Stockfish::Piece pB = states[1]->back().pieceToHand;
         if (pB) {
             pos[0]->remove_from_hand(pB);
@@ -183,7 +183,7 @@ void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         states[1]->pop_back();
     }
 
-    if (moveA != Stockfish::MOVE_NULL && moveA != Stockfish::MOVE_NONE) {
+    if (moveA != Stockfish::MOVE_NONE) {
         Stockfish::Piece pA = states[0]->back().pieceToHand;
         if (pA) {
             pos[1]->remove_from_hand(pA);
