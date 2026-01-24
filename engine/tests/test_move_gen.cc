@@ -5,7 +5,6 @@
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/bitboard.h"
 #include "Fairy-Stockfish/src/piece.h"
-#include "Fairy-Stockfish/src/stubs.h"
 #include "Fairy-Stockfish/src/thread.h"
 
 // Fixture for engine initialization
@@ -86,7 +85,7 @@ TEST_F(EngineTest, BughouseDrop) {
     for (const auto& m : moves) {
         std::string uci = board.uci_move(BOARD_A, m);
         // UCI format uses lowercase for pieces in drops
-        if (uci == "p@e4") {
+        if (uci == "P@e4") {
             found_drop = true;
             drop_e4 = m;
             break;
@@ -146,7 +145,7 @@ TEST_F(EngineTest, BughouseCaptureTransfer) {
     bool has_black_pawn_drop = false;
     for (const auto& m : black_moves) {
         std::string uci = board.uci_move(BOARD_B, m);
-        if (uci.find("p@") == 0) {  // Black pawn drop
+        if (uci.find("P@") == 0) {  // Black pawn drop
             has_black_pawn_drop = true;
             break;
         }
@@ -277,12 +276,12 @@ TEST_F(EngineTest, Castling) {
     
     for (const auto& m : moves) {
         std::string uci = board.uci_move(BOARD_A, m);
-        if (uci == "e1h1") found_kingside = true;
-        if (uci == "e1a1") found_queenside = true;
+        if (uci == "e1g1") found_kingside = true;
+        if (uci == "e1c1") found_queenside = true;
     }
     
-    EXPECT_TRUE(found_kingside) << "Kingside castling (e1h1) should be legal";
-    EXPECT_TRUE(found_queenside) << "Queenside castling (e1a1) should be legal";
+    EXPECT_TRUE(found_kingside) << "Kingside castling (e1g1) should be legal";
+    EXPECT_TRUE(found_queenside) << "Queenside castling (e1c1) should be legal";
 }
 
 TEST_F(EngineTest, Promotion) {

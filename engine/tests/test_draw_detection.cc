@@ -5,7 +5,6 @@
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/bitboard.h"
 #include "Fairy-Stockfish/src/piece.h"
-#include "Fairy-Stockfish/src/stubs.h"
 #include "Fairy-Stockfish/src/thread.h"
 
 class DrawDetectionTest : public ::testing::Test {
