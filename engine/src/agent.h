@@ -86,4 +86,19 @@ public:
      * @return true if running, false otherwise.
      */
     bool is_running();
+    
+    /**
+     * @brief Set the hash table size in MB.
+     * 
+     * Resizes the transposition table used for MCGS.
+     * @param sizeMB Size in megabytes (1 - 33554432)
+     */
+    void setHashSize(size_t sizeMB);
+    
+    /**
+     * @brief Get the transposition table for stats reporting.
+     */
+    TranspositionTable* getTranspositionTable() const {
+        return transpositionTable.get();
+    }
 };
