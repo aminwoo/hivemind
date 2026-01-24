@@ -280,3 +280,23 @@ void Agent::set_is_running(bool value) {
 bool Agent::is_running() {
     return running;
 }
+
+void Agent::setHashSize(size_t sizeMB) {
+    // Clamp to valid range (1 MB to 32 TB)
+    sizeMB = std::max(static_cast<size_t>(1), std::min(sizeMB, static_cast<size_t>(33554432)));
+    
+    // Convert MB to approximate entry count
+    // Each TT entry is roughly 64 bytes (hash key + shared_ptr + unordered_map overhead)
+    constexpr size_t BYTES_PER_ENTRY = 64;
+    size_t maxEntries = (sizeMB * 1024 * 1024) / BYTES_PER_ENTRY;
+    
+    if (!transpositionTable && SearchParams::ENABLE_MCGS) {
+        transpositionTable = std::make_unique<TranspositionTable>();
+    }
+    
+    if (transpositionTable) {
+        transpositionTable->setMaxCapacity(maxEntries);
+        transpositionTable->reserve(maxEntries);
+        transpositionTable->clear();
+    }
+}
