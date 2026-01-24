@@ -11,9 +11,6 @@ const int NB_INPUT_CHANNELS = 64;
 const int BOARD_HEIGHT = 8; 
 const int BOARD_WIDTH = 8; 
 
-// Re-export BATCH_SIZE for backward compatibility
-constexpr int BATCH_SIZE = SearchParams::BATCH_SIZE;
-
 inline int NB_INPUT_VALUES() {
     return NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH;  
 }

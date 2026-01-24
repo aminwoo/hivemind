@@ -28,7 +28,9 @@
 #include "movegen.h"
 #include "position.h"
 #include "thread.h"
-#include "stubs.h"
+#include "tt.h"
+#include "uci.h"
+#include "syzygy/tbprobe.h"
 
 using std::string;
 
@@ -98,8 +100,6 @@ std::ostream& operator<<(std::ostream& os, const Position& pos) {
   for (Bitboard b = pos.state()->chased; b; )
       os << UCI::square(pos, pop_lsb(b)) << " ";
 
-  // Tablebase probing removed for minimal move generation
-  /*
   if (    int(Tablebases::MaxCardinality) >= popcount(pos.pieces())
       && Options["UCI_Variant"] == "chess"
       && !pos.can_castle(ANY_CASTLING))
@@ -115,7 +115,6 @@ std::ostream& operator<<(std::ostream& os, const Position& pos) {
       os << "\nTablebases WDL: " << std::setw(4) << wdl << " (" << s1 << ")"
          << "\nTablebases DTZ: " << std::setw(4) << dtz << " (" << s2 << ")";
   }
-  */
 
   return os;
 }
@@ -397,9 +396,8 @@ Position& Position::set(const Variant* v, const string& fenStr, bool isChess960,
           st->epSquare = make_square(File(col - 'a'), Rank(row - '1'));
 #ifdef LARGEBOARDS
           // Consider different rank numbering in CECP
-          // Options removed for minimal move generation
-          // if (max_rank() == RANK_10 && Options["Protocol"] == "xboard")
-          //     st->epSquare += NORTH;
+          if (max_rank() == RANK_10 && Options["Protocol"] == "xboard")
+              st->epSquare += NORTH;
 #endif
 
           // En passant square will be considered only if
@@ -492,7 +490,7 @@ Position& Position::set(const Variant* v, const string& fenStr, bool isChess960,
   }
 
   chess960 = isChess960 || v->chess960;
-  tsumeMode = false;  // Options removed for minimal move generation
+  tsumeMode = Options["TsumeMode"];
   thisThread = th;
   set_state(st);
 
@@ -1484,11 +1482,11 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
       else if (Eval::useNNUE)
           dp.handPiece[1] = NO_PIECE;
 
-      // Update material hash key (material table removed for minimal move generation)
+      // Update material hash key and prefetch access to materialTable
       k ^= Zobrist::psq[captured][capsq];
       st->materialKey ^= Zobrist::psq[captured][pieceCount[captured]];
 #ifndef NO_THREADS
-      // prefetch(thisThread->materialTable[st->materialKey]);  // Removed for minimal move generation
+      prefetch(thisThread->materialTable[st->materialKey]);
 #endif
       // Reset rule 50 counter
       st->rule50 = 0;
@@ -2062,7 +2060,7 @@ void Position::do_null_move(StateInfo& newSt) {
   }
 
   st->key ^= Zobrist::side;
-  // prefetch(TT.first_entry(key()));  // TT removed for minimal move generation
+  prefetch(TT.first_entry(key()));
 
   ++st->rule50;
   st->pliesFromNull = 0;
