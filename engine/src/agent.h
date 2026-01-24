@@ -9,6 +9,7 @@
 #include "engine.h"
 #include "search_params.h"
 #include "transposition_table.h"
+#include "globals.h"
 
 /**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
@@ -19,32 +20,17 @@
  * the same position, enabling more efficient value estimation.
  */
 class Agent {
-public:
-    enum LogLevel {
-        LOG_NONE = 0,
-        LOG_INFO = 1,
-        LOG_DEBUG = 2
-    };
-
 private:
     std::vector<SearchThread*> searchThreads;
     std::atomic<bool> running;                            
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
 
-    LogLevel logLevel = LOG_NONE;
-
 public:
     /**
      * @brief Constructs a multi-threaded Agent with MCGS support.
      */
     Agent();
-    /**
-     * @brief Set the log level for debug/info output.
-     */
-    void set_log_level(LogLevel level) { logLevel = level; }
-
-    LogLevel get_log_level() const { return logLevel; }
 
     /**
      * @brief Destructor to clean up resources.
