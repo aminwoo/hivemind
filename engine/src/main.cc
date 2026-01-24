@@ -4,6 +4,7 @@
 #include "engine.h"
 #include "onnx_utils.h"
 #include "benchmark.h"
+#include "rl/selfplay.h"
 #include "Fairy-Stockfish/src/bitboard.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
@@ -18,9 +19,11 @@ using namespace std;
 void printUsage(const char* progName) {
     cout << "Usage: " << progName << " [options]" << endl;
     cout << "Options:" << endl;
-    cout << "  --log <level>   Set log level: none, info, debug (default: none)" << endl;
-    cout << "  bench [iters]   Run inference benchmark" << endl;
-    cout << "  perft [depth]   Run move generation benchmark" << endl;
+    cout << "  --log <level>      Set log level: none, info, debug (default: none)" << endl;
+    cout << "  bench [iters]      Run inference benchmark" << endl;
+    cout << "  perft [depth]      Run move generation benchmark" << endl;
+    cout << "  selfplay [games]   Run RL self-play (default: 1000 games)" << endl;
+    cout << "                     One team has time advantage, the other does not" << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -85,6 +88,40 @@ int main(int argc, char* argv[]) {
     if (argc > 1 && string(argv[1]) == "perft") {
         int depth = (argc > 2) ? stoi(argv[2]) : 5;
         benchmark_movegen(depth);
+        return EXIT_SUCCESS;
+    }
+
+    // Check for selfplay flag
+    if (argc > 1 && string(argv[1]) == "selfplay") {
+        cout << "Starting RL self-play..." << endl;
+        
+        // Initialize engines for all GPUs
+        vector<Engine*> engines;
+        for (int i = 0; i < deviceCount; i++) {
+            Engine* engine = new Engine(i);
+            const std::string onnxFile = findLatestOnnxFile("./networks");
+            if (onnxFile.empty()) {
+                cerr << "No ONNX file found in ./networks" << endl;
+                return EXIT_FAILURE;
+            }
+            const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, i, "v1");
+            if (!engine->loadNetwork(onnxFile, engineFile)) {
+                cerr << "Failed to load engine on GPU " << i << endl;
+                return EXIT_FAILURE;
+            }
+            engines.push_back(engine);
+        }
+        
+        RLSettings settings;
+        size_t numberOfGames = (argc > 2) ? stoul(argv[2]) : settings.numberOfGames;
+        
+        run_selfplay(settings, engines, numberOfGames);
+        
+        // Cleanup
+        for (auto* e : engines) {
+            delete e;
+        }
+        
         return EXIT_SUCCESS;
     }
 

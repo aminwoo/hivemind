@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <thread>
 #include <vector>
 
@@ -12,6 +13,91 @@
 #include "search_params.h"
 
 using namespace std;
+
+// Thread-local random generator for Dirichlet noise
+static thread_local std::mt19937 rng(std::random_device{}());
+
+/**
+ * @brief Generate Dirichlet noise vector.
+ * @param length Number of elements
+ * @param alpha Concentration parameter
+ * @return Normalized Dirichlet sample
+ */
+static vector<float> generate_dirichlet_noise(size_t length, float alpha) {
+    vector<float> noise(length);
+    float sum = 0.0f;
+    
+    std::gamma_distribution<float> gamma(alpha, 1.0f);
+    for (size_t i = 0; i < length; ++i) {
+        noise[i] = gamma(rng);
+        sum += noise[i];
+    }
+    
+    // Normalize to sum to 1
+    if (sum > 0.0f) {
+        for (size_t i = 0; i < length; ++i) {
+            noise[i] /= sum;
+        }
+    }
+    
+    return noise;
+}
+
+/**
+ * @brief Sample an index based on visit counts with temperature.
+ * @param visits Vector of visit counts
+ * @param temperature Temperature for sampling (0 = greedy, >0 = stochastic)
+ * @return Sampled index
+ */
+static size_t sample_with_temperature(const vector<int>& visits, float temperature) {
+    if (visits.empty()) return 0;
+    
+    // Greedy selection for temperature near 0
+    if (temperature < 0.01f) {
+        size_t bestIdx = 0;
+        int maxVisits = visits[0];
+        for (size_t i = 1; i < visits.size(); ++i) {
+            if (visits[i] > maxVisits) {
+                maxVisits = visits[i];
+                bestIdx = i;
+            }
+        }
+        return bestIdx;
+    }
+    
+    // Temperature-based sampling: P(i) = visits[i]^(1/T) / sum(visits^(1/T))
+    vector<double> probs(visits.size());
+    double sum = 0.0;
+    double invTemp = 1.0 / temperature;
+    
+    for (size_t i = 0; i < visits.size(); ++i) {
+        probs[i] = pow(static_cast<double>(visits[i]), invTemp);
+        sum += probs[i];
+    }
+    
+    if (sum <= 0.0) {
+        return 0;
+    }
+    
+    // Normalize
+    for (size_t i = 0; i < probs.size(); ++i) {
+        probs[i] /= sum;
+    }
+    
+    // Sample
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+    double r = dist(rng);
+    double cumulative = 0.0;
+    
+    for (size_t i = 0; i < probs.size(); ++i) {
+        cumulative += probs[i];
+        if (r <= cumulative) {
+            return i;
+        }
+    }
+    
+    return visits.size() - 1;
+}
 
 Agent::Agent() : running(false) {
     // Create the transposition table for MCGS (if enabled)
@@ -158,6 +244,118 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
 
     string bestMoveStr = extract_best_move(board);
     cout << "bestmove " << bestMoveStr << endl;
+}
+
+/**
+ * @brief Runs a silent search for self-play (no UCI output).
+ * Returns the best joint action found.
+ * @param targetNodes Number of MCTS iterations to run.
+ * @param settings RL settings for Dirichlet noise.
+ * @param temperature Temperature for move selection.
+ */
+JointActionCandidate Agent::run_search_silent(Board& board, const vector<Engine*>& engines, size_t targetNodes, Stockfish::Color teamSide, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature) {
+    JointActionCandidate result;
+    
+    if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty()) {
+        return result;  // No legal moves
+    }
+
+    // Check for mate in 1 on either board before starting search
+    auto legalMoves = board.legal_moves(teamSide, teamHasTimeAdvantage);
+    for (const auto& [boardNum, move] : legalMoves) {
+        if (boardNum == 0) {
+            board.make_moves(move, Stockfish::MOVE_NONE);
+        } else {
+            board.make_moves(Stockfish::MOVE_NONE, move);
+        }
+        
+        if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
+            if (boardNum == 0) {
+                board.unmake_moves(move, Stockfish::MOVE_NONE);
+                result.moveA = move;
+                result.moveB = Stockfish::MOVE_NONE;
+            } else {
+                board.unmake_moves(Stockfish::MOVE_NONE, move);
+                result.moveA = Stockfish::MOVE_NONE;
+                result.moveB = move;
+            }
+            return result;
+        }
+        
+        if (boardNum == 0) {
+            board.unmake_moves(move, Stockfish::MOVE_NONE);
+        } else {
+            board.unmake_moves(Stockfish::MOVE_NONE, move);
+        }
+    }
+
+    // Create the root node and search info
+    rootNode = make_shared<Node>(teamSide, board.hash_key(teamHasTimeAdvantage));
+    SearchInfo searchInfo(chrono::steady_clock::now(), 0);  // Time not used for node-based search
+    
+    if (SearchParams::ENABLE_MCGS && transpositionTable) {
+        transpositionTable->clear();
+        transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
+    }
+
+    for (auto* st : searchThreads) {
+        st->set_root_node(rootNode.get());
+        st->set_search_info(&searchInfo);
+        if (SearchParams::ENABLE_MCGS) {
+            st->set_transposition_table(transpositionTable.get());
+        }
+    }
+    
+    running = true;
+
+    // Launch worker threads
+    vector<thread> workers;
+    for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
+        Engine* engine = engines[i % engines.size()];
+        SearchThread* st = searchThreads[i];
+        
+        workers.emplace_back([this, &board, engine, st, targetNodes, teamHasTimeAdvantage, &searchInfo]() {
+            Board localBoard(board);
+            while (running && static_cast<size_t>(searchInfo.get_nodes_searched()) < targetNodes) {
+                st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+            }
+        });
+    }
+    
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    running = false;
+    
+    // Apply Dirichlet noise to root node priors after expansion
+    // (for self-play exploration)
+    if (rootNode && rootNode->is_expanded() && settings.dirichletEpsilon > 0.0f) {
+        size_t numChildren = rootNode->get_num_children();
+        if (numChildren > 0) {
+            auto noise = generate_dirichlet_noise(numChildren, settings.dirichletAlpha);
+            rootNode->apply_dirichlet_noise(noise, settings.dirichletEpsilon);
+        }
+    }
+    
+    // Extract best joint action with temperature-based selection
+    if (rootNode && rootNode->is_expanded()) {
+        auto children = rootNode->get_children();
+        if (!children.empty()) {
+            // Collect visit counts
+            vector<int> visits;
+            visits.reserve(children.size());
+            for (const auto& child : children) {
+                visits.push_back(child->get_visits());
+            }
+            
+            // Sample index with temperature
+            size_t selectedIdx = sample_with_temperature(visits, temperature);
+            result = rootNode->get_joint_action(static_cast<int>(selectedIdx));
+        }
+    }
+    
+    return result;
 }
 
 /**
