@@ -99,7 +99,10 @@ static size_t sample_with_temperature(const vector<int>& visits, float temperatu
     return visits.size() - 1;
 }
 
-Agent::Agent() : running(false) {
+Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
+    // Use specified thread count, or fall back to search params default
+    numThreads = (numThreadsParam > 0) ? numThreadsParam : SearchParams::NUM_SEARCH_THREADS;
+    
     // Create the transposition table for MCGS (if enabled)
     if (SearchParams::ENABLE_MCGS) {
         transpositionTable = std::make_unique<TranspositionTable>();
@@ -107,7 +110,7 @@ Agent::Agent() : running(false) {
     }
     
     // Create multiple search threads
-    for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
+    for (int i = 0; i < numThreads; i++) {
         searchThreads.push_back(new SearchThread());
     }
 }
@@ -168,9 +171,9 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
     }
 
-    if (engines.size() < static_cast<size_t>(SearchParams::NUM_SEARCH_THREADS)) {
+    if (engines.size() < static_cast<size_t>(numThreads)) {
         cerr << "Warning: Not enough engines for all threads. Need " 
-             << SearchParams::NUM_SEARCH_THREADS << ", have " << engines.size() << endl;
+             << numThreads << ", have " << engines.size() << endl;
     }
 
     // Set up all search threads with shared root node, search info, and transposition table
@@ -186,7 +189,7 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
 
     // Launch worker threads
     vector<thread> workers;
-    for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
+    for (int i = 0; i < numThreads; i++) {
         // Each thread gets its own engine (or shares if not enough)
         Engine* engine = engines[i % engines.size()];
         SearchThread* st = searchThreads[i];
@@ -253,45 +256,16 @@ void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTim
  * @param settings RL settings for Dirichlet noise.
  * @param temperature Temperature for move selection.
  */
-JointActionCandidate Agent::run_search_silent(Board& board, const vector<Engine*>& engines, size_t targetNodes, Stockfish::Color teamSide, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature) {
+JointActionCandidate Agent::run_search_silent(Board& board, const vector<Engine*>& engines, size_t targetNodes, int moveTimeMs, Stockfish::Color teamSide, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature) {
     JointActionCandidate result;
     
     if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty()) {
         return result;  // No legal moves
     }
 
-    // Check for mate in 1 on either board before starting search
-    auto legalMoves = board.legal_moves(teamSide, teamHasTimeAdvantage);
-    for (const auto& [boardNum, move] : legalMoves) {
-        if (boardNum == 0) {
-            board.make_moves(move, Stockfish::MOVE_NONE);
-        } else {
-            board.make_moves(Stockfish::MOVE_NONE, move);
-        }
-        
-        if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
-            if (boardNum == 0) {
-                board.unmake_moves(move, Stockfish::MOVE_NONE);
-                result.moveA = move;
-                result.moveB = Stockfish::MOVE_NONE;
-            } else {
-                board.unmake_moves(Stockfish::MOVE_NONE, move);
-                result.moveA = Stockfish::MOVE_NONE;
-                result.moveB = move;
-            }
-            return result;
-        }
-        
-        if (boardNum == 0) {
-            board.unmake_moves(move, Stockfish::MOVE_NONE);
-        } else {
-            board.unmake_moves(Stockfish::MOVE_NONE, move);
-        }
-    }
-
     // Create the root node and search info
     rootNode = make_shared<Node>(teamSide, board.hash_key(teamHasTimeAdvantage));
-    SearchInfo searchInfo(chrono::steady_clock::now(), 0);  // Time not used for node-based search
+    SearchInfo searchInfo(chrono::steady_clock::now(), moveTimeMs);
     
     if (SearchParams::ENABLE_MCGS && transpositionTable) {
         transpositionTable->clear();
@@ -310,16 +284,26 @@ JointActionCandidate Agent::run_search_silent(Board& board, const vector<Engine*
 
     // Launch worker threads
     vector<thread> workers;
-    for (int i = 0; i < SearchParams::NUM_SEARCH_THREADS; i++) {
+    for (int i = 0; i < numThreads; i++) {
         Engine* engine = engines[i % engines.size()];
         SearchThread* st = searchThreads[i];
         
-        workers.emplace_back([this, &board, engine, st, targetNodes, teamHasTimeAdvantage, &searchInfo]() {
-            Board localBoard(board);
-            while (running && static_cast<size_t>(searchInfo.get_nodes_searched()) < targetNodes) {
-                st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
-            }
-        });
+        // Use time-based stopping if moveTimeMs > 0, otherwise use node-based
+        if (moveTimeMs > 0) {
+            workers.emplace_back([this, &board, engine, st, moveTimeMs, teamHasTimeAdvantage, &searchInfo]() {
+                Board localBoard(board);
+                while (running && searchInfo.elapsed() < moveTimeMs) {
+                    st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+                }
+            });
+        } else {
+            workers.emplace_back([this, &board, engine, st, targetNodes, teamHasTimeAdvantage, &searchInfo]() {
+                Board localBoard(board);
+                while (running && static_cast<size_t>(searchInfo.get_nodes_searched()) < targetNodes) {
+                    st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+                }
+            });
+        }
     }
     
     for (auto& worker : workers) {

@@ -45,10 +45,16 @@ public:
      * are allocated via cudaMallocHost (Pinned Memory).
      */
     bool runInference(float* obs, float* value, float* piA, float* piB);
+    
+    /**
+     * @brief Get the batch size this engine was built with.
+     */
+    int getBatchSize() const { return m_batchSize; }
 
 private:
     // Device ID and Logger
     int m_deviceId;
+    int m_batchSize = 8;  // Default, will be extracted from engine
     Logger m_logger;
     
     // TensorRT Core Objects

@@ -168,11 +168,16 @@ public:
                      bool isWhiteTeam);
     
     /**
-     * @brief Finalize the game with the result and write to the data writer.
-     * @param result Game result from white team's perspective (1.0 = white wins, -1.0 = black wins, 0.0 = draw)
+     * @brief Finalize the game with asymmetric rewards and write to the data writer.
+     * 
+     * Supports different reward values for white and black teams to enable
+     * asymmetric training (time-to-mate penalty, survival bonus, etc.)
+     * 
+     * @param whiteTeamValue Reward for white team positions
+     * @param blackTeamValue Reward for black team positions
      * @param writer The training data writer to output samples to
      */
-    void finalize_game(float result, TrainingDataWriter& writer);
+    void finalize_game(float whiteTeamValue, float blackTeamValue, TrainingDataWriter& writer);
     
     /**
      * @brief Clear the buffer without writing (e.g., for abandoned games).
