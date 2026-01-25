@@ -96,14 +96,18 @@ bool Engine::initializeResources() {
     if (!m_engine) return false;
     m_context.reset(m_engine->createExecutionContext());
     
-    // Set Input Shape (Required for V3 Engines/Dynamic Shapes)
-    nvinfer1::Dims4 dims{SearchParams::BATCH_SIZE, NB_INPUT_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH};
+    // Extract batch size from the engine's input dimensions
     const char* inputName = m_engine->getIOTensorName(0);
+    nvinfer1::Dims inputDims = m_engine->getTensorShape(inputName);
+    m_batchSize = inputDims.d[0];  // First dimension is batch size
+    
+    // Set Input Shape (Required for V3 Engines/Dynamic Shapes)
+    nvinfer1::Dims4 dims{m_batchSize, NB_INPUT_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH};
     m_context->setInputShape(inputName, dims);
 
-    size_t inputSize = SearchParams::BATCH_SIZE * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
-    size_t valSize = SearchParams::BATCH_SIZE * sizeof(float);
-    size_t polSize = SearchParams::BATCH_SIZE * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
+    size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
+    size_t valSize = m_batchSize * sizeof(float);
+    size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
 
     // Allocate GPU Device Memory
     cudaMalloc(&m_deviceObsBuffer, inputSize);
@@ -124,9 +128,9 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB) {
     std::lock_guard<std::mutex> lock(m_inferenceMutex);
     cudaSetDevice(m_deviceId);
 
-    size_t inputSize = SearchParams::BATCH_SIZE * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
-    size_t valSize = SearchParams::BATCH_SIZE * sizeof(float);
-    size_t polSize = SearchParams::BATCH_SIZE * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
+    size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
+    size_t valSize = m_batchSize * sizeof(float);
+    size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
 
     // Step 1: Upload Input (Async)
     cudaMemcpyAsync(m_deviceObsBuffer, obs, inputSize, cudaMemcpyHostToDevice, m_cudaStream);

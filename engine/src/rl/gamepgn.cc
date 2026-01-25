@@ -1,16 +1,24 @@
 /*
  * Hivemind - Bughouse Chess Engine
- * PGN output for Bughouse games
+ * PGN output for Bughouse games (BPGN format)
  * Adapted from CrazyAra's GamePGN
  */
 
 #include "gamepgn.h"
 #include <ctime>
 #include <iomanip>
+#include <sstream>
 
 void BughouseGamePGN::new_game() {
     gameMoves.clear();
     result = "*";
+    termination = "";
+    
+    // Reset move counters
+    moveNumberBoardA = 1;
+    moveNumberBoardB = 1;
+    whiteToMoveBoardA = true;
+    whiteToMoveBoardB = true;
     
     // Update date
     time_t now = time(nullptr);
@@ -20,14 +28,59 @@ void BughouseGamePGN::new_game() {
     date = date_buf;
 }
 
-void BughouseGamePGN::add_move(int boardNum, const std::string& moveStr) {
-    // Prefix with 1 for Board A, 2 for Board B
-    std::string prefixedMove = std::to_string(boardNum + 1) + moveStr;
-    gameMoves.push_back(prefixedMove);
+void BughouseGamePGN::add_move(int boardNum, const std::string& moveStr, float clockTime) {
+    MoveRecord record;
+    record.boardNum = boardNum;
+    record.move = moveStr;
+    record.clockTime = clockTime;
+    
+    if (boardNum == 0) {
+        // Board A
+        record.isWhite = whiteToMoveBoardA;
+        record.moveNumber = moveNumberBoardA;
+        
+        if (!whiteToMoveBoardA) {
+            moveNumberBoardA++;  // Increment after Black's move
+        }
+        whiteToMoveBoardA = !whiteToMoveBoardA;
+    } else {
+        // Board B
+        record.isWhite = whiteToMoveBoardB;
+        record.moveNumber = moveNumberBoardB;
+        
+        if (!whiteToMoveBoardB) {
+            moveNumberBoardB++;  // Increment after Black's move
+        }
+        whiteToMoveBoardB = !whiteToMoveBoardB;
+    }
+    
+    gameMoves.push_back(record);
 }
 
 void BughouseGamePGN::set_result(GameResult res) {
     result = result_string(res);
+    
+    // Set termination message
+    switch (res) {
+        case GameResult::WHITE_WINS:
+            termination = whiteTeam + " won by checkmate";
+            break;
+        case GameResult::BLACK_WINS:
+            termination = blackTeam + " won by checkmate";
+            break;
+        case GameResult::WHITE_RESIGNS:
+            termination = whiteTeam + " resigned";
+            break;
+        case GameResult::BLACK_RESIGNS:
+            termination = blackTeam + " resigned";
+            break;
+        case GameResult::DRAW:
+            termination = "Game drawn";
+            break;
+        default:
+            termination = "";
+            break;
+    }
 }
 
 std::string BughouseGamePGN::result_string(GameResult res) const {
@@ -47,55 +100,57 @@ std::string BughouseGamePGN::result_string(GameResult res) const {
 }
 
 std::ostream& operator<<(std::ostream& os, const BughouseGamePGN& pgn) {
-    // Standard PGN headers
+    // BPGN headers
     os << "[Event \"" << pgn.event << "\"]\n"
        << "[Site \"" << pgn.site << "\"]\n"
        << "[Date \"" << pgn.date << "\"]\n"
        << "[Round \"" << pgn.round << "\"]\n"
-       << "[Variant \"" << pgn.variant << "\"]\n";
-    
-    // Bughouse-specific headers
-    os << "[WhiteTeam \"" << pgn.whiteTeam << "\"]\n"
+       << "[Variant \"" << pgn.variant << "\"]\n"
+       << "[TimeControl \"" << pgn.timeControl << "\"]\n"
+       << "[WhiteTeam \"" << pgn.whiteTeam << "\"]\n"
        << "[BlackTeam \"" << pgn.blackTeam << "\"]\n"
        << "[WhiteA \"" << pgn.whiteBoardA << "\"]\n"
        << "[BlackA \"" << pgn.blackBoardA << "\"]\n"
        << "[WhiteB \"" << pgn.whiteBoardB << "\"]\n"
        << "[BlackB \"" << pgn.blackBoardB << "\"]\n"
-       << "[FENBoardA \"" << pgn.fenBoardA << "\"]\n"
-       << "[FENBoardB \"" << pgn.fenBoardB << "\"]\n"
-       << "[Result \"" << pgn.result << "\"]\n"
-       << "[PlyCount \"" << pgn.gameMoves.size() << "\"]\n"
-       << "[TimeControl \"" << pgn.timeControl << "\"]\n";
+       << "[TimeAdvantage \"" << (pgn.whiteTeamHadTimeAdvantage ? pgn.whiteTeam : pgn.blackTeam) << "\"]\n"
+       << "[Result \"" << pgn.result << "\"]\n";
     
-    // Custom header for RL training
-    os << "[WhiteTeamTimeAdvantage \"" << (pgn.whiteTeamHadTimeAdvantage ? "true" : "false") << "\"]\n";
+    if (!pgn.termination.empty()) {
+        os << "[Termination \"" << pgn.termination << "\"]\n";
+    }
     
     os << "\n";
     
-    // Output moves with line wrapping
-    size_t lineLength = 0;
+    // Output moves in BPGN format
+    // Format: 1A. e4 {179.9} 1a. e6 {179.8} 1B. d4 {179.7} 1b. d5 {179.6}
     for (size_t i = 0; i < pgn.gameMoves.size(); ++i) {
-        const std::string& move = pgn.gameMoves[i];
+        const auto& move = pgn.gameMoves[i];
         
-        if (lineLength + move.length() + 1 > 80) {
-            os << "\n";
-            lineLength = 0;
+        // Build move prefix: "1A." for White Board A, "1a." for Black Board A, etc.
+        os << move.moveNumber;
+        
+        char boardLetter = (move.boardNum == 0) ? 'A' : 'B';
+        if (!move.isWhite) {
+            boardLetter = (move.boardNum == 0) ? 'a' : 'b';
         }
+        os << boardLetter << ". ";
         
-        if (lineLength > 0) {
-            os << " ";
-            lineLength++;
-        }
+        // Output move
+        os << move.move;
         
-        os << move;
-        lineLength += move.length();
+        // Output clock time in braces
+        os << " {" << std::fixed << std::setprecision(1) << move.clockTime << "} ";
     }
     
-    // Final result
-    if (lineLength > 0) {
-        os << " ";
+    // Add termination comment if present
+    if (!pgn.termination.empty()) {
+        os << "{C:" << pgn.termination << " " << pgn.result << "}\n";
+        os << "{" << pgn.termination << "} ";
     }
-    os << pgn.result << "\n\n";
+    
+    // Final result marker
+    os << "*\n\n";
     
     return os;
 }

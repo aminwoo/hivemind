@@ -73,6 +73,12 @@ private:
     
     // Batch collection for minibatch MCTS
     vector<LeafContext> batchContexts;
+    
+    // Current batch size (initialized on first run_iteration call)
+    int currentBatchSize = 0;
+    
+    // Allocate/reallocate buffers for given batch size
+    void ensureBufferSize(int batchSize);
 
 public: 
     SearchThread();

@@ -15,10 +15,10 @@ struct PlaneData {
     Board& board;
     float* inputPlanes;
     float* curIt;
-    Stockfish::Color us; 
+    Stockfish::Color teamSide; 
 
-    PlaneData(Board& board, float* inputPlanes, Stockfish::Color us)
-        : board(board), inputPlanes(inputPlanes), curIt(inputPlanes), us(us) {}
+    PlaneData(Board& board, float* inputPlanes, Stockfish::Color teamSide)
+        : board(board), inputPlanes(inputPlanes), curIt(inputPlanes), teamSide(teamSide) {}
 
     inline void increment_channel() {
         curIt += 64;
@@ -36,14 +36,14 @@ struct PlaneData {
 
     // Helper to determine if the specific board needs perspective flipping
     inline bool needs_flipping(int boardIdx) {
-        if (boardIdx == 0) return us == Stockfish::BLACK;
-        return us == Stockfish::WHITE;
+        if (boardIdx == 0) return teamSide == Stockfish::BLACK;
+        return teamSide == Stockfish::WHITE;
     }
 };
 
 inline void set_plane_pieces_board(PlaneData& p, int boardIdx) { 
     // Python logic: Board A uses (us, opponent), Board B uses (opponent, us)
-    Stockfish::Color first = (boardIdx == 0) ? p.us : ~p.us;
+    Stockfish::Color first = (boardIdx == 0) ? p.teamSide : ~p.teamSide;
     Stockfish::Color second = ~first;
 
     for (Stockfish::Color color : {first, second}) {
@@ -58,7 +58,7 @@ inline void set_plane_pieces_board(PlaneData& p, int boardIdx) {
 }
 
 inline void set_plane_pockets_board(PlaneData& p, int boardIdx) {
-    Stockfish::Color first = (boardIdx == 0) ? p.us : ~p.us;
+    Stockfish::Color first = (boardIdx == 0) ? p.teamSide : ~p.teamSide;
     Stockfish::Color second = ~first;
 
     for (Stockfish::Color color : {first, second}) {
@@ -70,7 +70,7 @@ inline void set_plane_pockets_board(PlaneData& p, int boardIdx) {
 }
 
 inline void set_plane_promoted_pieces_board(PlaneData& p, int boardIdx) {
-    Stockfish::Color first = (boardIdx == 0) ? p.us : ~p.us;
+    Stockfish::Color first = (boardIdx == 0) ? p.teamSide : ~p.teamSide;
     Stockfish::Color second = ~first;
 
     for (Stockfish::Color color : {first, second}) {
@@ -96,7 +96,7 @@ inline void set_plane_ep_square_board(PlaneData& p, int boardIdx) {
 
 inline void set_plane_color_info_board(PlaneData& p, int boardIdx) {
     // Python: Board A turn == team_side; Board B turn == not team_side
-    Stockfish::Color expectedTurn = (boardIdx == 0) ? p.us : ~p.us;
+    Stockfish::Color expectedTurn = (boardIdx == 0) ? p.teamSide : ~p.teamSide;
     float val = (p.board.side_to_move(boardIdx) == expectedTurn) ? 1.0f : 0.0f; 
     p.set_plane_to_value(val);
 }
@@ -104,23 +104,23 @@ inline void set_plane_color_info_board(PlaneData& p, int boardIdx) {
 inline void set_plane_castling_rights_board(PlaneData& p, int boardIdx) {
     // Note: Castling rights are usually evaluated on the original board state
     if (boardIdx == 0) {
-        p.set_plane_to_value(p.board.can_castle(0, p.us == Stockfish::WHITE ? Stockfish::WHITE_OO : Stockfish::BLACK_OO));
-        p.set_plane_to_value(p.board.can_castle(0, p.us == Stockfish::WHITE ? Stockfish::WHITE_OOO : Stockfish::BLACK_OOO));
-        p.set_plane_to_value(p.board.can_castle(0, p.us == Stockfish::WHITE ? Stockfish::BLACK_OO : Stockfish::WHITE_OO));
-        p.set_plane_to_value(p.board.can_castle(0, p.us == Stockfish::WHITE ? Stockfish::BLACK_OOO : Stockfish::WHITE_OOO));
+        p.set_plane_to_value(p.board.can_castle(0, p.teamSide == Stockfish::WHITE ? Stockfish::WHITE_OO : Stockfish::BLACK_OO));
+        p.set_plane_to_value(p.board.can_castle(0, p.teamSide == Stockfish::WHITE ? Stockfish::WHITE_OOO : Stockfish::BLACK_OOO));
+        p.set_plane_to_value(p.board.can_castle(0, p.teamSide == Stockfish::WHITE ? Stockfish::BLACK_OO : Stockfish::WHITE_OO));
+        p.set_plane_to_value(p.board.can_castle(0, p.teamSide == Stockfish::WHITE ? Stockfish::BLACK_OOO : Stockfish::WHITE_OOO));
     } else {
         // Board B logic: Kingside(not team_side), Queenside(not team_side), Kingside(team_side), Queenside(team_side)
-        p.set_plane_to_value(p.board.can_castle(1, p.us == Stockfish::WHITE ? Stockfish::BLACK_OO : Stockfish::WHITE_OO));
-        p.set_plane_to_value(p.board.can_castle(1, p.us == Stockfish::WHITE ? Stockfish::BLACK_OOO : Stockfish::WHITE_OOO));
-        p.set_plane_to_value(p.board.can_castle(1, p.us == Stockfish::WHITE ? Stockfish::WHITE_OO : Stockfish::BLACK_OO));
-        p.set_plane_to_value(p.board.can_castle(1, p.us == Stockfish::WHITE ? Stockfish::WHITE_OOO : Stockfish::BLACK_OOO));
+        p.set_plane_to_value(p.board.can_castle(1, p.teamSide == Stockfish::WHITE ? Stockfish::BLACK_OO : Stockfish::WHITE_OO));
+        p.set_plane_to_value(p.board.can_castle(1, p.teamSide == Stockfish::WHITE ? Stockfish::BLACK_OOO : Stockfish::WHITE_OOO));
+        p.set_plane_to_value(p.board.can_castle(1, p.teamSide == Stockfish::WHITE ? Stockfish::WHITE_OO : Stockfish::BLACK_OO));
+        p.set_plane_to_value(p.board.can_castle(1, p.teamSide == Stockfish::WHITE ? Stockfish::WHITE_OOO : Stockfish::BLACK_OOO));
     }
 }
 
-void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color us, bool hasTimeAdvantage=false) {
+void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage=false) {
     // Initialize all to 0
     std::fill_n(inputPlanes, NB_INPUT_VALUES(), 0.0f); 
-    PlaneData planeData(board, inputPlanes, us);
+    PlaneData planeData(board, inputPlanes, teamSide);
     
     // Process Board 0 (Channels 0-31)
     set_plane_pieces_board(planeData, 0);           

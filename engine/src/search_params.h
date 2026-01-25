@@ -22,7 +22,7 @@ namespace SearchParams {
 
 /// Number of leaves to collect before batched neural network inference
 /// CrazyAra default: 8
-constexpr int BATCH_SIZE = 8;
+constexpr int BATCH_SIZE = 16;
 
 /// Number of search threads to run in parallel
 /// CrazyAra default: 2
@@ -120,6 +120,26 @@ constexpr float CPUCT_BASE = 19652.0f;
 constexpr float FPU_REDUCTION = 0.4f;
 
 // =============================================================================
+// Draw Contempt Parameters
+// =============================================================================
+
+/**
+ * Draw contempt: Penalty applied to draw evaluations to encourage playing for wins.
+ * 
+ * Positive values make the engine avoid draws (treat them slightly as losses).
+ * A value of 0.05 means draws are evaluated as -0.05 instead of 0.0.
+ * 
+ * This encourages more aggressive play and prevents the engine from being
+ * overly content with drawn positions.
+ * 
+ * Typical range: 0.0 to 0.15
+ * - 0.0: No contempt (draws are neutral)
+ * - 0.05: Light contempt (slightly prefer wins over draws)
+ * - 0.10: Moderate contempt (more aggressive)
+ */
+constexpr float DRAW_CONTEMPT = 0.15f;
+
+// =============================================================================
 // Progressive Widening Parameters
 // =============================================================================
 
@@ -131,48 +151,6 @@ constexpr float PW_COEFFICIENT = 1.0f;
 /// Exponent for progressive widening formula
 /// Lower values slow down the expansion rate
 constexpr float PW_EXPONENT = 0.3f;
-
-// =============================================================================
-// Dirichlet Noise Parameters (aligned with CrazyAra for root exploration)
-// =============================================================================
-
-/// Epsilon: fraction of policy that comes from Dirichlet noise (vs. NN policy)
-/// CrazyAra default: 0.25
-constexpr float DIRICHLET_EPSILON = 0.25f;
-
-/// Alpha: concentration parameter for Dirichlet distribution
-/// Lower values create more peaked distributions (more exploration on fewer moves)
-/// CrazyAra default: 0.2
-constexpr float DIRICHLET_ALPHA = 0.2f;
-
-// =============================================================================
-// Q-Value Weighting Parameters (aligned with CrazyAra)
-// =============================================================================
-
-/// Weight for Q-value in move selection (used in final move selection, not PUCT)
-/// CrazyAra default: 1.0
-constexpr float Q_VALUE_WEIGHT = 1.0f;
-
-/// Q-value veto delta: if best Q move differs from most visited by this margin,
-/// consider swapping them in final move selection
-/// CrazyAra default: 0.4
-constexpr float Q_VETO_DELTA = 0.4f;
-
-// =============================================================================
-// Other CrazyAra-aligned Settings
-// =============================================================================
-
-/// Policy temperature applied to neural network policy outputs
-/// CrazyAra default: 1.0 (no temperature scaling)
-constexpr float NODE_POLICY_TEMPERATURE = 1.0f;
-
-/// Enable tree reuse between moves
-/// CrazyAra default: true
-constexpr bool REUSE_TREE = true;
-
-/// Enable MCTS solver for terminal positions
-/// CrazyAra default: false
-constexpr bool MCTS_SOLVER = false;
 
 // =============================================================================
 // Utility Functions
