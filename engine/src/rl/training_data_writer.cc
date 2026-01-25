@@ -236,11 +236,10 @@ void GameSampleBuffer::add_position(const float* inputPlanes,
     positions.push_back(std::move(pos));
 }
 
-void GameSampleBuffer::finalize_game(float result, TrainingDataWriter& writer) {
+void GameSampleBuffer::finalize_game(float whiteTeamValue, float blackTeamValue, TrainingDataWriter& writer) {
     for (const auto& pos : positions) {
-        // Value is from the perspective of the team that made the move
-        // result is from white team's perspective
-        float value = pos.isWhiteTeam ? result : -result;
+        // Use the appropriate value based on which team made the move
+        float value = pos.isWhiteTeam ? whiteTeamValue : blackTeamValue;
         
         TrainingSample sample;
         sample.planes = pos.planes;

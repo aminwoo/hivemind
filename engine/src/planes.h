@@ -12,7 +12,7 @@
  *
  * @param board The current bughouse board state.
  * @param inputPlanes Pointer to an array of floats where the resulting planes are stored.
- * @param us The color representing the current team's perspective.
- * @param pass A flag indicating whether to process additional input (e.g., passed moves).
+ * @param teamSide The color representing the current team's perspective.
+ * @param hasTimeAdvantage A flag indicating whether the team has a time advantage.
  */
-void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color us, bool hasTimeAdvantage);
+void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);

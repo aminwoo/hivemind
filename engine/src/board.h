@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iostream>
 
+#include "Fairy-Stockfish/src/apiutil.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
 #include "Fairy-Stockfish/src/types.h"
@@ -239,6 +240,21 @@ class Board {
 
             // Concatenate board_num and move_str without a space
             return move_str;
+        }
+
+        /**
+         * @brief Converts a move to SAN (Standard Algebraic Notation) string.
+         * @param board_num The board index.
+         * @param move The move to convert.
+         * @return std::string The SAN move string (e.g., "e4", "Nf3", "O-O").
+         */
+        std::string san_move(int board_num, Stockfish::Move move) { 
+            if (move == Stockfish::MOVE_NONE) {
+                return "pass";
+            }
+
+            // Get the SAN move string using Fairy-Stockfish's move_to_san
+            return Stockfish::SAN::move_to_san(*pos[board_num], move, Stockfish::NOTATION_SAN);
         }
 
         bool is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage = false);

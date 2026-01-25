@@ -11,15 +11,8 @@
 
 using namespace std;
 
-SearchThread::SearchThread() : transpositionTable(nullptr) {
-    // Pre-allocate inference buffers for batch processing
-    obs = new float[SearchParams::BATCH_SIZE * NB_INPUT_VALUES()];
-    value = new float[SearchParams::BATCH_SIZE];
-    piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-    piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-
-    // Reserve space for batch contexts
-    batchContexts.reserve(SearchParams::BATCH_SIZE);
+SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {
+    // Buffers are allocated lazily in ensureBufferSize() when run_iteration is called
 }
 
 SearchThread::~SearchThread() {
@@ -27,6 +20,25 @@ SearchThread::~SearchThread() {
     delete[] value;
     delete[] piA;
     delete[] piB;
+}
+
+void SearchThread::ensureBufferSize(int batchSize) {
+    if (batchSize == currentBatchSize) return;
+    
+    // Free old buffers
+    delete[] obs;
+    delete[] value;
+    delete[] piA;
+    delete[] piB;
+    
+    // Allocate new buffers
+    obs = new float[batchSize * NB_INPUT_VALUES()];
+    value = new float[batchSize];
+    piA = new float[batchSize * NB_POLICY_VALUES()];
+    piB = new float[batchSize * NB_POLICY_VALUES()];
+    
+    batchContexts.reserve(batchSize);
+    currentBatchSize = batchSize;
 }
 
 SearchInfo* SearchThread::get_search_info() {
@@ -79,16 +91,20 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
 /**
  * @brief Runs a minibatch of MCTS iterations.
  * 
- * This collects SearchParams::BATCH_SIZE leaf nodes, runs batched neural network inference,
+ * This collects leaves based on the engine's batch size, runs batched neural network inference,
  * then expands and backs up all leaves. This better utilizes GPU parallelism.
  */
 void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
+    // Get batch size from engine and ensure buffers are properly sized
+    int batchSize = engine->getBatchSize();
+    ensureBufferSize(batchSize);
+    
     batchContexts.clear();
     int validInferenceCount = 0;
     int batchCollisions = 0;
     
-    // Phase 1: Collect SearchParams::BATCH_SIZE leaf nodes
-    for (int i = 0; i < SearchParams::BATCH_SIZE; i++) {
+    // Phase 1: Collect batchSize leaf nodes
+    for (int i = 0; i < batchSize; i++) {
         LeafContext ctx;
         trajectoryBuffer.clear();
         
@@ -115,7 +131,8 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         // Check for terminal states
         if (board.is_draw()) {
             ctx.isTerminal = true;
-            ctx.terminalValue = 0.0f;
+            // Apply draw contempt: treat draws as slightly negative for the side to move
+            ctx.terminalValue = -SearchParams::DRAW_CONTEMPT;
             batchContexts.push_back(std::move(ctx));
             
             // Undo moves for this trajectory so we can do another selection
@@ -208,7 +225,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                     }
                 }
             }
-            searchInfo->increment_nodes(SearchParams::BATCH_SIZE);
+            searchInfo->increment_nodes(batchSize);
             return;
         }
     }
@@ -279,7 +296,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         }
     }
     
-    searchInfo->increment_nodes(SearchParams::BATCH_SIZE);
+    searchInfo->increment_nodes(batchSize);
     searchInfo->increment_collisions(batchCollisions);
 }
 
