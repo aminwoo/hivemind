@@ -1,64 +1,29 @@
-<div align="center">
-  
-  ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/d42c6a6e-ab2e-4d7a-bf90-4876d59c9558)
-  
-  <h3>HiveMind</h3>
+./hivemind param-eval \  
+ --model /home/ben/hivemind/engine/networks/model-0.97878-0.683-0224-v3.0.onnx \  
+ --p1-name "Batch1" --p1-time 1000 --p1-batch 1 --p1-threads 1 \  
+ --p2-name "Batch16" --p2-time 1000 --p2-batch 16 --p2-threads 2 \  
+ --games 10
 
-  A free & strong UCI Bughouse engine.
+./hivemind param-eval \
+ --model /home/ben/hivemind/engine/networks/model-0.97878-0.683-0224-v3.0.onnx \
+ --p1-name "MCGS-ON" --p1-time 1000 --p1-batch 8 --p1-threads 2 --p1-mcgs 1 \
+ --p2-name "MCGS-OFF" --p2-time 1000 --p2-batch 8 --p2-threads 2 --p2-mcgs 0 \
+ --games 20
 
-</div>
+./hivemind param-eval \
+ --model /home/ben/hivemind/engine/networks/model-0.97878-0.683-0224-v3.0.onnx \
+ --p1-name "PW-1.0-0.3" --p1-time 1000 --p1-batch 8 --p1-threads 2 --p1-pw-coef 1.0 --p1-pw-exp 0.3 \
+ --p2-name "PW-2.0-0.7" --p2-time 1000 --p2-batch 8 --p2-threads 2 --p2-pw-coef 2.0 --p2-pw-exp 0.7 \
+ --games 20
 
-## Overview
-Bughouse is a four player chess variant where players exchange captured pieces which can be dropped on empty squares. The large game tree and complexities around coordination between players makes Bughouse a challenging domain for traditional Chess algorithms. HiveMind is a two board engine which uses a policy network and Monte Carlo tree search (MCTS) to narrow down the search space and coordinate both boards. 
+./hivemind param-eval \
+ --model /home/ben/hivemind/engine/networks/model-0.97878-0.683-0224-v3.0.onnx \
+ --p1-time 500 --p1-batch 8 --p1-threads 2 --p1-contempt 0.0 \
+ --p2-time 500 --p2-batch 8 --p2-threads 2 --p2-contempt 1.0 \
+ --games 100
 
-## Prerequisites
-
-This project requires the installation of the CUDA Toolkit and TensorRT for inference.
-
----
-
-### CUDA Toolkit Installation Steps
-
-Follow these steps to install the CUDA Toolkit:
-```
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin
-mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600
-wget https://developer.download.nvidia.com/compute/cuda/12.8.0/local_installers/cuda-repo-ubuntu2204-12-8-local_12.8.0-570.86.10-1_amd64.deb
-dpkg -i cuda-repo-ubuntu2204-12-8-local_12.8.0-570.86.10-1_amd64.deb
-cp /var/cuda-repo-ubuntu2204-12-8-local/cuda-*-keyring.gpg /usr/share/keyrings/
-apt-get update
-apt-get -y install cuda-toolkit-12-8
-```
-
-### TensorRT Installation Steps 
-```
-wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.8.0/local_repo/nv-tensorrt-local-repo-ubuntu2204-10.8.0-cuda-12.8_1.0-1_amd64.deb
-os="ubuntu2204"
-tag="10.8.0-cuda-12.8"
-dpkg -i nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb
-cp /var/nv-tensorrt-local-repo-${os}-${tag}/*-keyring.gpg /usr/share/keyrings/
-apt-get update
-apt-get install tensorrt
-```
-
-## Compiling and Running HiveMind
-
-```
-cmake .
-make
-./hivemind
-```
-### Running from release
-```
-LD_LIBRARY_PATH=. ./hivemind
-```
-
-
-## Acknowledgements
-
-*   [**CrazyAra**](https://github.com/QueensGambit/CrazyAra/tree/master): A Deep Learning UCI-Chess Variant Engine written in C++ & Python
-*   [**Fairy-Stockfish**](https://github.com/fairy-stockfish/Fairy-Stockfish): A chess variant engine supporting Xiangqi, Shogi, Janggi, Makruk, S-Chess, Crazyhouse, Bughouse, and many more
-
-## Licence
-
-This project is licensed under the GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](https://github.com/aminwoo/hivemind/blob/master/LICENSE) file for the full license text.
+./hivemind param-eval \
+ --model /home/ben/hivemind/engine/networks/model-0.97878-0.683-0224-v3.0.onnx \
+ --p1-name "FPU-0.2" --p1-time 500 --p1-batch 16 --p1-threads 2 --p1-fpu 0.2 \
+ --p2-name "FPU-0.6" --p2-time 500 --p2-batch 16 --p2-threads 2 --p2-fpu 0.6 \
+ --games 20

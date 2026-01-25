@@ -93,6 +93,14 @@ private:
     std::chrono::steady_clock::time_point startTime;
     float gamesPerMinute;
     
+    // Alice (attacker with time advantage) vs Bob (defender) statistics
+    std::atomic<size_t> aliceWins{0};
+    std::atomic<size_t> aliceLosses{0};
+    std::atomic<size_t> aliceDraws{0};
+    
+    // Game length tracking
+    std::atomic<size_t> totalPlies{0};
+    
     /**
      * @brief Generate a single self-play game.
      * @param whiteHasTimeAdvantage If true, white team has time advantage
@@ -142,6 +150,21 @@ private:
      * @return Adjusted node count
      */
     size_t randomize_nodes(size_t baseNodes) const;
+    
+    /**
+     * @brief Calculate asymmetric rewards based on game outcome and length.
+     * 
+     * Implements:
+     * - Time-to-Mate Penalty: Winner gets higher reward for faster wins
+     * - Survival Bonus: Loser gets less negative reward for lasting longer
+     * 
+     * @param result Game result
+     * @param ply Number of plies in the game
+     * @param whiteHadTimeAdvantage Whether white team had time advantage
+     * @return Pair of (whiteTeamValue, blackTeamValue)
+     */
+    std::pair<float, float> calculate_asymmetric_rewards(
+        GameResult result, size_t ply, bool whiteHadTimeAdvantage) const;
     
     /**
      * @brief Print speed statistics.

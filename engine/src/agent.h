@@ -27,12 +27,14 @@ private:
     std::atomic<bool> running;                            
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
+    int numThreads;                                          // Number of search threads
 
 public:
     /**
      * @brief Constructs a multi-threaded Agent with MCGS support.
+     * @param numThreads Number of search threads (0 = use SearchParams::NUM_SEARCH_THREADS)
      */
-    Agent();
+    Agent(int numThreads = 0);
 
     /**
      * @brief Destructor to clean up resources.
@@ -52,14 +54,15 @@ public:
      * @brief Runs a silent search for self-play (no UCI output).
      * @param board The board on which to perform the search.
      * @param engines A vector of engine pointers to use during the search.
-     * @param targetNodes The number of MCTS iterations to run.
+     * @param targetNodes The number of MCTS iterations to run (0 = use time limit).
+     * @param moveTimeMs Time limit in milliseconds (0 = use node limit).
      * @param side The side to move.
      * @param teamHasTimeAdvantage If true, team is ahead on time.
      * @param settings RL settings for Dirichlet noise and temperature.
      * @param temperature Temperature for move selection (0 = greedy, >0 = stochastic).
      * @return The best joint action found.
      */
-    JointActionCandidate run_search_silent(Board& board, const std::vector<Engine*>& engines, size_t targetNodes, Stockfish::Color side, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature);
+    JointActionCandidate run_search_silent(Board& board, const std::vector<Engine*>& engines, size_t targetNodes, int moveTimeMs, Stockfish::Color side, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature);
 
     /**
      * @brief Extracts the best move from the root node after search.

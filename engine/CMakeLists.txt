@@ -21,6 +21,7 @@ set(LIB_SOURCES
     src/rl/gamepgn.cc
     src/rl/selfplay.cc
     src/rl/training_data_writer.cc
+    src/rl/model_eval.cc
 )
 
 # For finding FindTensorRT.cmake

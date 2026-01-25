@@ -1,389 +1,342 @@
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "1"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
 [Result "1-0"]
-[PlyCount "134"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[Termination "Alice won by checkmate"]
 
-1e2e4 1e7e5 2d2d4 1b1c3 2d7d5 1b8c6 2c1f4 1g1f3 2g8f6 1g8f6 2e2e3 1f1c4 2c8f5
-1f8e7 2f1d3 1d2d4 2f5d3 1e5d4 2c2d3 1c4f7 2e7e6 1e8f7 2b1c3 1f3d4 2f8b4 1h8f8
-2B@g3 1B@b3 2P@a3 1B@e6 2P@d2 2a3b2 2a1b1 1P@h6 2b4c3 1g7h6 2d2c3 1c1h6 1c6d4
-1d1d4 2P@d6 1e6b3 2P@e5 1a2b3 1B@c5 1d4d2 2d6e5 1f7g8 2f4e5 1P@g7 1f8f7 1N@g5
-1f7g7 1h6g7 1g8g7 2R@c1 2B@a4 1e4e5 2b8c6 1d8f8 2b1c1 2b2c1q 2d1c1 1R@f7 1f8f7
-1g5f7 1g7f7 1e5f6 2P@d2 1e7f6 2c1d2 1c3e4 2N@b1 1c5e7 2d2d1 1e4f6 2Q@d2 1e7f6
-2d1d2 2b1d2 2e1d2 2N@e4 2d3e4 2f6e4 2d2e2 2e4c3 2e2f1 1Q@h5 1P@g6 1h5h7 1P@g7
-2B@d3 2P@e2 2c3e2 2g1e2 2d3e2 2f1e2 1N@h8 1f7e7 1h8g6 1e7d8 1h7g8 1B@e8 2P@d3
-2e2d3 1P@e7 1f6e7 1g6e7 1R@e5 1P@e3 1e5e7 1P@d6 2B@c4 1c7d6 2d3d2 1d2d6 1P@d2
-1d6d2 1N@e4 2P@c3 2d2c3 2P@b4 2c3c2 2B@d3 2c2c1 2P@b2 2c1b2 1g8e8 1e7e8 2B@a3
-2b2a1 1a1a7 1e4d2 2P@b2 1-0
+1A. d3 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. Nf3 {179.7} 1b. e6 {179.6} 2a. Nf6 {179.5} 2B. d4 {179.4} 3A. Nc3 {179.3} 2b. Nc6 {179.2} 3a. Nc6 {179.1} 3B. Nc3 {179.0} 4A. e3 {178.9} 3b. Nf6 {178.8} 4a. Bg4 {178.7} 4B. Nf3 {178.6} 5A. Be2 {178.5} 4b. Bb4 {178.4} 5a. Bxf3 {178.3} 5B. Bd3 {178.2} 6A. Bxf3 {178.1} 6a. e6 {178.0} 7A. O-O {177.9} 7a. Bd6 {177.8} 8A. e4 {177.7} 5b. B@h5 {177.6} 8a. d4 {177.5} 6B. Be3 {177.4} 9A. Nb5 {177.3} 6b. d5 {177.2} 9a. h5 {177.1} 7B. e5 {177.0} 10A. Nxd6+ {176.9} 7b. Ne4 {176.8} 10a. cxd6 {176.7} 8B. N@f4 {176.6} 11A. Bg5 {176.5} 8b. Bxf3 {176.4} 11a. Ne5 {176.3} 9B. gxf3 {176.2} 9b. Nxc3 {176.1} 10B. bxc3 {176.0} 10b. Bxc3+ {175.9} 11B. Kf1 {175.8} 12A. Bxf6 {175.7} 12a. Qxf6 {175.6} 13A. N@c7+ {175.5} 13a. Kd7 {175.4} 14A. Nxa8 {175.3} 14a. Rxa8 {175.2} 15A. Bxh5 {175.1} 15a. N@f4 {175.0} 16A. N@g4 {174.9} 16a. Nxg4 {174.8} 17A. Bxg4 {174.7} 11b. Bxa1 {174.6} 17a. B@h3 {174.5} 12B. Qxa1 {174.4} 18A. Bxh3 {174.3} 18a. Nxh3+ {174.2} 19A. Kh1 {174.1} 19a. Nf4 {174.0} 20A. R@g3 {173.9} 20a. Rh8 {173.8} 12b. P@g2+ {173.7} 13B. Nxg2 {173.6} 13b. B@h3 {173.5} 14B. N@f4 {173.4} 14b. Bxg2+ {173.3} 15B. Nxg2 {173.2} 21A. N@g4 {173.1} 15b. B@h3 {173.0} 21a. Qe7 {172.9} 16B. N@f4 {172.8} 22A. e5 {172.7} 16b. Bxg2+ {172.6} 22a. B@d5 {172.5} 17B. Nxg2 {172.4} 23A. exd6 {172.3} 23a. Qxd6 {172.2} 24A. N@e5+ {172.1} 17b. P@h3 {172.0} 24a. Ke7 {171.9} 18B. Rg1 {171.8} 18b. hxg2+ {171.7} 19B. Rxg2 {171.6} 25A. P@e4 {171.5} 19b. R@h1+ {171.4} 25a. P@e2 {171.3} 20B. B@g1 {171.2} 26A. Qxe2 {171.1} 26a. Nxe2 {171.0} 27A. exd5 {170.9} 20b. P@h3 {170.8} 27a. B@f4 {170.7} 21B. Rxg7 {170.6} 28A. Rh3 {170.5} 21b. B@g2+ {170.4} 28a. P@h4 {170.3} 22B. Ke2 {170.2} 29A. N@g6+ {170.1} 22b. Bxf3+ {170.0} 29a. fxg6 {169.9} 23B. Kxf3 {169.8} 30A. Nxg6+ {169.7} 30a. Kd7 {169.6} 31A. dxe6+ {169.5} 31a. Qxe6 {169.4} 32A. Nxh8 {169.3} 23b. P@e4+ {169.2} 32a. Qxg4 {169.1} 24B. Ke2 {169.0} 24b. exd3+ {168.9} 25B. cxd3 {168.8} 33A. B@f3 {168.7} 25b. P@f3+ {168.6} 33a. Qe6 {168.5} 26B. Kxf3 {168.4} 34A. P@d5 {168.3} 34a. Qd6 {168.2} 26b. N@h4+ {168.1} 27B. Ke2 {168.0} 35A. Bg4+ {167.9} 35a. Kc7 {167.8} 36A. Bxe2 {167.7} 36a. B@f5 {167.6} 37A. Bf3 {167.5} 27b. R@c2+ {167.4} 37a. P@g4 {167.3} 28B. B@d2 {167.2} 38A. Bxg4 {167.1} 38a. Bxg4 {167.0} 39A. Rxh4 {166.9} 39a. B@f3 {166.8} 40A. Rg1 {166.7} 40a. P@h3 {166.6} 41A. Rxg4 {166.5} 41a. hxg2+ {166.4} 42A. R4xg2 {166.3} 28b. B@f3+ {166.2} 42a. P@h3 {166.1} 29B. Ke1 {166.0} 29b. N@g2+ {165.9} 30B. Kf1 {165.8} 30b. P@e2# {165.7} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "2"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[Result "0-1"]
-[PlyCount "86"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
+[Result "1/2-1/2"]
+[Termination "Game drawn"]
 
-1b1c3 1d7d5 2e2e4 1g1f3 2e7e5 1b8c6 1d2d4 1c8g4 1c1g5 1f7f6 2g1f3 1g5h4 2b8c6
-1e7e6 2f1c4 1e2e3 2f8e7 1f8b4 2b1c3 1f1e2 2g8f6 1g8e7 2d2d4 1e1g1 2e5d4 1e7f5
-2c4f7 1P@h3 2e8f7 1g4f3 2f3d4 1e2f3 2h8f8 1f5h4 1B@g3 1h4f3 2B@h6 1d1f3 2g7h6
-1b4c3 2c1h6 1b2c3 2c6d4 1P@e4 2N@e5 1f3g4 2f7g8 1d8e7 2B@c4 1N@b5 2B@e6 1P@f5
-2d1d4 1g4h5 2N@g4 1g7g6 1h5e2 1P@f3 1g2f3 1e4f3 1e2f3 1N@g5 1f3g2 2e5g4 2B@c5
-2c4e6 2d7e6 1B@f3 2d4d8 1b5c7 2f6g4 1e8f7 1N@h6 1f7g7 1c7e6 1e7e6 1h6f5 1e6f5
-1B@h6 1g7h6 1g3f4 1N@e2 1g1h1 1f3g2 1h1g2 1Q@f3 0-1
+1A. d4 {180.0} 1a. d5 {179.9} 2A. Nc3 {179.8} 2a. Nf6 {179.7} 1B. e4 {179.6} 3A. Bf4 {179.5} 1b. e5 {179.4} 3a. Nc6 {179.3} 4A. e3 {179.2} 4a. Bg4 {179.1} 2B. Nf3 {179.0} 5A. f3 {178.9} 2b. Nc6 {178.8} 5a. Bh5 {178.7} 3B. Bc4 {178.6} 6A. Bd3 {178.5} 3b. Be7 {178.4} 6a. e6 {178.3} 4B. d4 {178.2} 7A. Nge2 {178.1} 4b. exd4 {178.0} 7a. Bb4 {177.9} 5B. Nxd4 {177.8} 8A. O-O {177.7} 5b. Ne5 {177.6} 8a. Bxc3 {177.5} 6B. Nf5 {177.4} 9A. bxc3 {177.3} 6b. Bf6 {177.2} 9a. P@e4 {177.1} 10A. Ng3 {177.0} 10a. exd3 {176.9} 11A. cxd3 {176.8} 11a. Bg6 {176.7} 7B. N@h5 {176.6} 12A. Rb1 {176.5} 7b. B@f8 {176.4} 12a. Rb8 {176.3} 13A. P@g5 {176.2} 13a. Nd7 {176.1} 8B. B@g5 {176.0} 14A. e4 {175.9} 8b. d5 {175.8} 14a. dxe4 {175.7} 9B. Bxf6 {175.6} 15A. fxe4 {175.5} 9b. Nxf6 {175.4} 15a. e5 {175.3} 10B. Nhxg7+ {175.2} 16A. dxe5 {175.1} 10b. Bxg7 {175.0} 16a. Ndxe5 {174.9} 11B. Nxg7+ {174.8} 17A. N@d5 {174.7} 11b. Kf8 {174.6} 17a. B@c5+ {174.5} 12B. Bh6 {174.4} 18A. d4 {174.3} 12b. Kg8 {174.2} 18a. B@d3 {174.1} 19A. Bxe5 {174.0} 19a. Nxe5 {173.9} 13B. Nf5 {173.8} 20A. dxc5 {173.7} 13b. Bxf5 {173.6} 20a. Bxf1 {173.5} 14B. P@g7 {173.4} 21A. Qxf1 {173.3} 14b. B@b4+ {173.2} 15B. B@c3 {173.1} 15b. N@g6 {173.0} 16B. gxh8=Q+ {172.9} 16b. Kxh8 {172.8} 17B. P@g7+ {172.7} 17b. Kg8 {172.6} 21a. R@d2 {172.5} 18B. exf5 {172.4} 22A. N@f6+ {172.3} 18b. B@c5 {172.2} 22a. gxf6 {172.1} 23A. Nxf6+ {172.0} 23a. Qxf6 {171.9} 19B. fxg6 {171.8} 24A. gxf6 {171.7} 19b. Nxg6 {171.6} 24a. B@e3+ {171.5} 20B. R@h8+ {171.4} 25A. Kh1 {171.3} 20b. Nxh8 {171.2} 21B. gxh8=Q+ {171.1} 21b. Kxh8 {171.0} 25a. P@e2 {170.9} 26A. Nxe2 {170.8} 26a. N@f2+ {170.7} 27A. Kg1 {170.6} 27a. Rxe2 {170.5} 28A. B@a4+ {170.4} 28a. N@c6 {170.3} 29A. Qxe2 {170.2} 29a. Nh3+ {170.1} 30A. Kh1 {170.0} 30a. Nf2+ {169.9} 31A. Kg1 {169.8} {C:Game drawn 1/2-1/2}
+{Game drawn} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "3"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
 [Result "1/2-1/2"]
-[PlyCount "93"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[Termination "Game drawn"]
 
-1d2d4 1d7d5 2d2d4 1b1c3 2d7d5 1g8f6 2c1f4 1c1g5 2b8c6 1h7h6 2e2e3 1g5f6 2g8f6
-1e7f6 2b1d2 1e2e3 1b8c6 1f1d3 1f8b4 1g1e2 1c8g4 1e1g1 2N@e4 1b4c3 2g1f3 1b2c3
-2e4f2 1e8g8 2e1f2 1f2f3 1g4h5 1e2f4 2f6g4 1h5g6 2f2e2 1d3g6 1f7g6 1f4g6 1N@e7
-1g6f8 1d8f8 1a1b1 2R@f2 1e7f5 2e2e1 1d1d3 1c6e7 1b1b7 1f5h4 1b7c7 1f6f5 2f2f3
-2d1f3 1N@e5 2P@f2 1f8f6 2e1d1 1c7e7 2B@e4 1f6e7 2d2e4 2d5e4 2f3e4 1N@g6 2B@d5
-1h4g6 2e4d3 1e5g6 1e7f6 2P@c4 2d3d2 2N@e4 2d2e2 2N@c3 2b2c3 2e4c3 2d1d2 2c3e2
-2f1e2 1Q@h8 2c4c3 1g8f7 2d2c3 1h8a8 1f7g6 1a8d5 1P@e6 1d5e5 1f6f7 1e5g3 1g6f6
-1g3e5 1f6g6 1/2-1/2
+1A. e4 {180.0} 1a. e5 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 1b. e5 {179.6} 2a. Nc6 {179.5} 2B. d4 {179.4} 3A. Nf3 {179.3} 3a. Nf6 {179.2} 4A. Bc4 {179.1} 2b. exd4 {179.0} 4a. Be7 {178.9} 3B. Nf3 {178.8} 5A. d4 {178.7} 3b. d5 {178.6} 5a. O-O {178.5} 4B. Nxd4 {178.4} 6A. dxe5 {178.3} 4b. dxe4 {178.2} 6a. Ng4 {178.1} 5B. Nc3 {178.0} 7A. P@h6 {177.9} 5b. Nf6 {177.8} 7a. gxh6 {177.7} 6B. Bc4 {177.6} 8A. P@g7 {177.5} 6b. P@d5 {177.4} 8a. d6 {177.3} 7B. Bb5+ {177.2} 9A. gxf8=Q+ {177.1} 7b. c6 {177.0} 9a. Qxf8 {176.9} 8B. Bf4 {176.8} 10A. exd6 {176.7} 10a. Bxd6 {176.6} 11A. O-O {176.5} 8b. P@c7 {176.4} 11a. P@g7 {176.3} 9B. P@e5 {176.2} 12A. Nd5 {176.1} 9b. cxb5 {176.0} 12a. Be6 {175.9} 10B. exf6 {175.8} 10b. gxf6 {175.7} 11B. Ndxb5 {175.6} 13A. P@f5 {175.5} 13a. Bxd5 {175.4} 14A. Bxd5 {175.3} 14a. N@e5 {175.2} 11b. B@a5 {175.1} 12B. Nxc7+ {175.0} 12b. Bxc7 {174.9} 13B. Bxc7 {174.8} 15A. B@h5 {174.7} 15a. Nxf3+ {174.6} 16A. Qxf3 {174.5} 16a. Nce5 {174.4} 17A. Bxg4 {174.3} 17a. Nxf3+ {174.2} 18A. Bxf3 {174.1} 18a. c6 {174.0} 19A. Bxf7+ {173.9} 19a. Kh8 {173.8} 13b. Qxc7 {173.7} 14B. Nxd5 {173.6} 20A. B@e6 {173.5} 20a. Bxh2+ {173.4} 21A. Kh1 {173.3} 21a. P@e2 {173.2} 22A. Bxe2 {173.1} 22a. P@h3 {173.0} 23A. N@h4 {172.9} 14b. Qa5+ {172.8} 23a. hxg2+ {172.7} 15B. Q@c3 {172.6} 24A. Kxg2 {172.5} 24a. Qd6 {172.4} 25A. Bxh6 {172.3} 25a. gxh6 {172.2} 26A. Rad1 {172.1} 26a. Qe7 {172.0} 27A. Kxh2 {171.9} 27a. Qxh4+ {171.8} 28A. Kg2 {171.7} 28a. B@h3+ {171.6} 29A. Kf3 {171.5} 29a. Qg5 {171.4} 30A. Rg1 {171.3} 30a. P@g2 {171.2} 31A. B2c4 {171.1} 31a. Bg4+ {171.0} 32A. Kxg2 {170.9} 32a. Bxd1+ {170.8} 33A. Kf1 {170.7} 33a. Qf6 {170.6} 34A. Ke1 {170.5} 34a. Bf3 {170.4} 35A. Kd2 {170.3} 35a. Qd4+ {170.2} 36A. Bd3 {170.1} 36a. Qxf2+ {170.0} 37A. Kc3 {169.9} 37a. Qxg1 {169.8} 38A. f6 {169.7} 38a. Qg5 {169.6} 15b. Qxc3+ {169.5} 16B. bxc3 {169.4} 39A. Q@g7+ {169.3} 39a. Qxg7 {169.2} 40A. fxg7+ {169.1} 16b. N@f3+ {169.0} 40a. Kxg7 {168.9} 17B. gxf3 {168.8} 41A. Kd4 {168.7} 17b. N@g2+ {168.6} 41a. Q@b4+ {168.5} 18B. Kf1 {168.4} 42A. Ke3 {168.3} 18b. B@c4+ {168.2} 42a. Qe1+ {168.1} 19B. P@d3 {168.0} 43A. Kxf3 {167.9} 43a. N@e5+ {167.8} 44A. Kf4 {167.7} 44a. Nxf7 {167.6} 19b. Bxd5 {167.5} 20B. N@c7+ {167.4} 45A. N@f5+ {167.3} 45a. Kf6 {167.2} 46A. Bxf7 {167.1} 46a. Qf2+ {167.0} 47A. Kg4 {166.9} 47a. Kxf7 {166.8} 48A. Bc4+ {166.7} 48a. Kf6 {166.6} 49A. Kh5 {166.5} 49a. Qh2+ {166.4} 50A. Kg4 {166.3} 50a. Rg8+ {166.2} 51A. Kf3 {166.1} 51a. Qh3+ {166.0} 52A. Ke2 {165.9} 52a. Rg2+ {165.8} 53A. Ke1 {165.7} 53a. Qh1+ {165.6} 54A. Bf1 {165.5} 54a. Qg1 {165.4} 20b. Kd7 {165.3} 21B. Q@e8+ {165.2} 21b. Kxc7 {165.1} 22B. N@b5+ {165.0} 55A. e5+ {164.9} 22b. Kb6 {164.8} 55a. Kxf5 {164.7} 23B. B@c7+ {164.6} 56A. N@h4+ {164.5} 56a. Kxe5 {164.4} 57A. Nf3+ {164.3} 57a. Kd6 {164.2} 58A. Nxg1 {164.1} 58a. Rxg1 {164.0} 59A. Kf2 {163.9} 59a. Rg5 {163.8} 60A. Bh3 {163.7} 60a. Ke7 {163.6} 61A. Kf3 {163.5} 61a. Re5 {163.4} 62A. Kf4 {163.3} 62a. Kf6 {163.2} 63A. Kf3 {163.1} 63a. Rh5 {163.0} 64A. Bg4 {162.9} 64a. Re5 {162.8} 65A. Kf4 {162.7} 65a. h5 {162.6} 66A. Bf3 {162.5} 66a. h4 {162.4} 67A. Kg4 {162.3} 67a. Rg5+ {162.2} 68A. Kxh4 {162.1} 68a. Rf5 {162.0} 69A. Bg4 {161.9} 69a. Re5 {161.8} 70A. Kg3 {161.7} 70a. h5 {161.6} 71A. Bf3 {161.5} 71a. Rg5+ {161.4} 72A. Kf2 {161.3} 72a. h4 {161.2} 73A. Ke3 {161.1} 73a. h3 {161.0} 74A. Ke4 {160.9} 74a. h2 {160.8} 75A. Kf4 {160.7} 75a. Rf5+ {160.6} 76A. Kg3 {160.5} 76a. Rxf3+ {160.4} 77A. Kxh2 {160.3} 77a. Rf2+ {160.2} 78A. Kg3 {160.1} 78a. Rxc2 {160.0} 79A. Kf4 {159.9} 79a. Rxb2 {159.8} 80A. Ke4 {159.7} 80a. Rxa2 {159.6} 81A. Kf4 {159.5} 81a. Rh2 {159.4} 82A. Kg3 {159.3} 82a. Rh1 {159.2} 83A. Kg2 {159.1} 83a. Rh8 {159.0} 84A. Kf2 {158.9} 84a. Rh2+ {158.8} 85A. Kg3 {158.7} {C:Game drawn 1/2-1/2}
+{Game drawn} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "4"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
 [Result "0-1"]
-[PlyCount "110"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[Termination "Alice won by checkmate"]
 
-1e2e4 1g8f6 2e2e4 1b1c3 2e7e6 1d7d5 2b1c3 1e4d5 2d7d5 1e7e6 2e4d5 1f1b5 2e6d5
-2g1f3 2g8f6 2f1b5 2b8c6 2d1e2 2P@e4 1c7c6 2f3e5 1d5c6 2c8d7 1b8c6 2b5c6 1d2d4
-2b7c6 1f8b4 2d2d4 1g1f3 2P@h3 1N@e4 1B@h4 1b4c3 1b2c3 1e4c3 2e5f7 1h4f6 2h3g2
-1g7f6 2h1g1 1d1d3 2d8e7 1c3b5 2f7h8 1d3b5 2N@f3 2e2f3 2e4f3 1N@c3 2P@e5 1b5d3
-2B@h5 1P@e2 2P@f7 1d3e2 2h5f7 1c3e2 2h8f7 1P@g7 2P@g3 1h8g8 2N@d6 1Q@f8 2c7d6
-1g8f8 2f7d6 1g7f8q 2e7d6 1e8f8 1P@g7 1f8e7 2P@f7 1P@d6 2e8f7 1d8d6 1N@g8 1e7d8
-1g8f6 1R@d1 1e1e2 1c6d4 1f3d4 1d1d4 1g7g8q 1B@f8 2N@g5 1P@c7 2f7e8 1d8c7 2Q@f7
-1f6e8 2e8d8 1c7b8 1e8d6 1d4d6 1g8f8 2N@b7 2d8c7 2e5d6 2f8d6 1Q@c4 1e2f3 2b7d6
-2g3f2 1B@e2 2e1f2 1f3g3 2N@g4 1c4g4 0-1
+1A. e4 {180.0} 1a. e5 {179.9} 1B. e4 {179.8} 2A. Nf3 {179.7} 1b. e6 {179.6} 2a. Nc6 {179.5} 3A. d4 {179.4} 3a. exd4 {179.3} 4A. Bc4 {179.2} 2B. Nc3 {179.1} 2b. d5 {179.0} 3B. exd5 {178.9} 3b. exd5 {178.8} 4B. Bb5+ {178.7} 4b. Nc6 {178.6} 4a. P@e6 {178.5} 5B. Qe2+ {178.4} 5A. P@d5 {178.3} 5b. Be7 {178.2} 5a. Nf6 {178.1} 6B. d4 {178.0} 6A. dxc6 {177.9} 6b. Nf6 {177.8} 6a. dxc6 {177.7} 7B. Nf3 {177.6} 7A. Bg5 {177.5} 7b. Bg4 {177.4} 7a. Be7 {177.3} 8B. P@h6 {177.2} 8A. O-O {177.1} 8b. Rg8 {177.0} 8a. Nxe4 {176.9} 9B. hxg7 {176.8} 9A. Bxe7 {176.7} 9b. N@h4 {176.6} 9a. Qxe7 {176.5} 10A. Qxd4 {176.4} 10a. P@d5 {176.3} 10B. Nxh4 {176.2} 11A. Qxg7 {176.1} 10b. Bxe2 {176.0} 11a. Rf8 {175.9} 11B. Nxe2 {175.8} 12A. Nc3 {175.7} 11b. B@h5 {175.6} 12a. B@f6 {175.5} 13A. Qxh7 {175.4} 13a. Nxc3 {175.3} 14A. bxc3 {175.2} 14a. dxc4 {175.1} 15A. Rfe1 {175.0} 15a. Bxc3 {174.9} 16A. Rad1 {174.8} 16a. Bxe1 {174.7} 17A. Rxe1 {174.6} 17a. N@f6 {174.5} 12B. R@h8 {174.4} 18A. Qh4 {174.3} 12b. B@a5+ {174.2} 13B. P@c3 {174.1} 13b. Bxc3+ {174.0} 14B. Nxc3 {173.9} 14b. N@b4 {173.8} 15B. Rxg8+ {173.7} 15b. Nxg8 {173.6} 18a. R@g4 {173.5} 16B. B@a4 {173.4} 19A. P@g7 {173.3} 16b. Bxh4 {173.2} 19a. Rxh4 {173.1} 17B. Bxc6+ {173.0} 20A. gxf8=Q+ {172.9} 17b. bxc6 {172.8} 20a. Qxf8 {172.7} 18B. Q@f8+ {172.6} 21A. Nxh4 {172.5} 18b. Kd7 {172.4} 19B. N@c5+ {172.3} 19b. Kc8 {172.2} 20B. P@b7+ {172.1} 20b. Kb8 {172.0} 21B. bxa8=Q+ {171.9} 21b. Kxa8 {171.8} 22B. P@b7+ {171.7} 22b. Kb8 {171.6} 23B. Qxd8+ {171.5} 23b. Bxd8 {171.4} 21a. Q@d2 {171.3} 22A. Rf1 {171.2} 22a. R@e1 {171.1} 23A. N@g3 {171.0} 23a. Rxf1+ {170.9} 24A. Nxf1 {170.8} 24B. R@c8# {170.7} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "5"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
 [Result "1-0"]
-[PlyCount "86"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[Termination "Alice won by checkmate"]
 
-1d2d4 1d7d5 2e2e4 1g1f3 2e7e5 1b8c6 2g1f3 1c1f4 2b8c6 1g8f6 2f1c4 1e2e3 2f8c5
-1c8g4 2d2d3 1b1d2 2g8f6 1e7e6 2b1c3 1f1e2 2e8g8 1f8b4 2e1g1 1e1g1 2d7d6 1h7h5
-2c1g5 1h2h3 2c8g4 1b4d2 2c3d5 1f3d2 2f6d5 1g4f5 2g5d8 1N@g5 2d5f4 1d8e7 2N@f6
-2g7f6 2d8f6 2B@g7 2f6g7 2g8g7 2h2h3 2g4h3 2g2h3 1P@e5 2f8g8 1f6e4 2f3g5 1d2e4
-1d5e4 1B@d6 2g7f8 1c7d6 2d1g4 1e5d6 1e7d7 1N@c7 1e8f8 1c7a8 1B@f6 2g8g5 2N@d7
-1N@c5 2f8e8 1Q@e8 2d7f6 2e8d8 2g4g5 1c5d7 1e8d7 2f4h3 2g1h1 2h3g5 2f1g1 1P@e7
-2R@h3 1c6e7 2B@h2 1d6e7 1f6e7 2h3h2 2h1h2 2Q@h3 1-0
+1A. e4 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. exd5 {179.7} 1b. d5 {179.6} 2a. e6 {179.5} 2B. exd5 {179.4} 3A. Bb5+ {179.3} 2b. e6 {179.2} 3a. Bd7 {179.1} 3B. Bb5+ {179.0} 4A. Qe2 {178.9} 3b. Bd7 {178.8} 4a. Qe7 {178.7} 4B. Qe2 {178.6} 5A. Nc3 {178.5} 4b. Qe7 {178.4} 5a. Nf6 {178.3} 5B. Nc3 {178.2} 6A. dxe6 {178.1} 5b. exd5 {178.0} 6a. Qxe6 {177.9} 6B. Nxd5 {177.8} 6b. Qxe2+ {177.7} 7B. Nxe2 {177.6} 7b. Bd6 {177.5} 8B. P@c5 {177.4} 7A. Q@c8+ {177.3} 8b. Bxb5 {177.2} 7a. Q@d8 {177.1} 9B. cxd6 {177.0} 8A. Qxe6+ {176.9} 9b. Na6 {176.8} 8a. fxe6 {176.7} 10B. d3 {176.6} 10b. cxd6 {176.5} 11B. Bg5 {176.4} 9A. P@f7+ {176.3} 11b. Q@e6 {176.2} 9a. Ke7 {176.1} 12B. Q@e4 {176.0} 12b. Qxe4 {175.9} 13B. dxe4 {175.8} 13b. P@f6 {175.7} 14B. Nd4 {175.6} 14b. Bd7 {175.5} 15B. Bf4 {175.4} 15b. P@e5 {175.3} 16B. Bg3 {175.2} 16b. exd4 {175.1} 17B. Bxd6 {175.0} 17b. Ne7 {174.9} 18B. Bxe7 {174.8} 18b. Bc6 {174.7} 19B. Bxf6 {174.6} 19b. Bxd5 {174.5} 20B. exd5 {174.4} 20b. gxf6 {174.3} 21B. O-O {174.2} 21b. O-O-O {174.1} 22B. Rfe1 {174.0} 22b. Rhe8 {173.9} 23B. Rxe8 {173.8} 23b. Rxe8 {173.7} 24B. d6 {173.6} 10A. N@g8+ {173.5} 10a. Rxg8 {173.4} 11A. fxg8=N+ {173.3} 11a. Nxg8 {173.2} 12A. N@d5+ {173.1} 24b. R@e1+ {173.0} 12a. exd5 {172.9} 25B. N@f1 {172.8} 13A. Nxd5+ {172.7} 25b. Rxa1 {172.6} 13a. Kd6 {172.5} 26B. d7+ {172.4} 26b. Kxd7 {172.3} 27B. h3 {172.2} 27b. Rxf1+ {172.1} 28B. Kxf1 {172.0} 14A. N@f7+ {171.9} 14a. Kxd5 {171.8} 15A. Q@c4# {171.7} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "6"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
 [Result "0-1"]
-[PlyCount "54"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[Termination "Alice won by checkmate"]
 
-1e2e4 1e7e5 2e2e4 1b1c3 2g8f6 1b8c6 1f1c4 1f8c5 2b1c3 1g1f3 2d7d5 1g8f6 1d2d4
-1c5d4 1c4f7 1e8f7 1e1g1 1h8f8 1c3d5 1d7d6 2e4d5 1c2c3 2f6d5 2c3d5 2d8d5 1P@h3
-2g1f3 1P@h6 2c8g4 1h3g2 2B@b3 1f3g5 2d5e4 1f7g8 2d1e2 1h6g7 2e4g6 1N@h3 1g5h3
-1c8h3 1N@h6 1g8g7 1h6f5 1g7f7 2N@e5 1f5h6 2g4f3 1f7e8 1N@g7 1e8d7 1f1e1 2e5g6
-2f3e2 1Q@h1 0-1
+1A. e4 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 1b. e5 {179.6} 2a. e6 {179.5} 2B. Nc3 {179.4} 3A. exd5 {179.3} 2b. Nc6 {179.2} 3a. exd5 {179.1} 3B. Nf3 {179.0} 4A. Nf3 {178.9} 3b. Be7 {178.8} 4a. Nc6 {178.7} 5A. Bb5 {178.6} 5a. Nf6 {178.5} 4B. Bc4 {178.4} 6A. O-O {178.3} 4b. P@g4 {178.2} 6a. Be7 {178.1} 7A. Re1 {178.0} 7a. O-O {177.9} 8A. d4 {177.8} 8a. Bg4 {177.7} 9A. Bxc6 {177.6} 9a. bxc6 {177.5} 10A. h3 {177.4} 10a. Bh5 {177.3} 11A. Bf4 {177.2} 11a. Re8 {177.1} 5B. Bxf7+ {177.0} 12A. Be5 {176.9} 5b. Kxf7 {176.8} 12a. P@e4 {176.7} 6B. B@h5+ {176.6} 13A. B@e2 {176.5} 6b. g6 {176.4} 13a. exf3 {176.3} 7B. Bxg4 {176.2} 14A. Bxf3 {176.1} 7b. N@f4 {176.0} 14a. Bg6 {175.9} 8B. d4 {175.8} 15A. Qd2 {175.7} 8b. Nxg2+ {175.6} 15a. P@e4 {175.5} 9B. Kf1 {175.4} 16A. Be2 {175.3} 9b. Nh4 {175.2} 16a. Bd6 {175.1} 17A. Qf4 {175.0} 10B. Nxh4 {174.9} 10b. Bxh4 {174.8} 17a. Bxe5 {174.7} 11B. dxe5 {174.6} 18A. dxe5 {174.5} 11b. Nxe5 {174.4} 18a. N@h5 {174.3} 19A. Bxh5 {174.2} 19a. Nxh5 {174.1} 20A. Qh2 {174.0} 20a. P@f4 {173.9} 21A. P@f6 {173.8} 21a. gxf6 {173.7} 22A. N@h6+ {173.6} 22a. Kh8 {173.5} 12B. B@g3 {173.4} 23A. P@f5 {173.3} 12b. Nxg4 {173.2} 13B. Qxg4 {173.1} 13b. Bf6 {173.0} 14B. B@b3+ {172.9} 14b. N@e6 {172.8} 15B. P@f5 {172.7} 15b. B@h5 {172.6} 16B. fxe6+ {172.5} 16b. dxe6 {172.4} 17B. Qxh5 {172.3} 17b. gxh5 {172.2} 23a. B@g3 {172.1} 18B. P@f5 {172.0} 24A. fxg6 {171.9} 18b. P@g2+ {171.8} 19B. Kxg2 {171.7} 19b. B@g4 {171.6} 20B. h3 {171.5} 20b. Bxf5 {171.4} 24a. Bxh2+ {171.3} 21B. exf5 {171.2} 25A. Kxh2 {171.1} 21b. Kf8 {171.0} 22B. fxe6 {170.9} 22b. B@c6+ {170.8} 25a. P@g3+ {170.7} 26A. Kg1 {170.6} 23B. f3 {170.5} 23b. Bxf3+ {170.4} 24B. Kxf3 {170.3} 24b. Qe7 {170.2} 26a. gxf2+ {170.1} 25B. Q@f7+ {170.0} 27A. Kh1 {169.9} 25b. Qxf7 {169.8} 26B. exf7 {169.7} 26b. Bg4+ {169.6} 27B. hxg4 {169.5} 27b. hxg4+ {169.4} 27a. Ng3+ {169.3} 28B. Kxg4 {169.2} 28A. Kh2 {169.1} 28b. h5+ {169.0} 29B. Kf3 {168.9} 29b. Ne7 {168.8} 28a. N@f1+ {168.7} 29A. Rxf1 {168.6} 29a. Nxf1+ {168.5} 30A. Rxf1 {168.4} 30a. B@g3+ {168.3} 31A. Kh1 {168.2} 31a. Q@h2# {168.1} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "7"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[Result "0-1"]
-[PlyCount "169"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
+[Result "1-0"]
+[Termination "Alice won by checkmate"]
 
-1e2e4 1e7e6 2e2e4 1b1c3 1d7d5 1e4d5 1e6d5 1d2d4 1g8f6 1g1f3 1b8c6 1f1b5 2e7e6
-1f8e7 2b1c3 1f3e5 2d7d5 1e8g8 2g1f3 1b5c6 1b7c6 1e1g1 1c6c5 1f1e1 1c5d4 1d1d4
-2b8c6 1c7c5 2e4d5 1d4h4 2e6d5 1f6e4 2d2d4 2f8b4 2f1b5 2d8e7 2P@e5 2N@e4 2P@d6
-1P@g5 2c7d6 1e4g5 2B@h4 1P@h6 2P@f6 1g7h6 2c1d2 1h4h6 2b4c3 1P@g7 2b2c3 1h6g7
-2P@h3 1g8g7 2h1g1 1N@h5 2h3g2 1g7g8 2P@h6 2g8h6 2d2h6 2e4c3 2d1d3 2c3b5 2d3b5
-1P@g7 2d6e5 1N@h3 2d4e5 1g1f1 1B@h6 1g7f8q 1d8f8 1B@f6 1P@g7 1f6e7 1f8e7 1P@f6
-1g7f6 1c3d5 2B@c3 1c8a6 2P@d2 1P@d3 2c3a1 1e7e6 2P@d6 1d5f6 1g8h8 1c1g5 1h3g5
-2N@d4 2f3d4 2e7e5 2Q@e3 2R@f1 2g1f1 2g2f1q 2b5f1 2a1d4 2e3e5 2d4e5 2f1e2 1e5f7
-1e6f7 1R@e8 1N@g8 1e8a8 1R@h1 1R@g1 2R@g1 1N@d2 2B@f1 1f1e2 1P@f3 1g2f3 1d2f3
-2g1f1 2e2f1 1P@g7 1f7g7 2e5d6 2f1e2 2P@e4 2N@b5 1B@e3 1f3g1 1e1g1 1Q@f3 1e2d2
-1g5e4 1d3e4 1f3e2 2N@g2 2e1f1 1d2c1 1R@d1 2c8h3 2b5d6 2e8d7 2B@g4 2h3g4 2e2g4
-2d7d6 2g4g2 2d6c5 2f2f3 2e4f3 2g2f3 2c5b6 2f3e3 2d5d4 2e3b3 2b6c7 2h6f4 2c7d7
-2b3d5 2d7e8 2P@d7 2e8f8 2f4d6 2P@e7 2P@c7 2e7d6 2c7c8q 2f8e7 2R@e8 1g1d1 1h1d1 0-1
+1A. e4 {180.0} 1a. e5 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 2a. Nc6 {179.6} 3A. Nf3 {179.5} 1b. d5 {179.4} 3a. Nf6 {179.3} 2B. exd5 {179.2} 4A. Bc4 {179.1} 2b. e6 {179.0} 4a. Bc5 {178.9} 3B. Bb5+ {178.8} 5A. d3 {178.7} 3b. c6 {178.6} 5a. O-O {178.5} 4B. dxc6 {178.4} 6A. O-O {178.3} 4b. bxc6 {178.2} 6a. d5 {178.1} 5B. Be2 {178.0} 7A. P@h6 {177.9} 5b. Nf6 {177.8} 7a. P@h3 {177.7} 6B. Nf3 {177.6} 8A. hxg7 {177.5} 6b. e5 {177.4} 8a. hxg2 {177.3} 7B. Nxe5 {177.2} 7b. Bc5 {177.1} 8B. P@e3 {177.0} 8b. P@h3 {176.9} 9B. Bf3 {176.8} 9A. Nxd5 {176.7} 9b. hxg2 {176.6} 9a. Ng4 {176.5} 10B. Bxg2 {176.4} 10A. Kxg2 {176.3} 10b. P@h3 {176.2} 10a. P@h3+ {176.1} 11B. Bf3 {176.0} 11A. Kg1 {175.9} 11b. P@g4 {175.8} 11a. P@g2 {175.7} 12B. d4 {175.6} 12b. gxf3 {175.5} 13B. Qxf3 {175.4} 12A. B@h6 {175.3} 13b. Bb4+ {175.2} 12a. Re8 {175.1} 14B. Bd2 {175.0} 14b. Bxd2+ {174.9} 15B. Nxd2 {174.8} 13A. B@h5 {174.7} 13a. gxf1=Q+ {174.6} 14A. Qxf1 {174.5} 14a. P@g2 {174.4} 15A. Qe1 {174.3} 15a. B@h4 {174.2} 16A. Bxf7+ {174.1} 16a. Kxf7 {174.0} 15b. P@g4 {173.9} 16B. Qe2 {173.8} 16b. O-O {173.7} 17B. Rg1 {173.6} 17b. Ba6 {173.5} 18B. B@d3 {173.4} 18b. Bxd3 {173.3} 19B. Nxd3 {173.2} 19b. Nbd7 {173.1} 20B. R@g3 {173.0} 20b. Re8 {172.9} 21B. Rxg4 {172.8} 21b. Nxg4 {172.7} 22B. Qxg4 {172.6} 22b. P@g6 {172.5} 23B. Qxh3 {172.4} 17A. B@h5+ {172.3} 23b. Nf6 {172.2} 17a. P@g6 {172.1} 24B. Nf3 {172.0} 24b. Qa5+ {171.9} 25B. Kf1 {171.8} 25b. Qh5 {171.7} 26B. Qg3 {171.6} 26b. Ne4 {171.5} 27B. Qg2 {171.4} 18A. R@f8+ {171.3} 18a. Rxf8 {171.2} 19A. gxf8=Q+ {171.1} 19a. Qxf8 {171.0} 20A. Nxh4 {170.9} 20a. P@g3 {170.8} 27b. B@h3 {170.7} 28B. P@g4 {170.6} 28b. Bxg2+ {170.5} 29B. Rxg2 {170.4} 29b. Qh3 {170.3} 30B. R@g3 {170.2} 21A. Q@f3+ {170.1} 30b. Nxg3+ {170.0} 21a. B@f4 {169.9} 31B. fxg3 {169.8} 31b. Qxg4 {169.7} 32B. Nde5 {169.6} 22A. Nxf4+ {169.5} 22a. B@e6 {169.4} 23A. Nxe6+ {169.3} 23a. P@f4 {169.2} 24A. Ng5+ {169.1} 32b. Rxe5 {169.0} 24a. Ke8 {168.9} 33B. Nxe5 {168.8} 25A. P@f7+ {168.7} 25a. Kd8 {168.6} 26A. R@e8+ {168.5} 26a. Qxe8 {168.4} 27A. fxe8=Q+ {168.3} 27a. Kxe8 {168.2} 28A. P@f7+ {168.1} 28a. Kd8 {168.0} 33b. R@d1+ {167.9} 34B. Rxd1 {167.8} 34b. Qxd1+ {167.7} 35B. R@e1 {167.6} 29A. R@e8+ {167.5} 29a. Kd7 {167.4} 30A. Be6+ {167.3} 30a. Kd6 {167.2} 31A. N@c4# {167.1} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "8"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
 [Result "0-1"]
-[PlyCount "126"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[Termination "Alice won by checkmate"]
 
-1e2e4 1e7e6 2e2e4 1b1c3 2e7e6 1d7d5 2b1c3 1e4d5 2d7d6 1e6d5 2d2d4 1d2d4 2f8e7
-1b8c6 1g1f3 1f8b4 2g1f3 1f1b5 2b8c6 1d8e7 2d4d5 1d1e2 2e6d5 1e7e2 2e4d5 1b5e2
-2c6e5 1g8f6 1c1g5 1P@a3 2f3e5 1P@d2 2d6e5 1a3b2 2f1b5 1a1d1 2e8f8 1b4c3 1d2c3
-1N@e4 2P@h6 1g5f6 2B@f6 1e4f6 2N@h5 1N@e5 2Q@g6 2h6g7 2f6g7 2h5g7 2g6g7 1c6e5
-1d4e5 1f6e4 2N@h5 1N@h5 2N@h4 2h5g7 2h4g2 1Q@g6 2e1f1 1h5f4 2g2f4 2h1g1 2c8h3
-1g6f5 2P@g2 1f4d5 2f4g2 1P@d2 2B@h6 1e1f1 2g8h6 2c1h6 2g2e3 2f1e2 2P@f3 2e2d2
-2N@f1 2b5f1 2e3f1 2g1f1 2e7g5 2h6g5 2d8g5 2Q@e3 2g5g7 2f1g1 2h3g4 2g1g4 2g7g4
-2d1f3 2g4b4 1N@e3 2e3e5 1d5e3 2P@e3 2f2e3 2N@c4 2d2e2 2c4e5 1f5f3 1e2f3 1B@b5
-2N@e6 1B@d3 2f8e8 1b5d3 1c2d3 2e6c7 2e8d8 1P@e2 2c7a8 1f3e2 2Q@d2 2e2d2 2e5f3
-1R@e1 2d2e2 1d1e1 2B@c4 1d2e1q 1f1e1 1P@d2 1e1f1 1Q@e1 0-1
+1A. d4 {180.0} 1a. d5 {179.9} 2A. Nc3 {179.8} 2a. Nf6 {179.7} 1B. e4 {179.6} 3A. Bg5 {179.5} 1b. e5 {179.4} 3a. Nc6 {179.3} 2B. Nc3 {179.2} 4A. e3 {179.1} 2b. Nc6 {179.0} 4a. h6 {178.9} 3B. Nf3 {178.8} 5A. Bxf6 {178.7} 3b. Bc5 {178.6} 5a. exf6 {178.5} 4B. Bc4 {178.4} 6A. Bd3 {178.3} 4b. N@f4 {178.2} 6a. Bb4 {178.1} 5B. O-O {178.0} 7A. Ne2 {177.9} 5b. Nf6 {177.8} 7a. Bg4 {177.7} 6B. d4 {177.6} 8A. h3 {177.5} 6b. Nxd4 {177.4} 8a. Bxe2 {177.3} 7B. Bxf7+ {177.2} 9A. Qxe2 {177.1} 7b. Kf8 {177.0} 9a. P@e4 {176.9} 8B. Bxf4 {176.8} 10A. P@g6 {176.7} 8b. exf4 {176.6} 10a. fxg6 {176.5} 9B. Nxd4 {176.4} 11A. B@e6 {176.3} 9b. Bxd4 {176.2} 11a. Qe7 {176.1} 10B. Qxd4 {176.0} 12A. Bxd5 {175.9} 10b. B@d6 {175.8} 12a. exd3 {175.7} 13A. cxd3 {175.6} 13a. N@f4 {175.5} 14A. exf4 {175.4} 14a. Qxe2+ {175.3} 15A. Kxe2 {175.2} 15a. Nxd4+ {175.1} 16A. Kf1 {175.0} 16a. Bxc3 {174.9} 11B. N@g5 {174.8} 17A. bxc3 {174.7} 11b. f3 {174.6} 17a. B@e2+ {174.5} 18A. Kg1 {174.4} 18a. N@f3+ {174.3} 19A. gxf3 {174.2} 19a. Nxf3+ {174.1} 20A. Bxf3 {174.0} 20a. Bxf3 {173.9} 21A. N@d4 {173.8} 21a. Bxh1 {173.7} 22A. Kxh1 {173.6} 22a. O-O-O {173.5} 23A. Rb1 {173.4} 23a. Rhe8 {173.3} 24A. Kh2 {173.2} 24a. Rxd4 {173.1} 25A. cxd4 {173.0} 25a. g5 {172.9} 26A. f5 {172.8} 26a. b6 {172.7} 27A. Rc1 {172.6} 27a. Kb7 {172.5} 28A. d5 {172.4} 28a. Re2 {172.3} 29A. Kg2 {172.2} 29a. Rd2 {172.1} 30A. d6 {172.0} 30a. cxd6 {171.9} 31A. Kf3 {171.8} 31a. Rxd3+ {171.7} 32A. Ke2 {171.6} 32a. Rd5 {171.5} 33A. Rc4 {171.4} 33a. Rc5 {171.3} 34A. Rd4 {171.2} 34a. Re5+ {171.1} 35A. Kd3 {171.0} 35a. d5 {170.9} 36A. f4 {170.8} 36a. gxf4 {170.7} 37A. Rxf4 {170.6} 37a. Re4 {170.5} 38A. Rxe4 {170.4} 38a. dxe4+ {170.3} 39A. Kxe4 {170.2} 39a. Kc6 {170.1} 40A. Kd4 {170.0} 40a. Kd6 {169.9} 41A. Ke4 {169.8} 41a. Kc5 {169.7} 42A. Kd3 {169.6} 42a. b5 {169.5} 43A. Ke4 {169.4} 43a. b4 {169.3} 44A. Kf4 {169.2} 44a. a5 {169.1} 45A. h4 {169.0} 45a. a4 {168.9} 46A. h5 {168.8} 46a. b3 {168.7} 47A. axb3 {168.6} 47a. axb3 {168.5} 48A. Ke4 {168.4} 48a. b2 {168.3} 49A. Kf4 {168.2} 49a. b1=Q {168.1} 50A. Kf3 {168.0} 50a. Qxf5+ {167.9} 51A. Ke3 {167.8} 51a. Qg5+ {167.7} 52A. Kd3 {167.6} 52a. f5 {167.5} 53A. Kc3 {167.4} 53a. f4 {167.3} 54A. Kd3 {167.2} 54a. f3 {167.1} 55A. Ke4 {167.0} 55a. f2 {166.9} 56A. Kf3 {166.8} 56a. f1=Q+ {166.7} 57A. Ke4 {166.6} 57a. Qff5# {166.5} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "9"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
 [Result "1-0"]
-[PlyCount "110"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[Termination "Alice won by checkmate"]
 
-1e2e4 1d7d5 2d2d4 1e4d5 2e7e6 1e7e6 2g1f3 1b1c3 2b8c6 1e6d5 2c1f4 1d2d4 2g8f6
-1g8f6 2e2e3 1g1f3 2f6d5 1b8c6 2b1d2 1f1b5 2d5f4 1f8b4 2e3f4 1e1g1 1e8g8 1b5c6
-1b7c6 1f3e5 2N@d5 1b4c3 2B@g5 1b2c3 2P@e3 1f6e4 2f2e3 2d5e3 2g5d8 1B@f3 2e3d1
-1P@h3 2a1d1 1P@h6 1h3g2 1f3g2 2c6d8 1N@h3 2P@f2 1g2h3 1c8h3 1B@f3 1d8f6 2N@b4
-2f1d3 2b4d3 2c2d3 1B@g2 2P@c2 1N@g5 2d1c1 1c1g5 1e4g5 1Q@g3 2N@b4 1f6h6 2B@e2
-1g2h3 1g5h3 1g1h1 1N@f5 1g3g2 2B@d1 1h3f4 2e1g1 2d1e2 2f1e1 1B@g5 2b4d3 1f4g2
-2e1e2 1g5h6 2d3c1 1g7h6 2e2e1 1f3g2 2Q@d1 1B@g7 2B@c4 1R@g4 1g8h8 1g4g7 1f5g7
-1P@f6 1Q@g5 1f6g7 1g5g7 1d1g4 2N@e2 1g7g4 2c4e2 1e5g4 2c1e2 1f8g8 2g1h1 1B@f6
-1N@g7 1g4h6 1a8f8 2d1e1 2f3e1 2Q@g1 1-0
+1A. e4 {180.0} 1a. e5 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 2a. Nc6 {179.6} 3A. Bc4 {179.5} 1b. e6 {179.4} 3a. Be7 {179.3} 2B. d4 {179.2} 4A. d3 {179.1} 2b. d5 {179.0} 4a. Nf6 {178.9} 3B. e5 {178.8} 5A. Nf3 {178.7} 3b. Nc6 {178.6} 5a. O-O {178.5} 4B. Nf3 {178.4} 6A. O-O {178.3} 4b. Nge7 {178.2} 6a. d6 {178.1} 5B. Bg5 {178.0} 7A. h3 {177.9} 5b. h6 {177.8} 7a. Nd4 {177.7} 6B. Bh4 {177.6} 6b. Qd7 {177.5} 7B. Bd3 {177.4} 7b. Nf5 {177.3} 8B. Bxf5 {177.2} 8A. Nxd4 {177.1} 8b. exf5 {177.0} 8a. exd4 {176.9} 9B. Nc3 {176.8} 9A. Nd5 {176.7} 9b. N@f4 {176.6} 9a. Nxd5 {176.5} 10B. Rg1 {176.4} 10A. Bxd5 {176.3} 10a. c6 {176.2} 11A. Bb3 {176.1} 11a. N@h4 {176.0} 12A. B@g3 {175.9} 10b. N@g6 {175.8} 12a. Nxg2 {175.7} 11B. Bg3 {175.6} 13A. Kxg2 {175.5} 13a. d5 {175.4} 14A. exd5 {175.3} 11b. N@e4 {175.2} 14a. cxd5 {175.1} 12B. P@e3 {175.0} 15A. Bcf4 {174.9} 12b. Nxg2+ {174.8} 15a. Bg5 {174.7} 13B. Rxg2 {174.6} 13b. P@g4 {174.5} 14B. P@e2 {174.4} 16A. Bxd5 {174.3} 14b. gxf3 {174.2} 16a. N@g6 {174.1} 15B. exf3 {174.0} 15b. P@d2+ {173.9} 16B. Kf1 {173.8} 17A. Bxg5 {173.7} 17a. Qxg5 {173.6} 18A. N@f3 {173.5} 16b. B@h3 {173.4} 18a. Qxd5 {173.3} 17B. B@h1 {173.2} 19A. P@e4 {173.1} 19a. Qh5 {173.0} 20A. Rh1 {172.9} 20a. f5 {172.8} 21A. exf5 {172.7} 21a. Bxf5 {172.6} 17b. Bxg2+ {172.5} 18B. Bxg2 {172.4} 22A. R@g5 {172.3} 22a. Qxg5 {172.2} 23A. Nxg5 {172.1} 18b. Nxg3+ {172.0} 23a. B@d5+ {171.9} 19B. fxg3 {171.8} 24A. B@f3 {171.7} 19b. P@h3 {171.6} 24a. N@h4+ {171.5} 20B. Bxh3 {171.4} 25A. Bxh4 {171.3} 20b. Q@h1+ {171.2} 25a. Nxh4+ {171.1} 21B. N@g1 {171.0} 26A. Kh2 {170.9} 26a. Nxf3+ {170.8} 27A. Nxf3 {170.7} 27a. Bxh3 {170.6} 28A. Kxh3 {170.5} 28a. Bxf3 {170.4} 29A. Qxf3 {170.3} 29a. Rxf3+ {170.2} 30A. Kg2 {170.1} 30a. Raf8 {170.0} 31A. Raf1 {169.9} 31a. P@g4 {169.8} 32A. Rh4 {169.7} 32a. R8f4 {169.6} 33A. Rxh7 {169.5} 33a. Kxh7 {169.4} 34A. Rh1+ {169.3} 34a. P@h3+ {169.2} 35A. Kf1 {169.1} 35a. Rxf2+ {169.0} 36A. Ke1 {168.9} 36a. Rxc2 {168.8} 21b. B@c4+ {168.7} 22B. P@d3 {168.6} 37A. Kd1 {168.5} 37a. Rff2 {168.4} 22b. f4 {168.3} 23B. Q@g2 {168.2} 23b. Qxg2+ {168.1} 24B. Bxg2 {168.0} 24b. fxe3 {167.9} 25B. R@e2 {167.8} 25b. P@f2 {167.7} 26B. Rxe3 {167.6} 26b. B@e1 {167.5} 27B. Nge2 {167.4} 38A. Rxh3+ {167.3} 38a. gxh3 {167.2} 27b. P@h3 {167.1} 28B. B@h1 {167.0} 28b. hxg2+ {166.9} 29B. Bxg2 {166.8} 29b. N@f5 {166.7} 30B. N@g4 {166.6} 39A. B@e4+ {166.5} 30b. Nxe3+ {166.4} 39a. Kg8 {166.3} 31B. Nxe3 {166.2} 40A. Bd5+ {166.1} 40a. Kf8 {166.0} 31b. Bxd3 {165.9} 32B. cxd3 {165.8} 41A. P@e7+ {165.7} 41a. Kxe7 {165.6} 42A. R@e6+ {165.5} 42a. Kd7 {165.4} 32b. Qh3 {165.3} 33B. Ncxd5 {165.2} 33b. Qxg2+ {165.1} 34B. Kxg2 {165.0} 43A. B@a4+ {164.9} 43a. B@c6 {164.8} 44A. Baxc6+ {164.7} 44a. bxc6 {164.6} 34b. B@h3+ {164.5} 35B. Kh1 {164.4} 45A. Bxc6+ {164.3} 35b. f1=Q+ {164.2} 45a. Kxe6 {164.1} 36B. R@g1 {164.0} 36b. N@f2# {163.9} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "10"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
 [Result "0-1"]
-[PlyCount "118"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[Termination "Alice won by checkmate"]
 
-1d2d4 1d7d5 1g1f3 1g8f6 1b1c3 1c8f5 2d2d4 1c1g5 2e7e6 1e7e6 2g1f3 1e2e3 2d7d6
-1f8e7 2b1c3 1f1d3 2g8f6 1f6e4 2e2e4 1g5e7 2b8c6 1d8e7 2d4d5 1d3e4 2e6d5 1d5e4
-2e4d5 1f3e5 2d8e7 1e8g8 2f1e2 1P@g4 2B@h5 1f5g6 2d5c6 1h2h4 2h5f3 1P@f3 1g2f3
-1N@g2 1e1d2 1g2h4 1f3e4 2P@d7 2f6d7 2c6d7 2c8d7 2g2f3 2P@g2 1N@g5 2h1g1 1h1h4
-2N@h3 1b8c6 2g1g2 1P@h6 2N@h4 1g7h6 2g2g3 1P@g7 2P@g2 1c6e5 1d4e5 1f7f6 1g7f8q
-1a8f8 1N@d5 1e6d5 1c3d5 1g5e4 1d2c1 1e7e5 2c1e3 1h4h6 2R@g1 1P@d2 2e1d2 1d1d2
-2g1d1 1e4d2 2a1d1 1h6g6 2P@d4 1h7g6 2Q@e4 1Q@d3 2d4c3 2b2c3 2N@f1 1d2e4 1f2f4
-2d1f1 2g2f1n 2e2f1 2B@e1 1P@d2 2d2e1 1d3d2 2e7e4 1e5b2 2f3e4 1c1b2 2P@g2 1N@c4
-1b2b3 1e4d2 1b3c3 1Q@b2 1c3d3 1P@e4 1d3e2 1B@f3 1e2f2 1R@g2 2f1g2 1f2e1 2h4g2
-1P@f2 0-1
+1A. e4 {180.0} 1a. e5 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 1b. e5 {179.6} 2a. Nc6 {179.5} 2B. Nc3 {179.4} 3A. Nf3 {179.3} 2b. Nc6 {179.2} 3a. Nf6 {179.1} 3B. Nf3 {179.0} 4A. Bc4 {178.9} 3b. Bc5 {178.8} 4a. Bc5 {178.7} 4B. Bc4 {178.6} 5A. d3 {178.5} 4b. Nf6 {178.4} 5a. O-O {178.3} 5B. O-O {178.2} 6A. O-O {178.1} 5b. O-O {178.0} 6a. d6 {177.9} 6B. d3 {177.8} 7A. Bg5 {177.7} 6b. d6 {177.6} 7a. Bg4 {177.5} 7B. Bg5 {177.4} 8A. h3 {177.3} 7b. Bg4 {177.2} 8a. Bxf3 {177.1} 8B. h3 {177.0} 9A. Qxf3 {176.9} 8b. Bxf3 {176.8} 9a. Nd4 {176.7} 9B. Qxf3 {176.6} 10A. Qxf6 {176.5} 9b. B@f4 {176.4} 10a. gxf6 {176.3} 11A. N@h6+ {176.2} 11a. Kh8 {176.1} 12A. Bh4 {176.0} 12a. B@g7 {175.9} 13A. Ng4 {175.8} 10B. Bxf4 {175.7} 10b. N@d4 {175.6} 13a. B@f3 {175.5} 11B. Qd1 {175.4} 14A. gxf3 {175.3} 11b. exf4 {175.2} 14a. Nxf3+ {175.1} 15A. Kh1 {175.0} 15a. Nxh4 {174.9} 12B. P@h6 {174.8} 16A. B@g2 {174.7} 12b. gxh6 {174.6} 16a. Nxg2 {174.5} 17A. Kxg2 {174.4} 13B. B@g7 {174.3} 13b. Kxg7 {174.2} 17a. h5 {174.1} 14B. B@h4 {174.0} 18A. Ne3 {173.9} 14b. B@g5 {173.8} 15B. Bxg5 {173.7} 15b. hxg5 {173.6} 18a. f5 {173.5} 19A. B@g3 {173.4} 19a. f4 {173.3} 20A. Nf5 {173.2} 20a. fxg3 {173.1} 16B. N@h5+ {173.0} 21A. fxg3 {172.9} 16b. Nxh5 {172.8} 21a. B@h6 {172.7} 17B. Qxh5 {172.6} 22A. P@e7 {172.5} 17b. P@h6 {172.4} 22a. Qd7 {172.3} 23A. exf8=Q+ {172.2} 23a. Rxf8 {172.1} 24A. Nxh6 {172.0} 24a. N@e3+ {171.9} 25A. Kh2 {171.8} 25a. Qxh3+ {171.7} 26A. Kxh3 {171.6} 18B. Bxf7 {171.5} 18b. Qf6 {171.4} 26a. P@g4+ {171.3} 27A. Kh4 {171.2} 27a. Bxh6 {171.1} 28A. B@f6+ {171.0} 28a. Kh7 {170.9} 29A. N@g5+ {170.8} 29a. Bxg5+ {170.7} 30A. Kxg5 {170.6} 30a. Rg8+ {170.5} 31A. Kxh5 {170.4} 31a. Rg6 {170.3} 19B. N@f5+ {170.2} 32A. Bxf7 {170.1} 19b. Kh8 {170.0} 20B. P@g7+ {169.9} 20b. Qxg7 {169.8} 21B. Nxg7 {169.7} 21b. Q@f6 {169.6} 32a. Rh6+ {169.5} 33A. Kg5 {169.4} 22B. Nf5 {169.3} 22b. Rxf7 {169.2} 23B. Nxd4 {169.1} 23b. Nxd4 {169.0} 33a. N@h3# {168.9} 24B. Qxf7 {168.8} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "11"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
 [Result "1-0"]
-[PlyCount "156"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[Termination "Alice won by checkmate"]
 
-1d2d4 1d7d5 2d2d4 1b1c3 2d7d5 1b8c6 2b1c3 1g1f3 2g8f6 1c8g4 2c1g5 1c1f4 2c8f5
-1g8f6 2e2e3 1e2e3 1e7e6 1f1e2 1f8d6 1f3e5 2e7e6 1g4e2 2g1f3 1d1e2 2f8e7 1e8g8
-2f1b5 1e1g1 1f6e4 1f2f3 2b8d7 1e4c3 2f3e5 1b2c3 2e8g8 1f7f6 2b5d7 2f6d7 2g5e7
-2d8e7 2e5d7 1e5c6 2e7d7 1b7c6 2B@f6 2g7f6 2N@h6 2g8h8 2N@h5 1B@h3 2B@g7 1d6f4
-2h5g7 1e3f4 2N@h4 1B@f7 2g7f5 2e6f5 2h1g1 1h3e6 2B@g7 1f7e6 2B@f4 1e2e6 1B@f7
-1N@e7 2P@g5 1d8e7 2f4g5 1e6e7 2f6g5 1N@f5 2N@e5 2d7e6 2B@d7 2e6h6 2d7f5 2h4f5
-2e5g4 2h6g6 2c3d5 2B@a5 2c2c3 2N@e4 2g4e5 2g7e5 2d4e5 2e4f2 2e1f2 2f5e3 2d5e3
-2Q@f4 2d1f3 2f4f3 2g2f3 2a5b6 2a1e1 2b6e3 2e1e3 2a8d8 2e3e2 2d8d3 2g1g3 2d3d1
-2f3f4 2g5f4 2g3g6 2f7g6 2e5e6 2h8g7 2e6e7 2f8e8 2f2f3 2d1f1 2f3g4 2h7h5 2g4g5
-2f1g1 2g5f4 2g6g5 2f4e3 2e8e7 2e3d3 2e7e2 2d3e2 2h5h4 2e2d3 2g5g4 2d3c4 2g4g3
-2h2g3 2h4g3 2c4b3 2g3g2 2b3c4 2g1f1 2c4b3 2g2g1q 2b3c4 2g1f2 2c4b3 2f1e1 2b3c4
-2f2e3 2c4b3 2e1e2 2b3c4 2e3e4 2c4b3 2e4c2 2b3c4 2e2e4 2c4d5 2c2d3 2d5c5 2d3c4 1-0
+1A. e4 {180.0} 1a. e6 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 2a. d5 {179.6} 3A. exd5 {179.5} 1b. Nf6 {179.4} 3a. exd5 {179.3} 2B. Nc3 {179.2} 4A. d4 {179.1} 4a. Nc6 {179.0} 5A. Nf3 {178.9} 2b. Nc6 {178.8} 5a. Nf6 {178.7} 3B. Nf3 {178.6} 6A. Bb5 {178.5} 3b. P@d4 {178.4} 6a. Be7 {178.3} 4B. P@g5 {178.2} 7A. Ne5 {178.1} 4b. Ng4 {178.0} 7a. O-O {177.9} 5B. Bc4 {177.8} 8A. Bxc6 {177.7} 5b. e6 {177.6} 8a. bxc6 {177.5} 6B. O-O {177.4} 9A. O-O {177.3} 6b. N@f4 {177.2} 9a. c5 {177.1} 7B. B@g3 {177.0} 10A. Nc6 {176.9} 7b. Nxg2 {176.8} 10a. Qe8 {176.7} 8B. Kxg2 {176.6} 11A. Nxe7+ {176.5} 11a. Qxe7 {176.4} 12A. Re1 {176.3} 12a. Be6 {176.2} 13A. P@h6 {176.1} 8b. dxc3 {176.0} 13a. gxh6 {175.9} 9B. dxc3 {175.8} 14A. N@f5 {175.7} 9b. d5 {175.6} 14a. Qd7 {175.5} 10B. exd5 {175.4} 15A. Nxh6+ {175.3} 10b. exd5 {175.2} 15a. Kh8 {175.1} 11B. Bxd5 {175.0} 16A. P@g7+ {174.9} 11b. P@h3+ {174.8} 16a. Kxg7 {174.7} 12B. Kg1 {174.6} 12b. B@e6 {174.5} 13B. N@f4 {174.4} 13b. Bxd5 {174.3} 14B. Nxd5 {174.2} 14b. Be6 {174.1} 15B. Nxc7+ {174.0} 15b. Qxc7 {173.9} 16B. Bxc7 {173.8} 17A. B@e5 {173.7} 17a. P@e7 {173.6} 18A. Bxf6+ {173.5} 18a. exf6 {173.4} 19A. N@h5+ {173.3} 19a. Kg6 {173.2} 20A. Qf3 {173.1} 20a. B@g5 {173.0} 21A. Bxg5 {172.9} 21a. fxg5 {172.8} 22A. Qf6+ {172.7} 22a. Kxh5 {172.6} 16b. B@d5 {172.5} 17B. Bg3 {172.4} 17b. Bd6 {172.3} 18B. Bxd6 {172.2} 18b. Bxf3 {172.1} 19B. N@c7+ {172.0} 23A. N@g3+ {171.9} 19b. Kd7 {171.8} 23a. Kh4 {171.7} 20B. Qxf3 {171.6} 24A. Nhf5+ {171.5} 24a. Bxf5 {171.4} 25A. Qh6+ {171.3} 25a. Kg4 {171.2} 26A. h3+ {171.1} 26a. Kf4 {171.0} 27A. Nh5# {170.9} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "12"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
 [Result "0-1"]
-[PlyCount "98"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[Termination "Alice won by checkmate"]
 
-1d2d4 1d7d5 2e2e4 1g1f3 2d7d5 1g8f6 2e4d5 1b1c3 2e7e6 1b8c6 2b1c3 1c1g5 2e6d5
-1c8g4 2g1f3 1e2e3 2b8c6 1f6e4 2f1b5 1c3e4 2g8f6 1d5e4 2f3e5 1d4d5 2N@h4 1e4f3
-2h1g1 1g2f3 2d8e7 1c6e5 2d2d4 1f1e2 2P@h3 2b5c6 2b7c6 1N@g2 2d1e2 1e1f1 2h3g2
-1g4h3 2c1g5 1f1g1 2h7h6 2g5h4 2c8d7 2h4f6 2g7f6 1g2e3 2e5d7 1B@b5 2e7e2 2e1e2
-2e8d7 1B@d7 1Q@g3 1Q@g2 1g3g2 1h3g2 1N@f4 1N@h3 2g1g2 1f4h3 2a8e8 1g2h3 2N@e5
-1g5e3 2e8e5 2d4e5 2N@d4 1P@g2 2e2d1 1N@g3 2f8b4 1g2h1q 1g1h1 1P@g2 1h1g1 2P@g7
-2h8e8 1R@h1 2N@f8 1g3h1 2d7c8 1g2h1q 1g1h1 1d7b5 1e2b5 1c7c6 2Q@a8 1B@f1 2N@b8
-1h3f1 1b5f1 2B@d7 2c8d8 2a8b8 2d8e7 2b8e8 0-1
+1A. d4 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. Nc3 {179.7} 1b. e6 {179.6} 2a. Nf6 {179.5} 2B. Nc3 {179.4} 3A. Bg5 {179.3} 2b. d5 {179.2} 3a. Nc6 {179.1} 3B. exd5 {179.0} 4A. e3 {178.9} 3b. exd5 {178.8} 4B. d4 {178.7} 4b. Nc6 {178.6} 4a. P@b4 {178.5} 5B. Nf3 {178.4} 5A. Nb5 {178.3} 5b. Nf6 {178.2} 5a. Ne4 {178.1} 6B. Bb5 {178.0} 6A. Bf4 {177.9} 6b. Be7 {177.8} 6a. e5 {177.7} 7B. Ne5 {177.6} 7A. dxe5 {177.5} 7b. O-O {177.4} 7a. Nxf2 {177.3} 8B. Bxc6 {177.2} 8A. Kxf2 {177.1} 8b. bxc6 {177.0} 8a. N@e4+ {176.9} 9B. P@h6 {176.8} 9A. Ke2 {176.7} 9b. gxh6 {176.6} 10B. Bxh6 {176.5} 10b. N@f5 {176.4} 11B. Bxf8 {176.3} 11b. Qxf8 {176.2} 9a. R@f2+ {176.1} 12B. Nxc6 {176.0} 10A. Ke1 {175.9} 12b. P@e3 {175.8} 10a. P@d2+ {175.7} 13B. O-O {175.6} 11A. Qxd2 {175.5} 13b. exf2+ {175.4} 11a. Rxd2 {175.3} 14B. Rxf2 {175.2} 12A. B@g3 {175.1} 14b. P@e3 {175.0} 12a. Rxc2 {174.9} 15B. Rxf5 {174.8} 13A. Bd3 {174.7} 15b. Bxf5 {174.6} 16B. Q@g3+ {174.5} 16b. Bg6 {174.4} 13a. P@f2+ {174.3} 17B. Qxe3 {174.2} 14A. Bxf2 {174.1} 17b. Bd6 {174.0} 14a. Rxf2 {173.9} 15A. Bxe4 {173.8} 15a. dxe4 {173.7} 16A. Kxf2 {173.6} 16a. N@g4+ {173.5} 17A. Kf1 {173.4} 18B. B@e5 {173.3} 18b. P@f2+ {173.2} 19B. Qxf2 {173.1} 19b. N@g4 {173.0} 20B. Bxf6 {172.9} 20b. Bxh2+ {172.8} 17a. N@d2+ {172.7} 21B. Kf1 {172.6} 18A. Ke2 {172.5} 21b. Nxf6 {172.4} 18a. Qd3+ {172.3} 22B. Qxf6 {172.2} 19A. Kd1 {172.1} 22b. R@g1+ {172.0} 19a. P@c2+ {171.9} 20A. Kc1 {171.8} 20a. Nb3+ {171.7} 21A. axb3 {171.6} 21a. Qd1# {171.5} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "13"]
 [Variant "bughouse"]
-[WhiteTeam "TimeAdvTeam"]
-[BlackTeam "NoAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
 [Result "1-0"]
-[PlyCount "100"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "true"]
+[Termination "Alice won by checkmate"]
 
-1g1f3 1d7d5 2d2d4 1b1c3 2d7d5 1b8c6 2g1f3 1d2d4 2b8c6 1c8g4 2c1f4 1c1f4 2c8g4
-1e7e6 2e2e3 1e2e3 2e7e6 1f8d6 2f1e2 1f4d6 2f8d6 1c7d6 2f3e5 1f1e2 2g4e2 1g8f6
-2d1e2 1B@h4 2d6e5 1B@e7 2d4e5 2f7f6 2e5f6 2d8f6 2b1c3 2g8e7 2B@g5 2f6f7 2f4c7
-1P@e5 2e8g8 1f6e4 2c7d6 1h4e7 2e7f5 1d8e7 2d6f8 1e5d6 2a8f8 1e4d6 2B@g4 1B@c5
-2B@b4 1B@b4 2e1g1 1c5b4 2c6e5 1c6b4 2c3d5 2e5g4 2d5b4 1B@c5 2P@h3 1b4c2 2B@f3
-1d1c2 2B@h5 1P@c7 2g2h3 1c5d6 2g4e5 1c7d6 2f3h5 2N@f3 2h5f3 2e5f3 2e2f3 1B@a4
-2N@e5 1B@c6 2B@g2 2e5f3 2g2f3 1a4c6 1b7c6 2f5h4 2g5h4 2f7f3 2P@g2 2f3g2 2g1g2
-1P@b7 2B@f3 1a8d8 2g2g1 1Q@c8 1R@c7 1c8d8 1e7d8 2R@h1 1-0
+1A. d4 {180.0} 1a. d5 {179.9} 1B. d4 {179.8} 2A. Nf3 {179.7} 1b. d5 {179.6} 2a. Nf6 {179.5} 2B. Nf3 {179.4} 3A. Bf4 {179.3} 3a. Bf5 {179.2} 4A. e3 {179.1} 4a. e6 {179.0} 5A. Nbd2 {178.9} 2b. Bf5 {178.8} 5a. Nbd7 {178.7} 3B. Bf4 {178.6} 6A. Ne5 {178.5} 3b. e6 {178.4} 6a. Be7 {178.3} 4B. e3 {178.2} 7A. Bd3 {178.1} 4b. Bd6 {178.0} 7a. Bg6 {177.9} 5B. Ne5 {177.8} 8A. O-O {177.7} 5b. Ne7 {177.6} 8a. Nxe5 {177.5} 6B. Bd3 {177.4} 9A. dxe5 {177.3} 6b. O-O {177.2} 9a. Ne4 {177.1} 7B. N@h5 {177.0} 10A. f3 {176.9} 7b. f6 {176.8} 10a. Nxd2 {176.7} 8B. Nxg7 {176.6} 11A. Qxd2 {176.5} 8b. fxe5 {176.4} 11a. P@g5 {176.3} 9B. N@h6+ {176.2} 12A. Bg3 {176.1} 9b. Kxg7 {176.0} 12a. Bxd3 {175.9} 10B. dxe5 {175.8} 13A. cxd3 {175.7} 10b. Bxe5 {175.6} 13a. P@f4 {175.5} 11B. Bxe5+ {175.4} 14A. exf4 {175.3} 11b. B@f6 {175.2} 14a. B@d4+ {175.1} 12B. Bxf6+ {175.0} 15A. P@e3 {174.9} 12b. Rxf6 {174.8} 15a. Bxe3+ {174.7} 13B. B@g5 {174.6} 16A. Qxe3 {174.5} 16a. d4 {174.4} 17A. Qe2 {174.3} 13b. B@e5 {174.2} 17a. gxf4 {174.1} 14B. P@f4 {174.0} 18A. Bxf4 {173.9} 18a. B@e3+ {173.8} 19A. Bxe3 {173.7} 19a. dxe3 {173.6} 20A. N@h5 {173.5} 20a. Rg8 {173.4} 21A. B@a4+ {173.3} 14b. Bxb2 {173.2} 21a. c6 {173.1} 15B. Bxf6+ {173.0} 22A. P@d6 {172.9} 15b. Bxf6 {172.8} 22a. Bxd6 {172.7} 16B. P@g5 {172.6} 23A. exd6 {172.5} 23a. Qxd6 {172.4} 24A. B@g3 {172.3} 24a. R@e5 {172.2} 25A. N@c4 {172.1} 16b. Bxa1 {172.0} 25a. Qd4 {171.9} 17B. P@f6+ {171.8} 17b. Kf8 {171.7} 18B. P@g7+ {171.6} 26A. Bxe5 {171.5} 18b. Ke8 {171.4} 26a. Qxe5 {171.3} 19B. B@f7+ {171.2} 27A. Nxe5 {171.1} 19b. Kd7 {171.0} 27a. Rd8 {170.9} 20B. Bxf5 {170.8} 20b. B@a5+ {170.7} 21B. Kf1 {170.6} 21b. Nxf5 {170.5} 22B. Bxe6+ {170.4} 22b. Kc6 {170.3} 23B. Nxf5 {170.2} 23b. B@c4+ {170.1} 24B. B@d3 {170.0} 24b. Bxd3+ {169.9} 25B. cxd3 {169.8} 25b. Q@e1+ {169.7} 26B. Qxe1 {169.6} 26b. Bxe1 {169.5} 27B. Ne7+ {169.4} 27b. Kb6 {169.3} 28B. Nxd5+ {169.2} 28b. Qxd5 {169.1} 29B. Bxd5 {169.0} 28A. N@c7+ {168.9} 28a. Ke7 {168.8} 29A. B@c5+ {168.7} 29b. Nc6 {168.6} 29a. P@d6 {168.5} 30B. Kxe1 {168.4} 30b. P@c2 {168.3} 31B. Kd2 {168.2} 31b. cxb1=Q {168.1} 32B. Rxb1+ {168.0} 32b. P@b2 {167.9} 33B. g8=Q {167.8} 33b. Rxg8 {167.7} 34B. Bxg8 {167.6} 30A. Nd5+ {167.5} 30a. exd5 {167.4} 31A. N@f5+ {167.3} 31a. Ke6 {167.2} 32A. Q@e7+ {167.1} 32a. Kxf5 {167.0} 33A. B@g4# {166.9} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
 
-[Event "SelfPlay"]
-[Site "Hivemind"]
-[Date "2026.01.24"]
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
 [Round "14"]
 [Variant "bughouse"]
-[WhiteTeam "NoAdvTeam"]
-[BlackTeam "TimeAdvTeam"]
-[WhiteA "EngineA1"]
-[BlackA "EngineA2"]
-[WhiteB "EngineB1"]
-[BlackB "EngineB2"]
-[FENBoardA "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
-[FENBoardB "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
 [Result "0-1"]
-[PlyCount "78"]
-[TimeControl "-"]
-[WhiteTeamTimeAdvantage "false"]
+[Termination "Alice won by checkmate"]
 
-1d2d4 1e7e6 2e2e4 1b1c3 2e7e5 1b8c6 1e2e4 1d7d5 2b1c3 1g1f3 2g8f6 1g8f6 2g1f3
-1e4e5 2f8c5 1f6e4 1f1d3 1f8b4 1c1d2 1e4f2 2f1c4 1e1f2 2d7d5 1c6d4 2c4d5 1h1f1
-2c5f2 1b4c5 2e1f2 1P@e3 2e8g8 2h1f1 2b8c6 2f2g1 2c8g4 1d4f3 2d5c6 1d1f3 2b7c6
-1N@g5 2P@h6 1f3g4 2N@f4 2h6g7 2g8g7 1B@f5 2d2d4 1d3f5 2N@h3 1e6f5 2g2h3 1g4g5
-2f4h3 1d8g5 2g1h1 1B@b5 2N@f2 2f1f2 2h3f2 1P@c6 2h1g2 1R@g3 2g4h3 2g2g1 2f8g8
-1N@g4 2B@h6 1f2e2 2g7h8 2P@g7 2g8g7 2h6g7 2h8g7 1c5e3 2c1h6 1d2e3 2g7h6 2Q@g5 0-1
+1A. e4 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. exd5 {179.7} 1b. e5 {179.6} 2a. e6 {179.5} 2B. Nf3 {179.4} 3A. Bb5+ {179.3} 2b. Nc6 {179.2} 3a. Bd7 {179.1} 3B. Bc4 {179.0} 4A. Qe2 {178.9} 3b. Bc5 {178.8} 4a. Qe7 {178.7} 5A. Nc3 {178.6} 5a. Nf6 {178.5} 6A. dxe6 {178.4} 6a. Qxe6 {178.3} 7A. d4 {178.2} 7a. Bb4 {178.1} 4B. Bxf7+ {178.0} 8A. Bxd7+ {177.9} 4b. Kxf7 {177.8} 8a. Nbxd7 {177.7} 9A. B@e5 {177.6} 9a. Nxe5 {177.5} 5B. d4 {177.4} 10A. dxe5 {177.3} 5b. Bxd4 {177.2} 10a. Bxc3+ {177.1} 11A. bxc3 {177.0} 11a. Nd5 {176.9} 12A. Nf3 {176.8} 12a. Nxc3 {176.7} 13A. Qd3 {176.6} 13a. P@e4 {176.5} 6B. N@g5+ {176.4} 14A. Qxc3 {176.3} 6b. Kf8 {176.2} 14a. exf3 {176.1} 15A. gxf3 {176.0} 15a. Rd8 {175.9} 16A. P@d4 {175.8} 7B. Nxd4 {175.7} 7b. Nxd4 {175.6} 16a. B@b4 {175.5} 8B. B@c5+ {175.4} 17A. Qxb4 {175.3} 8b. N@d6 {175.2} 9B. N@f7 {175.1} 9b. P@e2 {175.0} 10B. Qxe2 {174.9} 10b. Nxe2 {174.8} 17a. P@g2 {174.7} 11B. Nxh8 {174.6} 18A. Rg1 {174.5} 11b. B@h5 {174.4} 18a. R@f1+ {174.3} 12B. Nxh7+ {174.2} 19A. Ke2 {174.1} 12b. Ke7 {174.0} 19a. Rxg1 {173.9} 13B. B@f8+ {173.8} 20A. Bg5 {173.7} 13b. Ke8 {173.6} 14B. Bfxd6 {173.5} 14b. cxd6 {173.4} 15B. P@f7+ {173.3} 15b. Bxf7 {173.2} 16B. Nxf7 {173.1} 16b. B@a5+ {173.0} 20a. B@f1+ {172.9} 17B. Nc3 {172.8} 21A. Kd2 {172.7} 17b. Qe7 {172.6} 18B. Nxd6+ {172.5} 18b. Kd8 {172.4} 21a. N@c4+ {172.3} 22A. Kc3 {172.2} 19B. P@c7+ {172.1} 19b. Bxc7 {172.0} 20B. R@e8+ {171.9} 20b. Qxe8 {171.8} 21B. Nxe8 {171.7} 21b. Nxc3 {171.6} 22B. bxc3 {171.5} 22b. N@f3+ {171.4} 22a. N@d5+ {171.3} 23B. gxf3 {171.2} 23A. Kb3 {171.1} 23b. P@g2 {171.0} 23a. Q@b2+ {170.9} 24A. Ka4 {170.8} 24a. Qxb4# {170.7} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
+
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
+[Round "15"]
+[Variant "bughouse"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
+[Result "1-0"]
+[Termination "Alice won by checkmate"]
+
+1A. d4 {180.0} 1a. e6 {179.9} 1B. e4 {179.8} 2A. Nf3 {179.7} 1b. d5 {179.6} 2a. Nc6 {179.5} 2B. exd5 {179.4} 3A. Bf4 {179.3} 2b. e6 {179.2} 3a. Nf6 {179.1} 3B. Bb5+ {179.0} 4A. e3 {178.9} 3b. Bd7 {178.8} 4a. Bb4+ {178.7} 4B. dxe6 {178.6} 5A. Nbd2 {178.5} 4b. Qe7 {178.4} 5a. d5 {178.3} 5B. Qe2 {178.2} 6A. a3 {178.1} 5b. Qxe6 {178.0} 6a. Bxd2+ {177.9} 6B. Nc3 {177.8} 7A. Nxd2 {177.7} 6b. Qxe2+ {177.6} 7a. Ne4 {177.5} 7B. Ngxe2 {177.4} 8A. Nxe4 {177.3} 8a. dxe4 {177.2} 9A. P@h6 {177.1} 9a. Rg8 {177.0} 10A. hxg7 {176.9} 7b. N@h4 {176.8} 10a. Rxg7 {176.7} 8B. N@d5 {176.6} 8b. B@d6 {176.5} 9B. N@f4 {176.4} 9b. P@f3 {176.3} 10B. P@e6 {176.2} 11A. Bh6 {176.1} 10b. fxe6 {176.0} 11a. Qf6 {175.9} 11B. Nxe6 {175.8} 12A. Q@h8+ {175.7} 11b. fxg2 {175.6} 12a. Q@g8 {175.5} 12B. Ndxc7+ {175.4} 12b. Bxc7 {175.3} 13B. Nxc7+ {175.2} 13b. Kd8 {175.1} 14B. Rg1 {175.0} 13A. Bxg7 {174.9} 13a. Qxh8 {174.8} 14A. Bxf6 {174.7} 14b. R@f1+ {174.6} 14a. Qxf6 {174.5} 15B. Rxf1 {174.4} 15b. Nf3+ {174.3} 16B. Kd1 {174.2} 16b. gxf1=Q+ {174.1} 17B. B@e1 {174.0} 17b. Qxe1# {173.9} {C:Alice won by checkmate 1-0}
+{Alice won by checkmate} *
+
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
+[Round "16"]
+[Variant "bughouse"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
+[Result "0-1"]
+[Termination "Alice won by checkmate"]
+
+1A. e4 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. exd5 {179.7} 1b. e5 {179.6} 2a. e6 {179.5} 2B. Nf3 {179.4} 3A. Bb5+ {179.3} 2b. Nc6 {179.2} 3a. Bd7 {179.1} 3B. Bc4 {179.0} 4A. Qe2 {178.9} 3b. Bc5 {178.8} 4a. Qe7 {178.7} 4B. Bxf7+ {178.6} 5A. Nc3 {178.5} 4b. Kxf7 {178.4} 5a. exd5 {178.3} 5B. d4 {178.2} 6A. B@e5 {178.1} 5b. Bxd4 {178.0} 6a. Bxb5 {177.9} 6B. Ng5+ {177.8} 7A. Nxb5 {177.7} 6b. Kf8 {177.6} 7a. P@d6 {177.5} 8A. Nxc7+ {177.4} 8a. Kd7 {177.3} 9A. Nxa8 {177.2} 9a. Qxe5 {177.1} 10A. P@e3 {177.0} 10a. Nc6 {176.9} 11A. Qb5 {176.8} 11a. Nf6 {176.7} 12A. Qxb7+ {176.6} 12a. Ke6 {176.5} 13A. Qxc6 {176.4} 13a. Be7 {176.3} 14A. Nc7+ {176.2} 14a. Kf5 {176.1} 15A. Nf3 {176.0} 15a. Qe4 {175.9} 16A. d3 {175.8} 16a. Qg4 {175.7} 17A. e4+ {175.6} 17a. Kg6 {175.5} 18A. h3 {175.4} 18a. Qxf3 {175.3} 19A. gxf3 {175.2} 19a. h6 {175.1} 20A. Rg1+ {175.0} 20a. Kh7 {174.9} 21A. e5 {174.8} 21a. dxe5 {174.7} 22A. Bxh6 {174.6} 22a. gxh6 {174.5} 7B. Nxh7+ {174.4} 23A. Nxd5 {174.3} 7b. Rxh7 {174.2} 23a. Rg8 {174.1} 8B. N@g6+ {174.0} 24A. Nxe7 {173.9} 8b. Kf7 {173.8} 24a. Rxg1+ {173.7} 25A. Kd2 {173.6} 25a. Rxa1 {173.5} 26A. Qxf6 {173.4} 9B. R@f5+ {173.3} 9b. R@f6 {173.2} 10B. R@f8+ {173.1} 10b. Ke6 {173.0} 11B. P@d5+ {172.9} 11b. Kd6 {172.8} 12B. Rxd8 {172.7} 12b. Rxf5 {172.6} 13B. B@a3+ {172.5} 13b. P@b4 {172.4} 14B. P@c5+ {172.3} 14b. Kxc5 {172.2} 26a. Q@e1# {172.1} 15B. Bxb4+ {172.0} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
+
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
+[Round "17"]
+[Variant "bughouse"]
+[TimeControl "180"]
+[WhiteTeam "Alice"]
+[BlackTeam "Bob"]
+[WhiteA "Alice1"]
+[BlackA "Bob2"]
+[WhiteB "Bob1"]
+[BlackB "Alice2"]
+[TimeAdvantage "Alice"]
+[Result "0-1"]
+[Termination "Bob won by checkmate"]
+
+1A. d4 {180.0} 1a. d5 {179.9} 1B. d4 {179.8} 2A. Nc3 {179.7} 2a. e5 {179.6} 3A. Nf3 {179.5} 1b. d5 {179.4} 3a. Nc6 {179.3} 2B. Nf3 {179.2} 2b. Nc6 {179.1} 3B. Nc3 {179.0} 4A. Nxe5 {178.9} 3b. Nf6 {178.8} 4a. Nf6 {178.7} 4B. Bg5 {178.6} 5A. e4 {178.5} 4b. P@b4 {178.4} 5a. Bb4 {178.3} 5B. Nb5 {178.2} 6A. Bb5 {178.1} 5b. Ne4 {178.0} 6a. Nxe4 {177.9} 6B. e3 {177.8} 7A. Bxc6+ {177.7} 7a. bxc6 {177.6} 8A. Qf3 {177.5} 8a. Qf6 {177.4} 9A. Qxf6 {177.3} 9a. Nxf6 {177.2} 10A. Nxc6 {177.1} 6b. Nxf2 {177.0} 10a. Bxc3+ {176.9} 7B. Q@f4 {176.8} 11A. bxc3 {176.7} 11a. Bg4 {176.6} 12A. P@b7 {176.5} 12a. O-O {176.4} 13A. bxa8=Q {176.3} 13a. Rxa8 {176.2} 14A. Ne7+ {176.1} 14a. Kh8 {176.0} 15A. O-O {175.9} 15a. Re8 {175.8} 16A. Re1 {175.7} 16a. Nh5 {175.6} 7b. Nxd1 {175.5} 8B. Rxd1 {175.4} 8b. R@f5 {175.3} 9B. Qh4 {175.2} 9b. N@e4 {175.1} 10B. P@f2 {175.0} 17A. Nxd5 {174.9} 10b. P@c3 {174.8} 17a. Rxe1+ {174.7} 11B. Nxc7+ {174.6} 11b. Qxc7 {174.5} 12B. N@b5 {174.4} 12b. P@d2+ {174.3} 13B. Nxd2 {174.2} 13b. cxd2+ {174.1} 14B. Rxd2 {174.0} 18A. Q@f1 {173.9} 18a. N@e2+ {173.8} 14b. Qd7 {173.7} 15B. Bd3 {173.6} 15b. Nxd2 {173.5} 16B. Bxf5 {173.4} 16b. Qxf5 {173.3} 17B. Nc7+ {173.2} 17b. Kd7 {173.1} 18B. B@g4 {173.0} 18b. Nf3+ {172.9} 19B. gxf3 {172.8} 19b. Q@c1+ {172.7} 20B. R@d1 {172.6} 20b. B@d2+ {172.5} 21B. Ke2 {172.4} 21b. Nxd4+ {172.3} 22B. exd4 {172.2} 22b. Bxg5 {172.1} 23B. Bxf5+ {172.0} 23b. Kxc7 {171.9} 24B. Qg3+ {171.8} 24b. Bf4 {171.7} 25B. Rxc1 {171.6} 25b. Bxg3 {171.5} 26B. hxg3 {171.4} 26b. Bxf5 {171.3} 27B. c4 {171.2} 27b. bxc3 {171.1} 28B. Rxc3+ {171.0} 28b. Kd7 {170.9} 29B. Rhc1 {170.8} 29b. e6 {170.7} 30B. Rc7+ {170.6} 30b. Kd8 {170.5} 31B. Rxf7 {170.4} 31b. Rc8 {170.3} 32B. Rxc8+ {170.2} 32b. Kxc8 {170.1} 33B. P@d7+ {170.0} 33b. Kc7 {169.9} 34B. d8=Q+ {169.8} 34b. Kxd8 {169.7} 35B. Rxb7 {169.6} 35b. Bd6 {169.5} 36B. g4 {169.4} 36b. Bxg4 {169.3} 37B. fxg4 {169.2} 37b. Rf8 {169.1} 38B. Rxg7 {169.0} 38b. Rxf2+ {168.9} 39B. Kxf2 {168.8} 39b. e5 {168.7} 40B. dxe5 {168.6} 40b. Bxe5 {168.5} 41B. Rxh7 {168.4} 41b. d4 {168.3} 42B. Ke2 {168.2} 42b. d3+ {168.1} 43B. Kxd3 {168.0} 43b. Bf6 {167.9} 44B. g5 {167.8} 44b. Bxg5 {167.7} 45B. Rh8+ {167.6} 45b. Kc7 {167.5} 46B. Rh7+ {167.4} 46b. Kd6 {167.3} 47B. Rh5 {167.2} 47b. Bf6 {167.1} 48B. Rh6 {167.0} 48b. Ke5 {166.9} 49B. Rh5+ {166.8} 49b. Kf4 {166.7} 50B. Rh6 {166.6} 50b. Bg5 {166.5} 51B. Rh5 {166.4} 51b. Kg4 {166.3} 52B. Rh8 {166.2} 52b. Kg3 {166.1} 53B. Rh7 {166.0} 53b. Kg2 {165.9} 54B. Rg7 {165.8} 54b. Kf1 {165.7} 55B. Rxg5 {165.6} 55b. Ke1 {165.5} 56B. Rf5 {165.4} 19A. Kh1 {165.3} 56b. a5 {165.2} 19a. Rxf1+ {165.1} 57B. Rf3 {165.0} 57b. a4 {164.9} 58B. Re3+ {164.8} 58b. Kd1 {164.7} 59B. Re2 {164.6} 59b. a3 {164.5} 60B. Rd2+ {164.4} 60b. Ke1 {164.3} 61B. bxa3 {164.2} 61b. Kf1 {164.1} 62B. a4 {164.0} 62b. Ke1 {163.9} 63B. a5 {163.8} 63b. Kf1 {163.7} 64B. a6 {163.6} 64b. Ke1 {163.5} 65B. a7 {163.4} 65b. Kf1 {163.3} 66B. a8=Q {163.2} 66b. Ke1 {163.1} 67B. Qf3 {163.0} 20A. N@g1 {162.9} 20a. Rxg1# {162.8} {C:Bob won by checkmate 0-1}
+{Bob won by checkmate} *
+
+[Event "Hivemind Self-Play"]
+[Site "Hivemind Engine"]
+[Date "2026.01.25"]
+[Round "18"]
+[Variant "bughouse"]
+[TimeControl "180"]
+[WhiteTeam "Bob"]
+[BlackTeam "Alice"]
+[WhiteA "Bob1"]
+[BlackA "Alice2"]
+[WhiteB "Alice1"]
+[BlackB "Bob2"]
+[TimeAdvantage "Alice"]
+[Result "0-1"]
+[Termination "Alice won by checkmate"]
+
+1A. e4 {180.0} 1a. d5 {179.9} 1B. e4 {179.8} 2A. exd5 {179.7} 1b. d5 {179.6} 2a. e6 {179.5} 2B. exd5 {179.4} 3A. Bb5+ {179.3} 2b. e6 {179.2} 3a. Bd7 {179.1} 4A. Bxd7+ {179.0} 4a. Nxd7 {178.9} 3B. Bb5+ {178.8} 5A. d4 {178.7} 3b. Bd7 {178.6} 5a. exd5 {178.5} 6A. Nf3 {178.4} 6a. Bb4+ {178.3} 7A. Nc3 {178.2} 7a. Qe7+ {178.1} 4B. dxe6 {178.0} 8A. Be3 {177.9} 4b. Qe7 {177.8} 8a. Ngf6 {177.7} 5B. Qe2 {177.6} 9A. O-O {177.5} 5b. Qxe6 {177.4} 9a. Bxc3 {177.3} 6B. Qxe6+ {177.2} 10A. bxc3 {177.1} 6b. fxe6 {177.0} 10a. Ne4 {176.9} 7B. P@f7+ {176.8} 11A. Re1 {176.7} 7b. Kd8 {176.6} 11a. P@g4 {176.5} 12A. Bg5 {176.4} 12a. gxf3 {176.3} 13A. Qxf3 {176.2} 13a. Qxg5 {176.1} 14A. P@e6 {176.0} 14a. O-O {175.9} 15A. exf7+ {175.8} 15a. Rxf7 {175.7} 16A. Qxf7+ {175.6} 16a. Kxf7 {175.5} 17A. Q@f3+ {175.4} 17a. Q@f6 {175.3} 18A. Qh3 {175.2} 18a. Qxf2+ {175.1} 8B. Q@e8+ {175.0} 19A. Kh1 {174.9} 8b. Bxe8 {174.8} 9B. fxe8=Q# {174.7} {C:Alice won by checkmate 0-1}
+{Alice won by checkmate} *
 
