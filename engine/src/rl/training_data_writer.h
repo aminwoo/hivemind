@@ -60,10 +60,22 @@ struct TrainingSample {
                    const std::vector<PolicyEntry>& polB,
                    float v)
         : policyA(polA), policyB(polB), value(v) {
-        // Convert float planes (0.0 or 1.0) to uint8 (0 or 1)
+        // Convert float planes to uint8
+        // - Binary planes (pieces, castling, etc.): 0 or 1
+        // - Pocket planes (channels 12-21, 44-53): 0-16 (multiply normalized 0.0-1.0 by 16)
         planes.resize(NB_INPUT_VALUES());
-        for (int i = 0; i < NB_INPUT_VALUES(); ++i) {
-            planes[i] = static_cast<uint8_t>(inputPlanes[i] > 0.5f ? 1 : 0);
+        for (size_t i = 0; i < NB_INPUT_VALUES(); ++i) {
+            // Check if this is a pocket plane channel
+            size_t channel = i / 64;  // 64 squares per channel
+            bool isPocketPlane = (channel >= 12 && channel <= 21) || (channel >= 44 && channel <= 53);
+            
+            if (isPocketPlane) {
+                // Store as 0-16: multiply normalized value by 16
+                planes[i] = static_cast<uint8_t>(inputPlanes[i] * 16.0f);
+            } else {
+                // Binary threshold for other planes
+                planes[i] = static_cast<uint8_t>(inputPlanes[i] > 0.5f ? 1 : 0);
+            }
         }
     }
 };
@@ -84,7 +96,7 @@ public:
      * @param outputDir Directory to write training data
      * @param samplesPerShard Number of samples per shard file
      */
-    TrainingDataWriter(const std::string& outputDir, size_t samplesPerShard = 65536);
+    TrainingDataWriter(const std::string& outputDir, size_t samplesPerShard = 8192);
     
     ~TrainingDataWriter();
     

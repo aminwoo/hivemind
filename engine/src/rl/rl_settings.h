@@ -18,11 +18,11 @@ struct RLSettings {
     size_t numberOfGames = 0;
     
     // Search settings
-    size_t nodesPerMove = 800;           // MCTS nodes per move
-    int moveTimeMs = 100;                // Time per move in milliseconds (default 100ms for faster games)
+    size_t nodesPerMove = 1200;           // MCTS nodes per move
+    int moveTimeMs = 0;                // Time per move in milliseconds (default 100ms for faster games)
     
     // Node count randomization factor (e.g., 0.2 = +/- 20% nodes)
-    float nodeRandomFactor = 0.2f;
+    float nodeRandomFactor = 0.05f;
     
     // Clips values in policy below this threshold to 0 to reduce noise
     float lowPolicyClipThreshold = 0.01f;
@@ -37,7 +37,7 @@ struct RLSettings {
     
     // Temperature for move selection (higher = more exploration)
     float temperature = 1.0f;
-    size_t temperatureDecayMoves = 15;    // Moves before temperature decays to 0
+    size_t temperatureDecayMoves = 30;    // Moves before temperature decays to 0
     
     // Dirichlet noise for exploration
     float dirichletAlpha = 0.2f;
@@ -54,7 +54,7 @@ struct RLSettings {
     size_t numThreads = 1;
     
     // Maximum game length (plies) before declaring draw
-    size_t maxGameLength = 2048;
+    size_t maxGameLength = 512;
     
     // Whether to reuse search tree between moves
     bool reuseTree = true;
@@ -93,21 +93,21 @@ struct RLSettings {
     
     // Node multiplier for the time-advantaged team (Alice/attacker)
     // e.g., 0.8 means Alice gets 80% of base nodes (handicap to force efficient play)
-    float attackerNodeMultiplier = 0.8f;
+    float attackerNodeMultiplier = 1.0f;
     
     // Node multiplier for the time-disadvantaged team (Bob/defender)
     // e.g., 1.5 means Bob gets 150% of base nodes to think about defense
-    float defenderNodeMultiplier = 1.5f;
+    float defenderNodeMultiplier = 2.0f;
     
     // Time-to-Mate Penalty: Reward scaling based on game length
     // Winner gets: 1.0 - (ply / maxGameLength) * mateSpeedPenalty
-    // e.g., mate in 20 ply with maxGameLength=200 and penalty=0.5: reward = 1.0 - (20/200)*0.5 = 0.95
-    float mateSpeedPenalty = 0.5f;
+    // e.g., mate in 51 ply with maxGameLength=512 and penalty=1.28: reward = 1.0 - (51/512)*1.28 = 0.87
+    float mateSpeedPenalty = 1.3f;
     
     // Survival Bonus for the loser (Bob) based on game length
     // Loser gets: -1.0 + (ply / maxGameLength) * survivalBonus
-    // e.g., lasting 100 ply with maxGameLength=200 and bonus=0.8: reward = -1.0 + (100/200)*0.8 = -0.6
-    float survivalBonus = 0.4f;
+    // e.g., lasting 256 ply with maxGameLength=512 and bonus=1.024: reward = -1.0 + (256/512)*1.024 = -0.49
+    float survivalBonus = 1.0f;
     
     // Minimum reward magnitude for winner (even slow wins shouldn't be too low)
     float minWinReward = 0.7f;
