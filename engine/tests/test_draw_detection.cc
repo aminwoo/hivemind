@@ -70,9 +70,14 @@ TEST_F(DrawDetectionTest, ThreefoldRepetition) {
     ASSERT_NE(nb8, Stockfish::MOVE_NONE);
     
     board.push_move(BOARD_A, nb8);
+    // Back to starting position (2nd occurrence)
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "Two occurrences should not be draw";
     
     board.push_move(BOARD_A, nf3);
     board.push_move(BOARD_A, nc6);
+    board.push_move(BOARD_A, ng1);
+    board.push_move(BOARD_A, nb8);
+    // Back to starting position (3rd occurrence)
     
     EXPECT_TRUE(board.is_draw(BOARD_A)) << "Should be draw by threefold repetition";
 }
@@ -117,10 +122,14 @@ TEST_F(DrawDetectionTest, ThreefoldDetectionVerified) {
     board.push_move(BOARD_A, find_move("b8c6"));
     board.push_move(BOARD_A, find_move("f3g1"));
     board.push_move(BOARD_A, find_move("c6b8"));
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "Two occurrences should not be draw";
+    
     board.push_move(BOARD_A, find_move("g1f3"));
     board.push_move(BOARD_A, find_move("b8c6"));
+    board.push_move(BOARD_A, find_move("f3g1"));
+    board.push_move(BOARD_A, find_move("c6b8"));
     
-    EXPECT_TRUE(board.is_draw(BOARD_A)) << "Should be draw after third repetition of starting position";
+    EXPECT_TRUE(board.is_draw(BOARD_A)) << "Should be draw after third occurrence of starting position";
 }
 
 TEST_F(DrawDetectionTest, BughouseGlobalDrawDetection) {
@@ -132,4 +141,126 @@ TEST_F(DrawDetectionTest, BughouseGlobalDrawDetection) {
     EXPECT_TRUE(board.is_draw()) << "Global draw should be detected when board A reaches 50-move rule";
     EXPECT_TRUE(board.is_draw(BOARD_A)) << "Board A should be draw by 50-move rule";
     EXPECT_FALSE(board.is_draw(BOARD_B)) << "Board B should not be draw by itself";
+}
+
+TEST_F(DrawDetectionTest, NoDrawAfterOneRepetition) {
+    // Test that position appearing twice (1 repetition) is NOT a draw
+    Board board;
+    board.set_fen(BOARD_A, board.startingFen);
+    
+    auto find_move = [&](const std::string& uci) {
+        auto moves = board.legal_moves(BOARD_A);
+        for (const auto& m : moves) {
+            if (board.uci_move(BOARD_A, m) == uci) return m;
+        }
+        return Stockfish::MOVE_NONE;
+    };
+    
+    // Starting position (occurrence #1)
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "Starting position should not be draw";
+    
+    // Move knight out and back to return to starting position
+    board.push_move(BOARD_A, find_move("g1f3"));
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "After 1 move should not be draw";
+    
+    board.push_move(BOARD_A, find_move("b8c6"));
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "After 2 moves should not be draw";
+    
+    board.push_move(BOARD_A, find_move("f3g1"));
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "After 3 moves should not be draw";
+    
+    board.push_move(BOARD_A, find_move("c6b8"));
+    // Starting position (occurrence #2) - only 1 repetition, should NOT be draw
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "Position appearing twice (1 repetition) should NOT be draw";
+}
+
+TEST_F(DrawDetectionTest, NoDrawAfterTwoOccurrences) {
+    // Test that position appearing twice total (1 repetition) is NOT a draw
+    Board board;
+    board.set_fen(BOARD_A, board.startingFen);
+    
+    auto find_move = [&](const std::string& uci) {
+        auto moves = board.legal_moves(BOARD_A);
+        for (const auto& m : moves) {
+            if (board.uci_move(BOARD_A, m) == uci) return m;
+        }
+        return Stockfish::MOVE_NONE;
+    };
+    
+    // Reach a position, leave it, and return to it once
+    board.push_move(BOARD_A, find_move("e2e4"));  // Position A (occurrence #1)
+    board.push_move(BOARD_A, find_move("e7e5"));
+    board.push_move(BOARD_A, find_move("g1f3"));  // Position B
+    board.push_move(BOARD_A, find_move("b8c6"));
+    board.push_move(BOARD_A, find_move("f3g1"));  // Back to Position A (occurrence #2)
+    board.push_move(BOARD_A, find_move("c6b8"));
+    
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "Position appearing twice should NOT be draw (need 3 occurrences)";
+}
+
+TEST_F(DrawDetectionTest, DrawAfterThreeOccurrences) {
+    // Test that position appearing three times total (2 repetitions) IS a draw
+    Board board;
+    board.set_fen(BOARD_A, board.startingFen);
+    
+    auto find_move = [&](const std::string& uci) {
+        auto moves = board.legal_moves(BOARD_A);
+        for (const auto& m : moves) {
+            if (board.uci_move(BOARD_A, m) == uci) return m;
+        }
+        return Stockfish::MOVE_NONE;
+    };
+    
+    // Create a position that repeats three times
+    board.push_move(BOARD_A, find_move("e2e4"));  // Position A (occurrence #1)
+    board.push_move(BOARD_A, find_move("e7e5"));
+    
+    board.push_move(BOARD_A, find_move("g1f3"));  // Leave Position A
+    board.push_move(BOARD_A, find_move("b8c6"));
+    board.push_move(BOARD_A, find_move("f3g1"));  // Back to Position A (occurrence #2)
+    board.push_move(BOARD_A, find_move("c6b8"));
+    
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "After 2 occurrences, should not yet be draw";
+    
+    board.push_move(BOARD_A, find_move("g1f3"));  // Leave Position A again
+    board.push_move(BOARD_A, find_move("b8c6"));
+    board.push_move(BOARD_A, find_move("f3g1"));  // Back to Position A (occurrence #3)
+    board.push_move(BOARD_A, find_move("c6b8"));
+    
+    EXPECT_TRUE(board.is_draw(BOARD_A)) << "Position appearing three times (2 repetitions) should be draw";
+}
+
+TEST_F(DrawDetectionTest, ThreefoldRepetitionIntermediatePosition) {
+    // Test threefold repetition of an intermediate position (not the starting position)
+    Board board;
+    board.set_fen(BOARD_A, board.startingFen);
+    
+    auto find_move = [&](const std::string& uci) {
+        auto moves = board.legal_moves(BOARD_A);
+        for (const auto& m : moves) {
+            if (board.uci_move(BOARD_A, m) == uci) return m;
+        }
+        return Stockfish::MOVE_NONE;
+    };
+    
+    // Move to a specific position, then repeat it
+    board.push_move(BOARD_A, find_move("e2e4"));
+    board.push_move(BOARD_A, find_move("e7e5"));
+    // This is Position X (occurrence #1)
+    
+    board.push_move(BOARD_A, find_move("g1f3"));
+    board.push_move(BOARD_A, find_move("g8f6"));
+    board.push_move(BOARD_A, find_move("f3g1"));
+    board.push_move(BOARD_A, find_move("f6g8"));
+    // Back to Position X (occurrence #2)
+    
+    EXPECT_FALSE(board.is_draw(BOARD_A)) << "Two occurrences should not be draw";
+    
+    board.push_move(BOARD_A, find_move("g1f3"));
+    board.push_move(BOARD_A, find_move("g8f6"));
+    board.push_move(BOARD_A, find_move("f3g1"));
+    board.push_move(BOARD_A, find_move("f6g8"));
+    // Back to Position X (occurrence #3)
+    
+    EXPECT_TRUE(board.is_draw(BOARD_A)) << "Three occurrences should be draw by threefold repetition";
 }
