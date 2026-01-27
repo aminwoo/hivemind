@@ -66,6 +66,7 @@ bool Engine::saveEngineToFile(const std::string& engineFile) {
 }
 
 bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
+    std::cout << "Building TensorRT engine from ONNX: " << onnxFile << std::endl;
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(m_logger));
     auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
     auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, m_logger));

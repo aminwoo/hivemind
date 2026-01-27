@@ -137,7 +137,7 @@ constexpr float FPU_REDUCTION = 0.4f;
  * - 0.05: Light contempt (slightly prefer wins over draws)
  * - 0.10: Moderate contempt (more aggressive)
  */
-constexpr float DRAW_CONTEMPT = 0.15f;
+constexpr float DRAW_CONTEMPT = 0.8f;
 
 // =============================================================================
 // Progressive Widening Parameters

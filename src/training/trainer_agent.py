@@ -46,7 +46,9 @@ class TrainerAgentPytorch:
         train_config: TrainConfig,
         train_objects: TrainObjects,
         use_rtpt: bool,
-        additional_loaders=None
+        additional_loaders=None,
+        is_rl: bool = False,
+        rl_train_loader: DataLoader = None
     ):
         """
         Class for training the neural network.
@@ -57,10 +59,14 @@ class TrainerAgentPytorch:
         :param use_rtpt: If True, an RTPT object will be created and modified within this class.
         :param additional_loaders: optional dictionary of {dataset_name: DataLoader} whose dataloaders will also be
          used for evaluation (only used for informative purposes)
+        :param is_rl: If True, use RL training mode with soft policy targets
+        :param rl_train_loader: DataLoader for RL training data (used when is_rl=True)
         """
         self.additional_loaders = additional_loaders
         self.tc = train_config
         self.to = train_objects
+        self.is_rl = is_rl
+        self.rl_train_loader = rl_train_loader
         if self.to.metrics is None:
             self.to.metrics = {}
         self._model = model
@@ -86,6 +92,10 @@ class TrainerAgentPytorch:
         self.optimizer = create_optimizer(self._model, self.tc)
 
         self.ordering = glob.glob(main_config['planes_train_dir'] + '*')
+        
+        # For RL mode, we don't use the ordering (file-based loading)
+        if self.is_rl and not self.ordering:
+            self.ordering = ['rl_data']  # Placeholder to prevent empty ordering check
 
         # few variables which are internally used
         self.val_loss_best = self.val_p_acc_best = self.k_steps_best = \
@@ -126,11 +136,27 @@ class TrainerAgentPytorch:
             logging.info("=========================")
             self.t_s_steps = time()
 
-            for shard_file_path in tqdm(self.ordering):
-                train_loader = self._get_train_loader(shard_file_path)
+            # RL mode: iterate over the rl_train_loader directly
+            if self.is_rl and self.rl_train_loader is not None:
+                for _, batch in enumerate(self.rl_train_loader):
+                    data = self.train_update_rl(batch)
 
-                for _, batch in enumerate(train_loader):
-                    data = self.train_update(batch)
+                    if not self.graph_exported and self.tc.log_metrics_to_tensorboard:
+                        self.sum_writer.add_graph(self._model, data)
+                        self.graph_exported = True
+
+                    if self.batch_proc_tmp >= self.tc.batch_steps or self.cur_it >= self.tc.total_it:
+                        train_metric_values, val_metric_values, additional_metric_values = self.evaluate_rl(self.rl_train_loader)
+                        self._handle_evaluation(train_metric_values, val_metric_values, additional_metric_values, data)
+                        if not self.continue_training or self.cur_it >= self.tc.total_it:
+                            return self._finish_training(val_metric_values)
+            else:
+                # SL mode: iterate over shard files
+                for shard_file_path in tqdm(self.ordering):
+                    train_loader = self._get_train_loader(shard_file_path)
+
+                    for _, batch in enumerate(train_loader):
+                        data = self.train_update(batch)
 
                     # add the graph representation of the network to the tensorboard log file
                     if not self.graph_exported and self.tc.log_metrics_to_tensorboard:
@@ -397,6 +423,191 @@ class TrainerAgentPytorch:
         self.cur_it += 1
         self.batch_proc_tmp += 1
         return data
+
+    def train_update_rl(self, batch):
+        """
+        Training update for RL mode with separate policy_a and policy_b targets.
+        Batch format: (data, value_label, policy_a, policy_b)
+        """
+        self.optimizer.zero_grad()
+
+        data, value_label, policy_a, policy_b = batch
+        data = data.to(self._ctx)
+        value_label = value_label.to(self._ctx)
+        policy_a = policy_a.to(self._ctx)
+        policy_b = policy_b.to(self._ctx)
+        sample_weights = torch.ones(len(value_label), device=self._ctx)
+
+        self.old_label = value_label
+
+        value_out, policy_out = self._model(data)
+        value_loss = self.value_loss(torch.flatten(value_out), value_label, sample_weights)
+
+        policy_out_1, policy_out_2 = policy_out
+
+        # For RL, we use soft cross-entropy with full policy distributions
+        policy_loss_1 = self.policy_loss(policy_out_1, policy_a, sample_weights)
+        policy_loss_2 = self.policy_loss(policy_out_2, policy_b, sample_weights)
+
+        policy_loss = policy_loss_1 + policy_loss_2
+
+        combined_loss = (
+            self.tc.val_loss_factor * value_loss + self.tc.policy_loss_factor * policy_loss
+        )
+        combined_loss.backward()
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = self.to.lr_schedule(self.cur_it)
+            if 'momentum' in param_group:
+                param_group['momentum'] = self.to.momentum_schedule(self.cur_it)
+        self.optimizer.step()
+        self.cur_it += 1
+        self.batch_proc_tmp += 1
+        return data
+
+    def evaluate_rl(self, train_loader):
+        """Evaluate metrics for RL training mode."""
+        self.batch_proc_tmp -= self.tc.batch_steps
+        ms_step = ((time() - self.t_s_steps) / self.tc.batch_steps) * 1000
+        self.k_steps += 1
+        self.patience_cnt += 1
+        logging.info("Step %dK/%dK - %dms/step", self.k_steps, self.k_steps_end, ms_step)
+        logging.info("-------------------------")
+        logging.debug("Iteration %d/%d", self.cur_it, self.tc.total_it)
+        logging.debug("lr: %.7f - momentum: %.7f", self.to.lr_schedule(self.cur_it),
+                      self.to.momentum_schedule(self.cur_it))
+
+        print("starting train eval (RL)")
+        train_metric_values = self._evaluate_metrics_rl(train_loader, nb_batches=25)
+
+        print("starting val eval (RL)")
+        val_metric_values = self._evaluate_metrics_rl(self._val_loader, nb_batches=None)
+
+        self._model.train()
+        return train_metric_values, val_metric_values, {}
+
+    def _evaluate_metrics_rl(self, data_loader, nb_batches=None):
+        """
+        Evaluate metrics for RL data with separate policy_a and policy_b.
+        """
+        reset_metrics(self.to.metrics)
+        self._model.eval()
+
+        with torch.no_grad():
+            for i, batch in enumerate(data_loader):
+                data, value_label, policy_a, policy_b = batch
+                data = data.to(self._ctx)
+                value_label = value_label.to(self._ctx)
+                policy_a = policy_a.to(self._ctx)
+                policy_b = policy_b.to(self._ctx)
+                sample_weights = torch.ones(len(value_label), device=self._ctx)
+
+                value_out, policy_out = self._model(data)
+
+                # Update value metrics
+                self.to.metrics["value_loss"].update(
+                    preds=torch.flatten(value_out), labels=value_label, sample_weights=sample_weights
+                )
+                self.to.metrics["value_acc_sign"].update(
+                    preds=torch.flatten(value_out), labels=value_label, sample_weights=sample_weights
+                )
+
+                # Update policy metrics
+                # For soft labels, compare argmax of predictions with argmax of target distributions
+                policy_out_1, policy_out_2 = policy_out
+                self.to.metrics["policy_loss"].update(
+                    preds=policy_out_1, labels=policy_a, sample_weights=sample_weights
+                )
+                # Accuracy metric with sparse_policy_label=False will call argmax on labels
+                self.to.metrics["policy_acc"].update(
+                    preds=policy_out_1.argmax(dim=1), labels=policy_a, sample_weights=sample_weights
+                )
+                self.to.metrics["policy_loss"].update(
+                    preds=policy_out_2, labels=policy_b, sample_weights=sample_weights
+                )
+                self.to.metrics["policy_acc"].update(
+                    preds=policy_out_2.argmax(dim=1), labels=policy_b, sample_weights=sample_weights
+                )
+
+                if nb_batches and i + 1 == nb_batches:
+                    break
+
+        metric_values = {
+            "loss": 0.01 * self.to.metrics["value_loss"].compute() + 0.99 * self.to.metrics["policy_loss"].compute()
+        }
+        for metric_name in self.to.metrics:
+            metric_values[metric_name] = self.to.metrics[metric_name].compute()
+        return metric_values
+
+    def _handle_evaluation(self, train_metric_values, val_metric_values, additional_metric_values, data):
+        """Handle post-evaluation logic (spike recovery, checkpointing, etc.)."""
+        if self.use_rtpt:
+            self.rtpt.step(subtitle=f"loss={val_metric_values['loss']:2.2f}")
+
+        if self.tc.use_spike_recovery and (
+                self.old_val_loss * self.tc.spike_thresh < val_metric_values["loss"]
+                or torch.isnan(val_metric_values["loss"].detach())
+        ):
+            self.nb_spikes += 1
+            logging.warning("Spike %d/%d occurred - val_loss: %.3f",
+                           self.nb_spikes, self.tc.max_spikes, val_metric_values["loss"])
+            if self.nb_spikes >= self.tc.max_spikes:
+                self.val_loss = val_metric_values["loss"]
+                self.val_p_acc = val_metric_values["policy_acc"]
+                logging.debug("Maximum spikes reached. Stopping training.")
+                self.continue_training = False
+                return
+            # Recovery logic
+            if self.val_loss_best is not None:
+                model_path = self.tc.export_dir + "weights/model-%.5f-%.3f-%04d.tar" % (
+                    self.val_loss_best, self.val_p_acc_best, self.k_steps_best)
+                logging.debug("Recovering from checkpoint: %s", model_path)
+                load_torch_state(self._model, self.optimizer, model_path, self.tc.device_id)
+                self.k_steps = self.k_steps_best
+        else:
+            self.old_val_loss = val_metric_values["loss"]
+            self._log_metrics(train_metric_values, global_step=self.k_steps, prefix="train_")
+            self._log_metrics(val_metric_values, global_step=self.k_steps, prefix="val_")
+
+            if self.val_loss_best is None or val_metric_values["loss"] < self.val_loss_best:
+                self.val_loss_best = val_metric_values["loss"]
+                self.val_p_acc_best = val_metric_values["policy_acc"]
+                self.val_metric_values_best = val_metric_values
+                self.k_steps_best = self.k_steps
+
+                if self.tc.export_weights:
+                    model_prefix = "model-%.5f-%.3f-%04d" % (
+                        self.val_loss_best, self.val_p_acc_best, self.k_steps_best)
+                    weights_dir = Path(self.tc.export_dir) / "weights"
+                    weights_dir.mkdir(parents=True, exist_ok=True)
+                    filepath = weights_dir / f"{model_prefix}.tar"
+                    self.delete_previous_weights()
+                    save_torch_state(self._model, self.optimizer, filepath)
+                    print()
+                    logging.info("Saved checkpoint to %s", filepath)
+                    with torch.no_grad():
+                        ctx = get_context(self.tc.context, self.tc.device_id)
+                        dummy_input = torch.zeros(1, data.shape[1], data.shape[2], data.shape[3]).to(ctx)
+                        export_to_onnx(self._model, 1, dummy_input,
+                                      Path(self.tc.export_dir) / Path("weights"), model_prefix,
+                                      self.tc.use_wdl and self.tc.use_plys_to_end, True)
+
+                self.patience_cnt = 0
+
+            self.t_delta = time() - self.t_s_steps
+            print(" - %.ds" % self.t_delta)
+            self.t_s_steps = time()
+
+    def _finish_training(self, val_metric_values):
+        """Clean up and return final metrics."""
+        print()
+        print("Elapsed time for training(hh:mm:ss): " +
+              str(datetime.timedelta(seconds=round(time() - self.t_s))))
+        if self.tc.log_metrics_to_tensorboard:
+            self.sum_writer.close()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return return_metrics_and_stop_training(
+            self.k_steps, val_metric_values, self.k_steps_best, self.val_metric_values_best)
 
     def _log_metrics(self, metric_values, global_step, prefix="train_"):
         """

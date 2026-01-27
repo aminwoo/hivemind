@@ -100,6 +100,8 @@ private:
     
     // Game length tracking
     std::atomic<size_t> totalPlies{0};
+    std::atomic<size_t> minGameLength{999999};
+    std::atomic<size_t> maxGameLength{0};
     
     /**
      * @brief Generate a single self-play game.
