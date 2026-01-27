@@ -88,6 +88,7 @@ EvalStats ModelEvaluator::run() {
         cout << "  CPUCT: " << settings.player2.cpuctInit << endl;
     } else {
         cout << "Nodes per move: " << settings.nodesPerMove << endl;
+        cout << "Temperature: " << settings.temperature << endl;
     }
     
     cout << "Max game length: " << settings.maxGameLength << " plies" << endl;
@@ -163,8 +164,20 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
     size_t ply = 0;
     Stockfish::Color currentSide = Stockfish::WHITE;
     
-    // In evaluation, we don't use time advantage - both sides play symmetrically
-    bool teamHasTimeAdvantage = false;
+    // Alternate which MODEL has time advantage between games
+    // Game 1,3,5...: Player1 (New Model) has advantage
+    // Game 2,4,6...: Player2 (Old Model) has advantage
+    bool player1HasTimeAdvantage = (gameNumber % 2 == 1);
+    
+    // Translate model advantage to color advantage
+    // If new model is white and has advantage, white has advantage
+    // If new model is black and doesn't have advantage (old has it), white has advantage
+    bool whiteHasTimeAdvantage = (newModelIsWhite == player1HasTimeAdvantage);
+    pgn.whiteTeamHadTimeAdvantage = whiteHasTimeAdvantage;
+    
+    // Track time for both sides (starting at 180.0, decreasing by 0.1 per move)
+    float whiteTime = 180.0f;
+    float blackTime = 180.0f;
     
     // Allocate planes buffer
     vector<float> inputPlanes(NB_INPUT_VALUES());
@@ -211,9 +224,9 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         populateRLSettings(player1Settings, settings.player1);
         populateRLSettings(player2Settings, settings.player2);
     } else {
-        // Default deterministic settings
+        // Default settings with temperature for game variety
         player1Settings.nodesPerMove = settings.nodesPerMove;
-        player1Settings.temperature = 0.0f;
+        player1Settings.temperature = settings.temperature;
         player1Settings.temperatureDecayMoves = 0;
         player1Settings.dirichletEpsilon = 0.0f;
         player1Settings.nodeRandomFactor = 0.0f;
@@ -241,6 +254,9 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
             engines = &oldModelEngines;
             currentSettings = &player2Settings;
         }
+        
+        // Determine if current side has time advantage
+        bool teamHasTimeAdvantage = (currentSide == Stockfish::WHITE) ? whiteHasTimeAdvantage : !whiteHasTimeAdvantage;
         
         // Get legal moves for current side
         auto legalMoves = board.legal_moves(currentSide, teamHasTimeAdvantage);
@@ -285,19 +301,29 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         }
         
         // Record moves for PGN and opening tracking
+        // Decrement time for current side before recording
+        float currentTime = (currentSide == Stockfish::WHITE) ? whiteTime : blackTime;
+        
         if (moveA != Stockfish::MOVE_NONE) {
             string moveStr = board.san_move(0, moveA);
-            pgn.add_move(0, moveStr, 0.0f);
+            pgn.add_move(0, moveStr, currentTime);
             if (ply < settings.openingMovesToTrack * 2) {
                 gameMoves.push_back({0, moveStr});
             }
         }
         if (moveB != Stockfish::MOVE_NONE) {
             string moveStr = board.san_move(1, moveB);
-            pgn.add_move(1, moveStr, 0.0f);
+            pgn.add_move(1, moveStr, currentTime);
             if (ply < settings.openingMovesToTrack * 2) {
                 gameMoves.push_back({1, moveStr});
             }
+        }
+        
+        // Decrement time after move is recorded
+        if (currentSide == Stockfish::WHITE) {
+            whiteTime -= 0.1f;
+        } else {
+            blackTime -= 0.1f;
         }
         
         // Apply the joint move

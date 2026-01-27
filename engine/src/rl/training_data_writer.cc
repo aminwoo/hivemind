@@ -224,9 +224,21 @@ void GameSampleBuffer::add_position(const float* inputPlanes,
     PositionData pos;
     
     // Convert float planes to uint8
+    // - Binary planes (pieces, castling, etc.): 0 or 1
+    // - Pocket planes (channels 12-21, 44-53): actual counts 0-16
     pos.planes.resize(NB_INPUT_VALUES());
     for (int i = 0; i < NB_INPUT_VALUES(); ++i) {
-        pos.planes[i] = static_cast<uint8_t>(inputPlanes[i] > 0.5f ? 1 : 0);
+        // Check if this is a pocket plane channel
+        int channel = i / 64;  // 64 squares per channel
+        bool isPocketPlane = (channel >= 12 && channel <= 21) || (channel >= 44 && channel <= 53);
+        
+        if (isPocketPlane) {
+            // Store actual count (0-16)
+            pos.planes[i] = static_cast<uint8_t>(inputPlanes[i] * 16.0f);
+        } else {
+            // Binary threshold for other planes
+            pos.planes[i] = static_cast<uint8_t>(inputPlanes[i] > 0.5f ? 1 : 0);
+        }
     }
     
     pos.policyA = policyA;

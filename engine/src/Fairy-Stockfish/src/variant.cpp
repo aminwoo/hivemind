@@ -451,6 +451,7 @@ namespace {
         v->twoBoards = true;
         v->capturesToHand = false;
         v->stalemateValue = -VALUE_MATE;
+        v->nFoldRule = 3;  // Threefold repetition: position must appear 3 times (2 repetitions)
         return v;
     }
     // Koedem (Bughouse variant)

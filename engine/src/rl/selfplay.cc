@@ -22,6 +22,7 @@
 #include "../globals.h"
 #include "../planes.h"
 #include "../search_params.h"
+#include "../utils.h"
 
 using namespace std;
 
@@ -267,6 +268,13 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
     // Update game length statistics
     totalPlies += ply;
     
+    // Update min/max game length
+    size_t currentMin = minGameLength.load();
+    while (ply < currentMin && !minGameLength.compare_exchange_weak(currentMin, ply)) {}
+    
+    size_t currentMax = maxGameLength.load();
+    while (ply > currentMax && !maxGameLength.compare_exchange_weak(currentMax, ply)) {}
+    
     // Update Alice/Bob statistics
     // Alice is the team with time advantage, Bob is without
     bool aliceIsWhite = whiteHasTimeAdvantage;
@@ -372,12 +380,16 @@ void SelfPlay::print_statistics() const {
          << setw(15) << fixed << setprecision(2) << elapsedMin << endl;
     cout << endl;
     float avgGameLength = (totalGames > 0) ? (static_cast<float>(totalPlies.load()) / totalGames) : 0.0f;
+    size_t minLen = minGameLength.load();
+    size_t maxLen = maxGameLength.load();
     
     cout << "Alice (attacker) vs Bob (defender):" << endl;
     cout << "  Alice wins: " << aWins << " (" << fixed << setprecision(1) << aliceWinRate << "%)" << endl;
     cout << "  Bob wins:   " << aLosses << " (" << fixed << setprecision(1) << bobWinRate << "%)" << endl;
     cout << "  Draws:      " << aDraws << " (" << fixed << setprecision(1) << drawRate << "%)" << endl;
     cout << "  Avg length: " << fixed << setprecision(1) << avgGameLength << " plies" << endl;
+    cout << "  Min length: " << (minLen == 999999 ? 0 : minLen) << " plies" << endl;
+    cout << "  Max length: " << maxLen << " plies" << endl;
     cout << endl;
 }
 
@@ -477,25 +489,43 @@ void SelfPlay::extract_policy_distributions(
         
         // Process move on board A
         Stockfish::Move moveA = jointAction.moveA;
+        string uciA;
         if (moveA != Stockfish::MOVE_NONE) {
             // Convert move to UCI string using board and look up policy index
-            string uciA = board.uci_move(0, moveA);
-            auto itA = POLICY_INDEX.find(uciA);
-            if (itA != POLICY_INDEX.end()) {
-                visitsA[itA->second] += visits;
-                totalVisitsA += visits;
+            uciA = board.uci_move(0, moveA);
+            // Mirror move for black's perspective - policy index expects player-relative coordinates
+            if (board.side_to_move(0) == Stockfish::BLACK) {
+                uciA = mirror_move(uciA);
             }
+        } else {
+            // Board is not on turn, treat as pass
+            uciA = "pass";
+        }
+        
+        auto itA = POLICY_INDEX.find(uciA);
+        if (itA != POLICY_INDEX.end()) {
+            visitsA[itA->second] += visits;
+            totalVisitsA += visits;
         }
         
         // Process move on board B
         Stockfish::Move moveB = jointAction.moveB;
+        string uciB;
         if (moveB != Stockfish::MOVE_NONE) {
-            string uciB = board.uci_move(1, moveB);
-            auto itB = POLICY_INDEX.find(uciB);
-            if (itB != POLICY_INDEX.end()) {
-                visitsB[itB->second] += visits;
-                totalVisitsB += visits;
+            uciB = board.uci_move(1, moveB);
+            // Mirror move for black's perspective - policy index expects player-relative coordinates
+            if (board.side_to_move(1) == Stockfish::BLACK) {
+                uciB = mirror_move(uciB);
             }
+        } else {
+            // Board is not on turn, treat as pass
+            uciB = "pass";
+        }
+        
+        auto itB = POLICY_INDEX.find(uciB);
+        if (itB != POLICY_INDEX.end()) {
+            visitsB[itB->second] += visits;
+            totalVisitsB += visits;
         }
     }
     

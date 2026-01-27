@@ -30,6 +30,7 @@ void printUsage(const char* progName) {
     cout << "    --old <path>     Path to old model ONNX file" << endl;
     cout << "    --games <n>      Number of games to play (default: 100)" << endl;
     cout << "    --nodes <n>      MCTS nodes per move (default: 800)" << endl;
+    cout << "    --temperature <f> Temperature for move selection (default: 0.6)" << endl;
     cout << "    --verbose        Print each game result" << endl;
     cout << "    --pgn <path>     Save games to PGN file" << endl;
     cout << endl;
@@ -141,11 +142,13 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < deviceCount; i++) {
             Engine* engine = new Engine(i);
             const std::string onnxFile = findLatestOnnxFile("./networks");
+            cout << "Loading model from: " << onnxFile << " on GPU " << i << endl;
             if (onnxFile.empty()) {
                 cerr << "No ONNX file found in ./networks" << endl;
                 return EXIT_FAILURE;
             }
             const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, i, "v1");
+            cout << "Using TensorRT engine file: " << engineFile << endl;
             if (!engine->loadNetwork(onnxFile, engineFile)) {
                 cerr << "Failed to load engine on GPU " << i << endl;
                 return EXIT_FAILURE;
@@ -182,6 +185,8 @@ int main(int argc, char* argv[]) {
                 settings.numGames = stoul(argv[++i]);
             } else if ((arg == "--nodes" || arg == "-n") && i + 1 < argc) {
                 settings.nodesPerMove = stoul(argv[++i]);
+            } else if ((arg == "--temperature" || arg == "--temp" || arg == "-t") && i + 1 < argc) {
+                settings.temperature = stof(argv[++i]);
             } else if (arg == "--verbose" || arg == "-v") {
                 settings.verbose = true;
             } else if (arg == "--pgn" && i + 1 < argc) {
