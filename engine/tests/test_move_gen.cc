@@ -26,7 +26,7 @@ TEST_F(EngineTest, InitialMoves) {
     // If not, we can explicitly set it:
     board.set_fen(BOARD_A, board.startingFen);
     
-    std::vector<Stockfish::Move> movesA = board.legal_moves(0);
+    std::vector<Stockfish::Move> movesA = board.legal_moves(BOARD_A);
     // Standard chess start position has 20 moves.
     EXPECT_EQ(movesA.size(), 20);
 
@@ -43,7 +43,7 @@ TEST_F(EngineTest, InitialMoves) {
 
 TEST_F(EngineTest, MakeMove) {
     Board board;
-    board.set_fen(0, board.startingFen);
+    board.set_fen(BOARD_A, board.startingFen);
     
     // Find e2e4
     Stockfish::Move e2e4 = Stockfish::Move::MOVE_NONE;
@@ -56,10 +56,10 @@ TEST_F(EngineTest, MakeMove) {
     }
     ASSERT_NE(e2e4, Stockfish::Move::MOVE_NONE);
 
-    // Apply move on board 0
-    board.push_move(0, e2e4);
+    // Apply move on board A
+    board.push_move(BOARD_A, e2e4);
     
-    std::string fen = board.fen(0);
+    std::string fen = board.fen(BOARD_A);
     // e4 should be occupied by a white pawn. Checking FEN substring roughly.
     // FEN after e2e4: rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1
     // Note: FEN might vary slightly with en passant target.
@@ -68,7 +68,7 @@ TEST_F(EngineTest, MakeMove) {
 
 TEST_F(EngineTest, BughouseDrop) {
     Board board;
-    board.set_fen(0, board.startingFen);
+    board.set_fen(BOARD_A, board.startingFen);
 
     // Manually add pawn to hand
     board.add_to_hand(BOARD_A, Stockfish::make_piece(Stockfish::WHITE, Stockfish::PAWN));
@@ -95,16 +95,16 @@ TEST_F(EngineTest, BughouseDrop) {
     EXPECT_TRUE(found_drop);
     ASSERT_NE(drop_e4, Stockfish::MOVE_NONE);
     
-    board.push_move(0, drop_e4);
-    std::string fen = board.fen(0);
+    board.push_move(BOARD_A, drop_e4);
+    std::string fen = board.fen(BOARD_A);
     // After drop p@e4, the board should have a pawn on e4
     EXPECT_NE(fen.find("4P3"), std::string::npos) << "FEN: " << fen;
 }
 
 TEST_F(EngineTest, BughouseCaptureTransfer) {
     Board board;
-    board.set_fen(0, "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2");
-    board.set_fen(1, board.startingFen);
+    board.set_fen(BOARD_A, "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2");
+    board.set_fen(BOARD_B, board.startingFen);
     
     // Find and make the capture move exd5 on board A
     auto moves = board.legal_moves(BOARD_A);

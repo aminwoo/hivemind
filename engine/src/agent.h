@@ -14,6 +14,52 @@
 #include "rl/rl_settings.h"
 
 /**
+ * @brief Search options to configure Agent::run_search behavior.
+ */
+struct SearchOptions {
+    // Stopping conditions (one must be set)
+    size_t targetNodes = 0;      // Stop after this many nodes (0 = use time)
+    int moveTimeMs = 0;          // Stop after this many milliseconds (0 = use nodes)
+    
+    // UCI mode options
+    bool verbose = false;        // Output UCI info strings (info, bestmove)
+    bool checkMateIn1 = false;   // Check for immediate mate before search
+    
+    // Self-play exploration options  
+    float dirichletAlpha = 0.0f;   // Dirichlet noise alpha (0 = no noise)
+    float dirichletEpsilon = 0.0f; // Fraction of prior to replace with noise (0 = no noise)
+    
+    // Convenience constructors
+    static SearchOptions uci(int moveTimeMs) {
+        SearchOptions opts;
+        opts.moveTimeMs = moveTimeMs;
+        opts.verbose = true;
+        opts.checkMateIn1 = true;
+        return opts;
+    }
+    
+    static SearchOptions selfplay(size_t nodes, const RLSettings& settings) {
+        SearchOptions opts;
+        opts.targetNodes = nodes;
+        opts.verbose = false;
+        opts.checkMateIn1 = false;
+        opts.dirichletAlpha = settings.dirichletAlpha;
+        opts.dirichletEpsilon = settings.dirichletEpsilon;
+        return opts;
+    }
+    
+    static SearchOptions selfplay(int moveTimeMs, const RLSettings& settings) {
+        SearchOptions opts;
+        opts.moveTimeMs = moveTimeMs;
+        opts.verbose = false;
+        opts.checkMateIn1 = false;
+        opts.dirichletAlpha = settings.dirichletAlpha;
+        opts.dirichletEpsilon = settings.dirichletEpsilon;
+        return opts;
+    }
+};
+
+/**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
  *
  * Runs multiple search threads in parallel, each with its own engine instance.
@@ -42,27 +88,31 @@ public:
     ~Agent();
 
     /**
-     * @brief Runs the search operation on the given board using provided engines.
+     * @brief Unified search function for both UCI and self-play modes.
      * @param board The board on which to perform the search.
      * @param engines A vector of engine pointers to use during the search.
-     * @param move_time The allotted time for move calculation.
-     * @param teamHasTimeAdvantage If true, team is ahead on time and can double-sit.
-     */
-    void run_search(Board& board, const std::vector<Engine*>& engines, int move_time, Stockfish::Color side, bool teamHasTimeAdvantage);
-
-    /**
-     * @brief Runs a silent search for self-play (no UCI output).
-     * @param board The board on which to perform the search.
-     * @param engines A vector of engine pointers to use during the search.
-     * @param targetNodes The number of MCTS iterations to run (0 = use time limit).
-     * @param moveTimeMs Time limit in milliseconds (0 = use node limit).
      * @param side The side to move.
-     * @param teamHasTimeAdvantage If true, team is ahead on time.
-     * @param settings RL settings for Dirichlet noise and temperature.
-     * @param temperature Temperature for move selection (0 = greedy, >0 = stochastic).
+     * @param teamHasTimeAdvantage If true, team is ahead on time and can double-sit.
+     * @param options Search options (stopping conditions, verbosity, noise).
      * @return The best joint action found.
      */
-    JointActionCandidate run_search_silent(Board& board, const std::vector<Engine*>& engines, size_t targetNodes, int moveTimeMs, Stockfish::Color side, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature);
+    JointActionCandidate run_search(Board& board, const std::vector<Engine*>& engines, 
+                                    Stockfish::Color side, bool teamHasTimeAdvantage,
+                                    const SearchOptions& options);
+    
+    /**
+     * @brief Legacy wrapper for UCI mode search. Use run_search with SearchOptions::uci() instead.
+     */
+    void run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, 
+                    Stockfish::Color side, bool teamHasTimeAdvantage);
+    
+    /**
+     * @brief Legacy wrapper for silent search. Use run_search with SearchOptions::selfplay() instead.
+     */
+    JointActionCandidate run_search_silent(Board& board, const std::vector<Engine*>& engines, 
+                                           size_t targetNodes, int moveTimeMs, 
+                                           Stockfish::Color side, bool teamHasTimeAdvantage, 
+                                           const RLSettings& settings, float temperature);
 
     /**
      * @brief Extracts the best move from the root node after search.

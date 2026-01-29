@@ -46,15 +46,16 @@ struct PlayerConfig {
     float dirichletEpsilon = 0.0f;   // Dirichlet noise epsilon (0 = no noise for eval)
     float dirichletAlpha = 0.2f;     // Dirichlet noise alpha
     
-    // Temperature
-    float temperature = 0.0f;        // Move selection temperature (0 = greedy)
+    // Temperature (applies to first N moves, then decays to 0)
+    float temperature = 0.5f;        // Move selection temperature (0 = greedy, 1.0 = full stochastic)
+    size_t temperatureDecayMoves = 30; // Number of moves before temperature decays to 0
     
     // MCGS (Monte Carlo Graph Search) settings
     bool enableMCGS = true;          // Enable MCGS with transposition table
     bool enableTranspositions = true; // Enable transposition table lookups
     
     // Draw contempt
-    float drawContempt = 0.12f;      // Penalty for draws (0 = neutral)
+    float drawContempt = 0.15f;      // Penalty for draws (0 = neutral)
     
     // Progressive widening
     float pwCoefficient = 1.0f;      // Progressive widening coefficient
