@@ -118,8 +118,10 @@ private:
      * @param board The current board state (for move-to-UCI conversion)
      * @param policyA Output: sparse policy distribution for board A
      * @param policyB Output: sparse policy distribution for board B
+     * @return Vector of (JointActionCandidate, visit_count) pairs for temperature sampling
      */
-    void extract_policy_distributions(const std::shared_ptr<Node>& rootNode,
+    std::vector<std::pair<JointActionCandidate, int>> extract_policy_distributions(
+                                      const std::shared_ptr<Node>& rootNode,
                                       Board& board,
                                       std::vector<PolicyEntry>& policyA,
                                       std::vector<PolicyEntry>& policyB);
