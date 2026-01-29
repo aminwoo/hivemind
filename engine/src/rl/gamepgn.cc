@@ -5,6 +5,7 @@
  */
 
 #include "gamepgn.h"
+#include "../constants.h"
 #include <ctime>
 #include <iomanip>
 #include <sstream>
@@ -34,7 +35,7 @@ void BughouseGamePGN::add_move(int boardNum, const std::string& moveStr, float c
     record.move = moveStr;
     record.clockTime = clockTime;
     
-    if (boardNum == 0) {
+    if (boardNum == BOARD_A) {
         // Board A
         record.isWhite = whiteToMoveBoardA;
         record.moveNumber = moveNumberBoardA;
@@ -114,6 +115,7 @@ std::ostream& operator<<(std::ostream& os, const BughouseGamePGN& pgn) {
        << "[WhiteB \"" << pgn.whiteBoardB << "\"]\n"
        << "[BlackB \"" << pgn.blackBoardB << "\"]\n"
        << "[TimeAdvantage \"" << (pgn.whiteTeamHadTimeAdvantage ? pgn.whiteTeam : pgn.blackTeam) << "\"]\n"
+       << "[PlyCount \"" << pgn.plyCount << "\"]\n"
        << "[Result \"" << pgn.result << "\"]\n";
     
     if (!pgn.termination.empty()) {
@@ -130,9 +132,9 @@ std::ostream& operator<<(std::ostream& os, const BughouseGamePGN& pgn) {
         // Build move prefix: "1A." for White Board A, "1a." for Black Board A, etc.
         os << move.moveNumber;
         
-        char boardLetter = (move.boardNum == 0) ? 'A' : 'B';
+        char boardLetter = (move.boardNum == BOARD_A) ? 'A' : 'B';
         if (!move.isWhite) {
-            boardLetter = (move.boardNum == 0) ? 'a' : 'b';
+            boardLetter = (move.boardNum == BOARD_A) ? 'a' : 'b';
         }
         os << boardLetter << ". ";
         

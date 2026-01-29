@@ -15,10 +15,12 @@
 #include <sstream>
 #include <cuda_runtime.h>
 
+#include "../constants.h"
 #include "../globals.h"
 #include "../planes.h"
 #include "../search_params.h"
 #include "../onnx_utils.h"
+#include "../utils.h"
 
 using namespace std;
 
@@ -87,8 +89,9 @@ EvalStats ModelEvaluator::run() {
         cout << "  Batch size: " << settings.player2.batchSize << endl;
         cout << "  CPUCT: " << settings.player2.cpuctInit << endl;
     } else {
-        cout << "Nodes per move: " << settings.nodesPerMove << endl;
+        cout << "Nodes per move: " << settings.nodesPerMove << " (attacker: 0.5x, defender: 1.5x)" << endl;
         cout << "Temperature: " << settings.temperature << endl;
+        cout << "Dirichlet: eps=0.25, alpha=0.2 (exploration enabled)" << endl;
     }
     
     cout << "Max game length: " << settings.maxGameLength << " plies" << endl;
@@ -187,7 +190,7 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         rl.nodesPerMove = pc.nodesPerMove;
         rl.moveTimeMs = pc.moveTimeMs;
         rl.temperature = pc.temperature;
-        rl.temperatureDecayMoves = 0;
+        rl.temperatureDecayMoves = pc.temperatureDecayMoves;
         rl.dirichletEpsilon = pc.dirichletEpsilon;
         rl.dirichletAlpha = pc.dirichletAlpha;
         rl.nodeRandomFactor = 0.0f;  // No randomization in eval
@@ -227,8 +230,9 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         // Default settings with temperature for game variety
         player1Settings.nodesPerMove = settings.nodesPerMove;
         player1Settings.temperature = settings.temperature;
-        player1Settings.temperatureDecayMoves = 0;
-        player1Settings.dirichletEpsilon = 0.0f;
+        player1Settings.temperatureDecayMoves = 30;  // Match selfplay default
+        player1Settings.dirichletEpsilon = 0.25f;    // Match selfplay for exploration
+        player1Settings.dirichletAlpha = 0.2f;
         player1Settings.nodeRandomFactor = 0.0f;
         player1Settings.maxGameLength = settings.maxGameLength;
         
@@ -275,7 +279,28 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         // Get search limits for current player
         size_t nodesForThisMove = currentSettings->nodesPerMove;
         int timeForThisMove = currentSettings->moveTimeMs;
+        
+        // Asymmetric node allocation (like selfplay):
+        // - Attacker (time advantage): 0.5x nodes to force efficient play
+        // - Defender (time disadvantage): 1.5x nodes for better defense
+        constexpr float ATTACKER_NODE_MULT = 0.5f;
+        constexpr float DEFENDER_NODE_MULT = 1.5f;
+        if (teamHasTimeAdvantage) {
+            nodesForThisMove = static_cast<size_t>(nodesForThisMove * ATTACKER_NODE_MULT);
+        } else {
+            nodesForThisMove = static_cast<size_t>(nodesForThisMove * DEFENDER_NODE_MULT);
+        }
+        nodesForThisMove = max(static_cast<size_t>(1), nodesForThisMove);
+        
+        // Apply temperature decay like selfplay: start at configured temp, decay to 0
         float tempForThisMove = currentSettings->temperature;
+        size_t decayMoves = currentSettings->temperatureDecayMoves;
+        if (decayMoves > 0 && ply < decayMoves) {
+            float progress = static_cast<float>(ply) / decayMoves;
+            tempForThisMove = currentSettings->temperature * (1.0f - progress);
+        } else if (decayMoves > 0) {
+            tempForThisMove = 0.0f;  // Decay complete
+        }
         
         // Run MCTS search with player-specific settings
         // If moveTimeMs > 0, search uses time; otherwise uses nodes
@@ -283,22 +308,18 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
             board, *engines, nodesForThisMove, timeForThisMove, currentSide, 
             teamHasTimeAdvantage, *currentSettings, tempForThisMove);
         
-        Stockfish::Move moveA = bestAction.moveA;
-        Stockfish::Move moveB = bestAction.moveB;
-        
-        // Handle case where search returned no valid moves
-        if (moveA == Stockfish::MOVE_NONE && moveB == Stockfish::MOVE_NONE) {
-            if (!legalMoves.empty()) {
-                auto [boardNum, move] = legalMoves[0];
-                if (boardNum == 0) {
-                    moveA = move;
-                } else {
-                    moveB = move;
-                }
-            } else {
-                break;
+        // Sample action with temperature from visit distribution (like selfplay)
+        // This allows for more varied play and realistic draw rates
+        auto rootNode = agent->get_root_node();
+        if (rootNode && rootNode->is_expanded() && tempForThisMove > 0.0f) {
+            auto childActionVisits = rootNode->get_child_action_visits();
+            if (!childActionVisits.empty()) {
+                bestAction = sample_action_with_temperature(childActionVisits, tempForThisMove);
             }
         }
+        
+        Stockfish::Move moveA = bestAction.moveA;
+        Stockfish::Move moveB = bestAction.moveB;
         
         // Record moves for PGN and opening tracking
         // Decrement time for current side before recording
@@ -392,7 +413,7 @@ void ModelEvaluator::recordOpeningMoves(const vector<pair<int, string>>& moves) 
     for (const auto& [boardNum, moveStr] : moves) {
         if (count >= settings.openingMovesToTrack) break;
         if (count > 0) ss << " ";
-        ss << (boardNum == 0 ? "A:" : "B:") << moveStr;
+        ss << (boardNum == BOARD_A ? "A:" : "B:") << moveStr;
         count++;
     }
     

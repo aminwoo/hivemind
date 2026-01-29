@@ -129,7 +129,10 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
         
         // Check for terminal states
-        if (board.is_draw()) {
+        // Pass the tree depth (trajectory size) as ply so that 2-fold repetitions
+        // within the search tree are correctly detected as draws
+        int searchPly = static_cast<int>(trajectoryBuffer.size());
+        if (board.is_draw(searchPly)) {
             ctx.isTerminal = true;
             // Apply draw contempt: treat draws as slightly negative for the side to move
             ctx.terminalValue = -SearchParams::DRAW_CONTEMPT;
@@ -274,7 +277,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 priorsA.push_back(1.0f);
             } else {
                 actionsA.push_back(Stockfish::MOVE_NONE);
-                priorsA = get_normalized_probability(batchPiA, actionsA, 0, leafBoard);
+                priorsA = get_normalized_probability(batchPiA, actionsA, BOARD_A, leafBoard);
             }
             
             if (actionsB.empty()) {
@@ -282,7 +285,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 priorsB.push_back(1.0f);
             } else {
                 actionsB.push_back(Stockfish::MOVE_NONE);
-                priorsB = get_normalized_probability(batchPiB, actionsB, 1, leafBoard);
+                priorsB = get_normalized_probability(batchPiB, actionsB, BOARD_B, leafBoard);
             }
             
             // Expand leaf node and register in transposition table (MCGS)

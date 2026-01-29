@@ -1,5 +1,6 @@
 #pragma once
 
+#include "constants.h"
 #include "zobrist.h"
 
 #include <sstream>
@@ -274,11 +275,17 @@ class Board {
             return pos[board_num]->checkers();
         }
 
-        bool is_draw() {
-            return pos[0]->is_draw(0) || pos[1]->is_draw(0); 
+        /**
+         * @brief Check if either board is in a draw state.
+         * @param ply The current search depth (used for repetition detection)
+         *            When ply > 0, 2-fold repetition within search is treated as draw.
+         *            When ply = 0, requires 3-fold repetition.
+         */
+        bool is_draw(int ply = 0) {
+            return pos[0]->is_draw(ply) || pos[1]->is_draw(ply); 
         }
 
-        bool is_draw(int board_num) {
-            return pos[board_num]->is_draw(0);
+        bool is_draw_on_board(int board_num, int ply = 0) {
+            return pos[board_num]->is_draw(ply);
         }
 };

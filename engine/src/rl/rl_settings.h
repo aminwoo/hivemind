@@ -18,7 +18,7 @@ struct RLSettings {
     size_t numberOfGames = 0;
     
     // Search settings
-    size_t nodesPerMove = 1200;           // MCTS nodes per move
+    size_t nodesPerMove = 800;           // MCTS nodes per move
     int moveTimeMs = 0;                // Time per move in milliseconds (default 100ms for faster games)
     
     // Node count randomization factor (e.g., 0.2 = +/- 20% nodes)
@@ -75,7 +75,7 @@ struct RLSettings {
     bool enableTranspositions = true;    // Enable transposition table
     
     // Draw contempt
-    float drawContempt = 0.12f;          // Penalty for draws (0 = neutral)
+    float drawContempt = 0.15f;          // Penalty for draws (0 = neutral)
     
     // Progressive widening
     float pwCoefficient = 1.0f;          // Progressive widening coefficient
@@ -93,11 +93,11 @@ struct RLSettings {
     
     // Node multiplier for the time-advantaged team (Alice/attacker)
     // e.g., 0.8 means Alice gets 80% of base nodes (handicap to force efficient play)
-    float attackerNodeMultiplier = 1.0f;
+    float attackerNodeMultiplier = 0.5f;
     
     // Node multiplier for the time-disadvantaged team (Bob/defender)
     // e.g., 1.5 means Bob gets 150% of base nodes to think about defense
-    float defenderNodeMultiplier = 2.0f;
+    float defenderNodeMultiplier = 1.5f;
     
     // Time-to-Mate Penalty: Reward scaling based on game length
     // Winner gets: 1.0 - (ply / maxGameLength) * mateSpeedPenalty
