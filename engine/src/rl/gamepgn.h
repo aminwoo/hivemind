@@ -77,6 +77,9 @@ struct BughouseGamePGN {
     // Track which team had time advantage (for training purposes)
     bool whiteTeamHadTimeAdvantage = false;
     
+    // Game length in plies (half-moves)
+    size_t plyCount = 0;
+    
     /**
      * @brief Clear moves and reset for new game.
      */

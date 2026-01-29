@@ -139,8 +139,8 @@ TEST_F(DrawDetectionTest, BughouseGlobalDrawDetection) {
     board.set_fen(BOARD_B, board.startingFen);
     
     EXPECT_TRUE(board.is_draw()) << "Global draw should be detected when board A reaches 50-move rule";
-    EXPECT_TRUE(board.is_draw(BOARD_A)) << "Board A should be draw by 50-move rule";
-    EXPECT_FALSE(board.is_draw(BOARD_B)) << "Board B should not be draw by itself";
+    EXPECT_TRUE(board.is_draw_on_board(BOARD_A)) << "Board A should be draw by 50-move rule";
+    EXPECT_FALSE(board.is_draw_on_board(BOARD_B)) << "Board B should not be draw by itself";
 }
 
 TEST_F(DrawDetectionTest, NoDrawAfterOneRepetition) {

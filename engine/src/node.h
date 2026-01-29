@@ -122,6 +122,13 @@ public:
     }
 
     /**
+     * @brief Returns the number of generated candidates (should equal children.size()).
+     */
+    size_t get_num_generated() const {
+        return candidateGenerator.generatedCount();
+    }
+
+    /**
      * @brief Checks if we should expand a new child based on progressive widening.
      * 
      * Progressive widening formula: m = ceil(C_PW * n^KAPPA)
@@ -260,9 +267,12 @@ public:
      * @brief Gets the joint action for a specific child index (from generated cache).
      */
     JointActionCandidate get_joint_action(int childIdx) const {
-        if (childIdx >= 0 && static_cast<size_t>(childIdx) < candidateGenerator.generatedCount()) {
+        size_t genCount = candidateGenerator.generatedCount();
+        if (childIdx >= 0 && static_cast<size_t>(childIdx) < genCount) {
             return candidateGenerator.getGenerated(childIdx);
         }
+        std::cerr << "ERROR in get_joint_action: childIdx=" << childIdx 
+                  << " out of bounds (generatedCount=" << genCount << ")" << std::endl;
         return JointActionCandidate();
     }
 

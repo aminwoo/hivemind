@@ -190,13 +190,21 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         float temperature = get_temperature(ply);
         
         // Use time-based search if moveTimeMs > 0, otherwise node-based
+        // Note: run_search_silent returns greedy best action, we sample with temperature below
         JointActionCandidate bestAction = agent->run_search_silent(board, engines, targetNodes, settings.moveTimeMs, currentSide, teamHasTimeAdvantage, settings, temperature);
         
         // Extract policy distributions from MCTS tree
         vector<PolicyEntry> policyA, policyB;
         auto rootNode = agent->get_root_node();
         if (rootNode && rootNode->is_expanded()) {
-            extract_policy_distributions(rootNode, board, policyA, policyB);
+            auto childActionVisits = extract_policy_distributions(rootNode, board, policyA, policyB);
+            
+            // Sample action with temperature from visit distribution
+            if (!childActionVisits.empty()) {
+                bestAction = sample_action_with_temperature(childActionVisits, temperature);
+            } else {
+                cerr << "Warning: No child actions found in MCTS root node!" << endl;
+            }
         }
         
         // Add training sample (value will be filled in when game ends)
@@ -204,24 +212,12 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         gameSamples.add_position(inputPlanes.data(), policyA, policyB, isWhiteTeam);
         
         // Apply moves from the joint action
-        // In Bughouse, we can have moves on both boards or just one
+        // In Bughouse, we can have moves on both boards, just one, or neither (both pass)
         Stockfish::Move moveA = bestAction.moveA;
         Stockfish::Move moveB = bestAction.moveB;
         
-        // Handle case where search returned no valid moves
-        if (moveA == Stockfish::MOVE_NONE && moveB == Stockfish::MOVE_NONE) {
-            // Fall back to first legal move
-            if (!legalMoves.empty()) {
-                auto [boardNum, move] = legalMoves[0];
-                if (boardNum == 0) {
-                    moveA = move;
-                } else {
-                    moveB = move;
-                }
-            } else {
-                break;  // No legal moves, game over
-            }
-        }
+        // Note: (MOVE_NONE, MOVE_NONE) is valid - it means both boards are passing/sitting
+        // This can happen when the team has time advantage and chooses to wait
         
         // Record moves to PGN (SAN format) with decrementing clock
         if (moveA != Stockfish::MOVE_NONE) {
@@ -237,8 +233,8 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         
         if (g_logLevel >= LOG_DEBUG) {
             cout << "Ply " << ply << ": " 
-                 << (moveA != Stockfish::MOVE_NONE ? board.uci_move(0, moveA) : "pass") << ", "
-                 << (moveB != Stockfish::MOVE_NONE ? board.uci_move(1, moveB) : "pass") << endl;
+                 << (moveA != Stockfish::MOVE_NONE ? board.uci_move(BOARD_A, moveA) : "pass") << ", "
+                 << (moveB != Stockfish::MOVE_NONE ? board.uci_move(BOARD_B, moveB) : "pass") << endl;
         }
         
         // Apply the joint move
@@ -262,6 +258,7 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         result = GameResult::DRAW;
     }
     
+    pgn.plyCount = ply;
     pgn.set_result(result);
     write_game_to_pgn(pgn, verbose);
     
@@ -457,7 +454,7 @@ pair<float, float> SelfPlay::calculate_asymmetric_rewards(
     return {whiteValue, blackValue};
 }
 
-void SelfPlay::extract_policy_distributions(
+vector<pair<JointActionCandidate, int>> SelfPlay::extract_policy_distributions(
     const shared_ptr<Node>& rootNode,
     Board& board,
     vector<PolicyEntry>& policyA,
@@ -467,14 +464,14 @@ void SelfPlay::extract_policy_distributions(
     policyB.clear();
     
     if (!rootNode || !rootNode->is_expanded()) {
-        return;
+        return {};
     }
     
     // Get visit counts for each child action
     auto childActionVisits = rootNode->get_child_action_visits();
     
     if (childActionVisits.empty()) {
-        return;
+        return {};
     }
     
     // Marginalize joint action visits to per-board distributions
@@ -492,9 +489,9 @@ void SelfPlay::extract_policy_distributions(
         string uciA;
         if (moveA != Stockfish::MOVE_NONE) {
             // Convert move to UCI string using board and look up policy index
-            uciA = board.uci_move(0, moveA);
+            uciA = board.uci_move(BOARD_A, moveA);
             // Mirror move for black's perspective - policy index expects player-relative coordinates
-            if (board.side_to_move(0) == Stockfish::BLACK) {
+            if (board.side_to_move(BOARD_A) == Stockfish::BLACK) {
                 uciA = mirror_move(uciA);
             }
         } else {
@@ -512,9 +509,9 @@ void SelfPlay::extract_policy_distributions(
         Stockfish::Move moveB = jointAction.moveB;
         string uciB;
         if (moveB != Stockfish::MOVE_NONE) {
-            uciB = board.uci_move(1, moveB);
+            uciB = board.uci_move(BOARD_B, moveB);
             // Mirror move for black's perspective - policy index expects player-relative coordinates
-            if (board.side_to_move(1) == Stockfish::BLACK) {
+            if (board.side_to_move(BOARD_B) == Stockfish::BLACK) {
                 uciB = mirror_move(uciB);
             }
         } else {
@@ -576,6 +573,8 @@ void SelfPlay::extract_policy_distributions(
             }
         }
     }
+    
+    return childActionVisits;
 }
 
 void run_selfplay(const RLSettings& settings, const vector<Engine*>& engines, size_t numberOfGames) {
