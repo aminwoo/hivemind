@@ -184,6 +184,46 @@ constexpr float Q_VALUE_WEIGHT = 1.0f;
 constexpr bool ENABLE_TREE_REUSE = true;
 
 // =============================================================================
+// Early Stopping and Time Management Parameters
+// =============================================================================
+
+/**
+ * Enable early stopping: Stop search when best move has insurmountable lead.
+ * 
+ * When the second-best move cannot catch up to the best move even with
+ * all remaining search time, stop early to save time.
+ * 
+ * Condition: secondMax + remainingTime * NPS < firstMax * EARLY_STOP_FACTOR
+ * 
+ * CrazyAra default: true (when in-game with time controls)
+ */
+constexpr bool ENABLE_EARLY_STOPPING = true;
+
+/// Factor for early stopping comparison (best move must have this multiple of visits)
+/// CrazyAra uses 2.0
+constexpr float EARLY_STOP_FACTOR = 2.0f;
+
+/**
+ * Enable dynamic time extension: Extend search when evaluation is falling.
+ * 
+ * If the root evaluation has dropped since the last check, extend the
+ * allocated move time to avoid blundering in critical positions.
+ * 
+ * CrazyAra default: true
+ */
+constexpr bool ENABLE_TIME_EXTENSION = true;
+
+/// Maximum number of time extensions per move (to prevent infinite extension)
+constexpr int MAX_TIME_EXTENSIONS = 2;
+
+/// Minimum evaluation drop (in centipawns) to trigger time extension
+/// Smaller drops are normal fluctuation, not worth extending for
+constexpr float TIME_EXTENSION_THRESHOLD = 0.05f;
+
+/// Factor to multiply remaining time when extending (1.5 = 50% more time)
+constexpr float TIME_EXTENSION_FACTOR = 1.5f;
+
+// =============================================================================
 // MCTS Solver Parameters
 // =============================================================================
 
