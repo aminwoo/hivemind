@@ -89,9 +89,9 @@ EvalStats ModelEvaluator::run() {
         cout << "  Batch size: " << settings.player2.batchSize << endl;
         cout << "  CPUCT: " << settings.player2.cpuctInit << endl;
     } else {
-        cout << "Nodes per move: " << settings.nodesPerMove << " (attacker: 0.5x, defender: 1.5x)" << endl;
+        cout << "Nodes per move: " << settings.nodesPerMove << endl;
         cout << "Temperature: " << settings.temperature << endl;
-        cout << "Dirichlet: eps=0.25, alpha=0.2 (exploration enabled)" << endl;
+        cout << "Dirichlet: disabled (deterministic eval)" << endl;
     }
     
     cout << "Max game length: " << settings.maxGameLength << " plies" << endl;
@@ -231,7 +231,7 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         player1Settings.nodesPerMove = settings.nodesPerMove;
         player1Settings.temperature = settings.temperature;
         player1Settings.temperatureDecayMoves = 30;  // Match selfplay default
-        player1Settings.dirichletEpsilon = 0.25f;    // Match selfplay for exploration
+        player1Settings.dirichletEpsilon = 0.0f;     // No Dirichlet noise for eval
         player1Settings.dirichletAlpha = 0.2f;
         player1Settings.nodeRandomFactor = 0.0f;
         player1Settings.maxGameLength = settings.maxGameLength;

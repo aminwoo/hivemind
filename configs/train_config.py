@@ -188,7 +188,7 @@ def rl_train_config():
     tc.batch_steps = 100 * tc.div_factor
     tc.batch_size = int(1024 / tc.div_factor)
 
-    tc.max_lr = 0.005 / tc.div_factor
+    tc.max_lr = 0.001 / tc.div_factor
     tc.min_lr = 0.00001 / tc.div_factor
 
     tc.val_loss_factor = 0.5

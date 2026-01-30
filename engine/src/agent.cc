@@ -1,5 +1,6 @@
 #include "agent.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -108,11 +109,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
     }
 
-    if (options.verbose && engines.size() < static_cast<size_t>(numThreads)) {
-        cerr << "Warning: Not enough engines for all threads. Need " 
-             << numThreads << ", have " << engines.size() << endl;
-    }
-
     // Set up all search threads with shared root node, search info, and transposition table
     for (auto* st : searchThreads) {
         st->set_root_node(rootNode.get());
@@ -166,27 +162,101 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
     }
     
+    // Periodic info output during search (UCI verbose mode only)
+    // Output info whenever depth increases, with minimum 100ms interval to reduce overhead
+    constexpr int MIN_INFO_INTERVAL_MS = 100;
+    if (options.verbose && moveTimeMs > 0) {
+        constexpr float C = 180.0f;
+        constexpr float k = 1.56f;
+        int lastReportedDepth = 0;
+        
+        while (running && searchInfo.elapsed() < moveTimeMs) {
+            // Sleep for remaining time or MIN_INFO_INTERVAL_MS, whichever is smaller
+            int remainingMs = moveTimeMs - static_cast<int>(searchInfo.elapsed());
+            int sleepMs = std::min(MIN_INFO_INTERVAL_MS, std::max(1, remainingMs));
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+            
+            if (!running || searchInfo.elapsed() >= moveTimeMs) break;
+            
+            int depth = searchInfo.get_max_depth();
+            
+            // Only output when depth increases
+            if (depth <= lastReportedDepth) continue;
+            lastReportedDepth = depth;
+            
+            double elapsedMs = searchInfo.elapsed();
+            int nodes = searchInfo.get_nodes_searched();
+            int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
+            size_t tbhits = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getHits() : 0;
+            int hashfull = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+            
+            if (rootNode && rootNode->is_expanded()) {
+                auto childVisits = rootNode->get_child_visits();
+                auto children = rootNode->get_children();
+                size_t numChildren = min(childVisits.size(), children.size());
+                
+                if (numChildren > 0) {
+                    // Create sorted indices by visit count (descending)
+                    vector<size_t> sortedIndices(numChildren);
+                    for (size_t i = 0; i < numChildren; ++i) sortedIndices[i] = i;
+                    sort(sortedIndices.begin(), sortedIndices.end(), [&](size_t a, size_t b) {
+                        return childVisits[a] > childVisits[b];
+                    });
+                    
+                    // Output up to multiPV lines (only first PV during search to reduce overhead)
+                    int numPVs = 1;  // Only output best line during search
+                    for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
+                        size_t childIdx = sortedIndices[pvIdx];
+                        float q = children[childIdx]->Q();
+                        int cpScore = static_cast<int>(C * std::tan(k * q));
+                        string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
+                        
+                        cout << "info depth " << depth 
+                             << " score cp " << cpScore
+                             << " nodes " << nodes 
+                             << " nps " << nps
+                             << " hashfull " << hashfull
+                             << " tbhits " << tbhits
+                             << " time " << static_cast<int>(elapsedMs);
+                        
+                        if (!pv.empty()) {
+                            cout << " pv " << pv;
+                        }
+                        cout << endl;
+                    }
+                }
+            }
+        }
+    } else if (moveTimeMs > 0) {
+        // Non-verbose mode: just wait for time to expire, then signal stop
+        while (running && searchInfo.elapsed() < moveTimeMs) {
+            int remainingMs = moveTimeMs - static_cast<int>(searchInfo.elapsed());
+            int sleepMs = std::min(100, std::max(1, remainingMs));
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        }
+    }
+    
+    // Signal workers to stop (in case they're still running)
+    running = false;
+    
     // Wait for all threads to complete
     for (auto& worker : workers) {
         worker.join();
     }
 
-    running = false;
-    
-    // Extract best joint action (greedy by visit count)
+    // Extract best joint action by selecting the most visited child
     if (rootNode && rootNode->is_expanded()) {
         auto visits = rootNode->get_child_visits();
-        if (!visits.empty()) {
-            size_t bestIdx = 0;
-            int maxVisits = visits[0];
-            float bestQ = -2.0f;
-            auto children = rootNode->get_children();
+        auto children = rootNode->get_children();
+        if (!visits.empty() && !children.empty()) {
+            size_t numChildren = min(visits.size(), children.size());
             
-            for (size_t i = 0; i < visits.size(); ++i) {
-                float q = (i < children.size()) ? children[i]->Q() : -2.0f;
-                if (visits[i] > maxVisits || (visits[i] == maxVisits && q > bestQ)) {
+            // Find child with the most visits
+            size_t bestIdx = 0;
+            int maxVisits = 0;
+            for (size_t i = 0; i < numChildren; ++i) {
+                if (visits[i] > maxVisits) {
                     maxVisits = visits[i];
-                    bestQ = q;
                     bestIdx = i;
                 }
             }
@@ -213,23 +283,61 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
         constexpr float C = 180.0f;
         constexpr float k = 1.56f;
-        float q = rootNode ? rootNode->Q() : 0.0f;
-        int cpScore = static_cast<int>(C * std::tan(k * q));
         
-        string pv = extract_pv(board, 20);
-        
-        cout << "info depth " << depth 
-             << " score cp " << cpScore
-             << " nodes " << nodes 
-             << " nps " << nps
-             << " hashfull " << hashfull
-             << " tbhits " << tbhits
-             << " time " << static_cast<int>(elapsedMs);
-        
-        if (!pv.empty()) {
-            cout << " pv " << pv;
+        // Multi-PV output: sort children by visits and output top N lines
+        if (rootNode && rootNode->is_expanded()) {
+            auto childVisits = rootNode->get_child_visits();
+            auto children = rootNode->get_children();
+            size_t numChildren = min(childVisits.size(), children.size());
+            
+            // Create sorted indices by visit count (descending)
+            vector<size_t> sortedIndices(numChildren);
+            for (size_t i = 0; i < numChildren; ++i) sortedIndices[i] = i;
+            sort(sortedIndices.begin(), sortedIndices.end(), [&](size_t a, size_t b) {
+                return childVisits[a] > childVisits[b];
+            });
+            
+            // Output up to multiPV lines
+            int numPVs = min(options.multiPV, static_cast<int>(numChildren));
+            for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
+                size_t childIdx = sortedIndices[pvIdx];
+                float q = children[childIdx]->Q();
+                int cpScore = static_cast<int>(C * std::tan(k * q));
+                string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
+                
+                cout << "info depth " << depth 
+                     << " multipv " << (pvIdx + 1)
+                     << " score cp " << cpScore
+                     << " nodes " << nodes 
+                     << " nps " << nps
+                     << " hashfull " << hashfull
+                     << " tbhits " << tbhits
+                     << " time " << static_cast<int>(elapsedMs);
+                
+                if (!pv.empty()) {
+                    cout << " pv " << pv;
+                }
+                cout << endl;
+            }
+        } else {
+            // Fallback: single PV line with root Q
+            float q = rootNode ? rootNode->Q() : 0.0f;
+            int cpScore = static_cast<int>(C * std::tan(k * q));
+            string pv = extract_pv(board, 20);
+            
+            cout << "info depth " << depth 
+                 << " score cp " << cpScore
+                 << " nodes " << nodes 
+                 << " nps " << nps
+                 << " hashfull " << hashfull
+                 << " tbhits " << tbhits
+                 << " time " << static_cast<int>(elapsedMs);
+            
+            if (!pv.empty()) {
+                cout << " pv " << pv;
+            }
+            cout << endl;
         }
-        cout << endl;
 
         string bestMoveStr = extract_best_move(board);
         cout << "bestmove " << bestMoveStr << endl;
@@ -239,8 +347,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 }
 
 // Legacy wrappers for backwards compatibility
-void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color teamSide, bool teamHasTimeAdvantage) {
-    auto opts = SearchOptions::uci(moveTime);
+void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color teamSide, bool teamHasTimeAdvantage, int multiPV) {
+    auto opts = SearchOptions::uci(moveTime, multiPV);
     run_search(board, engines, teamSide, teamHasTimeAdvantage, opts);
 }
 
@@ -256,32 +364,24 @@ JointActionCandidate Agent::run_search_silent(Board& board, const vector<Engine*
 }
 
 /**
- * @brief Extracts the best move from the root node based on visit counts and Q-values.
+ * @brief Extracts the best move from the root node by selecting the most visited child.
  */
 string Agent::extract_best_move(Board& board) {
     if (!rootNode || !rootNode->is_expanded()) {
         return "(none)";
     }
 
-    // Find best child by visit count (with Q-value tiebreaker)
-    // Use parent's childVisits array which is correctly updated during backup
     auto childVisits = rootNode->get_child_visits();
-    auto children = rootNode->get_children();
-    if (children.empty() || childVisits.empty()) {
+    if (childVisits.empty()) {
         return "(none)";
     }
 
+    // Find child with the most visits
     int bestIdx = 0;
     int maxVisits = 0;
-    float bestQ = -2.0f;
-
-    for (size_t i = 0; i < children.size() && i < childVisits.size(); i++) {
-        int visits = childVisits[i];
-        float q = children[i]->Q();
-        
-        if (visits > maxVisits || (visits == maxVisits && q > bestQ)) {
-            maxVisits = visits;
-            bestQ = q;
+    for (size_t i = 0; i < childVisits.size(); ++i) {
+        if (childVisits[i] > maxVisits) {
+            maxVisits = childVisits[i];
             bestIdx = static_cast<int>(i);
         }
     }
@@ -320,6 +420,13 @@ string Agent::extract_pv(Board& board, int maxDepth) {
             break;
         }
         
+        // Sanity check: children and childVisits should have the same size
+        if (children.size() != childVisits.size()) {
+            cerr << "WARNING in extract_pv: children.size()=" << children.size()
+                 << " != childVisits.size()=" << childVisits.size() 
+                 << " at depth " << depth << endl;
+        }
+        
         // If debug log level, print all candidate moves at this PV node
         if (g_logLevel == LOG_DEBUG) {
             cout << "PV depth " << depth << " candidates:" << endl;
@@ -350,6 +457,14 @@ string Agent::extract_pv(Board& board, int maxDepth) {
         // Get the joint action for this move
         JointActionCandidate action = currentNode->get_joint_action(bestIdx);
         
+        // Verify the action is valid - if both moves are MOVE_NONE, it should be intentional
+        size_t genCount = currentNode->get_num_generated();
+        if (static_cast<size_t>(bestIdx) >= genCount) {
+            cerr << "WARNING in extract_pv: bestIdx=" << bestIdx 
+                 << " >= generatedCount=" << genCount 
+                 << " at depth " << depth << endl;
+        }
+        
         // Format move string
         string moveA = (action.moveA == Stockfish::MOVE_NONE) 
                         ? "pass" : tempBoard.uci_move(BOARD_A, action.moveA);
@@ -366,6 +481,83 @@ string Agent::extract_pv(Board& board, int maxDepth) {
         
         // Move to best child
         currentNode = children[bestIdx].get();
+    }
+    
+    return pv;
+}
+
+/**
+ * @brief Extracts PV line starting from a specific child index.
+ * Used for Multi-PV output to show principal variations for non-best moves.
+ * @param board The current board position
+ * @param childIdx The child index to start the PV from
+ * @param maxDepth Maximum number of moves to extract
+ * @return Space-separated sequence of joint moves in format "(moveA,moveB) (moveA,moveB) ..."
+ */
+string Agent::extract_pv_from_child(Board& board, int childIdx, int maxDepth) {
+    if (!rootNode || !rootNode->is_expanded()) {
+        return "";
+    }
+    
+    auto children = rootNode->get_children();
+    if (childIdx < 0 || static_cast<size_t>(childIdx) >= children.size()) {
+        return "";
+    }
+    
+    Board tempBoard = board;
+    string pv;
+    
+    // Get the first move from the specified child
+    JointActionCandidate action = rootNode->get_joint_action(childIdx);
+    string moveA = (action.moveA == Stockfish::MOVE_NONE) 
+                    ? "pass" : tempBoard.uci_move(BOARD_A, action.moveA);
+    string moveB = (action.moveB == Stockfish::MOVE_NONE) 
+                    ? "pass" : tempBoard.uci_move(BOARD_B, action.moveB);
+    pv = "(" + moveA + "," + moveB + ")";
+    
+    // Apply moves to temp board
+    tempBoard.make_moves(action.moveA, action.moveB);
+    
+    // Continue extracting PV from this child
+    Node* currentNode = children[childIdx].get();
+    
+    for (int depth = 1; depth < maxDepth; depth++) {
+        if (!currentNode || !currentNode->is_expanded()) {
+            break;
+        }
+        
+        auto nodeChildren = currentNode->get_children();
+        auto childVisits = currentNode->get_child_visits();
+        if (nodeChildren.empty() || childVisits.empty()) {
+            break;
+        }
+        
+        // Find child with most visits
+        int bestIdx = 0;
+        int maxVisits = 0;
+        for (size_t i = 0; i < nodeChildren.size() && i < childVisits.size(); i++) {
+            if (childVisits[i] > maxVisits) {
+                maxVisits = childVisits[i];
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        
+        // Get the joint action for this move
+        JointActionCandidate nextAction = currentNode->get_joint_action(bestIdx);
+        
+        // Format move string
+        string nextMoveA = (nextAction.moveA == Stockfish::MOVE_NONE) 
+                            ? "pass" : tempBoard.uci_move(BOARD_A, nextAction.moveA);
+        string nextMoveB = (nextAction.moveB == Stockfish::MOVE_NONE) 
+                            ? "pass" : tempBoard.uci_move(BOARD_B, nextAction.moveB);
+        
+        pv += " (" + nextMoveA + "," + nextMoveB + ")";
+        
+        // Apply moves to temp board for next iteration
+        tempBoard.make_moves(nextAction.moveA, nextAction.moveB);
+        
+        // Move to best child
+        currentNode = nodeChildren[bestIdx].get();
     }
     
     return pv;

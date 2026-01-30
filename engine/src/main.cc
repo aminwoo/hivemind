@@ -64,8 +64,6 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::cout << "Number of available GPUs: " << deviceCount << std::endl;
-
     // Parse --log argument first (can appear anywhere)
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "--help") == 0) || (strcmp(argv[i], "-h") == 0)) {
@@ -312,6 +310,8 @@ int main(int argc, char* argv[]) {
     UCI uci;
     std::vector<int> deviceIds(deviceCount);
     iota(deviceIds.begin(), deviceIds.end(), 0);
+
+    std::cout << "HiveMind 1.0" << std::endl;
 
     uci.initializeEngines(deviceIds);
     uci.loop();

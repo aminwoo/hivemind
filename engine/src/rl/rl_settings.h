@@ -93,11 +93,11 @@ struct RLSettings {
     
     // Node multiplier for the time-advantaged team (Alice/attacker)
     // e.g., 0.8 means Alice gets 80% of base nodes (handicap to force efficient play)
-    float attackerNodeMultiplier = 0.5f;
+    float attackerNodeMultiplier = 1.0f;
     
     // Node multiplier for the time-disadvantaged team (Bob/defender)
     // e.g., 1.5 means Bob gets 150% of base nodes to think about defense
-    float defenderNodeMultiplier = 1.5f;
+    float defenderNodeMultiplier = 1.0f;
     
     // Time-to-Mate Penalty: Reward scaling based on game length
     // Winner gets: 1.0 - (ply / maxGameLength) * mateSpeedPenalty

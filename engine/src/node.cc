@@ -9,7 +9,7 @@ std::shared_ptr<Node> Node::get_best_expanded_child() {
 }
 
 std::pair<std::shared_ptr<Node>, int> Node::get_best_expanded_child_with_idx() {
-    std::lock_guard<std::mutex> guard(nodeMutex);
+    std::unique_lock<std::shared_mutex> guard(nodeMutex);
     
     // 1. Initial validation
     size_t numExpanded = static_cast<size_t>(expandedCount);
@@ -18,13 +18,14 @@ std::pair<std::shared_ptr<Node>, int> Node::get_best_expanded_child_with_idx() {
     }
 
     // 2. Precompute constants for the selection loop (CrazyAra-aligned)
-    const float sqrtVisits = std::sqrt(static_cast<float>(m_visits));
-    const float c = SearchParams::get_cpuct(static_cast<float>(m_visits));
+    int visits = m_visits.load(std::memory_order_relaxed);
+    const float sqrtVisits = std::sqrt(static_cast<float>(visits));
+    const float c = SearchParams::get_cpuct(static_cast<float>(visits));
     const float explorationBase = c * sqrtVisits;
 
     // 3. Parent-Relative FPU Calculation (Lc0/CrazyAra-style)
     // Sets the 'default' value for nodes with 0 visits
-    float parentQ = (m_visits > 0) ? (valueSum / static_cast<float>(m_visits)) : 0.0f;
+    float parentQ = (visits > 0) ? (valueSum / static_cast<float>(visits)) : 0.0f;
     const float fpuValue = std::max(-1.0f, parentQ - SearchParams::FPU_REDUCTION);
 
     float bestScore = -std::numeric_limits<float>::infinity();
