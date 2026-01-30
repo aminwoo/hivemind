@@ -4,9 +4,9 @@
   
   # HiveMind
 
-  A free and strong UCI Bughouse chess engine powered by deep reinforcement learning.
+A free and strong UCI Bughouse chess engine powered by deep reinforcement learning.
 
-  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
 
@@ -50,12 +50,14 @@ hivemind/
 ## Requirements
 
 ### Engine (C++)
+
 - CMake 3.16+
 - C++23 compatible compiler
 - CUDA Toolkit 13.0+
 - TensorRT 10.14+
 
 ### Training (Python)
+
 - Python 3.13+
 - PyTorch 2.9+
 - See `pyproject.toml` for full dependencies
@@ -93,7 +95,7 @@ The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
 # Run inference benchmark
 ./hivemind bench
 
-# Run move generation benchmark  
+# Run move generation benchmark
 ./hivemind perft 5
 
 # Run self-play for training data generation
@@ -125,6 +127,7 @@ uv run python src/preprocessing/convert_selfplay_data.py \
 ## Neural Network Architecture
 
 HiveMind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimized architecture combining:
+
 - Mixed depthwise convolutions
 - Squeeze-and-excitation blocks
 - Pre-activation residual connections
@@ -133,16 +136,16 @@ HiveMind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimi
 
 The network uses a **64-channel input** (64×8×8) encoding both Bughouse boards:
 
-| Channels | Description |
-|----------|-------------|
-| 0-11, 32-43 | Piece positions (own and opponent) |
-| 12-21, 44-53 | Pocket pieces available for drops |
-| 22-23, 54-55 | Promoted piece masks |
-| 24, 56 | En passant squares |
-| 25, 57 | Side to move |
-| 26, 58 | Constant plane (all 1s) |
-| 27-30, 59-62 | Castling rights |
-| 31, 63 | Time advantage indicator |
+| Channels     | Description                        |
+| ------------ | ---------------------------------- |
+| 0-11, 32-43  | Piece positions (own and opponent) |
+| 12-21, 44-53 | Pocket pieces available for drops  |
+| 22-23, 54-55 | Promoted piece masks               |
+| 24, 56       | En passant squares                 |
+| 25, 57       | Side to move                       |
+| 26, 58       | Constant plane (all 1s)            |
+| 27-30, 59-62 | Castling rights                    |
+| 31, 63       | Time advantage indicator           |
 
 ### Output
 

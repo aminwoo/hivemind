@@ -17,7 +17,7 @@ void benchmark_inference(Engine& engine, int iterations) {
     float* piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
     
     // Initialize with random data
-    for (int i = 0; i < SearchParams::BATCH_SIZE * NB_INPUT_VALUES(); i++) {
+    for (size_t i = 0; i < SearchParams::BATCH_SIZE * NB_INPUT_VALUES(); i++) {
         obs[i] = static_cast<float>(rand()) / RAND_MAX;
     }
     

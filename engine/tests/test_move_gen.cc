@@ -332,7 +332,6 @@ TEST_F(EngineTest, BughouseMoveIndependence) {
     board.set_fen(BOARD_A, board.startingFen);
     board.set_fen(BOARD_B, board.startingFen);
     
-    auto moves_a_initial = board.legal_moves(BOARD_A).size();
     auto moves_b_initial = board.legal_moves(BOARD_B).size();
     
     auto moves_a = board.legal_moves(BOARD_A);
