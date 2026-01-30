@@ -26,6 +26,9 @@ Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
         transpositionTable->reserve(SearchParams::TT_INITIAL_CAPACITY);
     }
     
+    // Start garbage collection thread for async tree cleanup
+    gcThread_.start();
+    
     // Create multiple search threads
     for (int i = 0; i < numThreads; i++) {
         searchThreads.push_back(new SearchThread());
@@ -33,6 +36,9 @@ Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
 }
 
 Agent::~Agent() {
+    // Stop GC thread first
+    gcThread_.stop();
+    
     for (auto* st : searchThreads) {
         delete st;
     }
@@ -99,8 +105,29 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     int moveTimeMs = options.moveTimeMs;
     size_t targetNodes = options.targetNodes;
 
-    // Create the root node and search info
-    rootNode = make_shared<Node>(teamSide, board.hash_key(teamHasTimeAdvantage));
+    // Compute position hash for tree reuse
+    uint64_t positionHash = board.hash_key(teamHasTimeAdvantage);
+    
+    // Try to reuse tree from previous search (if enabled)
+    std::shared_ptr<Node> reusedRoot = nullptr;
+    if (SearchParams::ENABLE_TREE_REUSE) {
+        reusedRoot = try_reuse_tree(positionHash);
+    }
+    
+    if (reusedRoot) {
+        // Reuse the existing subtree
+        rootNode = reusedRoot;
+        rootNode->set_hash(positionHash);
+        
+        if (options.verbose) {
+            cout << "info string Tree reuse: " << rootNode->get_visits() 
+                 << " visits recovered" << endl;
+        }
+    } else {
+        // Create new root node
+        rootNode = make_shared<Node>(teamSide, positionHash);
+    }
+    
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTimeMs);
     
     // MCGS: Clear and set up transposition table for new search (if enabled)
@@ -251,24 +278,34 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         if (!visits.empty() && !children.empty()) {
             size_t numChildren = min(visits.size(), children.size());
             
-            // Find child with the most visits
-            size_t bestIdx = 0;
-            int maxVisits = 0;
-            for (size_t i = 0; i < numChildren; ++i) {
-                if (visits[i] > maxVisits) {
-                    maxVisits = visits[i];
-                    bestIdx = i;
+            // Use Q-value weighted selection (with veto and weighting)
+            int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+            
+            // Fallback to most-visited if Q-value selection failed
+            if (bestIdx < 0) {
+                int maxVisits = 0;
+                for (size_t i = 0; i < numChildren; ++i) {
+                    if (visits[i] > maxVisits) {
+                        maxVisits = visits[i];
+                        bestIdx = static_cast<int>(i);
+                    }
                 }
             }
             
             size_t numGenerated = rootNode->get_num_generated();
-            if (bestIdx >= numGenerated) {
+            if (static_cast<size_t>(bestIdx) >= numGenerated) {
                 cerr << "ERROR: bestIdx (" << bestIdx << ") >= numGenerated (" << numGenerated << ")" << endl;
                 bestIdx = 0;
             }
             
-            result = rootNode->get_joint_action(static_cast<int>(bestIdx));
+            result = rootNode->get_joint_action(bestIdx);
         }
+    }
+    
+    // Store next-root candidates for tree reuse
+    if (SearchParams::ENABLE_TREE_REUSE) {
+        store_next_root_candidates();
+        lastSearchHash_ = board.hash_key(teamHasTimeAdvantage);
     }
     
     // Output UCI info if verbose
@@ -588,5 +625,119 @@ void Agent::setHashSize(size_t sizeMB) {
         transpositionTable->setMaxCapacity(maxEntries);
         transpositionTable->reserve(maxEntries);
         transpositionTable->clear();
+    }
+}
+
+/**
+ * @brief Try to reuse the search tree from a previous search.
+ * 
+ * Implements CrazyAra-style tree reuse by checking if the current position
+ * matches either our expected move (ownNextRoot_) or opponent's expected
+ * response (opponentsNextRoot_).
+ */
+std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash) {
+    // Check if ownNextRoot_ matches (we made our expected move)
+    if (ownNextRoot_ && ownNextRoot_->get_hash() == positionHash) {
+        auto reused = ownNextRoot_;
+        
+        // Queue old root for garbage collection (if different from reused)
+        if (rootNode && rootNode != reused) {
+            gcThread_.enqueue(rootNode);
+        }
+        
+        // Clear both candidates since we're reusing one
+        ownNextRoot_.reset();
+        opponentsNextRoot_.reset();
+        
+        return reused;
+    }
+    
+    // Check if opponentsNextRoot_ matches (opponent made expected response)
+    if (opponentsNextRoot_ && opponentsNextRoot_->get_hash() == positionHash) {
+        auto reused = opponentsNextRoot_;
+        
+        // Queue old root for garbage collection
+        if (rootNode && rootNode != reused) {
+            gcThread_.enqueue(rootNode);
+        }
+        
+        // Clear both candidates
+        ownNextRoot_.reset();
+        opponentsNextRoot_.reset();
+        
+        return reused;
+    }
+    
+    // No reuse possible - queue old tree for GC
+    if (rootNode) {
+        gcThread_.enqueue(rootNode);
+    }
+    
+    // Clear candidates since they're now invalid
+    ownNextRoot_.reset();
+    opponentsNextRoot_.reset();
+    
+    return nullptr;
+}
+
+/**
+ * @brief Store next-root candidates for tree reuse.
+ * 
+ * After search completes, store references to likely next positions:
+ * - ownNextRoot_: Best child (our expected move)
+ * - opponentsNextRoot_: Best grandchild (opponent's expected response)
+ */
+void Agent::store_next_root_candidates() {
+    if (!rootNode || !rootNode->is_expanded()) {
+        ownNextRoot_.reset();
+        opponentsNextRoot_.reset();
+        return;
+    }
+    
+    auto children = rootNode->get_children();
+    auto visits = rootNode->get_child_visits();
+    
+    if (children.empty() || visits.empty()) {
+        ownNextRoot_.reset();
+        opponentsNextRoot_.reset();
+        return;
+    }
+    
+    // Find best child (most visited, with Q-value consideration)
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+    if (bestIdx < 0) {
+        // Fallback to most-visited
+        int maxVisits = 0;
+        for (size_t i = 0; i < visits.size(); ++i) {
+            if (visits[i] > maxVisits) {
+                maxVisits = visits[i];
+                bestIdx = static_cast<int>(i);
+            }
+        }
+    }
+    
+    if (bestIdx >= 0 && static_cast<size_t>(bestIdx) < children.size()) {
+        ownNextRoot_ = children[bestIdx];
+        
+        // Find best grandchild (opponent's expected response)
+        if (ownNextRoot_ && ownNextRoot_->is_expanded()) {
+            auto grandchildren = ownNextRoot_->get_children();
+            auto grandVisits = ownNextRoot_->get_child_visits();
+            
+            if (!grandchildren.empty() && !grandVisits.empty()) {
+                int bestGrandIdx = 0;
+                int maxGrandVisits = 0;
+                for (size_t i = 0; i < grandVisits.size(); ++i) {
+                    if (grandVisits[i] > maxGrandVisits) {
+                        maxGrandVisits = grandVisits[i];
+                        bestGrandIdx = static_cast<int>(i);
+                    }
+                }
+                
+                if (static_cast<size_t>(bestGrandIdx) < grandchildren.size()) {
+                    opponentsNextRoot_ = grandchildren[bestGrandIdx];
+                }
+            }
+        }
     }
 }

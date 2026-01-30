@@ -13,6 +13,22 @@
 #include "utils.h"
 #include "Fairy-Stockfish/src/types.h"
 
+/**
+ * @brief Node type for MCTS Solver.
+ * 
+ * Tracks whether a node's game-theoretic value is proven:
+ * - UNSOLVED: Not yet determined
+ * - WIN: Proven winning position (opponent is mated)
+ * - LOSS: Proven losing position (we are mated)
+ * - DRAW: Proven draw (stalemate, repetition, etc.)
+ */
+enum class NodeType : uint8_t {
+    UNSOLVED = 0,
+    WIN = 1,
+    LOSS = 2,
+    DRAW = 3
+};
+
 class Node {
 private:
     // Reader-writer mutex for thread-safe access to node state
@@ -45,6 +61,12 @@ private:
     uint64_t positionHash = 0;  // Zobrist hash for transposition detection
     std::atomic<bool> isTransposition{false};  // True if this node was found via transposition
     std::atomic<int> inFlightCount{0};  // Number of in-flight evaluations (for MCGS backup)
+    
+    // MCTS Solver support
+    NodeType nodeType = NodeType::UNSOLVED;  // Proven game-theoretic value
+    std::vector<NodeType> childNodeTypes;    // Cached node types of children
+    std::atomic<int> unsolvedChildCount{0};  // Number of unsolved children (for solver)
+    int endInPly = 0;                        // Distance to terminal (for mate distance)
 
 public:
     Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) {}
@@ -557,5 +579,342 @@ public:
             }
         }
         return {nullptr, -1};
+    }
+    
+    // =========================================================================
+    // MCTS Solver Methods
+    // =========================================================================
+    
+    /**
+     * @brief Get the node type (UNSOLVED, WIN, LOSS, DRAW).
+     */
+    NodeType get_node_type() const {
+        return nodeType;
+    }
+    
+    /**
+     * @brief Set the node type (for solver propagation).
+     */
+    void set_node_type(NodeType type) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType = type;
+    }
+    
+    /**
+     * @brief Check if this node is solved (WIN, LOSS, or DRAW).
+     */
+    bool is_solved() const {
+        return nodeType != NodeType::UNSOLVED;
+    }
+    
+    /**
+     * @brief Mark this node as a WIN (opponent is mated).
+     */
+    void mark_as_win(int ply = 0) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType = NodeType::WIN;
+        valueSum = 1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly = ply;
+    }
+    
+    /**
+     * @brief Mark this node as a LOSS (we are mated).
+     */
+    void mark_as_loss(int ply = 0) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType = NodeType::LOSS;
+        valueSum = -1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly = ply;
+    }
+    
+    /**
+     * @brief Mark this node as a DRAW.
+     */
+    void mark_as_draw() {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType = NodeType::DRAW;
+        valueSum = -SearchParams::DRAW_CONTEMPT * (m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly = 0;
+    }
+    
+    /**
+     * @brief Get the ply distance to terminal.
+     */
+    int get_end_in_ply() const {
+        return endInPly;
+    }
+    
+    /**
+     * @brief Initialize child node types array to match children count.
+     */
+    void init_child_node_types() {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (childNodeTypes.size() < children.size()) {
+            childNodeTypes.resize(children.size(), NodeType::UNSOLVED);
+            unsolvedChildCount.store(static_cast<int>(children.size()), std::memory_order_relaxed);
+        }
+    }
+    
+    /**
+     * @brief Update child node type and check for solver propagation.
+     * @param childIdx Index of the child
+     * @param childType The child's proven node type
+     * @return True if this node became solved as a result
+     */
+    bool update_child_node_type(int childIdx, NodeType childType) {
+        if (!SearchParams::ENABLE_MCTS_SOLVER) return false;
+        
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        
+        if (nodeType != NodeType::UNSOLVED) {
+            return false;  // Already solved
+        }
+        
+        if (childIdx < 0 || static_cast<size_t>(childIdx) >= childNodeTypes.size()) {
+            return false;
+        }
+        
+        if (childNodeTypes[childIdx] != NodeType::UNSOLVED) {
+            return false;  // Already recorded
+        }
+        
+        childNodeTypes[childIdx] = childType;
+        unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
+        
+        // Check solver conditions (from child's perspective, so inverted)
+        // If any child is a LOSS (for the child), this node is a WIN (we can force mate)
+        if (childType == NodeType::LOSS) {
+            nodeType = NodeType::WIN;
+            // Use shortest path to win
+            if (children[childIdx]) {
+                endInPly = children[childIdx]->get_end_in_ply() + 1;
+            }
+            return true;
+        }
+        
+        // If all children are solved, check if we're lost or drawn
+        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0) {
+            bool allWins = true;
+            bool hasDrawn = false;
+            int longestPly = 0;
+            
+            for (size_t i = 0; i < childNodeTypes.size(); i++) {
+                if (childNodeTypes[i] != NodeType::WIN) {
+                    allWins = false;
+                }
+                if (childNodeTypes[i] == NodeType::DRAW) {
+                    hasDrawn = true;
+                }
+                if (children[i] && children[i]->get_end_in_ply() > longestPly) {
+                    longestPly = children[i]->get_end_in_ply();
+                }
+            }
+            
+            if (allWins) {
+                // All children are wins for them = loss for us
+                nodeType = NodeType::LOSS;
+                endInPly = longestPly + 1;  // Delay mate as long as possible
+                return true;
+            } else if (hasDrawn) {
+                nodeType = NodeType::DRAW;
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // =========================================================================
+    // Q-Value Selection Methods
+    // =========================================================================
+    
+    /**
+     * @brief Get the Q-values for all expanded children.
+     */
+    std::vector<float> get_q_values() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        return qValues;
+    }
+    
+    /**
+     * @brief Get the index of the child with the highest Q-value.
+     */
+    int get_best_q_idx() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        if (qValues.empty()) return -1;
+        
+        int bestIdx = 0;
+        float bestQ = qValues[0];
+        for (size_t i = 1; i < qValues.size(); i++) {
+            if (qValues[i] > bestQ) {
+                bestQ = qValues[i];
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        return bestIdx;
+    }
+    
+    /**
+     * @brief Get the best move index using Q-value veto and weighting.
+     * 
+     * Implements CrazyAra's Q-value veto: if the best Q-value move differs
+     * significantly from the most-visited move, use Q-value to select.
+     * 
+     * @param qVetoDelta Threshold for Q-value veto (0 = disabled)
+     * @param qValueWeight Weight for Q-value adjustment (0 = pure visits)
+     * @return Index of the best move considering Q-values
+     */
+    int get_best_move_idx_with_q_weight(float qVetoDelta = SearchParams::Q_VETO_DELTA,
+                                        float qValueWeight = SearchParams::Q_VALUE_WEIGHT) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        
+        if (childVisits.empty() || qValues.empty()) return -1;
+        
+        // Handle solved nodes
+        if (nodeType == NodeType::WIN) {
+            // Find the child that's a LOSS (quickest win)
+            int bestIdx = -1;
+            int shortestPly = INT32_MAX;
+            for (size_t i = 0; i < childNodeTypes.size(); i++) {
+                if (childNodeTypes[i] == NodeType::LOSS) {
+                    if (children[i] && children[i]->get_end_in_ply() < shortestPly) {
+                        shortestPly = children[i]->get_end_in_ply();
+                        bestIdx = static_cast<int>(i);
+                    }
+                }
+            }
+            if (bestIdx >= 0) return bestIdx;
+        }
+        
+        if (nodeType == NodeType::LOSS) {
+            // Find the child with longest ply (delay mate)
+            int bestIdx = 0;
+            int longestPly = 0;
+            for (size_t i = 0; i < children.size(); i++) {
+                if (children[i] && children[i]->get_end_in_ply() > longestPly) {
+                    longestPly = children[i]->get_end_in_ply();
+                    bestIdx = static_cast<int>(i);
+                }
+            }
+            return bestIdx;
+        }
+        
+        // Find most-visited child
+        int bestVisitIdx = 0;
+        int maxVisits = childVisits[0];
+        for (size_t i = 1; i < childVisits.size(); i++) {
+            if (childVisits[i] > maxVisits) {
+                maxVisits = childVisits[i];
+                bestVisitIdx = static_cast<int>(i);
+            }
+        }
+        
+        // Find best Q-value child
+        int bestQIdx = 0;
+        float bestQ = qValues[0];
+        for (size_t i = 1; i < qValues.size(); i++) {
+            if (qValues[i] > bestQ) {
+                bestQ = qValues[i];
+                bestQIdx = static_cast<int>(i);
+            }
+        }
+        
+        // Q-value veto: if best-Q move is significantly better, use it
+        if (qVetoDelta > 0.0f && bestQIdx != bestVisitIdx) {
+            if (qValues[bestQIdx] > qValues[bestVisitIdx] + qVetoDelta && 
+                childVisits[bestQIdx] > 1) {
+                return bestQIdx;
+            }
+        }
+        
+        // Q-value weighting (for stochastic selection, not direct move choice)
+        // For direct move selection, we just use visits or Q-veto
+        return bestVisitIdx;
+    }
+    
+    /**
+     * @brief Get MCTS policy with Q-value adjustments.
+     * 
+     * Creates a policy distribution from visit counts with:
+     * - Q-value veto: swaps visit counts when Q-value is much better
+     * - Q-value weighting: transfers mass to higher-Q moves
+     * - Prunes moves that lead to proven losses
+     * 
+     * @return Normalized policy vector
+     */
+    std::vector<float> get_mcts_policy_with_q_weight() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        
+        if (childVisits.empty()) return {};
+        
+        std::vector<float> policy(childVisits.size());
+        float total = 0.0f;
+        
+        // Start with visit counts
+        for (size_t i = 0; i < childVisits.size(); i++) {
+            policy[i] = static_cast<float>(childVisits[i]);
+            total += policy[i];
+        }
+        
+        if (total == 0.0f) return policy;
+        
+        // Prune moves leading to losses (if solver is enabled)
+        if (SearchParams::ENABLE_MCTS_SOLVER && nodeType == NodeType::UNSOLVED) {
+            for (size_t i = 0; i < childNodeTypes.size() && i < policy.size(); i++) {
+                // Child WIN = bad for us (they win)
+                if (childNodeTypes[i] == NodeType::WIN) {
+                    total -= policy[i];
+                    policy[i] = 0.0f;
+                }
+            }
+        }
+        
+        // Find best-visited and second-best indices
+        int bestVisitIdx = 0;
+        int secondVisitIdx = -1;
+        for (size_t i = 1; i < policy.size(); i++) {
+            if (policy[i] > policy[bestVisitIdx]) {
+                secondVisitIdx = bestVisitIdx;
+                bestVisitIdx = static_cast<int>(i);
+            } else if (secondVisitIdx < 0 || policy[i] > policy[secondVisitIdx]) {
+                secondVisitIdx = static_cast<int>(i);
+            }
+        }
+        
+        // Find best Q-value index
+        int bestQIdx = 0;
+        if (!qValues.empty()) {
+            for (size_t i = 1; i < qValues.size(); i++) {
+                if (qValues[i] > qValues[bestQIdx]) {
+                    bestQIdx = static_cast<int>(i);
+                }
+            }
+        }
+        
+        // Q-value veto
+        if (SearchParams::Q_VETO_DELTA > 0.0f && bestQIdx != bestVisitIdx) {
+            if (qValues[bestQIdx] > qValues[bestVisitIdx] + SearchParams::Q_VETO_DELTA &&
+                childVisits[bestQIdx] > 1) {
+                // Swap visit counts
+                std::swap(policy[bestQIdx], policy[bestVisitIdx]);
+            }
+        }
+        // Q-value weighting (second-best boost)
+        else if (SearchParams::Q_VALUE_WEIGHT > 0.0f && secondVisitIdx >= 0) {
+            if (qValues[secondVisitIdx] > qValues[bestVisitIdx]) {
+                float qDiff = qValues[secondVisitIdx] - qValues[bestVisitIdx];
+                policy[secondVisitIdx] += qDiff * SearchParams::Q_VALUE_WEIGHT * policy[bestVisitIdx];
+                total += qDiff * SearchParams::Q_VALUE_WEIGHT * policy[bestVisitIdx];
+            }
+        }
+        
+        // Normalize
+        if (total > 0.0f) {
+            for (auto& p : policy) {
+                p /= total;
+            }
+        }
+        
+        return policy;
     }
 };

@@ -9,6 +9,7 @@
 #include "engine.h"
 #include "search_params.h"
 #include "transposition_table.h"
+#include "gc_thread.h"
 #include "globals.h"
 #include "joint_action.h"
 #include "rl/rl_settings.h"
@@ -76,6 +77,14 @@ private:
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
     int numThreads;                                          // Number of search threads
+    
+    // Tree reuse support (CrazyAra-style)
+    std::shared_ptr<Node> ownNextRoot_;      // Expected next root after our move
+    std::shared_ptr<Node> opponentsNextRoot_; // Expected next root after opponent's move
+    uint64_t lastSearchHash_ = 0;            // Hash of last search position
+    
+    // Garbage collection thread for async tree cleanup
+    GCThread gcThread_;
 
 public:
     /**
@@ -174,5 +183,36 @@ public:
      */
     std::shared_ptr<Node> get_root_node() const {
         return rootNode;
+    }
+    
+    /**
+     * @brief Try to reuse the search tree from a previous search.
+     * 
+     * Checks if the given position matches either ownNextRoot_ or opponentsNextRoot_.
+     * If found, reuses that subtree as the new root. The old tree portions are
+     * queued for async garbage collection.
+     * 
+     * @param positionHash Hash of the current position
+     * @return Shared pointer to reusable root, or nullptr if no reuse possible
+     */
+    std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash);
+    
+    /**
+     * @brief Store next-root candidates for tree reuse.
+     * 
+     * Called after search completes to save references to likely next positions:
+     * - ownNextRoot_: Most-visited child (our expected move)
+     * - opponentsNextRoot_: Most-visited grandchild (opponent's response)
+     */
+    void store_next_root_candidates();
+    
+    /**
+     * @brief Clear the tree reuse state.
+     * Called when starting a new game.
+     */
+    void clear_tree_reuse() {
+        ownNextRoot_.reset();
+        opponentsNextRoot_.reset();
+        lastSearchHash_ = 0;
     }
 };
