@@ -8,16 +8,22 @@ Verifies that:
 3. Real data augmentation works correctly
 """
 
-import torch
 import glob
+import os
+import sys
 from pathlib import Path
 
-from src.training.data_loaders import (
-    flip_bughouse_sample,
-    RLDataset,
-    load_rl_parquet_shard
-)
+import torch
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.domain.move2planes import make_map
+from src.training.data_loaders import (
+    RLDataset,
+    flip_bughouse_sample,
+    load_rl_parquet_shard,
+)
 
 
 def test_flip_function():

@@ -11,10 +11,16 @@ Usage:
 """
 
 import argparse
-import numpy as np
-import torch
-import onnxruntime as ort
+import os
+import sys
+
 import chess
+import numpy as np
+import onnxruntime as ort
+import torch
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
