@@ -143,6 +143,63 @@ constexpr float DRAW_CONTEMPT = 0.15f;
 // Q-Value Weighted Move Selection Parameters (CrazyAra 2019)
 // =============================================================================
 
+/**
+ * Q-value veto: If best Q-value move differs from most-visited move by more than
+ * this delta, swap their visit counts to promote the higher-Q move.
+ * 
+ * This prevents cases where a clearly better move hasn't received enough visits
+ * to become the most-visited child.
+ * 
+ * CrazyAra default: 0.4
+ * Set to 0.0 to disable Q-value veto.
+ */
+constexpr float Q_VETO_DELTA = 0.4f;
+
+/**
+ * Q-value weight: Transfers probability mass from most-visited to second-best
+ * move proportional to Q-value difference.
+ * 
+ * When the second-best Q-value is higher than the best-visited move:
+ * policy[secondBest] += qDiff * Q_VALUE_WEIGHT * policy[bestVisited]
+ * 
+ * CrazyAra default: 1.0
+ * Set to 0.0 to disable Q-value weighting.
+ */
+constexpr float Q_VALUE_WEIGHT = 1.0f;
+
+// =============================================================================
+// Tree Reuse Parameters
+// =============================================================================
+
+/**
+ * Enable tree reuse: Preserve search tree between moves.
+ * 
+ * When enabled, the engine stores pointers to likely next roots:
+ * - ownNextRoot: The most-visited child (our expected move)
+ * - opponentsNextRoot: Opponent's most-visited response
+ * 
+ * On the next search, if the position matches, the subtree is reused.
+ * CrazyAra default: true
+ */
+constexpr bool ENABLE_TREE_REUSE = true;
+
+// =============================================================================
+// MCTS Solver Parameters
+// =============================================================================
+
+/**
+ * Enable MCTS solver: Propagate proven WIN/LOSS/DRAW states up the tree.
+ * 
+ * When a terminal node is reached:
+ * - WIN for opponent (they got mated) → mark parent as WIN
+ * - LOSS for us (we got mated) → mark parent as candidate LOSS
+ * - Parent is WIN if any child is LOSS (opponent)
+ * - Parent is LOSS if all children are WIN (opponent)
+ * 
+ * CrazyAra default: true
+ */
+constexpr bool ENABLE_MCTS_SOLVER = true;
+
 // =============================================================================
 // Progressive Widening Parameters
 // =============================================================================
