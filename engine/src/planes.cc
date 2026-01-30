@@ -1,14 +1,38 @@
 #include "planes.h"
 #include <algorithm>
 
+// Check for AVX2 support at compile time
+#if defined(__AVX2__)
+#include <immintrin.h>
+#define USE_AVX2 1
+#else
+#define USE_AVX2 0
+#endif
+
 // Stockfish bitboards are typically 64-bit integers where bit 0 is A1.
 // This function maps the bitboard to the current plane iterator.
+// Optimized: Uses bit-scanning intrinsics for O(popcount) instead of O(64)
 inline void set_bits_from_bitmap(Stockfish::Bitboard bb, float *curIt) {
-    for (int i = 0; i < 64; i++) {
-        if (bb & (1ULL << i)) {
-            curIt[i] = 1.0f;
-        }
+    while (bb) {
+        // __builtin_ctzll: count trailing zeros (index of lowest set bit)
+        int idx = __builtin_ctzll(bb);
+        curIt[idx] = 1.0f;
+        bb &= bb - 1;  // Clear lowest set bit
     }
+}
+
+// SIMD-optimized fill for 64 floats (one chess board plane)
+inline void fill_plane_simd(float* curIt, float value) {
+#if USE_AVX2
+    // AVX2: Fill 8 floats at a time (256 bits = 8 x 32-bit floats)
+    __m256 val = _mm256_set1_ps(value);
+    for (int i = 0; i < 64; i += 8) {
+        _mm256_storeu_ps(curIt + i, val);
+    }
+#else
+    // Fallback to std::fill_n
+    std::fill_n(curIt, 64, value);
+#endif
 }
 
 struct PlaneData {
@@ -25,7 +49,7 @@ struct PlaneData {
     }
 
     inline void set_plane_to_value(float value) {
-        std::fill_n(curIt, 64, value);
+        fill_plane_simd(curIt, value);
         increment_channel();
     }
 
@@ -118,8 +142,17 @@ inline void set_plane_castling_rights_board(PlaneData& p, int boardIdx) {
 }
 
 void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage=false) {
-    // Initialize all to 0
-    std::fill_n(inputPlanes, NB_INPUT_VALUES(), 0.0f); 
+    // Initialize all to 0 using SIMD when available
+    // NB_INPUT_VALUES = 64 * 8 * 8 = 4096 floats (exactly 512 AVX2 iterations)
+    constexpr size_t totalFloats = 64 * 8 * 8;  // NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH
+#if USE_AVX2
+    __m256 zero = _mm256_setzero_ps();
+    for (size_t i = 0; i < totalFloats; i += 8) {
+        _mm256_storeu_ps(inputPlanes + i, zero);
+    }
+#else
+    std::fill_n(inputPlanes, totalFloats, 0.0f);
+#endif
     PlaneData planeData(board, inputPlanes, teamSide);
     
     // Process Board 0 (Channels 0-31)

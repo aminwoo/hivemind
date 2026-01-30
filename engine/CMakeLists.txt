@@ -3,7 +3,13 @@ project(hivemind)
 
 # Set C++ version and optimization level
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Ofast -DNDEBUG -DNNUE_EMBEDDING_OFF")
+
+# Performance flags:
+#   -Ofast: Maximum optimization (includes -O3 + fast-math)
+#   -march=native: CPU-specific optimizations (AVX2, FMA, etc.)
+#   -flto: Link-time optimization for cross-file inlining
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Ofast -DNDEBUG -DNNUE_EMBEDDING_OFF -march=native -flto")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
 
 # Add source files
 set(LIB_SOURCES
