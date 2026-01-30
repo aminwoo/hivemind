@@ -4,16 +4,23 @@ Evaluate supervised model on RL self-play data as a validation set.
 Usage:
     python evaluate_model.py --model path/to/model.onnx --data path/to/parquet_dir
 """
+
 import argparse
 import glob
+import os
+import sys
 from pathlib import Path
+
 import numpy as np
-import torch
 import onnxruntime as ort
+import torch
 from tqdm import tqdm
 
-from src.training.data_loaders import load_rl_parquet_shard, RLDataset
-from src.training.metrics import Accuracy, MSE, CrossEntropy, AccuracySign
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.training.data_loaders import RLDataset, load_rl_parquet_shard
+from src.training.metrics import Accuracy, AccuracySign, CrossEntropy, MSE
 
 
 def load_onnx_model(model_path):

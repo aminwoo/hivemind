@@ -293,7 +293,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 priorsA.push_back(1.0f);
             } else {
                 actionsA.push_back(Stockfish::MOVE_NONE);
-                priorsA = get_normalized_probability(batchPiA, actionsA, BOARD_A, leafBoard);
+                priorsA = get_normalized_probability(batchPiA, actionsA, BOARD_A, leafBoard, !ctx.sitPlaneActive);
             }
             
             if (actionsB.empty()) {
@@ -301,7 +301,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 priorsB.push_back(1.0f);
             } else {
                 actionsB.push_back(Stockfish::MOVE_NONE);
-                priorsB = get_normalized_probability(batchPiB, actionsB, BOARD_B, leafBoard);
+                priorsB = get_normalized_probability(batchPiB, actionsB, BOARD_B, leafBoard, !ctx.sitPlaneActive);
             }
             
             // Expand leaf node and register in transposition table (MCGS)

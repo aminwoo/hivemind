@@ -17,13 +17,19 @@ Usage:
 """
 
 import argparse
-import numpy as np
-import torch
 import glob
+import os
+import sys
 from pathlib import Path
 
-from src.training.data_loaders import load_rl_parquet_shard, RLDataset, flip_bughouse_sample
+import numpy as np
+import torch
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.domain.move2planes import make_map
+from src.training.data_loaders import RLDataset, flip_bughouse_sample, load_rl_parquet_shard
 
 
 def is_early_game(planes: torch.Tensor) -> bool:
