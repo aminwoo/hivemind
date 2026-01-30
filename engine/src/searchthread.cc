@@ -11,15 +11,8 @@
 
 using namespace std;
 
-SearchThread::SearchThread() : transpositionTable(nullptr) {
-    // Pre-allocate inference buffers for batch processing
-    obs = new float[SearchParams::BATCH_SIZE * NB_INPUT_VALUES()];
-    value = new float[SearchParams::BATCH_SIZE];
-    piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-    piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-
-    // Reserve space for batch contexts
-    batchContexts.reserve(SearchParams::BATCH_SIZE);
+SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {
+    // Buffers are allocated lazily in ensureBufferSize() when run_iteration is called
 }
 
 SearchThread::~SearchThread() {
@@ -27,6 +20,25 @@ SearchThread::~SearchThread() {
     delete[] value;
     delete[] piA;
     delete[] piB;
+}
+
+void SearchThread::ensureBufferSize(int batchSize) {
+    if (batchSize == currentBatchSize) return;
+    
+    // Free old buffers
+    delete[] obs;
+    delete[] value;
+    delete[] piA;
+    delete[] piB;
+    
+    // Allocate new buffers
+    obs = new float[batchSize * NB_INPUT_VALUES()];
+    value = new float[batchSize];
+    piA = new float[batchSize * NB_POLICY_VALUES()];
+    piB = new float[batchSize * NB_POLICY_VALUES()];
+    
+    batchContexts.reserve(batchSize);
+    currentBatchSize = batchSize;
 }
 
 SearchInfo* SearchThread::get_search_info() {
@@ -79,16 +91,20 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
 /**
  * @brief Runs a minibatch of MCTS iterations.
  * 
- * This collects SearchParams::BATCH_SIZE leaf nodes, runs batched neural network inference,
+ * This collects leaves based on the engine's batch size, runs batched neural network inference,
  * then expands and backs up all leaves. This better utilizes GPU parallelism.
  */
 void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
+    // Get batch size from engine and ensure buffers are properly sized
+    int batchSize = engine->getBatchSize();
+    ensureBufferSize(batchSize);
+    
     batchContexts.clear();
     int validInferenceCount = 0;
     int batchCollisions = 0;
     
-    // Phase 1: Collect SearchParams::BATCH_SIZE leaf nodes
-    for (int i = 0; i < SearchParams::BATCH_SIZE; i++) {
+    // Phase 1: Collect batchSize leaf nodes
+    for (int i = 0; i < batchSize; i++) {
         LeafContext ctx;
         trajectoryBuffer.clear();
         
@@ -113,9 +129,13 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
         
         // Check for terminal states
-        if (board.is_draw()) {
+        // Pass the tree depth (trajectory size) as ply so that 2-fold repetitions
+        // within the search tree are correctly detected as draws
+        int searchPly = static_cast<int>(trajectoryBuffer.size());
+        if (board.is_draw(searchPly)) {
             ctx.isTerminal = true;
-            ctx.terminalValue = 0.0f;
+            // Apply draw contempt: treat draws as slightly negative for the side to move
+            ctx.terminalValue = -SearchParams::DRAW_CONTEMPT;
             batchContexts.push_back(std::move(ctx));
             
             // Undo moves for this trajectory so we can do another selection
@@ -128,30 +148,41 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             continue;
         }
         
-        // Check for checkmate on each board
-        bool isCheckmate = false;
+        // Check for checkmate using bughouse-aware detection
+        // This properly accounts for partner captures that could provide blocking pieces
         Stockfish::Color teamToPlay = ctx.teamToPlay;
+        Stockfish::Color opponentTeam = ~teamToPlay;
+        Stockfish::Color rootTeam = root->get_team_to_play();
         
-        if (board.side_to_move(BOARD_A) == teamToPlay) {
-            auto movesA = board.legal_moves(BOARD_A);
-            if (movesA.empty() && board.is_in_check(BOARD_A)) {
-                //cerr << "Checkmate on board A: " << board.fen(BOARD_A) << "|" << board.fen(BOARD_B) << endl;
-                ctx.isTerminal = true;
-                ctx.terminalValue = -1.0f;
-                isCheckmate = true;
+        // Determine time advantage for each team based on root team's perspective
+        // teamHasTimeAdvantage is whether the ROOT team has time advantage
+        bool teamToPlayHasTimeAdvantage = (teamToPlay == rootTeam) ? teamHasTimeAdvantage : !teamHasTimeAdvantage;
+        bool opponentTeamHasTimeAdvantage = !teamToPlayHasTimeAdvantage;
+        
+        // First check if the team that just moved (opponentTeam) got themselves mated
+        // This happens when they made a move that doesn't save them from check
+        bool previousTeamMated = board.is_checkmate(opponentTeam, opponentTeamHasTimeAdvantage);
+        if (previousTeamMated) {
+            ctx.isTerminal = true;
+            ctx.terminalValue = 1.0f;  // Positive value for current player - opponent just got mated!
+            batchContexts.push_back(std::move(ctx));
+            
+            // Undo moves
+            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+                const JointActionCandidate& action = it->action;
+                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
+                    board.unmake_moves(action.moveA, action.moveB);
+                }
             }
+            continue;
         }
-        if (!isCheckmate && board.side_to_move(BOARD_B) == ~teamToPlay) {
-            auto movesB = board.legal_moves(BOARD_B);
-            if (movesB.empty() && board.is_in_check(BOARD_B)) {
-                //cerr << "Checkmate on board B: " << board.fen(BOARD_A) << "|" << board.fen(BOARD_B) << endl;
-                ctx.isTerminal = true;
-                ctx.terminalValue = -1.0f;
-                isCheckmate = true;
-            }
-        }
+        
+        // Check if the team about to play is mated
+        bool isCheckmate = board.is_checkmate(teamToPlay, teamToPlayHasTimeAdvantage);
         
         if (isCheckmate) {
+            ctx.isTerminal = true;
+            ctx.terminalValue = -1.0f;  // Negative - side to move is mated, they lose
             batchContexts.push_back(std::move(ctx));
             
             // Undo moves
@@ -208,7 +239,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                     }
                 }
             }
-            searchInfo->increment_nodes(SearchParams::BATCH_SIZE);
+            searchInfo->increment_nodes(batchSize);
             return;
         }
     }
@@ -238,6 +269,11 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             
             Board& leafBoard = *ctx.boardState;
             
+            // Compute whether the team at this leaf has time advantage
+            // Time advantage alternates: if root team has it, opponent team doesn't
+            Stockfish::Color rootTeam = root->get_team_to_play();
+            bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == rootTeam) ? teamHasTimeAdvantage : !teamHasTimeAdvantage;
+            
             // Get legal moves for each board
             vector<Stockfish::Move> actionsA;
             vector<Stockfish::Move> actionsB;
@@ -257,7 +293,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 priorsA.push_back(1.0f);
             } else {
                 actionsA.push_back(Stockfish::MOVE_NONE);
-                priorsA = get_normalized_probability(batchPiA, actionsA, 0, leafBoard);
+                priorsA = get_normalized_probability(batchPiA, actionsA, BOARD_A, leafBoard);
             }
             
             if (actionsB.empty()) {
@@ -265,12 +301,14 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 priorsB.push_back(1.0f);
             } else {
                 actionsB.push_back(Stockfish::MOVE_NONE);
-                priorsB = get_normalized_probability(batchPiB, actionsB, 1, leafBoard);
+                priorsB = get_normalized_probability(batchPiB, actionsB, BOARD_B, leafBoard);
             }
             
             // Expand leaf node and register in transposition table (MCGS)
+            // Use leafTeamHasTimeAdvantage for the team making the move at this leaf.
+            // The generator creates joint actions that THIS team will play.
             expand_leaf_node(ctx.leaf, actionsA, actionsB, priorsA, priorsB, 
-                             teamHasTimeAdvantage, ctx.leafHash);
+                             leafTeamHasTimeAdvantage, ctx.leafHash);
                 
             // Backup value
             backup(ctx.trajectory, leafBoard, *batchValue);
@@ -279,7 +317,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         }
     }
     
-    searchInfo->increment_nodes(SearchParams::BATCH_SIZE);
+    searchInfo->increment_nodes(batchSize);
     searchInfo->increment_collisions(batchCollisions);
 }
 

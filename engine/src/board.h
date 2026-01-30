@@ -1,5 +1,6 @@
 #pragma once
 
+#include "constants.h"
 #include "zobrist.h"
 
 #include <sstream>
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <iostream>
 
+#include "Fairy-Stockfish/src/apiutil.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
 #include "Fairy-Stockfish/src/types.h"
@@ -241,6 +243,21 @@ class Board {
             return move_str;
         }
 
+        /**
+         * @brief Converts a move to SAN (Standard Algebraic Notation) string.
+         * @param board_num The board index.
+         * @param move The move to convert.
+         * @return std::string The SAN move string (e.g., "e4", "Nf3", "O-O").
+         */
+        std::string san_move(int board_num, Stockfish::Move move) { 
+            if (move == Stockfish::MOVE_NONE) {
+                return "pass";
+            }
+
+            // Get the SAN move string using Fairy-Stockfish's move_to_san
+            return Stockfish::SAN::move_to_san(*pos[board_num], move, Stockfish::NOTATION_SAN);
+        }
+
         bool is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage = false);
         bool check_mate_in_one(Stockfish::Color side);
         
@@ -258,11 +275,17 @@ class Board {
             return pos[board_num]->checkers();
         }
 
-        bool is_draw() {
-            return pos[0]->is_draw(game_ply(0)) || pos[1]->is_draw(game_ply(1)); 
+        /**
+         * @brief Check if either board is in a draw state.
+         * @param ply The current search depth (used for repetition detection)
+         *            When ply > 0, 2-fold repetition within search is treated as draw.
+         *            When ply = 0, requires 3-fold repetition.
+         */
+        bool is_draw(int ply = 0) {
+            return pos[0]->is_draw(ply) || pos[1]->is_draw(ply); 
         }
 
-        bool is_draw(int board_num) {
-            return pos[board_num]->is_draw(game_ply(board_num));
+        bool is_draw_on_board(int board_num, int ply = 0) {
+            return pos[board_num]->is_draw(ply);
         }
 };
