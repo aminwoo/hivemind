@@ -69,6 +69,8 @@ TranspositionTable* SearchThread::get_transposition_table() {
 void SearchThread::backup(vector<TrajectoryEntry>& trajectory, 
                           Board& board, float valueToBackup) {
     // Process nodes in reverse order (from leaf to root)
+    NodeType childType = NodeType::UNSOLVED;
+    
     for (auto it = trajectory.rbegin(); it != trajectory.rend(); ++it) {
         Node* node = it->node;
         int childIdx = it->selectedChildIdx;
@@ -78,6 +80,15 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
             node->update(childIdx, valueToBackup);
             // Remove virtual loss after real update
             node->remove_virtual_loss(childIdx);
+            
+            // MCTS Solver: propagate terminal states
+            if (SearchParams::ENABLE_MCTS_SOLVER && childType != NodeType::UNSOLVED) {
+                node->init_child_node_types();
+                node->update_child_node_type(childIdx, childType);
+                childType = node->get_node_type();
+            } else {
+                childType = NodeType::UNSOLVED;
+            }
         } else {
             // Root or leaf without child selection
             node->update_terminal(valueToBackup);
@@ -136,6 +147,12 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             ctx.isTerminal = true;
             // Apply draw contempt: treat draws as slightly negative for the side to move
             ctx.terminalValue = -SearchParams::DRAW_CONTEMPT;
+            
+            // MCTS Solver: mark leaf as draw
+            if (SearchParams::ENABLE_MCTS_SOLVER) {
+                ctx.leaf->mark_as_draw();
+            }
+            
             batchContexts.push_back(std::move(ctx));
             
             // Undo moves for this trajectory so we can do another selection
@@ -165,6 +182,12 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         if (previousTeamMated) {
             ctx.isTerminal = true;
             ctx.terminalValue = 1.0f;  // Positive value for current player - opponent just got mated!
+            
+            // MCTS Solver: this is a WIN for the current team
+            if (SearchParams::ENABLE_MCTS_SOLVER) {
+                ctx.leaf->mark_as_win(1);
+            }
+            
             batchContexts.push_back(std::move(ctx));
             
             // Undo moves
@@ -183,6 +206,12 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         if (isCheckmate) {
             ctx.isTerminal = true;
             ctx.terminalValue = -1.0f;  // Negative - side to move is mated, they lose
+            
+            // MCTS Solver: this is a LOSS for the current team
+            if (SearchParams::ENABLE_MCTS_SOLVER) {
+                ctx.leaf->mark_as_loss(1);
+            }
+            
             batchContexts.push_back(std::move(ctx));
             
             // Undo moves
@@ -249,13 +278,25 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     for (auto& ctx : batchContexts) {
         if (ctx.isTerminal) {
             // Terminal node - backup the terminal value and remove virtual loss
+            // Also propagate solver state up the tree
             float val = ctx.terminalValue;
+            NodeType childType = ctx.leaf->get_node_type();
+            
             for (auto it = ctx.trajectory.rbegin(); it != ctx.trajectory.rend(); ++it) {
                 Node* node = it->node;
                 int childIdx = it->selectedChildIdx;
                 if (childIdx >= 0) {
                     node->update(childIdx, val);
                     node->remove_virtual_loss(childIdx);
+                    
+                    // MCTS Solver: propagate terminal state
+                    if (SearchParams::ENABLE_MCTS_SOLVER && childType != NodeType::UNSOLVED) {
+                        node->init_child_node_types();
+                        node->update_child_node_type(childIdx, childType);
+                        childType = node->get_node_type();
+                    } else {
+                        childType = NodeType::UNSOLVED;
+                    }
                 } else {
                     node->update_terminal(val);
                 }
