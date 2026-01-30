@@ -2,108 +2,158 @@
   
   ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/d42c6a6e-ab2e-4d7a-bf90-4876d59c9558)
   
-  <h3>HiveMind</h3>
+  # HiveMind
 
-<<<<<<< HEAD
-  A free & strong UCI Bughouse engine.
-=======
-A free & strong UCI Bughouse engine.
->>>>>>> feat/multi-pv
+  A free and strong UCI Bughouse chess engine powered by deep reinforcement learning.
+
+  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
 
-```
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-ubuntu2404.pin
-sudo mv cuda-ubuntu2404.pin /etc/apt/preferences.d/cuda-repository-pin-600
-wget https://developer.download.nvidia.com/compute/cuda/13.0.2/local_installers/cuda-repo-ubuntu2404-13-0-local_13.0.2-580.95.05-1_amd64.deb
-sudo dpkg -i cuda-repo-ubuntu2404-13-0-local_13.0.2-580.95.05-1_amd64.deb
-sudo cp /var/cuda-repo-ubuntu2404-13-0-local/cuda-*-keyring.gpg /usr/share/keyrings/
-sudo apt-get update
-sudo apt-get -y install cuda-toolkit-13-0
+## Overview
 
-wget https://developer.download.nvidia.com/compute/tensorrt/10.14.1/local_installers/nv-tensorrt-local-repo-ubuntu2404-10.14.1-cuda-13.0_1.0-1_amd64.deb
-os="ubuntu2404"
-tag="10.14.1-cuda-13.0"
-sudo dpkg -i nv-tensorrt-local-repo-${os}-${tag}_1.0-1_amd64.deb
-sudo cp /var/nv-tensorrt-local-repo-${os}-${tag}/*-keyring.gpg /usr/share/keyrings/
-sudo apt-get update
-sudo apt-get install tensorrt
-```
+HiveMind is a neural network-based engine for [Bughouse chess](https://en.wikipedia.org/wiki/Bughouse_chess), a four-player chess variant played on two boards. The engine uses Monte Carlo Tree Search (MCTS) with a deep neural network for position evaluation and move prediction.
+
+### Key Features
+
+- **Neural Network Policy & Value Estimation** - Uses the RISEv3 architecture for move prediction and position evaluation
+- **Monte Carlo Graph Search (MCGS)** - Shares nodes across transpositions for improved search efficiency
+- **TensorRT Acceleration** - High-performance GPU inference using NVIDIA TensorRT
+- **UCI Protocol** - Standard Universal Chess Interface for GUI compatibility
+- **Self-Play Training** - RL training pipeline with self-play game generation
+
+## Project Structure
 
 ```
-$$M = k \cdot N^{\alpha}$$$k$ (Widening Constant): Set this between $1.0$ and $2.0$.$\alpha$ (Widening Factor): Set this around $0.5$.
+hivemind/
+├── engine/              # C++ UCI engine
+│   ├── src/             # Engine source code
+│   │   ├── Fairy-Stockfish/  # Move generation library
+│   │   └── rl/          # Self-play and training data generation
+│   └── networks/        # ONNX model files
+├── src/                 # Python training code
+│   ├── architectures/   # Neural network architectures (RISEv3)
+│   ├── domain/          # Board representation and move encoding
+│   ├── preprocessing/   # Data preprocessing utilities
+│   ├── training/        # Training loop and data loaders
+│   └── utils/           # Utility functions
+├── scripts/             # Utility scripts
+│   ├── analyze_training_data.py  # Inspect training samples
+│   ├── evaluate_model.py         # Evaluate model on data
+│   ├── infer_from_fen.py         # Run inference on positions
+│   └── search_training_fen.py    # Search for positions in data
+├── tests/               # Test suite
+├── configs/             # Configuration files
+└── data/                # Training data and game archives
 ```
 
+## Requirements
+
+### Engine (C++)
+- CMake 3.16+
+- C++23 compatible compiler
+- CUDA Toolkit 13.0+
+- TensorRT 10.14+
+
+### Training (Python)
+- Python 3.13+
+- PyTorch 2.9+
+- See `pyproject.toml` for full dependencies
+
+## Building the Engine
+
+```bash
+cd engine
+mkdir build && cd build
+cmake ..
+make -j$(nproc)
 ```
-trtexec \
-    --onnx=model-2.40025-0.604-0001-v3.0.onnx \
-    --fp16 \
-    --shapes=obs:64x64x8x8 \
-    --warmUp=500 \
-    --duration=10 \
-    --avgTiming=100 \
-    --dumpProfile
+
+## Installation (Python)
+
+Using [uv](https://github.com/astral-sh/uv):
+
+```bash
+uv sync
 ```
 
-# Bughouse Chess Input Representation
-<<<<<<< HEAD
-The neural network uses a **64-channel input representation** (64×8×8) to encode the complete game state for bughouse chess.
-## Channel Layout
-The input is organized as two 32-channel blocks representing each bughouse board:
-=======
+## Usage
 
-The neural network uses a **64-channel input representation** (64×8×8) to encode the complete game state for bughouse chess.
+### Running the Engine
 
-## Channel Layout
+```bash
+./engine/build/hivemind
+```
 
-The input is organized as two 32-channel blocks representing each bughouse board:
+The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
 
->>>>>>> feat/multi-pv
-- **Channels 0-31**: Board A
-- **Channels 32-63**: Board B
+### Engine Commands
 
-All channels are from the current team's perspective with appropriate board orientations.
-<<<<<<< HEAD
-## Channel Breakdown
+```bash
+# Run inference benchmark
+./hivemind bench
+
+# Run move generation benchmark  
+./hivemind perft 5
+
+# Run self-play for training data generation
+./hivemind selfplay 1000
+
+# Evaluate two models against each other
+./hivemind eval --new model_a.onnx --old model_b.onnx --games 100
+```
+
+### Training
+
+```bash
+# Supervised learning on human games
+uv run python src/training/train_loop.py --mode supervised
+
+# RL training on self-play data
+uv run python src/training/train_loop.py --mode rl \
+  --rl-data-dir engine/selfplay_games/training_data_parquet
+```
+
+### Convert Self-Play Data
+
+```bash
+uv run python src/preprocessing/convert_selfplay_data.py \
+  engine/selfplay_games/training_data \
+  engine/selfplay_games/training_data_parquet
+```
+
+## Neural Network Architecture
+
+HiveMind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimized architecture combining:
+- Mixed depthwise convolutions
+- Squeeze-and-excitation blocks
+- Pre-activation residual connections
+
+### Input Representation
+
+The network uses a **64-channel input** (64×8×8) encoding both Bughouse boards:
 
 | Channels | Description |
-| --- | --- |
-| **0-11, 32-43** | **Piece Positions** - Own pieces (0-5) and opponent pieces (6-11) for each piece type: Pawn, Knight, Bishop, Rook, Queen, King |
-| **12-21, 44-53** | **Pocket Pieces** - Available drops for own team (12-16) and opponent (17-21): Pawn, Knight, Bishop, Rook, Queen (normalized by max drops) |
-| **22-23, 54-55** | **Promoted Pieces** - Binary mask for promoted pieces (own team, opponent team) |
-| **24, 56** | **En Passant** - En passant target squares |
-| **25, 57** | **Turn** - 1.0 if it's the team's turn on this board |
-| **26, 58** | **Constant** - All 1.0 (reference plane) |
-| **27-30, 59-62** | **Castling Rights** - Kingside/queenside castling availability for both teams |
-| **31, 63** | **Time Advantage** - 1.0 if team has time advantage (can "sit") |
-=======
+|----------|-------------|
+| 0-11, 32-43 | Piece positions (own and opponent) |
+| 12-21, 44-53 | Pocket pieces available for drops |
+| 22-23, 54-55 | Promoted piece masks |
+| 24, 56 | En passant squares |
+| 25, 57 | Side to move |
+| 26, 58 | Constant plane (all 1s) |
+| 27-30, 59-62 | Castling rights |
+| 31, 63 | Time advantage indicator |
 
-## Channel Breakdown
+### Output
 
-| Channels         | Description                                                                                                                                 |
-| ---------------- |---------------------------------------------------------------------------------------------------------------------------------------------|
-| **0-11, 32-43**  | **Piece Positions** - Own pieces (0-5) and opponent pieces (6-11) for each piece type: Pawn, Knight, Bishop, Rook, Queen, King              |
-| **12-21, 44-53** | **Pocket Pieces** - AvailabPle drops for own team (12-16) and opponent (17-21): Pawn, Knight, Bishop, Rook, Queen (normalized by max drops) |
-| **22-23, 54-55** | **Promoted Pieces** - Binary mask for promoted pieces (own team, opponent team)                                                             |
-| **24, 56**       | **En Passant** - En passant target squares                                                                                                  |
-| **25, 57**       | **Turn** - 1.0 if it's the team's turn on this board                                                                                        |
-| **26, 58**       | **Constant** - All 1.0 (reference plane)                                                                                                    |
-| **27-30, 59-62** | **Castling Rights** - Kingside/queenside castling availability for both teams                                                               |
-| **31, 63**       | **Time Advantage** - 1.0 if team has time advantage (can "sit")                                                                             |
+- **Policy head**: 4672 move probabilities per board (73 planes × 8 × 8)
+- **Value head**: Win/Draw/Loss prediction for the position
 
-uv run src/preprocessing/convert_selfplay_data.py \
- engine/selfplay_games/training_data \
- engine/selfplay_games/training_data_parquet
+## License
 
-cd src/training
-python train_loop.py --mode rl \
- --rl-data-dir ../../engine/selfplay_games/training_data_parquet \
+MIT License - see [LICENSE](LICENSE) for details.
 
-python train_loop.py --mode rl \
- --rl-data-dir ../../engine/selfplay_games/training_data_parquet \
- --checkpoint path/to/model.tar
+## Acknowledgments
 
-uv run src/training/train_loop.py --mode rl \
- --rl-data-dir engine/selfplay_games/training_data_parquet \
- --checkpoint src/training/weights/model-0.97878-0.683-0224.tar
->>>>>>> feat/multi-pv
+- [Fairy-Stockfish](https://github.com/fairy-stockfish/Fairy-Stockfish) for move generation
+- [CrazyAra](https://github.com/QueensGambit/CrazyAra) for architecture inspiration
