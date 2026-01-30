@@ -4,11 +4,19 @@
 #include <algorithm>
 #include <cmath>
 #include <queue>
-#include <set>
+#include <unordered_set>
 #include <functional>
 #include <numeric>
 #include "Fairy-Stockfish/src/types.h"
 #include "search_params.h"
+
+// Hash function for pair<size_t, size_t> used in visited set
+struct PairHash {
+    size_t operator()(const std::pair<size_t, size_t>& p) const {
+        // Combine hashes using bit mixing for better distribution
+        return std::hash<size_t>()(p.first) ^ (std::hash<size_t>()(p.second) << 16);
+    }
+};
 
 /**
  * @brief Represents a joint action candidate for Bughouse MCTS.
@@ -76,8 +84,8 @@ private:
     // Max-heap for lazy generation
     std::priority_queue<JointActionCandidate> heap;
     
-    // Track visited (i,j) pairs to avoid duplicates
-    std::set<std::pair<size_t, size_t>> visited;
+    // Track visited (i,j) pairs to avoid duplicates - O(1) lookup
+    std::unordered_set<std::pair<size_t, size_t>, PairHash> visited;
     
     // Cache of already-generated candidates (for random access)
     std::vector<JointActionCandidate> generatedCandidates;
