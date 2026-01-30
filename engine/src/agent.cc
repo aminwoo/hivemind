@@ -172,10 +172,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         SearchThread* st = searchThreads[i];
         
         // Use time-based stopping if moveTimeMs > 0, otherwise use node-based
+        // Workers check running flag and effective move time for time extension support
         if (moveTimeMs > 0) {
-            workers.emplace_back([this, &board, engine, st, moveTimeMs, teamHasTimeAdvantage, &searchInfo]() {
+            workers.emplace_back([this, &board, engine, st, teamHasTimeAdvantage, &searchInfo]() {
                 Board localBoard(board);
-                while (running && searchInfo.elapsed() < moveTimeMs) {
+                while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
                     st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
                 }
             });
@@ -190,27 +191,28 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
     
     // Periodic info output during search (UCI verbose mode only)
-    // Output info whenever depth increases, with minimum 100ms interval to reduce overhead
+    // Also handles early stopping and time extension
     constexpr int MIN_INFO_INTERVAL_MS = 100;
     if (options.verbose && moveTimeMs > 0) {
+        searchInfo.set_in_game(true);
         constexpr float C = 180.0f;
         constexpr float k = 1.56f;
         int lastReportedDepth = 0;
+        float lastCheckEval = 0.0f;
+        bool evalInitialized = false;
         
-        while (running && searchInfo.elapsed() < moveTimeMs) {
+        while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
             // Sleep for remaining time or MIN_INFO_INTERVAL_MS, whichever is smaller
-            int remainingMs = moveTimeMs - static_cast<int>(searchInfo.elapsed());
-            int sleepMs = std::min(MIN_INFO_INTERVAL_MS, std::max(1, remainingMs));
+            double remainingMs = searchInfo.get_effective_move_time() - searchInfo.elapsed();
+            int sleepMs = std::min(MIN_INFO_INTERVAL_MS, std::max(1, static_cast<int>(remainingMs)));
             std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
             
-            if (!running || searchInfo.elapsed() >= moveTimeMs) break;
+            if (!running || searchInfo.elapsed() >= searchInfo.get_effective_move_time()) break;
+            
+            // Update NPS tracking
+            searchInfo.update_nps();
             
             int depth = searchInfo.get_max_depth();
-            
-            // Only output when depth increases
-            if (depth <= lastReportedDepth) continue;
-            lastReportedDepth = depth;
-            
             double elapsedMs = searchInfo.elapsed();
             int nodes = searchInfo.get_nodes_searched();
             int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
@@ -223,43 +225,169 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 size_t numChildren = min(childVisits.size(), children.size());
                 
                 if (numChildren > 0) {
-                    // Create sorted indices by visit count (descending)
-                    vector<size_t> sortedIndices(numChildren);
-                    for (size_t i = 0; i < numChildren; ++i) sortedIndices[i] = i;
-                    sort(sortedIndices.begin(), sortedIndices.end(), [&](size_t a, size_t b) {
-                        return childVisits[a] > childVisits[b];
-                    });
-                    
-                    // Output up to multiPV lines (only first PV during search to reduce overhead)
-                    int numPVs = 1;  // Only output best line during search
-                    for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
-                        size_t childIdx = sortedIndices[pvIdx];
-                        float q = children[childIdx]->Q();
-                        int cpScore = static_cast<int>(C * std::tan(k * q));
-                        string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
-                        
-                        cout << "info depth " << depth 
-                             << " score cp " << cpScore
-                             << " nodes " << nodes 
-                             << " nps " << nps
-                             << " hashfull " << hashfull
-                             << " tbhits " << tbhits
-                             << " time " << static_cast<int>(elapsedMs);
-                        
-                        if (!pv.empty()) {
-                            cout << " pv " << pv;
+                    // Find first and second max visit counts
+                    int firstMax = 0, secondMax = 0;
+                    int firstIdx = 0, secondIdx = -1;
+                    for (size_t i = 0; i < numChildren; ++i) {
+                        if (childVisits[i] > firstMax) {
+                            secondMax = firstMax;
+                            secondIdx = firstIdx;
+                            firstMax = childVisits[i];
+                            firstIdx = static_cast<int>(i);
+                        } else if (childVisits[i] > secondMax) {
+                            secondMax = childVisits[i];
+                            secondIdx = static_cast<int>(i);
                         }
-                        cout << endl;
+                    }
+                    
+                    float bestQ = (firstIdx >= 0 && static_cast<size_t>(firstIdx) < children.size()) 
+                                  ? children[firstIdx]->Q() : 0.0f;
+                    float secondQ = (secondIdx >= 0 && static_cast<size_t>(secondIdx) < children.size()) 
+                                    ? children[secondIdx]->Q() : -1.0f;
+                    
+                    // Initialize eval tracking
+                    if (!evalInitialized) {
+                        lastCheckEval = bestQ;
+                        searchInfo.set_last_eval(bestQ);
+                        evalInitialized = true;
+                    }
+                    
+                    // Early stopping check
+                    if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
+                        double remaining = searchInfo.get_effective_move_time() - elapsedMs;
+                        float projectedVisits = static_cast<float>(secondMax) + 
+                                               static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
+                        
+                        // Stop if second-best can't catch up AND best move has better Q
+                        if (projectedVisits < firstMax * SearchParams::EARLY_STOP_FACTOR &&
+                            bestQ >= secondQ) {
+                            cout << "info string Early stopping: saved " 
+                                 << static_cast<int>(remaining) << "ms" << endl;
+                            running = false;
+                            break;
+                        }
+                    }
+                    
+                    // Time extension check - extend if eval is falling
+                    if (SearchParams::ENABLE_TIME_EXTENSION && evalInitialized) {
+                        float evalDrop = lastCheckEval - bestQ;
+                        if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
+                            if (searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
+                                                          SearchParams::MAX_TIME_EXTENSIONS)) {
+                                cout << "info string Extending search time (eval dropped by " 
+                                     << static_cast<int>(evalDrop * 100) << " cp)" << endl;
+                            }
+                        }
+                        lastCheckEval = bestQ;
+                    }
+                    
+                    // Only output when depth increases
+                    if (depth > lastReportedDepth) {
+                        lastReportedDepth = depth;
+                        
+                        // Create sorted indices by visit count (descending)
+                        vector<size_t> sortedIndices(numChildren);
+                        for (size_t i = 0; i < numChildren; ++i) sortedIndices[i] = i;
+                        sort(sortedIndices.begin(), sortedIndices.end(), [&](size_t a, size_t b) {
+                            return childVisits[a] > childVisits[b];
+                        });
+                        
+                        // Output up to multiPV lines (only first PV during search to reduce overhead)
+                        int numPVs = 1;  // Only output best line during search
+                        for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
+                            size_t childIdx = sortedIndices[pvIdx];
+                            float q = children[childIdx]->Q();
+                            int cpScore = static_cast<int>(C * std::tan(k * q));
+                            string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
+                            
+                            cout << "info depth " << depth 
+                                 << " score cp " << cpScore
+                                 << " nodes " << nodes 
+                                 << " nps " << nps
+                                 << " hashfull " << hashfull
+                                 << " tbhits " << tbhits
+                                 << " time " << static_cast<int>(elapsedMs);
+                            
+                            if (!pv.empty()) {
+                                cout << " pv " << pv;
+                            }
+                            cout << endl;
+                        }
                     }
                 }
             }
         }
     } else if (moveTimeMs > 0) {
-        // Non-verbose mode: just wait for time to expire, then signal stop
-        while (running && searchInfo.elapsed() < moveTimeMs) {
-            int remainingMs = moveTimeMs - static_cast<int>(searchInfo.elapsed());
-            int sleepMs = std::min(100, std::max(1, remainingMs));
+        // Non-verbose mode: still check for early stopping
+        searchInfo.set_in_game(true);
+        float lastCheckEval = 0.0f;
+        bool evalInitialized = false;
+        
+        while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
+            double remainingMs = searchInfo.get_effective_move_time() - searchInfo.elapsed();
+            int sleepMs = std::min(100, std::max(1, static_cast<int>(remainingMs)));
             std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+            
+            if (!running || searchInfo.elapsed() >= searchInfo.get_effective_move_time()) break;
+            
+            // Update NPS
+            searchInfo.update_nps();
+            
+            if (rootNode && rootNode->is_expanded()) {
+                auto childVisits = rootNode->get_child_visits();
+                auto children = rootNode->get_children();
+                size_t numChildren = min(childVisits.size(), children.size());
+                
+                if (numChildren > 0) {
+                    // Find first and second max
+                    int firstMax = 0, secondMax = 0;
+                    int firstIdx = 0, secondIdx = -1;
+                    for (size_t i = 0; i < numChildren; ++i) {
+                        if (childVisits[i] > firstMax) {
+                            secondMax = firstMax;
+                            secondIdx = firstIdx;
+                            firstMax = childVisits[i];
+                            firstIdx = static_cast<int>(i);
+                        } else if (childVisits[i] > secondMax) {
+                            secondMax = childVisits[i];
+                            secondIdx = static_cast<int>(i);
+                        }
+                    }
+                    
+                    float bestQ = (firstIdx >= 0 && static_cast<size_t>(firstIdx) < children.size()) 
+                                  ? children[firstIdx]->Q() : 0.0f;
+                    float secondQ = (secondIdx >= 0 && static_cast<size_t>(secondIdx) < children.size()) 
+                                    ? children[secondIdx]->Q() : -1.0f;
+                    
+                    if (!evalInitialized) {
+                        lastCheckEval = bestQ;
+                        evalInitialized = true;
+                    }
+                    
+                    // Early stopping
+                    if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
+                        double remaining = searchInfo.get_effective_move_time() - searchInfo.elapsed();
+                        float projectedVisits = static_cast<float>(secondMax) + 
+                                               static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
+                        
+                        if (projectedVisits < firstMax * SearchParams::EARLY_STOP_FACTOR &&
+                            bestQ >= secondQ) {
+                            running = false;
+                            break;
+                        }
+                    }
+                    
+                    // Time extension
+                    if (SearchParams::ENABLE_TIME_EXTENSION && evalInitialized) {
+                        float evalDrop = lastCheckEval - bestQ;
+                        if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
+                            searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
+                                                       SearchParams::MAX_TIME_EXTENSIONS);
+                        }
+                        lastCheckEval = bestQ;
+                    }
+                }
+            }
         }
     }
     
