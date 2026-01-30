@@ -23,17 +23,18 @@ Usage:
 """
 
 import argparse
-import os
 import glob
+import os
 import sys
+
+import chess
 import numpy as np
 import polars as pl
-import chess
 from chess.variant import CrazyhouseBoard
 
-# Add src to path to import move mapping
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-from domain.move2planes import make_map
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.domain.move2planes import make_map
 
 # Constants matching training data format
 NB_INPUT_CHANNELS = 64

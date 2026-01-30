@@ -8,13 +8,19 @@ This script loads a sample, applies flip augmentation, and shows:
 3. Whether the moves make sense for the flipped position
 """
 
-import numpy as np
-import torch
 import glob
+import os
+import sys
 from pathlib import Path
 
-from src.training.data_loaders import load_rl_parquet_shard, flip_bughouse_sample
+import numpy as np
+import torch
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.domain.move2planes import make_map
+from src.training.data_loaders import flip_bughouse_sample, load_rl_parquet_shard
 
 
 def decode_board(planes: torch.Tensor, board_offset: int = 0) -> str:
