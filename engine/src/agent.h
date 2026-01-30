@@ -24,17 +24,19 @@ struct SearchOptions {
     // UCI mode options
     bool verbose = false;        // Output UCI info strings (info, bestmove)
     bool checkMateIn1 = false;   // Check for immediate mate before search
+    int multiPV = 1;             // Number of principal variations to output
     
     // Self-play exploration options  
     float dirichletAlpha = 0.0f;   // Dirichlet noise alpha (0 = no noise)
     float dirichletEpsilon = 0.0f; // Fraction of prior to replace with noise (0 = no noise)
     
     // Convenience constructors
-    static SearchOptions uci(int moveTimeMs) {
+    static SearchOptions uci(int moveTimeMs, int multiPV = 1) {
         SearchOptions opts;
         opts.moveTimeMs = moveTimeMs;
         opts.verbose = true;
         opts.checkMateIn1 = true;
+        opts.multiPV = multiPV;
         return opts;
     }
     
@@ -104,7 +106,16 @@ public:
      * @brief Legacy wrapper for UCI mode search. Use run_search with SearchOptions::uci() instead.
      */
     void run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, 
-                    Stockfish::Color side, bool teamHasTimeAdvantage);
+                    Stockfish::Color side, bool teamHasTimeAdvantage, int multiPV = 1);
+    
+    /**
+     * @brief Extracts PV line starting from a specific child index.
+     * @param board The current board position.
+     * @param childIdx The child index to start the PV from.
+     * @param maxDepth Maximum number of moves to extract in the PV.
+     * @return Space-separated sequence of joint moves.
+     */
+    std::string extract_pv_from_child(Board& board, int childIdx, int maxDepth);
     
     /**
      * @brief Legacy wrapper for silent search. Use run_search with SearchOptions::selfplay() instead.

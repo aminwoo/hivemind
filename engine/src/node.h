@@ -3,7 +3,7 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
-#include <mutex>
+#include <shared_mutex>
 #include <vector>
 
 #include "board.h"
@@ -15,8 +15,9 @@
 
 class Node {
 private:
-    // Mutex for thread-safe access to node state
-    mutable std::mutex nodeMutex;
+    // Reader-writer mutex for thread-safe access to node state
+    // Allows multiple concurrent readers, exclusive writers
+    mutable std::shared_mutex nodeMutex;
     
     // Children indexed by expansion order
     std::vector<std::shared_ptr<Node>> children;
@@ -35,7 +36,7 @@ private:
 
     float valueSum = -1.0f;
     int m_depth = 0;
-    int m_visits = 0;
+    std::atomic<int> m_visits{0};  // Atomic for lock-free read/write
     bool m_is_expanded = false;
 
     Stockfish::Color teamToPlay;
@@ -52,23 +53,46 @@ public:
     ~Node() = default;
 
     // Lock the node for exclusive access
-    std::unique_lock<std::mutex> lock() {
-        return std::unique_lock<std::mutex>(nodeMutex);
+    std::unique_lock<std::shared_mutex> lock() {
+        return std::unique_lock<std::shared_mutex>(nodeMutex);
+    }
+
+    /**
+     * @brief Reserve capacity for child vectors to reduce reallocations.
+     * Call this when you know the approximate number of children.
+     */
+    void reserve_children(size_t capacity) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        children.reserve(capacity);
+        childValueSum.reserve(capacity);
+        childPriors.reserve(capacity);
+        childVisits.reserve(capacity);
+        virtualLoss.reserve(capacity);
+        qValues.reserve(capacity);
     }
 
     void update(size_t childIdx, float value) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
-        childValueSum[childIdx] += value;
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         childVisits[childIdx]++;
-        qValues[childIdx] = childValueSum[childIdx] / (1.0f + childVisits[childIdx]);
+        
+        if (childVisits[childIdx] == 1) {
+            // First visit: replace FPU initialization with actual value
+            childValueSum[childIdx] = value;
+            qValues[childIdx] = value;
+        } else {
+            // Subsequent visits: accumulate and average
+            childValueSum[childIdx] += value;
+            qValues[childIdx] = childValueSum[childIdx] / static_cast<float>(childVisits[childIdx]);
+        }
+        
         valueSum += value;
-        m_visits++;
+        m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
     void update_terminal(float value) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         valueSum += value;
-        m_visits++;
+        m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
     void set_depth(int value) {
@@ -102,7 +126,7 @@ public:
                               const std::vector<float>& priorsA,
                               const std::vector<float>& priorsB,
                               bool teamHasTimeAdvantage = false) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
         expandedCount = 0;
     }
@@ -118,6 +142,7 @@ public:
      * @brief Returns the total number of possible joint actions (N * M).
      */
     size_t get_candidate_count() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return candidateGenerator.totalPossible();
     }
 
@@ -125,6 +150,7 @@ public:
      * @brief Returns the number of generated candidates (should equal children.size()).
      */
     size_t get_num_generated() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return candidateGenerator.generatedCount();
     }
 
@@ -135,8 +161,8 @@ public:
      * Returns true if expandedCount < allowedChildren AND generator has more candidates.
      */
     bool should_expand_new_child() {
-        std::lock_guard<std::mutex> guard(nodeMutex);
-        int allowedChildren = SearchParams::get_allowed_children(m_visits);
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        int allowedChildren = SearchParams::get_allowed_children(m_visits.load(std::memory_order_relaxed));
         return expandedCount < allowedChildren && candidateGenerator.hasNext();
     }
 
@@ -146,7 +172,7 @@ public:
      * @return The next action that would be expanded, or empty if none available.
      */
     JointActionCandidate peek_next_joint_action() {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return candidateGenerator.peekNext();
     }
 
@@ -165,7 +191,7 @@ public:
     std::shared_ptr<Node> expand_next_joint_child(std::shared_ptr<Node> existingNode,
                                                    uint64_t positionHash,
                                                    JointActionCandidate& outAction) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (!candidateGenerator.hasNext()) {
             return nullptr;
         }
@@ -187,7 +213,8 @@ public:
             child = std::make_shared<Node>(~teamToPlay, positionHash);
             child->set_depth(m_depth + 1);
             
-            float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
+            int visits = m_visits.load(std::memory_order_relaxed);
+            float parentQ = (visits > 0) ? (valueSum / visits) : 0.0f;
             float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
             fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
             child->set_value(fpuValue);
@@ -223,7 +250,7 @@ public:
                              const std::vector<float>& priorsA,
                              const std::vector<float>& priorsB,
                              bool teamHasTimeAdvantage = false) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
         if (m_is_expanded) {
@@ -241,7 +268,8 @@ public:
             auto child = std::make_shared<Node>(~teamToPlay);
             child->set_depth(m_depth + 1);
             
-            float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
+            int visits = m_visits.load(std::memory_order_relaxed);
+            float parentQ = (visits > 0) ? (valueSum / visits) : 0.0f;
             float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
             fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
             
@@ -265,14 +293,17 @@ public:
 
     /**
      * @brief Gets the joint action for a specific child index (from generated cache).
+     * Thread-safe: holds nodeMutex to ensure consistency with children vector.
      */
     JointActionCandidate get_joint_action(int childIdx) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         size_t genCount = candidateGenerator.generatedCount();
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < genCount) {
             return candidateGenerator.getGenerated(childIdx);
         }
         std::cerr << "ERROR in get_joint_action: childIdx=" << childIdx 
-                  << " out of bounds (generatedCount=" << genCount << ")" << std::endl;
+                  << " out of bounds (generatedCount=" << genCount 
+                  << ", children.size=" << children.size() << ")" << std::endl;
         return JointActionCandidate();
     }
 
@@ -280,6 +311,7 @@ public:
      * @brief Checks if the joint candidate generator has candidates.
      */
     bool has_joint_candidates() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return !candidateGenerator.isEmpty();
     }
 
@@ -298,21 +330,23 @@ public:
      */
     std::pair<std::shared_ptr<Node>, int> get_best_expanded_child_with_idx();
 
-    std::vector<std::shared_ptr<Node>> get_children() {
+    std::vector<std::shared_ptr<Node>> get_children() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return children;
     }
 
-    const std::vector<float>& get_child_value_sums() const {
+    std::vector<float> get_child_value_sums() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return childValueSum;
     }
 
     bool is_expanded() {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return m_is_expanded;
     }
 
     void set_is_expanded(bool value) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         m_is_expanded = value;
     }
 
@@ -333,27 +367,27 @@ public:
     }
 
     int get_visits() {
-        return m_visits;
+        return m_visits.load(std::memory_order_relaxed);
     }
 
     void increment_visits() {
-        m_visits++;
+        m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
     void decrement_visits() {
-        m_visits--;
+        m_visits.fetch_sub(1, std::memory_order_relaxed);
     }
 
     // Virtual loss methods for batch MCTS (thread-safe)
     void apply_virtual_loss(int childIdx, int amount = 1) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < virtualLoss.size()) {
             virtualLoss[childIdx] += amount;
         }
     }
 
     void remove_virtual_loss(int childIdx, int amount = 1) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < virtualLoss.size()) {
             virtualLoss[childIdx] -= amount;
         }
@@ -371,7 +405,7 @@ public:
     }
 
     float Q() {
-        return valueSum / (1.0f + m_visits);
+        return valueSum / (1.0f + m_visits.load(std::memory_order_relaxed));
     }
     
     /**
@@ -380,7 +414,7 @@ public:
      * @param epsilon Mixing factor (prior = (1 - epsilon) * prior + epsilon * noise)
      */
     void apply_dirichlet_noise(const std::vector<float>& noise, float epsilon) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (noise.size() != childPriors.size()) return;
         
         for (size_t i = 0; i < childPriors.size(); ++i) {
@@ -392,6 +426,7 @@ public:
      * @brief Get the number of children that have been expanded.
      */
     size_t get_num_children() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return children.size();
     }
     
@@ -400,7 +435,7 @@ public:
      * Used for extracting MCTS policy distributions.
      */
     std::vector<int> get_child_visits() const {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return childVisits;
     }
     
@@ -410,7 +445,7 @@ public:
      * Used for extracting MCTS policy distributions for training.
      */
     std::vector<std::pair<JointActionCandidate, int>> get_child_action_visits() const {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         std::vector<std::pair<JointActionCandidate, int>> result;
         result.reserve(children.size());
         
@@ -482,7 +517,7 @@ public:
      * @return The index of the child that was added, or -1 if already exists
      */
     int try_add_transposition_child(std::shared_ptr<Node> existingNode, float prior) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Check if this child already exists (same hash)
         for (size_t i = 0; i < children.size(); i++) {
@@ -492,7 +527,8 @@ public:
         }
         
         // Add as new child
-        float parentQ = (m_visits > 0) ? (valueSum / m_visits) : 0.0f;
+        int visits = m_visits.load(std::memory_order_relaxed);
+        float parentQ = (visits > 0) ? (valueSum / visits) : 0.0f;
         float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
         fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
         
@@ -514,7 +550,7 @@ public:
      * @return Pair of (child pointer, child index), or (nullptr, -1) if not found
      */
     std::pair<std::shared_ptr<Node>, int> get_child_by_hash(uint64_t hash) {
-        std::lock_guard<std::mutex> guard(nodeMutex);
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         for (size_t i = 0; i < children.size(); i++) {
             if (children[i] && children[i]->get_hash() == hash) {
                 return {children[i], static_cast<int>(i)};

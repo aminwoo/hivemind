@@ -48,7 +48,6 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
         if (!enginePtr->loadNetwork(onnxFile, engineFile)) {
             std::cerr << "Error: Failed to load engine on device " << deviceId << std::endl;
         } else {
-            std::cout << "Engine successfully loaded on device " << deviceId << std::endl;
             engines.push_back(std::move(enginePtr));
         }
     }
@@ -62,6 +61,8 @@ void UCI::stop() {
     if (ongoingSearch) {
         agent->set_is_running(false);
         mainSearchThread->join();
+        delete mainSearchThread;
+        mainSearchThread = nullptr;
         ongoingSearch = false;
     } 
 }
@@ -136,8 +137,9 @@ void UCI::go(std::istringstream& is) {
 
     // Launch the search thread using a lambda that calls Agent::run_search,
     // passing in the board, the collection of engines, and the move time.
-    mainSearchThread = new std::thread([this, enginePtrs, moveTime]() {
-        agent->run_search(board, enginePtrs, moveTime, teamSide, teamHasTimeAdvantage);
+    int mpv = multiPV;  // Capture by value
+    mainSearchThread = new std::thread([this, enginePtrs, moveTime, mpv]() {
+        agent->run_search(board, enginePtrs, moveTime, teamSide, teamHasTimeAdvantage, mpv);
     });
 }
 
@@ -160,6 +162,12 @@ void UCI::setoption(std::istringstream& is) {
             agent->setHashSize(sizeMB);
             std::cout << "info string Hash table set to " << sizeMB << " MB" << std::endl;
         }
+    } else if (name == "MultiPV") {
+        int mpv = std::stoi(value);
+        if (mpv >= 1 && mpv <= 500) {
+            multiPV = mpv;
+            std::cout << "info string MultiPV set to " << multiPV << std::endl;
+        }
     } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
@@ -179,6 +187,7 @@ void UCI::send_uci_response() {
     cout << "id name hivemind" << endl;
     cout << "id author aminwoo\n" << endl;
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
+    cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "uciok" << endl;

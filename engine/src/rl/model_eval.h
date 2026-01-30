@@ -135,7 +135,7 @@ struct EvalStats {
 struct EvalSettings {
     size_t numGames = 100;           // Number of games to play
     size_t nodesPerMove = 800;       // MCTS nodes per move (default, can be overridden per player)
-    float temperature = 0.6f;        // Temperature for move selection (0.0 = deterministic, higher = more random)
+    float temperature = 0.3f;        // Temperature for move selection (0.0 = deterministic, higher = more random)
     size_t maxGameLength = 2048;     // Maximum plies before draw
     size_t openingMovesToTrack = 4;  // Number of opening moves to track
     bool verbose = false;            // Print each game result
