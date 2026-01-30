@@ -20,6 +20,7 @@ private:
     bool teamHasTimeAdvantage = false;
     std::vector<std::unique_ptr<Engine>> engines;
     bool ongoingSearch = false;
+    int multiPV = 1;  // Number of principal variations to display
 
 public:
     UCI();
