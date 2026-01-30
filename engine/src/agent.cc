@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -15,6 +16,40 @@
 #include "utils.h"
 
 using namespace std;
+
+/**
+ * @brief Format UCI score string based on node type.
+ * 
+ * Returns "score mate N" for proven wins/losses, "score cp X" otherwise.
+ * Mate distance is computed from endInPly (ply to terminal).
+ * Positive mate = we win in N moves, negative mate = we lose in N moves.
+ * 
+ * @param node The node to format score for
+ * @param C Conversion constant for Q to centipawns
+ * @param k Tan scaling constant
+ * @return Formatted score string (e.g., "score cp 150" or "score mate 5")
+ */
+static string format_uci_score(const Node* node, float C = 180.0f, float k = 1.56f) {
+    if (!node) return "score cp 0";
+    
+    NodeType nodeType = node->get_node_type();
+    int endInPly = node->get_end_in_ply();
+    
+    if (nodeType == NodeType::WIN) {
+        // We have a forced win, convert ply to moves (round up)
+        int mateInMoves = (endInPly + 1) / 2;
+        return "score mate " + to_string(max(1, mateInMoves));
+    } else if (nodeType == NodeType::LOSS) {
+        // We are being mated, negative mate score
+        int mateInMoves = (endInPly + 1) / 2;
+        return "score mate -" + to_string(max(1, mateInMoves));
+    } else {
+        // Not solved, use centipawn score from Q value
+        float q = node->Q();
+        int cpScore = static_cast<int>(C * std::tan(k * q));
+        return "score cp " + to_string(cpScore);
+    }
+}
 
 Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
     // Use specified thread count, or fall back to search params default
@@ -296,12 +331,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         int numPVs = 1;  // Only output best line during search
                         for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
                             size_t childIdx = sortedIndices[pvIdx];
-                            float q = children[childIdx]->Q();
-                            int cpScore = static_cast<int>(C * std::tan(k * q));
                             string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
+                            string scoreStr = format_uci_score(children[childIdx].get(), C, k);
                             
                             cout << "info depth " << depth 
-                                 << " score cp " << cpScore
+                                 << " " << scoreStr
                                  << " nodes " << nodes 
                                  << " nps " << nps
                                  << " hashfull " << hashfull
@@ -466,13 +500,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             int numPVs = min(options.multiPV, static_cast<int>(numChildren));
             for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
                 size_t childIdx = sortedIndices[pvIdx];
-                float q = children[childIdx]->Q();
-                int cpScore = static_cast<int>(C * std::tan(k * q));
                 string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
+                string scoreStr = format_uci_score(children[childIdx].get(), C, k);
                 
                 cout << "info depth " << depth 
                      << " multipv " << (pvIdx + 1)
-                     << " score cp " << cpScore
+                     << " " << scoreStr
                      << " nodes " << nodes 
                      << " nps " << nps
                      << " hashfull " << hashfull
@@ -486,12 +519,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             }
         } else {
             // Fallback: single PV line with root Q
-            float q = rootNode ? rootNode->Q() : 0.0f;
-            int cpScore = static_cast<int>(C * std::tan(k * q));
             string pv = extract_pv(board, 20);
+            string scoreStr = rootNode ? format_uci_score(rootNode.get(), C, k) : "score cp 0";
             
             cout << "info depth " << depth 
-                 << " score cp " << cpScore
+                 << " " << scoreStr
                  << " nodes " << nodes 
                  << " nps " << nps
                  << " hashfull " << hashfull

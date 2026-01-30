@@ -422,11 +422,11 @@ public:
         return 0;
     }
 
-    float get_value_sum() {
+    float get_value_sum() const {
         return valueSum;
     }
 
-    float Q() {
+    float Q() const {
         return valueSum / (1.0f + m_visits.load(std::memory_order_relaxed));
     }
     
