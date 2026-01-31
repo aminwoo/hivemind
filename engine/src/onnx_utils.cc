@@ -24,7 +24,7 @@ std::string findLatestOnnxFile(const std::string& directory) {
 
 std::string getEnginePath(const std::string& onnxPath, const std::string& precision,
                           int batchSize, int deviceId, const std::string& version) {
-    fs::path onnx(onnxPath);
+    fs::path onnx = fs::weakly_canonical(onnxPath);
     std::string modelName = onnx.stem().string();
     std::string directory = onnx.parent_path().string();
     

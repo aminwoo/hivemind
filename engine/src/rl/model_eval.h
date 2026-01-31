@@ -16,6 +16,7 @@
 
 #include "rl_settings.h"
 #include "gamepgn.h"
+#include "gui_state_writer.h"
 #include "../board.h"
 #include "../agent.h"
 #include "../engine.h"
@@ -135,11 +136,17 @@ struct EvalStats {
 struct EvalSettings {
     size_t numGames = 100;           // Number of games to play
     size_t nodesPerMove = 800;       // MCTS nodes per move (default, can be overridden per player)
+    int moveTimeMs = 0;              // Fixed time per move in milliseconds (0 = use nodes)
     float temperature = 0.3f;        // Temperature for move selection (0.0 = deterministic, higher = more random)
+    size_t temperatureDecayMoves = 15; // Number of opening moves before temperature goes to 0
     size_t maxGameLength = 2048;     // Maximum plies before draw
     size_t openingMovesToTrack = 4;  // Number of opening moves to track
     bool verbose = false;            // Print each game result
     std::string outputPgnPath = ""; // Optional: save games to PGN file
+    
+    // GUI options
+    bool enableGui = false;          // Enable GUI state output
+    std::string guiStatePath = "./gui/game_state.json"; // Path to GUI state file
     
     // Per-player configurations for parameter testing
     PlayerConfig player1;            // First player ("new" model in classic eval)
@@ -218,6 +225,9 @@ private:
     
     // PGN output
     std::mutex pgnMutex;
+    
+    // GUI state writer
+    std::unique_ptr<GuiStateWriter> guiWriter;
     
     /**
      * @brief Play a single evaluation game.

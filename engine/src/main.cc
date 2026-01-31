@@ -30,19 +30,24 @@ void printUsage(const char* progName) {
     cout << "    --old <path>     Path to old model ONNX file" << endl;
     cout << "    --games <n>      Number of games to play (default: 100)" << endl;
     cout << "    --nodes <n>      MCTS nodes per move (default: 800)" << endl;
-    cout << "    --temperature <f> Temperature for move selection (default: 0.6)" << endl;
+    cout << "    --time <ms>      Fixed time per move in ms (default: 0, use nodes)" << endl;
+    cout << "    --temperature <f> Temperature for opening moves (default: 0.6)" << endl;
+    cout << "    --temp-moves <n> Moves before temperature decays to 0 (default: 15)" << endl;
     cout << "    --verbose        Print each game result" << endl;
     cout << "    --pgn <path>     Save games to PGN file" << endl;
+    cout << "    --gui            Enable web GUI for live viewing" << endl;
     cout << endl;
     cout << "  param-eval         Test same model with different search parameters" << endl;
     cout << "    --model <path>   Path to model ONNX file" << endl;
     cout << "    --games <n>      Number of games to play (default: 100)" << endl;
     cout << "    --verbose        Print each game result" << endl;
     cout << "    --pgn <path>     Save games to PGN file" << endl;
+    cout << "    --gui            Enable web GUI for live viewing" << endl;
     cout << endl;
     cout << "  Player-specific parameters (use --p1-* or --p2-* prefix):" << endl;
     cout << "    --pX-name <s>    Player name (default: 'Player1/2')" << endl;
     cout << "    --pX-nodes <n>   Nodes per move (default: 800)" << endl;
+    cout << "    --pX-time <ms>   Time per move in ms (default: 0, use nodes)" << endl;
     cout << "    --pX-batch <n>   Batch size (default: 8)" << endl;
     cout << "    --pX-cpuct <f>   CPUCT init value (default: 2.5)" << endl;
     cout << "    --pX-fpu <f>     FPU reduction (default: 0.4)" << endl;
@@ -183,12 +188,21 @@ int main(int argc, char* argv[]) {
                 settings.numGames = stoul(argv[++i]);
             } else if ((arg == "--nodes" || arg == "-n") && i + 1 < argc) {
                 settings.nodesPerMove = stoul(argv[++i]);
+            } else if (arg == "--time" && i + 1 < argc) {
+                settings.moveTimeMs = stoi(argv[++i]);
             } else if ((arg == "--temperature" || arg == "--temp" || arg == "-t") && i + 1 < argc) {
                 settings.temperature = stof(argv[++i]);
+            } else if (arg == "--temp-moves" && i + 1 < argc) {
+                settings.temperatureDecayMoves = stoul(argv[++i]);
             } else if (arg == "--verbose" || arg == "-v") {
                 settings.verbose = true;
             } else if (arg == "--pgn" && i + 1 < argc) {
                 settings.outputPgnPath = argv[++i];
+            } else if (arg == "--gui") {
+                settings.enableGui = true;
+            } else if (arg == "--gui-path" && i + 1 < argc) {
+                settings.guiStatePath = argv[++i];
+                settings.enableGui = true;
             }
         }
         
@@ -287,6 +301,11 @@ int main(int argc, char* argv[]) {
                 settings.verbose = true;
             } else if (arg == "--pgn" && i + 1 < argc) {
                 settings.outputPgnPath = argv[++i];
+            } else if (arg == "--gui") {
+                settings.enableGui = true;
+            } else if (arg == "--gui-path" && i + 1 < argc) {
+                settings.guiStatePath = argv[++i];
+                settings.enableGui = true;
             }
         }
         

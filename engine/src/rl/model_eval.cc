@@ -47,6 +47,14 @@ ModelEvaluator::ModelEvaluator(const vector<Engine*>& newModelEngines,
         pgnFile << "; " << settings.numGames << " games\n\n";
         pgnFile.close();
     }
+    
+    // Create GUI state writer if enabled
+    if (settings.enableGui) {
+        filesystem::create_directories(filesystem::path(settings.guiStatePath).parent_path());
+        guiWriter = make_unique<GuiStateWriter>(settings.guiStatePath);
+        guiWriter->clear();
+        cout << "GUI enabled: " << settings.guiStatePath << endl;
+    }
 }
 
 ModelEvaluator::~ModelEvaluator() {
@@ -89,9 +97,17 @@ EvalStats ModelEvaluator::run() {
         cout << "  Batch size: " << settings.player2.batchSize << endl;
         cout << "  CPUCT: " << settings.player2.cpuctInit << endl;
     } else {
-        cout << "Nodes per move: " << settings.nodesPerMove << endl;
-        cout << "Temperature: " << settings.temperature << endl;
+        if (settings.moveTimeMs > 0) {
+            cout << "Time per move: " << settings.moveTimeMs << "ms" << endl;
+        } else {
+            cout << "Nodes per move: " << settings.nodesPerMove << endl;
+        }
+        cout << "Temperature: " << settings.temperature << " (decays to 0 after " << settings.temperatureDecayMoves << " moves)" << endl;
         cout << "Dirichlet: disabled (deterministic eval)" << endl;
+    }
+    
+    if (settings.enableGui) {
+        cout << "GUI: enabled at " << settings.guiStatePath << endl;
     }
     
     cout << "Max game length: " << settings.maxGameLength << " plies" << endl;
@@ -229,8 +245,9 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
     } else {
         // Default settings with temperature for game variety
         player1Settings.nodesPerMove = settings.nodesPerMove;
+        player1Settings.moveTimeMs = settings.moveTimeMs;  // Fixed movetime support
         player1Settings.temperature = settings.temperature;
-        player1Settings.temperatureDecayMoves = 30;  // Match selfplay default
+        player1Settings.temperatureDecayMoves = settings.temperatureDecayMoves;
         player1Settings.dirichletEpsilon = 0.0f;     // No Dirichlet noise for eval
         player1Settings.dirichletAlpha = 0.2f;
         player1Settings.nodeRandomFactor = 0.0f;
@@ -304,9 +321,14 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         
         // Run MCTS search with player-specific settings
         // If moveTimeMs > 0, search uses time; otherwise uses nodes
-        JointActionCandidate bestAction = agent->run_search_silent(
-            board, *engines, nodesForThisMove, timeForThisMove, currentSide, 
-            teamHasTimeAdvantage, *currentSettings, tempForThisMove);
+        SearchOptions opts;
+        if (timeForThisMove > 0) {
+            opts = SearchOptions::selfplay(timeForThisMove, *currentSettings);
+        } else {
+            opts = SearchOptions::selfplay(nodesForThisMove, *currentSettings);
+        }
+        JointActionCandidate bestAction = agent->run_search(
+            board, *engines, currentSide, teamHasTimeAdvantage, opts);
         
         // Sample action with temperature from visit distribution (like selfplay)
         // This allows for more varied play and realistic draw rates
@@ -351,6 +373,15 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         board.make_moves(moveA, moveB);
         ply++;
         
+        // Update GUI if enabled
+        if (guiWriter) {
+            EvalStats currentStats = getStats();
+            guiWriter->update(board, pgn.gameMoves, gameNumber, settings.numGames, ply,
+                              ~currentSide,  // Next side to move
+                              pgn.whiteTeam, pgn.blackTeam, "ongoing",
+                              currentStats.player1Wins, currentStats.player1Losses, currentStats.draws);
+        }
+        
         // Check for mate after move
         Stockfish::Color opponentSide = ~currentSide;
         bool opponentTimeAdvantage = !teamHasTimeAdvantage;
@@ -369,6 +400,15 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
     }
     
     pgn.set_result(result);
+    
+    // Final GUI update with result
+    if (guiWriter) {
+        EvalStats currentStats = getStats();
+        string resultStr = pgn.result;
+        guiWriter->update(board, pgn.gameMoves, gameNumber, settings.numGames, ply,
+                          currentSide, pgn.whiteTeam, pgn.blackTeam, resultStr,
+                          currentStats.player1Wins, currentStats.player1Losses, currentStats.draws);
+    }
     
     // Update game length stats
     {
@@ -533,7 +573,7 @@ void run_model_eval(const string& newModelPath,
     vector<Engine*> newModelEngines;
     for (int i = 0; i < deviceCount; i++) {
         Engine* engine = new Engine(i);
-        string engineFile = getEnginePath(newModelPath, "fp16", SearchParams::BATCH_SIZE, i, "eval_new");
+        string engineFile = getEnginePath(newModelPath, "fp16", SearchParams::BATCH_SIZE, i, "v1");
         if (!engine->loadNetwork(newModelPath, engineFile)) {
             cerr << "Failed to load new model on GPU " << i << endl;
             for (auto* e : newModelEngines) delete e;
@@ -546,7 +586,7 @@ void run_model_eval(const string& newModelPath,
     vector<Engine*> oldModelEngines;
     for (int i = 0; i < deviceCount; i++) {
         Engine* engine = new Engine(i);
-        string engineFile = getEnginePath(oldModelPath, "fp16", SearchParams::BATCH_SIZE, i, "eval_old");
+        string engineFile = getEnginePath(oldModelPath, "fp16", SearchParams::BATCH_SIZE, i, "v1");
         if (!engine->loadNetwork(oldModelPath, engineFile)) {
             cerr << "Failed to load old model on GPU " << i << endl;
             for (auto* e : newModelEngines) delete e;

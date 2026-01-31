@@ -137,9 +137,9 @@ void UCI::go(std::istringstream& is) {
 
     // Launch the search thread using a lambda that calls Agent::run_search,
     // passing in the board, the collection of engines, and the move time.
-    int mpv = multiPV;  // Capture by value
-    mainSearchThread = new std::thread([this, enginePtrs, moveTime, mpv]() {
-        agent->run_search(board, enginePtrs, moveTime, teamSide, teamHasTimeAdvantage, mpv);
+    auto opts = SearchOptions::uci(moveTime, multiPV);
+    mainSearchThread = new std::thread([this, enginePtrs, opts]() {
+        agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
     });
 }
 

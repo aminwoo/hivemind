@@ -112,12 +112,6 @@ public:
                                     const SearchOptions& options);
     
     /**
-     * @brief Legacy wrapper for UCI mode search. Use run_search with SearchOptions::uci() instead.
-     */
-    void run_search(Board& board, const std::vector<Engine*>& engines, int moveTime, 
-                    Stockfish::Color side, bool teamHasTimeAdvantage, int multiPV = 1);
-    
-    /**
      * @brief Extracts PV line starting from a specific child index.
      * @param board The current board position.
      * @param childIdx The child index to start the PV from.
@@ -125,14 +119,6 @@ public:
      * @return Space-separated sequence of joint moves.
      */
     std::string extract_pv_from_child(Board& board, int childIdx, int maxDepth);
-    
-    /**
-     * @brief Legacy wrapper for silent search. Use run_search with SearchOptions::selfplay() instead.
-     */
-    JointActionCandidate run_search_silent(Board& board, const std::vector<Engine*>& engines, 
-                                           size_t targetNodes, int moveTimeMs, 
-                                           Stockfish::Color side, bool teamHasTimeAdvantage, 
-                                           const RLSettings& settings, float temperature);
 
     /**
      * @brief Extracts the best move from the root node after search.
