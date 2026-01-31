@@ -29,24 +29,48 @@ using namespace std;
  * @param k Tan scaling constant
  * @return Formatted score string (e.g., "score cp 150" or "score mate 5")
  */
-static string format_uci_score(const Node* node, float C = 180.0f, float k = 1.56f) {
+/**
+ * @brief Format UCI score string based on node type and Q value.
+ * 
+ * Returns "score mate N" for proven wins/losses, "score cp X" otherwise.
+ * Mate distance is computed from endInPly (ply to terminal).
+ * Positive mate = we win in N moves, negative mate = we lose in N moves.
+ * 
+ * @param node The node to check for solved state
+ * @param qFromParent The Q-value from the root's perspective (positive = good for root)
+ * @param isChildNode True if this is a child node (opponent's perspective), false for root node
+ * @param C Conversion constant for Q to centipawns
+ * @param k Tan scaling constant
+ * @return Formatted score string (e.g., "score cp 150" or "score mate 5")
+ */
+static string format_uci_score(const Node* node, float qFromParent, bool isChildNode = true, 
+                               float C = 180.0f, float k = 1.56f) {
     if (!node) return "score cp 0";
     
     NodeType nodeType = node->get_node_type();
     int endInPly = node->get_end_in_ply();
     
     if (nodeType == NodeType::WIN) {
-        // We have a forced win, convert ply to moves (round up)
         int mateInMoves = (endInPly + 1) / 2;
-        return "score mate " + to_string(max(1, mateInMoves));
+        if (isChildNode) {
+            // Child is a WIN for the child (opponent) = LOSS for us (we're mated)
+            return "score mate -" + to_string(max(1, mateInMoves));
+        } else {
+            // Root is a WIN for us = we win
+            return "score mate " + to_string(max(1, mateInMoves));
+        }
     } else if (nodeType == NodeType::LOSS) {
-        // We are being mated, negative mate score
         int mateInMoves = (endInPly + 1) / 2;
-        return "score mate -" + to_string(max(1, mateInMoves));
+        if (isChildNode) {
+            // Child is a LOSS for the child (opponent) = WIN for us (we mate them)
+            return "score mate " + to_string(max(1, mateInMoves));
+        } else {
+            // Root is a LOSS for us = we're mated
+            return "score mate -" + to_string(max(1, mateInMoves));
+        }
     } else {
-        // Not solved, use centipawn score from Q value
-        float q = node->Q();
-        int cpScore = static_cast<int>(C * std::tan(k * q));
+        // Not solved, use centipawn score from Q value (already from root's perspective)
+        int cpScore = static_cast<int>(C * std::tan(k * qFromParent));
         return "score cp " + to_string(cpScore);
     }
 }
@@ -96,46 +120,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
         return result;
     }
-
-    // Check for mate in 1 on either board before starting search (UCI mode only)
-    if (options.checkMateIn1) {
-        auto legalMoves = board.legal_moves(teamSide, teamHasTimeAdvantage);
-        for (const auto& [boardNum, move] : legalMoves) {
-            if (boardNum == BOARD_A) {
-                board.make_moves(move, Stockfish::MOVE_NONE);
-            } else {
-                board.make_moves(Stockfish::MOVE_NONE, move);
-            }
-            
-            if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
-                if (boardNum == BOARD_A) {
-                    board.unmake_moves(move, Stockfish::MOVE_NONE);
-                } else {
-                    board.unmake_moves(Stockfish::MOVE_NONE, move);
-                }
-                
-                string moveStr = board.uci_move(boardNum, move);
-                string moveA = (boardNum == BOARD_A) ? moveStr : "pass";
-                string moveB = (boardNum == BOARD_B) ? moveStr : "pass";
-                
-                if (options.verbose) {
-                    cout << "info depth 1 score mate 1 nodes 1 nps 0 time 0" << endl;
-                    cout << "bestmove (" << moveA << "," << moveB << ")" << endl;
-                }
-                
-                result.moveA = (boardNum == BOARD_A) ? move : Stockfish::MOVE_NONE;
-                result.moveB = (boardNum == BOARD_B) ? move : Stockfish::MOVE_NONE;
-                return result;
-            }
-            
-            if (boardNum == BOARD_A) {
-                board.unmake_moves(move, Stockfish::MOVE_NONE);
-            } else {
-                board.unmake_moves(Stockfish::MOVE_NONE, move);
-            }
-        }
-    }
-
+    
     // Determine effective move time
     int moveTimeMs = options.moveTimeMs;
     size_t targetNodes = options.targetNodes;
@@ -275,10 +260,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
                     
-                    float bestQ = (firstIdx >= 0 && static_cast<size_t>(firstIdx) < children.size()) 
-                                  ? children[firstIdx]->Q() : 0.0f;
-                    float secondQ = (secondIdx >= 0 && static_cast<size_t>(secondIdx) < children.size()) 
-                                    ? children[secondIdx]->Q() : -1.0f;
+                    float bestQ = rootNode->get_child_q(firstIdx);
+                    float secondQ = (secondIdx >= 0) ? rootNode->get_child_q(secondIdx) : -1.0f;
                     
                     // Initialize eval tracking
                     if (!evalInitialized) {
@@ -332,7 +315,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
                             size_t childIdx = sortedIndices[pvIdx];
                             string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
-                            string scoreStr = format_uci_score(children[childIdx].get(), C, k);
+                            float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
+                            string scoreStr = format_uci_score(children[childIdx].get(), childQ, true, C, k);
                             
                             cout << "info depth " << depth 
                                  << " " << scoreStr
@@ -388,10 +372,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
                     
-                    float bestQ = (firstIdx >= 0 && static_cast<size_t>(firstIdx) < children.size()) 
-                                  ? children[firstIdx]->Q() : 0.0f;
-                    float secondQ = (secondIdx >= 0 && static_cast<size_t>(secondIdx) < children.size()) 
-                                    ? children[secondIdx]->Q() : -1.0f;
+                    float bestQ = rootNode->get_child_q(firstIdx);
+                    float secondQ = (secondIdx >= 0) ? rootNode->get_child_q(secondIdx) : -1.0f;
                     
                     if (!evalInitialized) {
                         lastCheckEval = bestQ;
@@ -501,7 +483,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
                 size_t childIdx = sortedIndices[pvIdx];
                 string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
-                string scoreStr = format_uci_score(children[childIdx].get(), C, k);
+                float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
+                string scoreStr = format_uci_score(children[childIdx].get(), childQ, true, C, k);
                 
                 cout << "info depth " << depth 
                      << " multipv " << (pvIdx + 1)
@@ -520,7 +503,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         } else {
             // Fallback: single PV line with root Q
             string pv = extract_pv(board, 20);
-            string scoreStr = rootNode ? format_uci_score(rootNode.get(), C, k) : "score cp 0";
+            // Use root's own Q value (which is from root's perspective)
+            float rootQ = rootNode ? rootNode->Q() : 0.0f;
+            string scoreStr = rootNode ? format_uci_score(rootNode.get(), rootQ, false, C, k) 
+                                       : "score cp 0";
             
             cout << "info depth " << depth 
                  << " " << scoreStr
@@ -631,7 +617,7 @@ string Agent::extract_pv(Board& board, int maxDepth) {
                 JointActionCandidate candAction = currentNode->get_joint_action(static_cast<int>(i));
                 string candMoveA = (candAction.moveA == Stockfish::MOVE_NONE) ? "pass" : tempBoard.uci_move(BOARD_A, candAction.moveA);
                 string candMoveB = (candAction.moveB == Stockfish::MOVE_NONE) ? "pass" : tempBoard.uci_move(BOARD_B, candAction.moveB);
-                float candQ = children[i]->Q();
+                float candQ = currentNode->get_child_q(static_cast<int>(i));
                 int candVisitsCount = childVisits[i];
                 cout << "  (" << candMoveA << ", " << candMoveB << ")"
                      << "  Q: " << std::fixed << std::setprecision(3) << candQ

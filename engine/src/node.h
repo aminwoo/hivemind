@@ -737,6 +737,25 @@ public:
     }
     
     /**
+     * @brief Get a child's Q-value from the parent's perspective.
+     * 
+     * This returns the Q-value stored in this node's qValues array,
+     * which is from the parent's (this node's) perspective, NOT the
+     * child's own accumulated valueSum which would be from the opponent's
+     * perspective.
+     * 
+     * @param childIdx Index of the child
+     * @return Q-value from parent's perspective, or 0.0f if invalid index
+     */
+    float get_child_q(int childIdx) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        if (childIdx >= 0 && static_cast<size_t>(childIdx) < qValues.size()) {
+            return qValues[childIdx];
+        }
+        return 0.0f;
+    }
+    
+    /**
      * @brief Get the index of the child with the highest Q-value.
      */
     int get_best_q_idx() const {
