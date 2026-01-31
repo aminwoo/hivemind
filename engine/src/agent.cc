@@ -75,6 +75,66 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
     }
 }
 
+/**
+ * @brief Check if we should exit search early due to solved position or winning evaluation.
+ * 
+ * Returns true if:
+ * - Root node is proven WIN (we have forced mate)
+ * - Best child is proven LOSS (opponent loses = we have forced mate via that move)
+ * - Best Q-value exceeds winning threshold and we have enough nodes searched
+ * 
+ * @param rootNode The root node of the search tree
+ * @param bestChildIdx Index of the best child (by visits)
+ * @param bestQ Q-value of the best child (from root's perspective)
+ * @param nodesSearched Number of nodes searched so far
+ * @param verbose If true, print info string when exiting early
+ * @return True if search should exit early
+ */
+static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int bestChildIdx, 
+                                       float bestQ, int nodesSearched, bool verbose) {
+    if (!SearchParams::ENABLE_MATE_EARLY_EXIT) {
+        return false;
+    }
+    
+    if (!rootNode || !rootNode->is_expanded()) {
+        return false;
+    }
+    
+    // Check if root is proven WIN (we have forced mate)
+    if (rootNode->get_node_type() == NodeType::WIN) {
+        if (verbose) {
+            cout << "info string Early exit: root position is proven WIN (forced mate)" << endl;
+        }
+        return true;
+    }
+    
+    // Check if best child is proven LOSS (opponent loses = we win via that move)
+    auto children = rootNode->get_children();
+    if (bestChildIdx >= 0 && static_cast<size_t>(bestChildIdx) < children.size()) {
+        Node* bestChild = children[bestChildIdx].get();
+        if (bestChild && bestChild->get_node_type() == NodeType::LOSS) {
+            if (verbose) {
+                int mateInPly = bestChild->get_end_in_ply();
+                int mateInMoves = (mateInPly + 1) / 2;
+                cout << "info string Early exit: forced mate in " << mateInMoves << " found" << endl;
+            }
+            return true;
+        }
+    }
+    
+    // Check for overwhelmingly winning Q-value (only if enough nodes searched)
+    if (nodesSearched >= SearchParams::MIN_NODES_FOR_Q_EXIT && 
+        bestQ >= SearchParams::WINNING_Q_THRESHOLD) {
+        if (verbose) {
+            cout << "info string Early exit: position is completely winning (Q=" 
+                 << std::fixed << std::setprecision(3) << bestQ << ")" << endl;
+        }
+        return true;
+    }
+    
+    return false;
+}
+
 Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
     // Use specified thread count, or fall back to search params default
     numThreads = (numThreadsParam > 0) ? numThreadsParam : SearchParams::NUM_SEARCH_THREADS;
@@ -120,7 +180,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
         return result;
     }
-    
+
     // Determine effective move time
     int moveTimeMs = options.moveTimeMs;
     size_t targetNodes = options.targetNodes;
@@ -270,7 +330,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         evalInitialized = true;
                     }
                     
-                    // Early stopping check
+                    // Early exit for solved/winning positions
+                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes, true)) {
+                        running = false;
+                        break;
+                    }
+                    
+                    // Early stopping check (visit-based)
                     if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
                         double remaining = searchInfo.get_effective_move_time() - elapsedMs;
                         float projectedVisits = static_cast<float>(secondMax) + 
@@ -380,7 +446,15 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         evalInitialized = true;
                     }
                     
-                    // Early stopping
+                    int nodes = searchInfo.get_nodes_searched();
+                    
+                    // Early exit for solved/winning positions
+                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes, false)) {
+                        running = false;
+                        break;
+                    }
+                    
+                    // Early stopping (visit-based)
                     if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
                         double remaining = searchInfo.get_effective_move_time() - searchInfo.elapsed();
                         float projectedVisits = static_cast<float>(secondMax) + 

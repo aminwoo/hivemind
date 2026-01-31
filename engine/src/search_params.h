@@ -204,6 +204,26 @@ constexpr bool ENABLE_EARLY_STOPPING = true;
 constexpr float EARLY_STOP_FACTOR = 2.0f;
 
 /**
+ * Enable early exit when position is solved or completely winning.
+ * 
+ * Stop search immediately when:
+ * - Root node is proven WIN (we have forced mate)
+ * - Best child is proven LOSS for opponent (we have forced mate via that move)
+ * - Best Q-value exceeds the winning threshold (completely winning position)
+ * 
+ * This saves time in clearly decided positions.
+ */
+constexpr bool ENABLE_MATE_EARLY_EXIT = true;
+
+/// Q-value threshold for early exit (positions above this are "completely winning")
+/// Value of 0.95 corresponds to roughly +3000 centipawns
+constexpr float WINNING_Q_THRESHOLD = 0.95f;
+
+/// Minimum nodes searched before allowing Q-based early exit
+/// (ensures we've explored enough to trust the evaluation)
+constexpr int MIN_NODES_FOR_Q_EXIT = 500;
+
+/**
  * Enable dynamic time extension: Extend search when evaluation is falling.
  * 
  * If the root evaluation has dropped since the last check, extend the
