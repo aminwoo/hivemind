@@ -646,12 +646,20 @@ public:
     
     /**
      * @brief Initialize child node types array to match children count.
+     * 
+     * When new children are added via progressive widening, we need to
+     * grow the childNodeTypes array and update the unsolved count.
+     * We only add the NEW children to the unsolved count to preserve
+     * the count of already-solved children.
      */
     void init_child_node_types() {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childNodeTypes.size() < children.size()) {
+            size_t oldSize = childNodeTypes.size();
             childNodeTypes.resize(children.size(), NodeType::UNSOLVED);
-            unsolvedChildCount.store(static_cast<int>(children.size()), std::memory_order_relaxed);
+            // Only add the new children to the unsolved count, preserving solved count
+            int newChildren = static_cast<int>(children.size() - oldSize);
+            unsolvedChildCount.fetch_add(newChildren, std::memory_order_relaxed);
         }
     }
     
@@ -692,8 +700,11 @@ public:
             return true;
         }
         
-        // If all children are solved, check if we're lost or drawn
-        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0) {
+        // If all expanded children are solved AND there are no more children to expand,
+        // check if we're lost or drawn.
+        // IMPORTANT: We can only mark as LOSS if ALL possible moves have been explored.
+        // With progressive widening, there may be unexpanded moves that could save us.
+        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0 && !candidateGenerator.hasNext()) {
             bool allWins = true;
             bool hasDrawn = false;
             int longestPly = 0;
