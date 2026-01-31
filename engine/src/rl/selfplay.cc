@@ -190,8 +190,13 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         float temperature = get_temperature(ply);
         
         // Use time-based search if moveTimeMs > 0, otherwise node-based
-        // Note: run_search_silent returns greedy best action, we sample with temperature below
-        JointActionCandidate bestAction = agent->run_search_silent(board, engines, targetNodes, settings.moveTimeMs, currentSide, teamHasTimeAdvantage, settings, temperature);
+        SearchOptions opts;
+        if (settings.moveTimeMs > 0) {
+            opts = SearchOptions::selfplay(settings.moveTimeMs, settings);
+        } else {
+            opts = SearchOptions::selfplay(targetNodes, settings);
+        }
+        JointActionCandidate bestAction = agent->run_search(board, engines, currentSide, teamHasTimeAdvantage, opts);
         
         // Extract policy distributions from MCTS tree
         vector<PolicyEntry> policyA, policyB;

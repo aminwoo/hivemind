@@ -1,0 +1,1695 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hivemind Bughouse Viewer</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        min-height: 100vh;
+        color: #e0e0e0;
+      }
+
+      .header {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 15px 30px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .header h1 {
+        font-size: 24px;
+        color: #00d4ff;
+        text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .status-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #ff4444;
+        animation: pulse 2s infinite;
+      }
+
+      .status-dot.connected {
+        background: #44ff44;
+      }
+
+      .status-dot.running {
+        background: #00d4ff;
+        animation: pulse 0.5s infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .main-container {
+        display: flex;
+        min-height: calc(100vh - 60px);
+      }
+
+      .control-panel {
+        width: 320px;
+        background: rgba(0, 0, 0, 0.4);
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 20px;
+        overflow-y: auto;
+      }
+
+      .control-section {
+        margin-bottom: 20px;
+        padding-bottom: 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .control-section:last-child {
+        border-bottom: none;
+      }
+
+      .control-section h3 {
+        color: #00d4ff;
+        font-size: 14px;
+        margin-bottom: 15px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+
+      .form-group {
+        margin-bottom: 12px;
+      }
+
+      .form-group label {
+        display: block;
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 4px;
+      }
+
+      .form-group input,
+      .form-group select {
+        width: 100%;
+        padding: 8px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.3);
+        color: #e0e0e0;
+        font-size: 14px;
+      }
+
+      .form-group input:focus,
+      .form-group select:focus {
+        outline: none;
+        border-color: #00d4ff;
+      }
+
+      .form-group input[type='number'] {
+        -moz-appearance: textfield;
+      }
+
+      .form-row {
+        display: flex;
+        gap: 10px;
+      }
+
+      .form-row .form-group {
+        flex: 1;
+      }
+
+      .radio-group {
+        display: flex;
+        gap: 15px;
+      }
+
+      .radio-group label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        color: #e0e0e0;
+      }
+
+      .radio-group input[type='radio'] {
+        width: auto;
+      }
+
+      .btn {
+        padding: 12px 24px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        transition: all 0.2s;
+        width: 100%;
+        margin-top: 10px;
+      }
+
+      .btn-play {
+        background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+        color: #1a1a2e;
+      }
+
+      .btn-play:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(0, 212, 255, 0.4);
+      }
+
+      .btn-play:disabled {
+        background: #444;
+        color: #888;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .btn-stop {
+        background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%);
+        color: white;
+      }
+
+      .btn-stop:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(255, 68, 68, 0.4);
+      }
+
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.1);
+        color: #e0e0e0;
+      }
+
+      .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+
+      .game-container {
+        flex: 1;
+        display: flex;
+        flex-wrap: nowrap;
+        justify-content: center;
+        align-items: flex-start;
+        gap: 30px;
+        padding: 30px;
+        overflow-x: auto;
+      }
+
+      .boards-container {
+        display: flex;
+        gap: 40px;
+        flex-wrap: nowrap;
+        justify-content: center;
+        align-items: flex-start;
+        flex-shrink: 0;
+      }
+
+      .board-wrapper {
+        background: transparent;
+        border-radius: 8px;
+        padding: 0;
+        flex-shrink: 0;
+        width: 540px;
+      }
+
+      .board-layout {
+        display: flex;
+        flex-direction: row;
+      }
+
+      .pocket-column {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 8px 4px;
+        gap: 2px;
+        background: transparent;
+        width: 55px;
+        flex-shrink: 0;
+      }
+
+      .pocket-piece-vertical {
+        position: relative;
+        width: 40px;
+        height: 40px;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        margin: 1px auto;
+        opacity: 0.25;
+        transition: opacity 0.15s;
+      }
+
+      .pocket-piece-vertical.has-piece {
+        opacity: 1;
+      }
+
+      .pocket-piece-vertical .piece-count {
+        position: absolute;
+        bottom: -2px;
+        right: -2px;
+        background: #00d4ff;
+        color: #1a1a2e;
+        font-size: 10px;
+        font-weight: 700;
+        min-width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 3px;
+      }
+
+      .board-and-players {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .player-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        background: transparent;
+        height: 36px;
+      }
+
+      .player-bar.top {
+        border-radius: 0;
+      }
+
+      .player-bar.bottom {
+        border-radius: 0;
+      }
+
+      .player-bar .player-name {
+        font-weight: 600;
+        font-size: 14px;
+        color: #e0e0e0;
+      }
+
+      .player-bar .player-name.to-move {
+        color: #00d4ff;
+      }
+
+      .player-bar .player-rating {
+        color: #888;
+        font-size: 12px;
+        margin-left: 6px;
+      }
+
+      .board-header {
+        display: none;
+      }
+
+      .board-title {
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .board-title.board-a {
+        color: #ff6b6b;
+      }
+      .board-title.board-b {
+        color: #4ecdc4;
+      }
+
+      .player-info {
+        display: none;
+      }
+
+      .player {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 6px;
+      }
+
+      .player.white {
+        border-left: 3px solid #f0d9b5;
+      }
+      .player.black {
+        border-left: 3px solid #b58863;
+      }
+      .player.to-move {
+        background: rgba(0, 212, 255, 0.2);
+      }
+
+      .player-name {
+        font-weight: 500;
+      }
+
+      .pocket {
+        display: none;
+      }
+
+      .pocket-piece {
+        position: relative;
+        width: 36px;
+        height: 36px;
+        flex-shrink: 0;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+      }
+
+      .pocket-piece .piece-count {
+        position: absolute;
+        bottom: -2px;
+        right: -2px;
+        background: #00d4ff;
+        color: #1a1a2e;
+        font-size: 11px;
+        font-weight: 700;
+        min-width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 4px;
+      }
+
+      .board-container {
+        width: 480px;
+        height: 480px;
+      }
+
+      /* Ensure chessboard pieces are visible */
+      .board-container img {
+        max-width: none !important;
+      }
+
+      .sidebar {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 20px;
+        width: 320px;
+        flex-shrink: 0;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+
+      .game-info {
+        margin-bottom: 20px;
+      }
+
+      .game-info h3 {
+        color: #00d4ff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .info-item {
+        background: rgba(0, 0, 0, 0.2);
+        padding: 10px;
+        border-radius: 6px;
+      }
+
+      .info-label {
+        font-size: 11px;
+        color: #888;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+
+      .info-value {
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .info-value.win {
+        color: #44ff44;
+      }
+      .info-value.loss {
+        color: #ff4444;
+      }
+      .info-value.draw {
+        color: #ffaa00;
+      }
+
+      .moves-container {
+        margin-top: 20px;
+      }
+
+      .moves-container h3 {
+        color: #00d4ff;
+        margin-bottom: 10px;
+        font-size: 14px;
+      }
+
+      .moves-list {
+        max-height: 200px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 6px;
+        padding: 10px;
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        word-wrap: break-word;
+        word-break: break-all;
+      }
+
+      .move-entry {
+        padding: 2px 4px;
+        border-radius: 3px;
+      }
+
+      .move-entry.board-a {
+        color: #ff6b6b;
+      }
+      .move-entry.board-b {
+        color: #4ecdc4;
+      }
+      .move-entry.latest {
+        background: rgba(0, 212, 255, 0.2);
+      }
+
+      .view-controls {
+        margin-top: 15px;
+        display: flex;
+        gap: 8px;
+      }
+
+      .view-controls .btn {
+        flex: 1;
+        padding: 8px;
+        margin-top: 0;
+        font-size: 12px;
+      }
+
+      .result-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+
+      .result-overlay.show {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .result-box {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 40px 60px;
+        border-radius: 16px;
+        text-align: center;
+      }
+
+      .result-text {
+        font-size: 36px;
+        font-weight: 700;
+        margin-bottom: 20px;
+      }
+
+      .result-text.white-wins {
+        color: #f0d9b5;
+      }
+      .result-text.black-wins {
+        color: #b58863;
+      }
+      .result-text.draw {
+        color: #ffaa00;
+      }
+
+      .player-config {
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        padding: 12px;
+        margin-top: 10px;
+      }
+
+      .player-config-header {
+        font-size: 12px;
+        color: #00d4ff;
+        margin-bottom: 10px;
+      }
+
+      .loading-spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: #00d4ff;
+        animation: spin 1s linear infinite;
+        margin-right: 8px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      /* Scrollbar styling */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 4px;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 4px;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.3);
+      }
+
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>🐝 HiveMind Bughouse Viewer</h1>
+      <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Ready</span>
+      </div>
+    </div>
+
+    <div class="main-container">
+      <!-- Control Panel -->
+      <div class="control-panel">
+        <div class="control-section">
+          <h3>⚙️ Evaluation Mode</h3>
+          <div class="form-group">
+            <div class="radio-group">
+              <label>
+                <input
+                  type="radio"
+                  name="evalType"
+                  value="eval"
+                  checked
+                  onchange="toggleEvalType()"
+                />
+                Model vs Model
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="evalType"
+                  value="param-eval"
+                  onchange="toggleEvalType()"
+                />
+                Parameter Test
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Model vs Model Settings -->
+        <div class="control-section" id="modelVsModelSettings">
+          <h3>🧠 Models</h3>
+          <div class="form-group">
+            <label>New Model (Challenger)</label>
+            <select id="newModel">
+              <option value="">Loading models...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Old Model (Baseline)</label>
+            <select id="oldModel">
+              <option value="">Loading models...</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Parameter Test Settings -->
+        <div class="control-section hidden" id="paramEvalSettings">
+          <h3>🧠 Model</h3>
+          <div class="form-group">
+            <label>Model to Test</label>
+            <select id="testModel">
+              <option value="">Loading models...</option>
+            </select>
+          </div>
+
+          <div class="player-config">
+            <div class="player-config-header">Player 1 Settings</div>
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" id="p1Name" value="Player1" />
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Nodes</label>
+                <input type="number" id="p1Nodes" value="800" />
+              </div>
+              <div class="form-group">
+                <label>CPUCT</label>
+                <input type="number" id="p1Cpuct" value="2.5" step="0.1" />
+              </div>
+            </div>
+          </div>
+
+          <div class="player-config">
+            <div class="player-config-header">Player 2 Settings</div>
+            <div class="form-group">
+              <label>Name</label>
+              <input type="text" id="p2Name" value="Player2" />
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Nodes</label>
+                <input type="number" id="p2Nodes" value="800" />
+              </div>
+              <div class="form-group">
+                <label>CPUCT</label>
+                <input type="number" id="p2Cpuct" value="2.5" step="0.1" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-section">
+          <h3>🎮 Search Settings</h3>
+          <div class="form-group">
+            <label>Search Mode</label>
+            <div class="radio-group">
+              <label>
+                <input
+                  type="radio"
+                  name="searchMode"
+                  value="nodes"
+                  checked
+                  onchange="toggleSearchMode()"
+                />
+                Nodes
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="searchMode"
+                  value="time"
+                  onchange="toggleSearchMode()"
+                />
+                Time
+              </label>
+            </div>
+          </div>
+          <div class="form-group" id="nodesPerMoveGroup">
+            <label>Nodes/Move</label>
+            <input type="number" id="nodesPerMove" value="800" min="1" />
+          </div>
+          <div class="form-group hidden" id="moveTimeMsGroup">
+            <label>Time/Move (ms)</label>
+            <input type="number" id="moveTimeMs" value="500" min="1" />
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Temperature</label>
+              <input
+                type="number"
+                id="temperature"
+                value="0.5"
+                min="0"
+                max="2"
+                step="0.1"
+              />
+            </div>
+            <div class="form-group">
+              <label>Temp Moves</label>
+              <input type="number" id="tempMoves" value="15" min="0" />
+            </div>
+          </div>
+        </div>
+
+        <div class="control-section">
+          <h3>🏆 Tournament</h3>
+          <div class="form-group">
+            <label>Number of Games</label>
+            <input type="number" id="numGames" value="10" min="1" />
+          </div>
+        </div>
+
+        <div class="control-section">
+          <button class="btn btn-play" id="playBtn" onclick="startEval()">
+            ▶ Start Evaluation
+          </button>
+          <button class="btn btn-stop hidden" id="stopBtn" onclick="stopEval()">
+            ⏹ Stop
+          </button>
+        </div>
+      </div>
+
+      <!-- Game Display -->
+      <div class="game-container">
+        <div class="boards-container">
+          <!-- Board A -->
+          <div class="board-wrapper">
+            <div class="board-layout">
+              <div class="pocket-column" id="boardAPocket"></div>
+              <div class="board-and-players">
+                <div class="player-bar top" id="boardATopPlayer">
+                  <span class="player-name" id="boardABlackName">Black</span>
+                </div>
+                <div id="boardA" class="board-container"></div>
+                <div class="player-bar bottom" id="boardABottomPlayer">
+                  <span class="player-name" id="boardAWhiteName">White</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Board B -->
+          <div class="board-wrapper">
+            <div class="board-layout">
+              <div class="pocket-column" id="boardBPocket"></div>
+              <div class="board-and-players">
+                <div class="player-bar top" id="boardBTopPlayer">
+                  <span class="player-name" id="boardBWhiteName">White</span>
+                </div>
+                <div id="boardB" class="board-container"></div>
+                <div class="player-bar bottom" id="boardBBottomPlayer">
+                  <span class="player-name" id="boardBBlackName">Black</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+          <div class="game-info">
+            <h3>📊 Tournament Stats</h3>
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">Game</div>
+                <div class="info-value" id="gameNumber">-</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Ply</div>
+                <div class="info-value" id="plyCount">-</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">P1 Wins</div>
+                <div class="info-value win" id="p1Wins">0</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">P2 Wins</div>
+                <div class="info-value loss" id="p2Wins">0</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Draws</div>
+                <div class="info-value draw" id="draws">0</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Win Rate</div>
+                <div class="info-value" id="winRate">-</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="game-info">
+            <h3>🎮 Current Game</h3>
+            <div class="info-grid">
+              <div class="info-item">
+                <div class="info-label">White Team</div>
+                <div class="info-value" id="whiteTeam">-</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Black Team</div>
+                <div class="info-value" id="blackTeam">-</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">To Move</div>
+                <div class="info-value" id="toMove">-</div>
+              </div>
+              <div class="info-item">
+                <div class="info-label">Result</div>
+                <div class="info-value" id="gameResult">-</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="moves-container">
+            <h3>📝 Move History</h3>
+            <div class="moves-list" id="movesList"></div>
+          </div>
+
+          <div class="view-controls">
+            <button class="btn btn-secondary" onclick="flipBoards()">
+              🔃 Flip
+            </button>
+            <button class="btn btn-secondary" onclick="toggleAutoRefresh()">
+              <span id="autoRefreshBtn">⏸ Pause</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="result-overlay" id="resultOverlay">
+      <div class="result-box">
+        <div class="result-text" id="resultText"></div>
+        <button class="btn btn-secondary" onclick="hideResult()">
+          Continue Watching
+        </button>
+      </div>
+    </div>
+
+    <!-- Sound effects -->
+    <audio id="moveSound" preload="auto">
+      <source
+        src="https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/move-self.mp3"
+        type="audio/mpeg"
+      />
+    </audio>
+    <audio id="captureSound" preload="auto">
+      <source
+        src="https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/capture.mp3"
+        type="audio/mpeg"
+      />
+    </audio>
+    <audio id="gameEndSound" preload="auto">
+      <source
+        src="https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/game-end.mp3"
+        type="audio/mpeg"
+      />
+    </audio>
+    <audio id="checkSound" preload="auto">
+      <source
+        src="https://images.chesscomfiles.com/chess-themes/sounds/_MP3_/default/move-check.mp3"
+        type="audio/mpeg"
+      />
+    </audio>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script>
+      // Chess board instances
+      let boardA, boardB
+      let autoRefresh = true
+      let refreshInterval
+      let lastGameNumber = 0
+      let flipped = localStorage.getItem('hivemind_flipped') === 'true'
+      let availableModels = []
+      let lastPly = 0
+      let lastFenA = ''
+      let lastFenB = ''
+      let lastFullFenA = ''
+      let lastFullFenB = ''
+      let soundEnabled = true
+
+      // Sound effects
+      const sounds = {
+        move: document.getElementById('moveSound'),
+        capture: document.getElementById('captureSound'),
+        gameEnd: document.getElementById('gameEndSound'),
+        check: document.getElementById('checkSound'),
+      }
+
+      function playSound(type) {
+        if (!soundEnabled) return
+        const sound = sounds[type]
+        if (sound) {
+          sound.currentTime = 0
+          sound.play().catch(() => {}) // Ignore autoplay errors
+        }
+      }
+
+      function isCapture(moves, boardNum) {
+        // Check if the latest move on this board was a capture (contains 'x')
+        if (!moves || moves.length === 0) return false
+        for (let i = moves.length - 1; i >= 0; i--) {
+          if (moves[i].board === boardNum) {
+            const san = moves[i].san || ''
+            return san.includes('x')
+          }
+        }
+        return false
+      }
+
+      // Piece image URL function for chessboard.js
+      function pieceTheme(piece) {
+        return (
+          'https://chessboardjs.com/img/chesspieces/wikipedia/' + piece + '.png'
+        )
+      }
+
+      // Initialize boards
+      function initBoards() {
+        const configA = {
+          pieceTheme: pieceTheme,
+          position: 'start',
+          showNotation: true,
+          appearSpeed: 200,
+          moveSpeed: 150,
+          orientation: 'white',
+        }
+
+        const configB = {
+          pieceTheme: pieceTheme,
+          position: 'start',
+          showNotation: true,
+          appearSpeed: 200,
+          moveSpeed: 150,
+          orientation: 'black',
+        }
+
+        boardA = Chessboard('boardA', configA)
+        boardB = Chessboard('boardB', configB)
+
+        $(window).resize(function () {
+          boardA.resize()
+          boardB.resize()
+        })
+      }
+
+      // Toggle between eval types
+      function toggleEvalType() {
+        const evalType = document.querySelector(
+          'input[name="evalType"]:checked',
+        ).value
+        const modelVsModel = document.getElementById('modelVsModelSettings')
+        const paramEval = document.getElementById('paramEvalSettings')
+
+        if (evalType === 'eval') {
+          modelVsModel.classList.remove('hidden')
+          paramEval.classList.add('hidden')
+        } else {
+          modelVsModel.classList.add('hidden')
+          paramEval.classList.remove('hidden')
+        }
+      }
+
+      // Toggle between time and nodes search mode
+      function toggleSearchMode() {
+        const searchMode = document.querySelector(
+          'input[name="searchMode"]:checked',
+        ).value
+        const nodesGroup = document.getElementById('nodesPerMoveGroup')
+        const timeGroup = document.getElementById('moveTimeMsGroup')
+
+        if (searchMode === 'nodes') {
+          nodesGroup.classList.remove('hidden')
+          timeGroup.classList.add('hidden')
+        } else {
+          nodesGroup.classList.add('hidden')
+          timeGroup.classList.remove('hidden')
+        }
+        saveSettings()
+      }
+
+      // Load available models
+      async function loadModels() {
+        try {
+          const response = await fetch('/api/models')
+          const data = await response.json()
+          availableModels = data.models || []
+
+          const selects = ['newModel', 'oldModel', 'testModel']
+          selects.forEach((id) => {
+            const select = document.getElementById(id)
+            select.innerHTML = ''
+
+            if (availableModels.length === 0) {
+              select.innerHTML = '<option value="">No models found</option>'
+            } else {
+              availableModels.forEach((model) => {
+                const option = document.createElement('option')
+                option.value = model.path
+                option.textContent = model.name
+                select.appendChild(option)
+              })
+            }
+          })
+
+          // Restore saved model selections after populating dropdowns
+          restoreModelSelections()
+        } catch (error) {
+          console.error('Failed to load models:', error)
+        }
+      }
+
+      // Start evaluation
+      async function startEval() {
+        const evalType = document.querySelector(
+          'input[name="evalType"]:checked',
+        ).value
+        const searchMode = document.querySelector(
+          'input[name="searchMode"]:checked',
+        ).value
+
+        const config = {
+          evalType: evalType,
+          numGames: parseInt(document.getElementById('numGames').value) || 10,
+          temperature:
+            parseFloat(document.getElementById('temperature').value) || 0.5,
+          tempMoves: parseInt(document.getElementById('tempMoves').value) || 15,
+          verbose: true,
+        }
+
+        // Only send the active search mode parameter
+        if (searchMode === 'time') {
+          config.moveTimeMs =
+            parseInt(document.getElementById('moveTimeMs').value) || 500
+        } else {
+          config.nodesPerMove =
+            parseInt(document.getElementById('nodesPerMove').value) || 800
+        }
+
+        if (evalType === 'eval') {
+          config.newModel = document.getElementById('newModel').value
+          config.oldModel = document.getElementById('oldModel').value
+
+          if (!config.newModel || !config.oldModel) {
+            alert('Please select both models')
+            return
+          }
+        } else {
+          config.model = document.getElementById('testModel').value
+          config.p1Name = document.getElementById('p1Name').value
+          config.p1Nodes = parseInt(document.getElementById('p1Nodes').value)
+          config.p1Cpuct = parseFloat(document.getElementById('p1Cpuct').value)
+          config.p2Name = document.getElementById('p2Name').value
+          config.p2Nodes = parseInt(document.getElementById('p2Nodes').value)
+          config.p2Cpuct = parseFloat(document.getElementById('p2Cpuct').value)
+
+          if (!config.model) {
+            alert('Please select a model')
+            return
+          }
+        }
+
+        const playBtn = document.getElementById('playBtn')
+        const stopBtn = document.getElementById('stopBtn')
+
+        playBtn.disabled = true
+        playBtn.innerHTML = '<span class="loading-spinner"></span>Starting...'
+
+        try {
+          const response = await fetch('/api/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config),
+          })
+
+          const result = await response.json()
+
+          if (response.ok) {
+            playBtn.classList.add('hidden')
+            stopBtn.classList.remove('hidden')
+            setStatus('running', 'Engine Running')
+            lastGameNumber = 0
+          } else {
+            alert('Failed to start: ' + (result.error || 'Unknown error'))
+            playBtn.disabled = false
+            playBtn.innerHTML = '▶ Start Evaluation'
+          }
+        } catch (error) {
+          console.error('Failed to start engine:', error)
+          alert('Failed to start engine: ' + error.message)
+          playBtn.disabled = false
+          playBtn.innerHTML = '▶ Start Evaluation'
+        }
+      }
+
+      // Stop evaluation
+      async function stopEval() {
+        try {
+          await fetch('/api/stop', { method: 'POST' })
+
+          document.getElementById('playBtn').classList.remove('hidden')
+          document.getElementById('playBtn').disabled = false
+          document.getElementById('playBtn').innerHTML = '▶ Start Evaluation'
+          document.getElementById('stopBtn').classList.add('hidden')
+          setStatus('connected', 'Stopped')
+        } catch (error) {
+          console.error('Failed to stop engine:', error)
+        }
+      }
+
+      // Parse pocket from FEN
+      function parsePocket(fen, color) {
+        const pieces = []
+        const fenParts = fen.split(' ')
+        if (fenParts.length < 1) return pieces
+
+        const match = fenParts[0].match(/\[([A-Za-z]*)\]/)
+        if (!match) return pieces
+
+        const pocket = match[1]
+        for (const p of pocket) {
+          const isWhite = p === p.toUpperCase()
+          if ((color === 'w' && isWhite) || (color === 'b' && !isWhite)) {
+            pieces.push(p.toLowerCase())
+          }
+        }
+        return pieces
+      }
+
+      // Create pocket HTML with piece counts
+      // Create pocket HTML for vertical layout - shows all pieces with ghost for empty
+      function createPocketHTML(pieces, color) {
+        // Count each piece type
+        const counts = {}
+        for (const p of pieces) {
+          counts[p] = (counts[p] || 0) + 1
+        }
+
+        let html = ''
+        const pieceMap = { p: 'P', n: 'N', b: 'B', r: 'R', q: 'Q' }
+        const pieceOrder = ['q', 'r', 'b', 'n', 'p'] // Display order
+
+        for (const p of pieceOrder) {
+          const pieceCode = (color === 'w' ? 'w' : 'b') + pieceMap[p]
+          const imgUrl = pieceTheme(pieceCode)
+          const count = counts[p] || 0
+          const hasClass = count > 0 ? 'has-piece' : ''
+          const countBadge =
+            count > 1 ? `<span class="piece-count">${count}</span>` : ''
+          html += `<div class="pocket-piece-vertical ${hasClass}" style="background-image: url('${imgUrl}')">${countBadge}</div>`
+        }
+        return html
+      }
+
+      // Update pockets - combined pocket on left side
+      function updatePockets(boardNum, fen) {
+        const whitePocket = parsePocket(fen, 'w')
+        const blackPocket = parsePocket(fen, 'b')
+
+        const pocketId = boardNum === 0 ? 'boardAPocket' : 'boardBPocket'
+
+        // Board A: white at bottom, black at top - so show black pieces first (top), then white (bottom)
+        // Board B: black at bottom, white at top - so show white pieces first (top), then black (bottom)
+        let allPieces
+        if (boardNum === 0) {
+          // Board A: black on top, white on bottom
+          allPieces =
+            createPocketHTML(blackPocket, 'b') +
+            createPocketHTML(whitePocket, 'w')
+        } else {
+          // Board B: white on top, black on bottom
+          allPieces =
+            createPocketHTML(whitePocket, 'w') +
+            createPocketHTML(blackPocket, 'b')
+        }
+        document.getElementById(pocketId).innerHTML = allPieces
+      }
+
+      // Convert FEN for display
+      function toDisplayFen(fen) {
+        return fen.replace(/\[[A-Za-z]*\]/, '')
+      }
+
+      // Set status indicator
+      function setStatus(type, text) {
+        const dot = document.getElementById('statusDot')
+        const statusText = document.getElementById('statusText')
+
+        dot.className = 'status-dot'
+        if (type === 'connected') dot.classList.add('connected')
+        if (type === 'running') dot.classList.add('running')
+
+        statusText.textContent = text
+      }
+
+      // Update game state
+      async function updateGameState() {
+        try {
+          const response = await fetch('/api/game-state')
+          if (!response.ok) {
+            setStatus('disconnected', 'Disconnected')
+            return
+          }
+
+          const state = await response.json()
+
+          // Update status based on engine state
+          if (state.engineRunning) {
+            setStatus('running', 'Engine Running')
+            document.getElementById('playBtn').classList.add('hidden')
+            document.getElementById('stopBtn').classList.remove('hidden')
+          } else if (
+            document.getElementById('stopBtn').classList.contains('hidden') ===
+            false
+          ) {
+            // Engine just stopped
+            setStatus('connected', 'Completed')
+            document.getElementById('playBtn').classList.remove('hidden')
+            document.getElementById('playBtn').disabled = false
+            document.getElementById('playBtn').innerHTML = '▶ Start Evaluation'
+            document.getElementById('stopBtn').classList.add('hidden')
+          }
+
+          // Helper to check if latest move on a board is check
+          function isCheckMove(moves, boardNum) {
+            if (!moves || moves.length === 0) return false
+            // Find the latest move for this board
+            for (let i = moves.length - 1; i >= 0; i--) {
+              if (moves[i].board === boardNum) {
+                const san = moves[i].san || ''
+                return san.includes('+') || san.includes('#')
+              }
+            }
+            return false
+          }
+
+          // Update boards with animation and sound
+          if (state.fenA) {
+            const newFenA = toDisplayFen(state.fenA)
+            const fullFenAChanged = state.fenA !== lastFullFenA
+            if (newFenA !== lastFenA) {
+              const animate = lastFenA !== '' && state.ply > lastPly
+              if (animate) {
+                if (isCheckMove(state.moves, 0)) {
+                  playSound('check')
+                } else if (isCapture(state.moves, 0)) {
+                  playSound('capture')
+                } else {
+                  playSound('move')
+                }
+                // Delay pocket update until after animation
+                setTimeout(() => updatePockets(0, state.fenA), 150)
+              } else {
+                updatePockets(0, state.fenA)
+              }
+              boardA.position(newFenA, animate)
+              lastFenA = newFenA
+            } else if (fullFenAChanged) {
+              // Board position same but pocket changed (capture on other board)
+              updatePockets(0, state.fenA)
+            }
+            lastFullFenA = state.fenA
+          }
+          if (state.fenB) {
+            const newFenB = toDisplayFen(state.fenB)
+            const fullFenBChanged = state.fenB !== lastFullFenB
+            if (newFenB !== lastFenB) {
+              const animate = lastFenB !== '' && state.ply > lastPly
+              if (animate) {
+                if (isCheckMove(state.moves, 1)) {
+                  playSound('check')
+                } else if (isCapture(state.moves, 1)) {
+                  playSound('capture')
+                } else {
+                  playSound('move')
+                }
+                // Delay pocket update until after animation
+                setTimeout(() => updatePockets(1, state.fenB), 150)
+              } else {
+                updatePockets(1, state.fenB)
+              }
+              boardB.position(newFenB, animate)
+              lastFenB = newFenB
+            } else if (fullFenBChanged) {
+              // Board position same but pocket changed (capture on other board)
+              updatePockets(1, state.fenB)
+            }
+            lastFullFenB = state.fenB
+          }
+          lastPly = state.ply || 0
+
+          // Update game info
+          document.getElementById('gameNumber').textContent =
+            `${state.gameNumber || '-'} / ${state.totalGames || '-'}`
+          document.getElementById('plyCount').textContent = state.ply || '-'
+          document.getElementById('whiteTeam').textContent =
+            state.whiteTeam || '-'
+          document.getElementById('blackTeam').textContent =
+            state.blackTeam || '-'
+          document.getElementById('toMove').textContent =
+            state.sideToMove === 'w' ? 'White' : 'Black'
+
+          updateToMoveHighlight(state.sideToMove)
+
+          // Update stats
+          document.getElementById('p1Wins').textContent = state.player1Wins || 0
+          document.getElementById('p2Wins').textContent =
+            state.player1Losses || 0
+          document.getElementById('draws').textContent = state.draws || 0
+
+          const totalGames =
+            (state.player1Wins || 0) +
+            (state.player1Losses || 0) +
+            (state.draws || 0)
+          if (totalGames > 0) {
+            const winRate = (
+              ((state.player1Wins || 0) / totalGames) *
+              100
+            ).toFixed(1)
+            document.getElementById('winRate').textContent = winRate + '%'
+          }
+
+          // Update moves list
+          if (state.moves) {
+            updateMovesList(state.moves)
+          }
+
+          // Handle game result
+          if (
+            state.result &&
+            state.result !== 'ongoing' &&
+            state.result !== '*'
+          ) {
+            document.getElementById('gameResult').textContent = state.result
+
+            if (
+              state.gameNumber !== lastGameNumber &&
+              state.result !== 'ongoing'
+            ) {
+              // Play game end sound
+              playSound('gameEnd')
+              lastGameNumber = state.gameNumber
+              // Reset FEN tracking for next game
+              lastFenA = ''
+              lastFenB = ''
+            }
+          } else {
+            document.getElementById('gameResult').textContent = 'In Progress'
+          }
+        } catch (error) {
+          console.error('Failed to fetch game state:', error)
+        }
+      }
+
+      function updateToMoveHighlight(side) {
+        // Remove to-move class from all player names
+        document
+          .querySelectorAll('.player-bar .player-name')
+          .forEach((el) => el.classList.remove('to-move'))
+
+        // Board A: white at bottom, black at top
+        // Board B: black at bottom, white at top
+        if (side === 'w') {
+          // White to move: highlight white on A (bottom), black on B (bottom)
+          document
+            .querySelector('#boardABottomPlayer .player-name')
+            .classList.add('to-move')
+          document
+            .querySelector('#boardBBottomPlayer .player-name')
+            .classList.add('to-move')
+        } else {
+          // Black to move: highlight black on A (top), white on B (top)
+          document
+            .querySelector('#boardATopPlayer .player-name')
+            .classList.add('to-move')
+          document
+            .querySelector('#boardBTopPlayer .player-name')
+            .classList.add('to-move')
+        }
+      }
+
+      function updateMovesList(moves) {
+        const container = document.getElementById('movesList')
+        let html = ''
+
+        moves.forEach((move, idx) => {
+          const boardClass = move.board === 0 ? 'board-a' : 'board-b'
+          const latestClass = idx === moves.length - 1 ? 'latest' : ''
+          const prefix = move.board === 0 ? 'A' : 'B'
+          const sideChar = move.isWhite ? '' : '...'
+          html += `<span class="move-entry ${boardClass} ${latestClass}">${move.moveNum}${prefix}${sideChar} ${move.san} </span>`
+        })
+
+        container.innerHTML = html
+        container.scrollTop = container.scrollHeight
+      }
+
+      function showResult(result) {
+        const overlay = document.getElementById('resultOverlay')
+        const text = document.getElementById('resultText')
+
+        playSound('gameEnd')
+
+        text.className = 'result-text'
+        if (result === '1-0') {
+          text.textContent = 'White Team Wins!'
+          text.classList.add('white-wins')
+        } else if (result === '0-1') {
+          text.textContent = 'Black Team Wins!'
+          text.classList.add('black-wins')
+        } else {
+          text.textContent = 'Draw!'
+          text.classList.add('draw')
+        }
+
+        overlay.classList.add('show')
+        setTimeout(hideResult, 2000)
+
+        // Reset FEN tracking for next game
+        lastFenA = ''
+        lastFenB = ''
+      }
+
+      function hideResult() {
+        document.getElementById('resultOverlay').classList.remove('show')
+      }
+
+      function toggleAutoRefresh() {
+        autoRefresh = !autoRefresh
+        const btn = document.getElementById('autoRefreshBtn')
+
+        if (autoRefresh) {
+          btn.textContent = '⏸ Pause'
+          startRefresh()
+        } else {
+          btn.textContent = '▶ Resume'
+          stopRefresh()
+        }
+      }
+
+      function startRefresh() {
+        if (refreshInterval) clearInterval(refreshInterval)
+        refreshInterval = setInterval(updateGameState, 200)
+      }
+
+      function stopRefresh() {
+        if (refreshInterval) {
+          clearInterval(refreshInterval)
+          refreshInterval = null
+        }
+      }
+
+      function flipBoards() {
+        flipped = !flipped
+        localStorage.setItem('hivemind_flipped', flipped)
+        boardA.flip()
+        boardB.flip()
+
+        // Swap the labels for Board A
+        const boardATopName = document.querySelector(
+          '#boardATopPlayer .player-name',
+        )
+        const boardABottomName = document.querySelector(
+          '#boardABottomPlayer .player-name',
+        )
+        const tempA = boardATopName.textContent
+        boardATopName.textContent = boardABottomName.textContent
+        boardABottomName.textContent = tempA
+
+        // Swap the labels for Board B
+        const boardBTopName = document.querySelector(
+          '#boardBTopPlayer .player-name',
+        )
+        const boardBBottomName = document.querySelector(
+          '#boardBBottomPlayer .player-name',
+        )
+        const tempB = boardBTopName.textContent
+        boardBTopName.textContent = boardBBottomName.textContent
+        boardBBottomName.textContent = tempB
+      }
+
+      // Settings persistence
+      const settingsFields = [
+        'moveTimeMs',
+        'nodesPerMove',
+        'temperature',
+        'tempMoves',
+        'numGames',
+        'p1Name',
+        'p1Nodes',
+        'p1Cpuct',
+        'p2Name',
+        'p2Nodes',
+        'p2Cpuct',
+      ]
+
+      function saveSettings() {
+        const settings = {}
+        settingsFields.forEach((id) => {
+          const el = document.getElementById(id)
+          if (el) settings[id] = el.value
+        })
+        // Save search mode
+        const searchMode = document.querySelector(
+          'input[name="searchMode"]:checked',
+        )
+        if (searchMode) settings.searchMode = searchMode.value
+        // Save selected models
+        const newModel = document.getElementById('newModel')
+        const oldModel = document.getElementById('oldModel')
+        const testModel = document.getElementById('testModel')
+        if (newModel.value) settings.newModel = newModel.value
+        if (oldModel.value) settings.oldModel = oldModel.value
+        if (testModel.value) settings.testModel = testModel.value
+        localStorage.setItem('hivemind_settings', JSON.stringify(settings))
+      }
+
+      function loadSettings() {
+        const saved = localStorage.getItem('hivemind_settings')
+        if (!saved) return
+        try {
+          const settings = JSON.parse(saved)
+          settingsFields.forEach((id) => {
+            const el = document.getElementById(id)
+            if (el && settings[id] !== undefined) el.value = settings[id]
+          })
+          // Restore search mode
+          if (settings.searchMode) {
+            const radio = document.querySelector(
+              `input[name="searchMode"][value="${settings.searchMode}"]`,
+            )
+            if (radio) {
+              radio.checked = true
+              toggleSearchMode()
+            }
+          }
+          // Model selections are restored after models are loaded
+        } catch (e) {
+          console.error('Failed to load settings:', e)
+        }
+      }
+
+      function restoreModelSelections() {
+        const saved = localStorage.getItem('hivemind_settings')
+        if (!saved) return
+        try {
+          const settings = JSON.parse(saved)
+          if (settings.newModel) {
+            const newModel = document.getElementById('newModel')
+            if (
+              [...newModel.options].some((o) => o.value === settings.newModel)
+            ) {
+              newModel.value = settings.newModel
+            }
+          }
+          if (settings.oldModel) {
+            const oldModel = document.getElementById('oldModel')
+            if (
+              [...oldModel.options].some((o) => o.value === settings.oldModel)
+            ) {
+              oldModel.value = settings.oldModel
+            }
+          }
+          if (settings.testModel) {
+            const testModel = document.getElementById('testModel')
+            if (
+              [...testModel.options].some((o) => o.value === settings.testModel)
+            ) {
+              testModel.value = settings.testModel
+            }
+          }
+        } catch (e) {
+          console.error('Failed to restore model selections:', e)
+        }
+      }
+
+      // Auto-save settings on change
+      function setupSettingsAutoSave() {
+        settingsFields.forEach((id) => {
+          const el = document.getElementById(id)
+          if (el) el.addEventListener('change', saveSettings)
+        })
+        document
+          .getElementById('newModel')
+          .addEventListener('change', saveSettings)
+        document
+          .getElementById('oldModel')
+          .addEventListener('change', saveSettings)
+        document
+          .getElementById('testModel')
+          .addEventListener('change', saveSettings)
+      }
+
+      // Initialize on page load
+      $(document).ready(function () {
+        initBoards()
+        loadSettings()
+        setupSettingsAutoSave()
+        loadModels()
+        updateGameState()
+        startRefresh()
+
+        // Restore flipped state
+        if (flipped) {
+          boardA.flip()
+          boardB.flip()
+          // Swap the labels for Board A
+          const boardATopName = document.querySelector(
+            '#boardATopPlayer .player-name',
+          )
+          const boardABottomName = document.querySelector(
+            '#boardABottomPlayer .player-name',
+          )
+          const tempA = boardATopName.textContent
+          boardATopName.textContent = boardABottomName.textContent
+          boardABottomName.textContent = tempA
+          // Swap the labels for Board B
+          const boardBTopName = document.querySelector(
+            '#boardBTopPlayer .player-name',
+          )
+          const boardBBottomName = document.querySelector(
+            '#boardBBottomPlayer .player-name',
+          )
+          const tempB = boardBTopName.textContent
+          boardBTopName.textContent = boardBBottomName.textContent
+          boardBBottomName.textContent = tempB
+        }
+      })
+    </script>
+  </body>
+</html>
