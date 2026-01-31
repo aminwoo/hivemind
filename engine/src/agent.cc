@@ -479,6 +479,16 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 }
             }
         }
+    } else {
+        // Node-based search: wait for workers to reach target nodes
+        // Workers will stop themselves when they've done enough iterations
+        // Just need to wait and periodically check if all workers are done
+        while (running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (static_cast<size_t>(searchInfo.get_nodes_searched()) >= targetNodes) {
+                break;
+            }
+        }
     }
     
     // Signal workers to stop (in case they're still running)
@@ -601,23 +611,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
     
     return result;
-}
-
-// Legacy wrappers for backwards compatibility
-void Agent::run_search(Board& board, const vector<Engine*>& engines, int moveTime, Stockfish::Color teamSide, bool teamHasTimeAdvantage, int multiPV) {
-    auto opts = SearchOptions::uci(moveTime, multiPV);
-    run_search(board, engines, teamSide, teamHasTimeAdvantage, opts);
-}
-
-JointActionCandidate Agent::run_search_silent(Board& board, const vector<Engine*>& engines, size_t targetNodes, int moveTimeMs, Stockfish::Color teamSide, bool teamHasTimeAdvantage, const RLSettings& settings, float temperature) {
-    SearchOptions opts;
-    opts.targetNodes = targetNodes;
-    opts.moveTimeMs = moveTimeMs;
-    opts.verbose = false;
-    opts.checkMateIn1 = false;
-    opts.dirichletAlpha = settings.dirichletAlpha;
-    opts.dirichletEpsilon = settings.dirichletEpsilon;
-    return run_search(board, engines, teamSide, teamHasTimeAdvantage, opts);
 }
 
 /**
