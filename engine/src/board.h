@@ -7,6 +7,8 @@
 #include <string>
 #include <algorithm>
 #include <iostream>
+#include <vector>
+#include <functional>
 
 #include "Fairy-Stockfish/src/apiutil.h"
 #include "Fairy-Stockfish/src/position.h"
@@ -25,6 +27,9 @@ class Board {
         std::unique_ptr<Stockfish::Position> pos[2]; ///< Array of board positions.
         Stockfish::StateListPtr states[2];             ///< Array of state history pointers.
         const std::string startingFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"; ///< Standard starting position in FEN notation.
+        
+        /// History of board-only position keys for repetition detection (ignores pocket pieces)
+        std::vector<uint64_t> positionHistory[2];
 
         Board();
         Board(const Board& board);
@@ -44,11 +49,61 @@ class Board {
         }
 
         /**
+         * @brief Computes a hash key for a single board ignoring pocket pieces.
+         * Used for 3-fold repetition detection where only board position matters.
+         * @param board_num The board index.
+         * @return uint64_t Hash of the board position without pocket pieces.
+         */
+        uint64_t board_only_key(int board_num) {
+            // Extract the FEN and hash only the board-relevant parts (not pocket)
+            std::string fenStr = pos[board_num]->fen();
+            
+            // FEN format: piece_placement side_to_move castling en_passant halfmove fullmove [pocket]
+            // We only want: piece_placement + side_to_move + castling + en_passant
+            std::stringstream ss(fenStr);
+            std::string piecePlacement, sideToMove, castling, enPassant;
+            ss >> piecePlacement >> sideToMove >> castling >> enPassant;
+            
+            // Create a normalized string for hashing (ignore halfmove, fullmove, pocket)
+            std::string boardOnlyFen = piecePlacement + " " + sideToMove + " " + castling + " " + enPassant;
+            
+            // Use std::hash for the string
+            return std::hash<std::string>{}(boardOnlyFen);
+        }
+
+        /**
+         * @brief Adds current position to history for repetition tracking.
+         * @param board_num The board index.
+         */
+        void record_position(int board_num) {
+            positionHistory[board_num].push_back(board_only_key(board_num));
+        }
+
+        /**
+         * @brief Removes the last position from history (for unmake_moves).
+         * @param board_num The board index.
+         */
+        void unrecord_position(int board_num) {
+            if (!positionHistory[board_num].empty()) {
+                positionHistory[board_num].pop_back();
+            }
+        }
+
+        /**
+         * @brief Clears position history for a board.
+         * @param board_num The board index.
+         */
+        void clear_position_history(int board_num) {
+            positionHistory[board_num].clear();
+        }
+
+        /**
          * @brief Swaps the positions and states of the two boards.
          */
         void swap_boards() {
             std::swap(pos[0], pos[1]);
             std::swap(states[0], states[1]);
+            std::swap(positionHistory[0], positionHistory[1]);
         }
 
         void set(std::string fen); 
@@ -95,6 +150,9 @@ class Board {
             states[board_num] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
             states[board_num]->emplace_back();
             pos[board_num]->set(Stockfish::variants.find("bughouse")->second, fen, false, &states[board_num]->back(), Stockfish::Threads.main());
+            // Reset position history for this board
+            clear_position_history(board_num);
+            record_position(board_num);
         }
 
         /**
@@ -276,16 +334,53 @@ class Board {
         }
 
         /**
-         * @brief Check if either board is in a draw state.
+         * @brief Check if either board is in a draw state (3-fold repetition ignoring pocket pieces).
          * @param ply The current search depth (used for repetition detection)
          *            When ply > 0, 2-fold repetition within search is treated as draw.
          *            When ply = 0, requires 3-fold repetition.
+         * @return true if either board has reached a draw condition.
          */
         bool is_draw(int ply = 0) {
-            return pos[0]->is_draw(ply) || pos[1]->is_draw(ply); 
+            return is_draw_on_board(0, ply) || is_draw_on_board(1, ply); 
         }
 
+        /**
+         * @brief Check if a specific board is in a draw state (3-fold repetition ignoring pocket pieces).
+         * @param board_num The board index.
+         * @param ply The current search depth (used for repetition detection)
+         *            When ply > 0, 2-fold repetition within search is treated as draw.
+         *            When ply = 0, requires 3-fold repetition.
+         * @return true if the board has reached a draw condition.
+         */
         bool is_draw_on_board(int board_num, int ply = 0) {
-            return pos[board_num]->is_draw(ply);
+            // Check 50-move rule using Fairy-Stockfish's built-in detection
+            if (pos[board_num]->rule50_count() >= 100) {
+                return true;
+            }
+            
+            // Check for 3-fold (or 2-fold in search) repetition ignoring pocket pieces
+            uint64_t currentKey = board_only_key(board_num);
+            const auto& history = positionHistory[board_num];
+            
+            // Count how many times this position has occurred in PREVIOUS positions
+            // (excluding the current position which is the last entry in history)
+            int repetitionCount = 0;
+            
+            // When ply > 0, we're in search - 2-fold repetition is a draw
+            // When ply = 0, we need 3-fold repetition (current + 2 previous = 3 occurrences)
+            int threshold = (ply > 0) ? 1 : 2;
+            
+            // Check all positions except the last one (current position)
+            size_t historySize = history.size();
+            for (size_t i = 0; i + 1 < historySize; ++i) {
+                if (history[i] == currentKey) {
+                    repetitionCount++;
+                    if (repetitionCount >= threshold) {
+                        return true;
+                    }
+                }
+            }
+            
+            return false;
         }
 };

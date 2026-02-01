@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/**/*.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "public/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/(.*)", "dest": "/public/$1" }
+  ],
+  "env": {
+    "RUNPOD_ENDPOINT_ID": "@runpod-endpoint-id",
+    "RUNPOD_API_KEY": "@runpod-api-key"
+  }
+}
