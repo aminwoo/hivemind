@@ -33,6 +33,9 @@ void Board::set(std::string fen) {
         states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
         states[0]->emplace_back();
         pos[0]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[0]->back(), Stockfish::Threads.main());
+        // Reset position history for this board
+        clear_position_history(0);
+        record_position(0);
     }
     
     getline(ss, line, '|');
@@ -43,6 +46,9 @@ void Board::set(std::string fen) {
         states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
         states[1]->emplace_back();
         pos[1]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[1]->back(), Stockfish::Threads.main());
+        // Reset position history for this board
+        clear_position_history(1);
+        record_position(1);
     }
 }
 
@@ -58,6 +64,10 @@ Board::Board() {
     states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
     states[1]->emplace_back();
     pos[1]->set(Stockfish::variants.find("bughouse")->second, startingFen, false, &states[1]->back(), Stockfish::Threads.main());
+    
+    // Initialize position history with starting positions
+    record_position(0);
+    record_position(1);
 }
 
 // Copy constructor: copies state history and reinitializes positions from the provided board.
@@ -77,6 +87,10 @@ Board::Board(const Board& board) {
 
     pos[0]->set(Stockfish::variants.find("bughouse")->second, board.pos[0]->fen(), false, &states[0]->back(), Stockfish::Threads.main());
     pos[1]->set(Stockfish::variants.find("bughouse")->second, board.pos[1]->fen(), false, &states[1]->back(), Stockfish::Threads.main());
+    
+    // Copy position history
+    positionHistory[0] = board.positionHistory[0];
+    positionHistory[1] = board.positionHistory[1];
 }
 
 // Executes a move on the board and updates the corresponding state.
@@ -88,6 +102,8 @@ void Board::push_move(int board_num, Stockfish::Move move) {
     if (p) {
         pos[1 - board_num]->add_to_hand(p);
     }
+    // Record position for repetition detection
+    record_position(board_num);
 }
 
 // Reverts the last move on the board and updates the state.
@@ -100,6 +116,8 @@ void Board::pop_move(int board_num) {
     }
     pos[board_num]->undo_move(m); 
     states[board_num]->pop_back();
+    // Remove position from history
+    unrecord_position(board_num);
 }
 
 // Returns a list of legal moves for the specified board index.
@@ -280,6 +298,8 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         if (p) {
             pos[1]->add_to_hand(p);
         }
+        // Record position for repetition detection
+        record_position(0);
     }
     
     if (moveB != Stockfish::MOVE_NONE) {
@@ -289,6 +309,8 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         if (p) {
             pos[0]->add_to_hand(p);
         }
+        // Record position for repetition detection
+        record_position(1);
     }
 }
 
@@ -300,6 +322,8 @@ void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         }
         pos[1]->undo_move(moveB);
         states[1]->pop_back();
+        // Remove position from history
+        unrecord_position(1);
     }
 
     if (moveA != Stockfish::MOVE_NONE) {
@@ -309,5 +333,7 @@ void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         }
         pos[0]->undo_move(moveA);
         states[0]->pop_back();
+        // Remove position from history
+        unrecord_position(0);
     }
 }

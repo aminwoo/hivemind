@@ -68,6 +68,7 @@ bool Engine::saveEngineToFile(const std::string& engineFile) {
 bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     std::cout << "Building TensorRT engine from ONNX: " << onnxFile << std::endl;
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(m_logger));
+    // TensorRT 10: explicit batch is now the default, just pass 0
     auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
     auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, m_logger));
 
@@ -89,7 +90,12 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, dims);
     config->addOptimizationProfile(profile);
 
-    m_engine.reset(builder->buildEngineWithConfig(*network, *config));
+    // TensorRT 10: use buildSerializedNetwork instead of buildEngineWithConfig
+    auto serializedEngine = std::unique_ptr<nvinfer1::IHostMemory>(builder->buildSerializedNetwork(*network, *config));
+    if (!serializedEngine) return false;
+    
+    auto runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(m_logger));
+    m_engine.reset(runtime->deserializeCudaEngine(serializedEngine->data(), serializedEngine->size()));
     return initializeResources();
 }
 

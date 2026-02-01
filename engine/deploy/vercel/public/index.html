@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hivemind - Bughouse Chess Engine</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        min-height: 100vh;
+        color: #e0e0e0;
+      }
+
+      .header {
+        background: rgba(0, 0, 0, 0.3);
+        padding: 15px 30px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .header h1 {
+        font-size: 24px;
+        color: #00d4ff;
+        text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+      }
+
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .status-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #ff4444;
+        animation: pulse 2s infinite;
+      }
+
+      .status-dot.connected {
+        background: #44ff44;
+      }
+      .status-dot.thinking {
+        background: #00d4ff;
+        animation: pulse 0.5s infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .main-container {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 30px;
+        padding: 30px;
+      }
+
+      .boards-container {
+        display: flex;
+        gap: 40px;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+
+      .board-wrapper {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+
+      .board-title {
+        text-align: center;
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 15px;
+        color: #00d4ff;
+      }
+
+      .board-container {
+        width: 400px;
+        height: 400px;
+      }
+
+      .pocket {
+        display: flex;
+        gap: 5px;
+        margin-top: 10px;
+        padding: 10px;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 8px;
+        min-height: 50px;
+        flex-wrap: wrap;
+      }
+
+      .pocket-piece {
+        width: 36px;
+        height: 36px;
+        background-size: contain;
+        background-repeat: no-repeat;
+        cursor: pointer;
+        position: relative;
+      }
+
+      .pocket-piece .count {
+        position: absolute;
+        bottom: -2px;
+        right: -2px;
+        background: #00d4ff;
+        color: #1a1a2e;
+        font-size: 11px;
+        font-weight: 700;
+        min-width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .sidebar {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 20px;
+        width: 320px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      }
+
+      .sidebar h3 {
+        color: #00d4ff;
+        margin-bottom: 15px;
+        font-size: 14px;
+      }
+
+      .controls {
+        margin-bottom: 20px;
+      }
+
+      .form-group {
+        margin-bottom: 12px;
+      }
+
+      .form-group label {
+        display: block;
+        font-size: 12px;
+        color: #888;
+        margin-bottom: 4px;
+      }
+
+      .form-group select,
+      .form-group input {
+        width: 100%;
+        padding: 8px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.3);
+        color: #e0e0e0;
+        font-size: 14px;
+      }
+
+      .btn {
+        padding: 12px 24px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        width: 100%;
+        margin-top: 10px;
+        transition: all 0.2s;
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+        color: #1a1a2e;
+      }
+
+      .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(0, 212, 255, 0.4);
+      }
+
+      .btn-primary:disabled {
+        background: #444;
+        color: #888;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.1);
+        color: #e0e0e0;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      .info-item {
+        background: rgba(0, 0, 0, 0.2);
+        padding: 10px;
+        border-radius: 6px;
+      }
+
+      .info-label {
+        font-size: 11px;
+        color: #888;
+        text-transform: uppercase;
+      }
+
+      .info-value {
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .moves-list {
+        max-height: 200px;
+        overflow-y: auto;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 6px;
+        padding: 10px;
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+      }
+
+      .move-entry {
+        padding: 2px 4px;
+        border-radius: 3px;
+      }
+      .move-entry.board-a {
+        color: #ff6b6b;
+      }
+      .move-entry.board-b {
+        color: #4ecdc4;
+      }
+
+      .thinking-overlay {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.9);
+        padding: 30px 50px;
+        border-radius: 12px;
+        text-align: center;
+        z-index: 1000;
+        display: none;
+      }
+
+      .thinking-overlay.show {
+        display: block;
+      }
+
+      .spinner {
+        border: 4px solid rgba(255, 255, 255, 0.1);
+        border-top: 4px solid #00d4ff;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 15px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (max-width: 900px) {
+        .board-container {
+          width: 300px;
+          height: 300px;
+        }
+        .sidebar {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>🐝 HiveMind Bughouse</h1>
+      <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+    </div>
+
+    <div class="main-container">
+      <div class="boards-container">
+        <div class="board-wrapper">
+          <div class="board-title">Board A</div>
+          <div id="boardA" class="board-container"></div>
+          <div class="pocket" id="pocketA"></div>
+        </div>
+        <div class="board-wrapper">
+          <div class="board-title">Board B</div>
+          <div id="boardB" class="board-container"></div>
+          <div class="pocket" id="pocketB"></div>
+        </div>
+      </div>
+
+      <div class="sidebar">
+        <div class="controls">
+          <h3>⚙️ Settings</h3>
+          <div class="form-group">
+            <label>Search Nodes</label>
+            <input type="number" id="nodes" value="800" min="100" max="10000" />
+          </div>
+          <div class="form-group">
+            <label>Play As</label>
+            <select id="playAs">
+              <option value="white">White Team</option>
+              <option value="black">Black Team</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="newGame()">
+            🎮 New Game
+          </button>
+          <button class="btn btn-secondary" onclick="getEngineMove()">
+            🤖 Engine Move
+          </button>
+        </div>
+
+        <div class="info-grid">
+          <div class="info-item">
+            <div class="info-label">To Move</div>
+            <div class="info-value" id="toMove">White</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Ply</div>
+            <div class="info-value" id="plyCount">0</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Eval</div>
+            <div class="info-value" id="evalScore">0.00</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Nodes</div>
+            <div class="info-value" id="nodesSearched">-</div>
+          </div>
+        </div>
+
+        <h3>📝 Moves</h3>
+        <div class="moves-list" id="movesList"></div>
+      </div>
+    </div>
+
+    <div class="thinking-overlay" id="thinkingOverlay">
+      <div class="spinner"></div>
+      <div>Engine is thinking...</div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script>
+      const API_BASE = '/api'
+
+      let boardA, boardB
+      let currentFenA =
+        'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+      let currentFenB =
+        'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+      let sideToMove = 'w'
+      let plyCount = 0
+      let moveHistory = []
+
+      function pieceTheme(piece) {
+        return (
+          'https://chessboardjs.com/img/chesspieces/wikipedia/' + piece + '.png'
+        )
+      }
+
+      function initBoards() {
+        boardA = Chessboard('boardA', {
+          pieceTheme: pieceTheme,
+          position: 'start',
+          draggable: true,
+          onDrop: (source, target) => onDrop('A', source, target),
+        })
+
+        boardB = Chessboard('boardB', {
+          pieceTheme: pieceTheme,
+          position: 'start',
+          orientation: 'black',
+          draggable: true,
+          onDrop: (source, target) => onDrop('B', source, target),
+        })
+
+        $(window).resize(() => {
+          boardA.resize()
+          boardB.resize()
+        })
+      }
+
+      function onDrop(board, source, target) {
+        // For now, just prevent invalid drops
+        // Full move validation would require chess.js
+        if (source === target) return 'snapback'
+
+        // Update FEN (simplified - real implementation needs proper FEN generation)
+        console.log(`Move on Board ${board}: ${source} -> ${target}`)
+        plyCount++
+        updateInfo()
+      }
+
+      async function checkHealth() {
+        try {
+          const response = await fetch(`${API_BASE}/health`)
+          const data = await response.json()
+
+          if (data.status === 'ok') {
+            setStatus(
+              'connected',
+              `Ready (${data.workers?.ready || 0} workers)`,
+            )
+          } else {
+            setStatus('error', 'Endpoint unavailable')
+          }
+        } catch (error) {
+          setStatus('error', 'Disconnected')
+        }
+      }
+
+      function setStatus(type, text) {
+        const dot = document.getElementById('statusDot')
+        dot.className = 'status-dot'
+        if (type === 'connected') dot.classList.add('connected')
+        if (type === 'thinking') dot.classList.add('thinking')
+        document.getElementById('statusText').textContent = text
+      }
+
+      function showThinking(show) {
+        document
+          .getElementById('thinkingOverlay')
+          .classList.toggle('show', show)
+        if (show) setStatus('thinking', 'Thinking...')
+      }
+
+      async function getEngineMove() {
+        showThinking(true)
+
+        try {
+          const nodes = parseInt(document.getElementById('nodes').value) || 800
+          const combinedFen = `${currentFenA}|${currentFenB}`
+
+          const response = await fetch(`${API_BASE}/move`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fen: combinedFen,
+              nodes: nodes,
+            }),
+          })
+
+          const data = await response.json()
+
+          if (data.error) {
+            alert('Error: ' + data.error)
+            return
+          }
+
+          // Update display with results
+          document.getElementById('evalScore').textContent =
+            data.eval !== null ? data.eval.toFixed(2) : '-'
+          document.getElementById('nodesSearched').textContent =
+            data.nodes || '-'
+
+          if (data.bestmove) {
+            // Parse and apply the move (format: "(moveA,moveB)")
+            console.log('Best move:', data.bestmove)
+            addMoveToHistory(data.bestmove)
+          }
+
+          setStatus('connected', 'Ready')
+        } catch (error) {
+          console.error('Engine error:', error)
+          alert('Failed to get engine move: ' + error.message)
+          setStatus('error', 'Error')
+        } finally {
+          showThinking(false)
+        }
+      }
+
+      function newGame() {
+        currentFenA = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+        currentFenB = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+        sideToMove = 'w'
+        plyCount = 0
+        moveHistory = []
+
+        boardA.position('start')
+        boardB.position('start')
+        updateInfo()
+        document.getElementById('movesList').innerHTML = ''
+      }
+
+      function updateInfo() {
+        document.getElementById('toMove').textContent =
+          sideToMove === 'w' ? 'White' : 'Black'
+        document.getElementById('plyCount').textContent = plyCount
+      }
+
+      function addMoveToHistory(move) {
+        moveHistory.push(move)
+        const list = document.getElementById('movesList')
+        const entry = document.createElement('span')
+        entry.className = 'move-entry'
+        entry.textContent = `${moveHistory.length}. ${move} `
+        list.appendChild(entry)
+        list.scrollTop = list.scrollHeight
+      }
+
+      // Initialize
+      $(document).ready(function () {
+        initBoards()
+        checkHealth()
+        setInterval(checkHealth, 30000) // Check every 30 seconds
+      })
+    </script>
+  </body>
+</html>
