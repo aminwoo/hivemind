@@ -99,6 +99,8 @@ public:
                           const vector<float>& priorsA,
                           const vector<float>& priorsB,
                           bool teamHasTimeAdvantage,
+                          bool boardAOnTurn,
+                          bool boardBOnTurn,
                           uint64_t positionHash = 0);
     void backup(vector<TrajectoryEntry>& trajectory, 
                 Board& board, float value);

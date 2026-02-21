@@ -279,12 +279,20 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         // Determine if current side has time advantage
         bool teamHasTimeAdvantage = (currentSide == Stockfish::WHITE) ? whiteHasTimeAdvantage : !whiteHasTimeAdvantage;
         
+        // Check for checkmate (must check explicitly, not just empty legal moves)
+        if (board.is_checkmate(currentSide, teamHasTimeAdvantage)) {
+            result = (currentSide == Stockfish::WHITE) ? GameResult::BLACK_WINS : GameResult::WHITE_WINS;
+            break;
+        }
+        
         // Get legal moves for current side
         auto legalMoves = board.legal_moves(currentSide, teamHasTimeAdvantage);
         
+        // If no legal moves but not checkmate, team has no turn on either board
+        // This means opponent has turns on both boards - let them continue
         if (legalMoves.empty()) {
-            result = (currentSide == Stockfish::WHITE) ? GameResult::BLACK_WINS : GameResult::WHITE_WINS;
-            break;
+            currentSide = ~currentSide;
+            continue;
         }
         
         // Check for draw conditions

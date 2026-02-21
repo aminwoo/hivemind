@@ -345,8 +345,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         // Stop if second-best can't catch up AND best move has better Q
                         if (projectedVisits < firstMax * SearchParams::EARLY_STOP_FACTOR &&
                             bestQ >= secondQ) {
+                            double savedMs = std::max(0.0, static_cast<double>(searchInfo.get_move_time()) - elapsedMs);
                             cout << "info string Early stopping: saved " 
-                                 << static_cast<int>(remaining) << "ms" << endl;
+                                 << static_cast<int>(savedMs) << "ms" << endl;
                             running = false;
                             break;
                         }
@@ -369,17 +370,15 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     if (depth > lastReportedDepth) {
                         lastReportedDepth = depth;
                         
-                        // Create sorted indices by visit count (descending)
-                        vector<size_t> sortedIndices(numChildren);
-                        for (size_t i = 0; i < numChildren; ++i) sortedIndices[i] = i;
-                        sort(sortedIndices.begin(), sortedIndices.end(), [&](size_t a, size_t b) {
-                            return childVisits[a] > childVisits[b];
-                        });
+                        // Use solver-aware selection for the best child to display
+                        int solverBestIdx = rootNode->get_best_move_idx_with_q_weight();
+                        size_t displayIdx = (solverBestIdx >= 0) 
+                            ? static_cast<size_t>(solverBestIdx) : static_cast<size_t>(firstIdx);
                         
-                        // Output up to multiPV lines (only first PV during search to reduce overhead)
-                        int numPVs = 1;  // Only output best line during search
+                        // Output best line during search
+                        int numPVs = 1;
                         for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
-                            size_t childIdx = sortedIndices[pvIdx];
+                            size_t childIdx = displayIdx;
                             string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
                             float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
                             string scoreStr = format_uci_score(children[childIdx].get(), childQ, true, C, k);
@@ -562,6 +561,18 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 return childVisits[a] > childVisits[b];
             });
             
+            // When root is proven WIN/LOSS, prioritize the solver's best move as PV 1
+            if (rootNode->get_node_type() != NodeType::UNSOLVED) {
+                int solverIdx = rootNode->get_best_move_idx_with_q_weight();
+                if (solverIdx >= 0) {
+                    auto it = std::find(sortedIndices.begin(), sortedIndices.end(), static_cast<size_t>(solverIdx));
+                    if (it != sortedIndices.end() && it != sortedIndices.begin()) {
+                        sortedIndices.erase(it);
+                        sortedIndices.insert(sortedIndices.begin(), static_cast<size_t>(solverIdx));
+                    }
+                }
+            }
+            
             // Output up to multiPV lines
             int numPVs = min(options.multiPV, static_cast<int>(numChildren));
             for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
@@ -614,26 +625,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 }
 
 /**
- * @brief Extracts the best move from the root node by selecting the most visited child.
+ * @brief Extracts the best move from the root node using solver-aware selection.
+ * When root is proven WIN/LOSS, selects the proven-best move.
+ * Otherwise falls back to Q-value weighted visit-based selection.
  */
 string Agent::extract_best_move(Board& board) {
     if (!rootNode || !rootNode->is_expanded()) {
         return "(none)";
     }
 
-    auto childVisits = rootNode->get_child_visits();
-    if (childVisits.empty()) {
+    // Use solver-aware move selection (handles proven wins/losses)
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+    if (bestIdx < 0) {
         return "(none)";
-    }
-
-    // Find child with the most visits
-    int bestIdx = 0;
-    int maxVisits = 0;
-    for (size_t i = 0; i < childVisits.size(); ++i) {
-        if (childVisits[i] > maxVisits) {
-            maxVisits = childVisits[i];
-            bestIdx = static_cast<int>(i);
-        }
     }
 
     JointActionCandidate action = rootNode->get_joint_action(bestIdx);
@@ -782,13 +786,18 @@ string Agent::extract_pv_from_child(Board& board, int childIdx, int maxDepth) {
             break;
         }
         
-        // Find child with most visits
-        int bestIdx = 0;
-        int maxVisits = 0;
-        for (size_t i = 0; i < nodeChildren.size() && i < childVisits.size(); i++) {
-            if (childVisits[i] > maxVisits) {
-                maxVisits = childVisits[i];
-                bestIdx = static_cast<int>(i);
+        // Find best child: prefer solver-proven path, fallback to most visits
+        int bestIdx = currentNode->get_best_move_idx_with_q_weight();
+        
+        // Fallback to most-visited (handles unsolved nodes and edge cases)
+        if (bestIdx < 0) {
+            bestIdx = 0;
+            int maxVisits = 0;
+            for (size_t i = 0; i < nodeChildren.size() && i < childVisits.size(); i++) {
+                if (childVisits[i] > maxVisits) {
+                    maxVisits = childVisits[i];
+                    bestIdx = static_cast<int>(i);
+                }
             }
         }
         
