@@ -117,9 +117,15 @@ private:
             teamHasTimeAdvantage
         );
         
-        // Only push valid candidates (jointPrior != -1.0f)
+        // Only push valid candidates (jointPrior >= 0)
         if (candidate.jointPrior >= 0.0f) {
             heap.push(candidate);
+        } else {
+            // Invalid candidate (e.g., double pass without time advantage)
+            // We still need to explore its successors to avoid missing valid moves
+            // Recursively try the adjacent candidates
+            pushCandidate(idxA + 1, idxB);
+            pushCandidate(idxA, idxB + 1);
         }
     }
 
@@ -133,12 +139,16 @@ public:
      * @param priorsA Prior probabilities for board 0 moves
      * @param priorsB Prior probabilities for board 1 moves
      * @param hasTimeAdvantage If true, team is up on time and can sit when on turn
+     * @param isAOnTurn True if it's this team's turn on board A
+     * @param isBOnTurn True if it's this team's turn on board B
      */
     void initialize(const std::vector<Stockfish::Move>& actionsA,
                     const std::vector<Stockfish::Move>& actionsB,
                     const std::vector<float>& priorsA,
                     const std::vector<float>& priorsB,
-                    bool hasTimeAdvantage = false) {
+                    bool hasTimeAdvantage,
+                    bool isAOnTurn,
+                    bool isBOnTurn) {
         // Clear previous state
         sortedActionsA.clear();
         sortedActionsB.clear();
@@ -148,9 +158,10 @@ public:
         visited.clear();
         generatedCandidates.clear();
         
-        // A board is "on turn" if it has more than just the null move
-        boardAOnTurn = (actionsA.size() > 1);
-        boardBOnTurn = (actionsB.size() > 1);
+        // Use explicit on-turn status (not inferred from action count,
+        // since a board can be on-turn but stalemated with no legal moves)
+        boardAOnTurn = isAOnTurn;
+        boardBOnTurn = isBOnTurn;
         teamHasTimeAdvantage = hasTimeAdvantage;
         
         if (actionsA.empty() || actionsB.empty()) {
@@ -247,8 +258,13 @@ public:
 
     /**
      * @brief Get an already-generated candidate by index.
+     * Returns empty candidate if index is out of bounds.
      */
     const JointActionCandidate& getGenerated(size_t idx) const {
+        static const JointActionCandidate empty;
+        if (idx >= generatedCandidates.size()) {
+            return empty;
+        }
         return generatedCandidates[idx];
     }
 

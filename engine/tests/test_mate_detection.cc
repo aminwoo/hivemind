@@ -668,3 +668,58 @@ TEST_F(MateDetectionTest, RookDropBackRankMate) {
     EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false))
         << "R@h8 should be checkmate - Black king on g8 has no escape";
 }
+
+// =============================================================================
+// "No Turn" Tests - Team has neither board's turn
+// =============================================================================
+
+// Test: When a team has no turn on either board, they should not be considered checkmated
+// This tests the fix for the bug where games ended prematurely as "checkmate" when
+// a team simply didn't have the turn on either board.
+TEST_F(MateDetectionTest, NoTurnIsNotCheckmate) {
+    Board board;
+    // Set up a position where Board A has White to move and Board B has Black to move
+    // In bughouse:
+    // - WHITE team plays White on A and Black on B
+    // - BLACK team plays Black on A and White on B
+    // If Board A = White to move, Board B = Black to move:
+    // - WHITE team has turns on BOTH boards (White on A, Black on B)
+    // - BLACK team has turns on NEITHER board (not Black on A, not White on B)
+    
+    board.set_fen(BOARD_A, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");  // White to move
+    board.set_fen(BOARD_B, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");  // Black to move
+    
+    // BLACK team has no turn on either board, but is NOT checkmated
+    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, false))
+        << "No turn on either board should NOT be checkmate";
+    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, true))
+        << "No turn on either board should NOT be checkmate (with time advantage)";
+    
+    // WHITE team has turns on both boards, definitely not mated
+    EXPECT_FALSE(board.is_checkmate(Stockfish::WHITE, false))
+        << "Team with turns should not be checkmated";
+    EXPECT_FALSE(board.is_checkmate(Stockfish::WHITE, true))
+        << "Team with turns should not be checkmated (with time advantage)";
+}
+
+// Test: legal_moves returns empty when team has no turn, but is_checkmate returns false
+TEST_F(MateDetectionTest, EmptyMovesNotCheckmate) {
+    Board board;
+    // Same setup as above - BLACK team has no turn on either board
+    board.set_fen(BOARD_A, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");  // White to move
+    board.set_fen(BOARD_B, "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");  // Black to move
+    
+    // BLACK team has empty legal moves (no turn on either board)
+    auto blackMoves = board.legal_moves(Stockfish::BLACK, false);
+    EXPECT_TRUE(blackMoves.empty())
+        << "legal_moves should be empty when team has no turn";
+    
+    // But is_checkmate should return false (they're not mated, just waiting)
+    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, false))
+        << "Empty legal_moves with no turn should NOT mean checkmate";
+    
+    // WHITE team should have normal moves
+    auto whiteMoves = board.legal_moves(Stockfish::WHITE, false);
+    EXPECT_GT(whiteMoves.size(), 1)
+        << "White team should have many legal moves";
+}

@@ -142,14 +142,18 @@ public:
      * Uses a max-heap to lazily generate pairs in order of decreasing P_A * P_B.
      * This considers ALL moves from both boards without arbitrary top-K filtering.
      * @param teamHasTimeAdvantage If true, team is up on time and can sit when on turn
+     * @param boardAOnTurn True if it's this team's turn on board A
+     * @param boardBOnTurn True if it's this team's turn on board B
      */
     void init_joint_generator(const std::vector<Stockfish::Move>& actionsA,
                               const std::vector<Stockfish::Move>& actionsB,
                               const std::vector<float>& priorsA,
                               const std::vector<float>& priorsB,
-                              bool teamHasTimeAdvantage = false) {
+                              bool teamHasTimeAdvantage,
+                              bool boardAOnTurn,
+                              bool boardBOnTurn) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
+        candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
         expandedCount = 0;
     }
 
@@ -271,7 +275,9 @@ public:
                              const std::vector<Stockfish::Move>& actionsB,
                              const std::vector<float>& priorsA,
                              const std::vector<float>& priorsB,
-                             bool teamHasTimeAdvantage = false) {
+                             bool teamHasTimeAdvantage,
+                             bool boardAOnTurn,
+                             bool boardBOnTurn) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
@@ -280,7 +286,7 @@ public:
         }
         
         // Initialize generator
-        candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
+        candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
         expandedCount = 0;
         
         // Try to expand the first child
@@ -465,13 +471,17 @@ public:
      * @brief Get the joint action and visit count for each child.
      * Returns vector of (JointActionCandidate, visit_count) pairs.
      * Used for extracting MCTS policy distributions for training.
+     * Note: Only includes children that have generated candidates (excludes transposition children).
      */
     std::vector<std::pair<JointActionCandidate, int>> get_child_action_visits() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         std::vector<std::pair<JointActionCandidate, int>> result;
-        result.reserve(children.size());
         
-        for (size_t i = 0; i < children.size(); ++i) {
+        size_t genCount = candidateGenerator.generatedCount();
+        size_t count = std::min(children.size(), genCount);
+        result.reserve(count);
+        
+        for (size_t i = 0; i < count; ++i) {
             JointActionCandidate action = candidateGenerator.getGenerated(i);
             int visits = (i < childVisits.size()) ? childVisits[i] : 0;
             result.emplace_back(action, visits);
@@ -704,7 +714,10 @@ public:
         // check if we're lost or drawn.
         // IMPORTANT: We can only mark as LOSS if ALL possible moves have been explored.
         // With progressive widening, there may be unexpanded moves that could save us.
-        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0 && !candidateGenerator.hasNext()) {
+        // CRITICAL: Must also verify the node is actually expanded (generator initialized).
+        // An unexpanded node has an empty generator which would incorrectly pass hasNext() check.
+        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0 && 
+            m_is_expanded && !candidateGenerator.hasNext()) {
             bool allWins = true;
             bool hasDrawn = false;
             int longestPly = 0;

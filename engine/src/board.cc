@@ -159,24 +159,58 @@ std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color
 // 2. The partner cannot capture any piece that could be used to block the check
 bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
     // Check Board A (where 'side' plays)
-    if (pos[0]->side_to_move() == side && pos[0]->checkers()) {
-        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[0]);
+    if (pos[BOARD_A]->side_to_move() == side && pos[BOARD_A]->checkers()) {
+        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[BOARD_A]);
         if (!legalMoves.size()) {
             // No legal moves - but can partner provide a blocking piece?
-            if (!can_partner_provide_blocking_piece(0, side, teamHasTimeAdvantage)) {
+            if (!can_partner_provide_blocking_piece(BOARD_A, side, teamHasTimeAdvantage)) {
                 return true;
             }
         }
     }
 
     // Check Board B (where partner of 'side' plays, so opponent color is ~side)
-    if (pos[1]->side_to_move() == ~side && pos[1]->checkers()) {
-        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[1]);
+    if (pos[BOARD_B]->side_to_move() == ~side && pos[BOARD_B]->checkers()) {
+        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[BOARD_B]);
         if (!legalMoves.size()) {
             // No legal moves - but can partner provide a blocking piece?
-            if (!can_partner_provide_blocking_piece(1, ~side, teamHasTimeAdvantage)) {
+            if (!can_partner_provide_blocking_piece(BOARD_B, ~side, teamHasTimeAdvantage)) {
                 return true;
             }
+        }
+    }
+
+    // Bughouse special case: if team has no legal moves at all (e.g., stalemate on their
+    // board(s)) AND they don't have time advantage, they cannot pass/sit - this is a loss.
+    // This handles positions like stalemate where the team cannot move but isn't in check.
+    // Note: We check moves directly here to avoid infinite recursion with legal_moves().
+    if (!teamHasTimeAdvantage) {
+        bool hasMovesOnA = false;
+        bool hasMovesOnB = false;
+        bool isOnTurnOnA = (pos[BOARD_A]->side_to_move() == side);
+        bool isOnTurnOnB = (pos[BOARD_B]->side_to_move() == ~side);
+        
+        // If neither board has the team on turn, they can't be checkmated this way
+        // (opponent(s) are on turn, so it's not the team's problem yet)
+        if (!isOnTurnOnA && !isOnTurnOnB) {
+            return false;
+        }
+        
+        // Check Board A (where 'side' plays)
+        if (isOnTurnOnA) {
+            Stockfish::MoveList<Stockfish::LEGAL> movesA(*pos[BOARD_A]);
+            hasMovesOnA = (movesA.size() > 0);
+        }
+        
+        // Check Board B (where partner of 'side' plays, so ~side)
+        if (isOnTurnOnB) {
+            Stockfish::MoveList<Stockfish::LEGAL> movesB(*pos[BOARD_B]);
+            hasMovesOnB = (movesB.size() > 0);
+        }
+        
+        // If on turn on at least one board but no moves on any, it's a loss
+        if (!hasMovesOnA && !hasMovesOnB) {
+            return true;
         }
     }
 
@@ -188,7 +222,7 @@ bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
 // checked_side: the color of the player being checked on that board
 // teamHasTimeAdvantage: if true, partner may be able to capture in the future even if not their turn
 bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Color checked_side, bool teamHasTimeAdvantage) {
-    int partner_board = 1 - board_in_check;
+    int partner_board = (board_in_check == BOARD_A) ? BOARD_B : BOARD_A;
     Stockfish::Color partner_side = ~checked_side;  // Partner plays opposite color
     
     // Check if it's currently partner's turn
@@ -292,48 +326,48 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
     Stockfish::Piece p;
     
     if (moveA != Stockfish::MOVE_NONE) {
-        states[0]->emplace_back();
-        pos[0]->do_move(moveA, states[0]->back());
-        p = states[0]->back().pieceToHand; 
+        states[BOARD_A]->emplace_back();
+        pos[BOARD_A]->do_move(moveA, states[BOARD_A]->back());
+        p = states[BOARD_A]->back().pieceToHand; 
         if (p) {
-            pos[1]->add_to_hand(p);
+            pos[BOARD_B]->add_to_hand(p);
         }
         // Record position for repetition detection
-        record_position(0);
+        record_position(BOARD_A);
     }
     
     if (moveB != Stockfish::MOVE_NONE) {
-        states[1]->emplace_back();
-        pos[1]->do_move(moveB, states[1]->back());
-        p = states[1]->back().pieceToHand; 
+        states[BOARD_B]->emplace_back();
+        pos[BOARD_B]->do_move(moveB, states[BOARD_B]->back());
+        p = states[BOARD_B]->back().pieceToHand; 
         if (p) {
-            pos[0]->add_to_hand(p);
+            pos[BOARD_A]->add_to_hand(p);
         }
         // Record position for repetition detection
-        record_position(1);
+        record_position(BOARD_B);
     }
 }
 
 void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
     if (moveB != Stockfish::MOVE_NONE) {
-        Stockfish::Piece pB = states[1]->back().pieceToHand;
+        Stockfish::Piece pB = states[BOARD_B]->back().pieceToHand;
         if (pB) {
-            pos[0]->remove_from_hand(pB);
+            pos[BOARD_A]->remove_from_hand(pB);
         }
-        pos[1]->undo_move(moveB);
-        states[1]->pop_back();
+        pos[BOARD_B]->undo_move(moveB);
+        states[BOARD_B]->pop_back();
         // Remove position from history
-        unrecord_position(1);
+        unrecord_position(BOARD_B);
     }
 
     if (moveA != Stockfish::MOVE_NONE) {
-        Stockfish::Piece pA = states[0]->back().pieceToHand;
+        Stockfish::Piece pA = states[BOARD_A]->back().pieceToHand;
         if (pA) {
-            pos[1]->remove_from_hand(pA);
+            pos[BOARD_B]->remove_from_hand(pA);
         }
-        pos[0]->undo_move(moveA);
-        states[0]->pop_back();
+        pos[BOARD_A]->undo_move(moveA);
+        states[BOARD_A]->pop_back();
         // Remove position from history
-        unrecord_position(0);
+        unrecord_position(BOARD_A);
     }
 }

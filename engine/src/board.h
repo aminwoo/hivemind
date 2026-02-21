@@ -63,6 +63,11 @@ class Board {
             std::stringstream ss(fenStr);
             std::string piecePlacement, sideToMove, castling, enPassant;
             ss >> piecePlacement >> sideToMove >> castling >> enPassant;
+
+            size_t pos = piecePlacement.find('[');
+            if (pos != std::string::npos) {
+                piecePlacement = piecePlacement.substr(0, pos);
+            }
             
             // Create a normalized string for hashing (ignore halfmove, fullmove, pocket)
             std::string boardOnlyFen = piecePlacement + " " + sideToMove + " " + castling + " " + enPassant;
@@ -331,6 +336,23 @@ class Board {
 
         bool is_in_check(int board_num) {
             return pos[board_num]->checkers();
+        }
+
+        /**
+         * @brief Check if a SPECIFIC color's king is being attacked on a board.
+         * This checks if the given color's king is in check, regardless of whose turn it is.
+         * @param board_num The board index (0 or 1)
+         * @param color The color whose king to check
+         * @return true if that color's king is being attacked by opponent pieces
+         */
+        bool is_king_attacked(int board_num, Stockfish::Color color) {
+            Stockfish::Square kingSquare = pos[board_num]->square<Stockfish::KING>(color);
+            if (kingSquare == Stockfish::SQ_NONE) {
+                return false;  // King not on board (shouldn't happen in normal chess)
+            }
+            // Check if any opponent pieces attack the king's square
+            Stockfish::Bitboard attackers = pos[board_num]->attackers_to(kingSquare, ~color);
+            return attackers != 0;
         }
 
         /**
