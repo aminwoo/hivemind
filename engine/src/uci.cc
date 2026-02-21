@@ -94,23 +94,47 @@ void UCI::position(istringstream& is) {
     
     if (is >> token && token == "moves") {
         // Parse move list (if any)
+        int moveCount = 0;
         while (is >> token) {
+            if (token.empty() || token[0] < '1' || token[0] > '2') {
+                std::cerr << "Error: Invalid board indicator in move '" << token 
+                          << "' at move " << (moveCount + 1) << std::endl;
+                break;
+            }
             int boardNum = token[0] - '1'; // '1' becomes 0, '2' becomes 1.
             std::string moveStr = token.substr(1); // Extract move string without board indicator
             Stockfish::Move m = Stockfish::UCI::to_move(*board.pos[boardNum], moveStr);
-            if (m == Stockfish::MOVE_NONE)
+            if (m == Stockfish::MOVE_NONE) {
+                std::cerr << "Error: Invalid move '" << moveStr << "' on board " 
+                          << (boardNum + 1) << " at move " << (moveCount + 1) << std::endl;
+                std::cerr << "       Current FEN: " << board.fen(boardNum) << std::endl;
+                std::cerr << "       Legal moves: ";
+                auto legalMoves = board.legal_moves(boardNum);
+                for (const auto& lm : legalMoves) {
+                    std::cerr << board.uci_move(boardNum, lm) << " ";
+                }
+                std::cerr << std::endl;
                 break;  // Stop if an invalid move is encountered.
+            }
             board.push_move(boardNum, m);
+            moveCount++;
         }
     }
 }
 
 void UCI::go(std::istringstream& is) {
     std::string token;
-    // Consume the first two tokens (e.g. "go" and "movetime")
-    is >> token >> token;
+    int moveTime = 0;
+    size_t nodes = 0;
     
-    int moveTime = std::stoi(token);
+    // Parse go parameters
+    while (is >> token) {
+        if (token == "movetime") {
+            is >> moveTime;
+        } else if (token == "nodes") {
+            is >> nodes;
+        }
+    }
     
     // Wait for any previous search to complete before starting a new one
     if (mainSearchThread && mainSearchThread->joinable()) {
@@ -135,9 +159,20 @@ void UCI::go(std::istringstream& is) {
         enginePtrs.push_back(eng.get());
     }
 
-    // Launch the search thread using a lambda that calls Agent::run_search,
-    // passing in the board, the collection of engines, and the move time.
-    auto opts = SearchOptions::uci(moveTime, multiPV);
+    // Build search options based on what was specified
+    SearchOptions opts;
+    if (nodes > 0) {
+        opts = SearchOptions::uci(static_cast<int>(nodes), multiPV);
+        opts.moveTimeMs = 0;  // Node-based search
+        opts.targetNodes = nodes;
+    } else if (moveTime > 0) {
+        opts = SearchOptions::uci(moveTime, multiPV);
+    } else {
+        // Default to 1 second if nothing specified
+        opts = SearchOptions::uci(1000, multiPV);
+    }
+    
+    // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
         agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
     });

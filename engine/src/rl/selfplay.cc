@@ -140,12 +140,20 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         // Determine time advantage based on which team is moving
         bool teamHasTimeAdvantage = (currentSide == Stockfish::WHITE) ? whiteHasTimeAdvantage : !whiteHasTimeAdvantage;
         
+        // Check for checkmate (must check explicitly, not just empty legal moves)
+        if (board.is_checkmate(currentSide, teamHasTimeAdvantage)) {
+            result = (currentSide == Stockfish::WHITE) ? GameResult::BLACK_WINS : GameResult::WHITE_WINS;
+            break;
+        }
+        
         // Get legal moves for current side
         auto legalMoves = board.legal_moves(currentSide, teamHasTimeAdvantage);
         
+        // If no legal moves but not checkmate, team has no turn on either board
+        // This means opponent has turns on both boards - let them continue
         if (legalMoves.empty()) {
-            result = (currentSide == Stockfish::WHITE) ? GameResult::BLACK_WINS : GameResult::WHITE_WINS;
-            break;
+            currentSide = ~currentSide;
+            continue;
         }
         
         // Check for draw conditions
@@ -221,8 +229,22 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         Stockfish::Move moveA = bestAction.moveA;
         Stockfish::Move moveB = bestAction.moveB;
         
-        // Note: (MOVE_NONE, MOVE_NONE) is valid - it means both boards are passing/sitting
-        // This can happen when the team has time advantage and chooses to wait
+        // Invariant: team without time advantage MUST make a move on at least one board
+        // This should be guaranteed by the joint action generator filtering out (MOVE_NONE, MOVE_NONE)
+        bool bothPassing = (moveA == Stockfish::MOVE_NONE) && (moveB == Stockfish::MOVE_NONE);
+        if (bothPassing && !teamHasTimeAdvantage) {
+            cerr << "=== FATAL: Team without time advantage returned (MOVE_NONE, MOVE_NONE) ===" << endl;
+            cerr << "Ply: " << ply << endl;
+            cerr << "Current side: " << (currentSide == Stockfish::WHITE ? "WHITE" : "BLACK") << endl;
+            cerr << "legal_moves count: " << legalMoves.size() << endl;
+            cerr << "Board A: " << board.fen(BOARD_A) << endl;
+            cerr << "Board B: " << board.fen(BOARD_B) << endl;
+            cerr << "rootNode valid: " << (rootNode != nullptr) << endl;
+            if (rootNode) {
+                cerr << "rootNode expanded: " << rootNode->is_expanded() << endl;
+            }
+            assert(false && "Invariant violated: team without time advantage cannot pass on both boards");
+        }
         
         // Record moves to PGN (SAN format) with decrementing clock
         if (moveA != Stockfish::MOVE_NONE) {
@@ -237,14 +259,17 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
         }
         
         if (g_logLevel >= LOG_DEBUG) {
-            cout << "Ply " << ply << ": " 
+            cout << "Ply " << ply << " (" << (currentSide == Stockfish::WHITE ? "WHITE" : "BLACK") << "): " 
                  << (moveA != Stockfish::MOVE_NONE ? board.uci_move(BOARD_A, moveA) : "pass") << ", "
                  << (moveB != Stockfish::MOVE_NONE ? board.uci_move(BOARD_B, moveB) : "pass") << endl;
         }
         
         // Apply the joint move
         board.make_moves(moveA, moveB);
-        ply++;
+        
+        // Track ply
+        if (moveA != Stockfish::MOVE_NONE) ply++;
+        if (moveB != Stockfish::MOVE_NONE) ply++;
         
         // Check for mate after move
         Stockfish::Color opponentSide = ~currentSide;

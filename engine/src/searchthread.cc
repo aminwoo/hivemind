@@ -140,13 +140,23 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
         
         // Check for terminal states
-        // Pass the tree depth (trajectory size) as ply so that 2-fold repetitions
-        // within the search tree are correctly detected as draws
-        int searchPly = static_cast<int>(trajectoryBuffer.size());
+        // Pass the tree depth (trajectory size minus 1) as ply so that 2-fold repetitions
+        // within the search tree are correctly detected as draws.
+        // We subtract 1 because trajectoryBuffer includes the root entry at index 0,
+        // and the root position should use ply=0 (requiring 3-fold repetition, not 2-fold).
+        // Without this, a root position with only 2-fold repetition is incorrectly
+        // treated as a draw on every iteration, preventing the root from ever expanding.
+        int searchPly = static_cast<int>(trajectoryBuffer.size()) - 1;
         if (board.is_draw(searchPly)) {
             ctx.isTerminal = true;
-            // Apply draw contempt: treat draws as slightly negative for the side to move
-            ctx.terminalValue = -SearchParams::DRAW_CONTEMPT;
+            // Apply draw contempt: treat draws as slightly negative from ROOT team's perspective.
+            // The backup negates the value at each level, so we must set the sign based on
+            // whether the leaf team is the same as root or the opponent:
+            //   - Leaf is root team (even depth):  -CONTEMPT → backs up to -CONTEMPT at root
+            //   - Leaf is opponent  (odd depth):   +CONTEMPT → backs up to -CONTEMPT at root
+            ctx.terminalValue = (ctx.teamToPlay == root->get_team_to_play())
+                                    ? -SearchParams::DRAW_CONTEMPT
+                                    :  SearchParams::DRAW_CONTEMPT;
             
             // MCTS Solver: mark leaf as draw
             if (SearchParams::ENABLE_MCTS_SOLVER) {
@@ -319,28 +329,40 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             vector<Stockfish::Move> actionsA;
             vector<Stockfish::Move> actionsB;
             
-            if (leafBoard.side_to_move(BOARD_A) == ctx.teamToPlay) {
+            // Track which boards are on turn for the team
+            bool boardAOnTurn = (leafBoard.side_to_move(BOARD_A) == ctx.teamToPlay);
+            bool boardBOnTurn = (leafBoard.side_to_move(BOARD_B) == ~ctx.teamToPlay);
+            
+            if (boardAOnTurn) {
                 actionsA = leafBoard.legal_moves(BOARD_A);
             }
-            if (leafBoard.side_to_move(BOARD_B) == ~ctx.teamToPlay) {
+            if (boardBOnTurn) {
                 actionsB = leafBoard.legal_moves(BOARD_B);
             }
             
             vector<float> priorsA;
             vector<float> priorsB;
             
+            // MOVE_NONE is always a valid option because it doesn't change the board state.
+            // Even if in check, a team can "pass" on a board - the check persists until dealt with.
+            // The only restriction is: team without time advantage cannot pass on BOTH boards.
+            
             if (actionsA.empty()) {
+                // Not on turn or no legal moves - MOVE_NONE is only option
                 actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA.push_back(1.0f);
             } else {
+                // On turn with legal moves - can also pass (MOVE_NONE)
                 actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA = get_normalized_probability(batchPiA, actionsA, BOARD_A, leafBoard, !ctx.sitPlaneActive);
             }
             
             if (actionsB.empty()) {
+                // Not on turn or no legal moves - MOVE_NONE is only option
                 actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB.push_back(1.0f);
             } else {
+                // On turn with legal moves - can also pass (MOVE_NONE)
                 actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB = get_normalized_probability(batchPiB, actionsB, BOARD_B, leafBoard, !ctx.sitPlaneActive);
             }
@@ -349,7 +371,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             // Use leafTeamHasTimeAdvantage for the team making the move at this leaf.
             // The generator creates joint actions that THIS team will play.
             expand_leaf_node(ctx.leaf, actionsA, actionsB, priorsA, priorsB, 
-                             leafTeamHasTimeAdvantage, ctx.leafHash);
+                             leafTeamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, ctx.leafHash);
                 
             // Backup value
             backup(ctx.trajectory, leafBoard, *batchValue);
@@ -463,6 +485,8 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
  * the leaf node itself. Child transpositions are handled during select_and_expand.
  * 
  * @param teamHasTimeAdvantage If true, team is up on time and can sit when on turn
+ * @param boardAOnTurn True if it's this team's turn on board A
+ * @param boardBOnTurn True if it's this team's turn on board B
  * @param positionHash Zobrist hash of the leaf position for transposition table
  */
 void SearchThread::expand_leaf_node(Node* leaf,
@@ -471,6 +495,8 @@ void SearchThread::expand_leaf_node(Node* leaf,
                                     const vector<float>& priorsA,
                                     const vector<float>& priorsB,
                                     bool teamHasTimeAdvantage,
+                                    bool boardAOnTurn,
+                                    bool boardBOnTurn,
                                     uint64_t positionHash) {
     // Store the position hash in the node for MCGS
     if (positionHash != 0) {
@@ -479,7 +505,7 @@ void SearchThread::expand_leaf_node(Node* leaf,
     
     // Atomically try to initialize and expand if not already done
     // This is safe for concurrent access from multiple threads
-    leaf->try_init_and_expand(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage);
+    leaf->try_init_and_expand(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
     
     // Note: The first child created during try_init_and_expand doesn't have its
     // hash computed yet (would require board access). However, when that child
