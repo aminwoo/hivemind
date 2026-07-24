@@ -19,15 +19,12 @@ UCI::UCI() : mainSearchThread(nullptr) {
 }
 
 UCI::~UCI() {
-    // Join the main search thread if running.
-    if (mainSearchThread && mainSearchThread->joinable()) {
-        mainSearchThread->join();
-        delete mainSearchThread;
-    }
-    // Engines will automatically be cleaned up when the vector is destroyed.
+    stop();
 }
 
 void UCI::initializeEngines(const std::vector<int>& deviceIds) {
+    stop();
+
     // Clear any existing engines.
     engines.clear();
 
@@ -58,16 +55,22 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
 
 
 void UCI::stop() {
-    if (ongoingSearch) {
+    if (agent) {
         agent->set_is_running(false);
-        mainSearchThread->join();
+    }
+    if (mainSearchThread) {
+        if (mainSearchThread->joinable()) {
+            mainSearchThread->join();
+        }
         delete mainSearchThread;
         mainSearchThread = nullptr;
-        ongoingSearch = false;
-    } 
+    }
+    ongoingSearch.store(false, std::memory_order_release);
 }
 
 void UCI::position(istringstream& is) {
+    stop();
+
     std::string token;
     is >> token;
     
@@ -136,21 +139,15 @@ void UCI::go(std::istringstream& is) {
         }
     }
     
-    // Wait for any previous search to complete before starting a new one
-    if (mainSearchThread && mainSearchThread->joinable()) {
-        mainSearchThread->join();
-        delete mainSearchThread;
-        mainSearchThread = nullptr;
-    }
-    
-    ongoingSearch = true;
-    agent->set_is_running(true);
+    stop();
 
     // Ensure that engines have been initialized.
-    if (engines.empty()) {
+    if (!agent || engines.empty()) {
         std::cerr << "Error: No engines have been initialized!" << std::endl;
         return;
     }
+
+    ongoingSearch.store(true, std::memory_order_release);
 
     // Build a vector of raw Engine pointers from the unique_ptr collection.
     std::vector<Engine*> enginePtrs;
@@ -175,10 +172,17 @@ void UCI::go(std::istringstream& is) {
     // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
         agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+        ongoingSearch.store(false, std::memory_order_release);
     });
+
+    while (ongoingSearch.load(std::memory_order_acquire) && !agent->is_running()) {
+        std::this_thread::yield();
+    }
 }
 
 void UCI::setoption(std::istringstream& is) {
+    stop();
+
     std::string token;
     is >> token; 
     if (token != "name") return;

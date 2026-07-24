@@ -1,0 +1,35 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "ninja-fast",
+      "displayName": "Ninja Fast Build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "HIVEMIND_FAST_BUILD": "ON",
+        "HIVEMIND_USE_UNITY_BUILD": "ON",
+        "HIVEMIND_USE_CCACHE": "ON"
+      }
+    },
+    {
+      "name": "ninja-release",
+      "displayName": "Ninja Optimized Build",
+      "inherits": "ninja-fast",
+      "cacheVariables": {
+        "HIVEMIND_FAST_BUILD": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ninja-fast",
+      "configurePreset": "ninja-fast"
+    },
+    {
+      "name": "ninja-release",
+      "configurePreset": "ninja-release"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <thread>
 #include <vector>
 #include "searchthread.h"
@@ -95,6 +96,7 @@ class Agent {
 private:
     std::vector<SearchThread*> searchThreads;
     std::atomic<bool> running;                            
+    std::mutex searchMutex_;
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
     int numThreads;                                          // Number of search threads
