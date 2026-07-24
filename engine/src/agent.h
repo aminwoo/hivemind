@@ -30,6 +30,7 @@ struct SearchOptions {
     // Self-play exploration options  
     float dirichletAlpha = 0.0f;   // Dirichlet noise alpha (0 = no noise)
     float dirichletEpsilon = 0.0f; // Fraction of prior to replace with noise (0 = no noise)
+    SearchParams::RuntimeConfig search;
     
     // Convenience constructors
     static SearchOptions uci(int moveTimeMs, int multiPV = 1) {
@@ -48,6 +49,16 @@ struct SearchOptions {
         opts.checkMateIn1 = false;
         opts.dirichletAlpha = settings.dirichletAlpha;
         opts.dirichletEpsilon = settings.dirichletEpsilon;
+        opts.search.cpuctInit = settings.cpuctInit;
+        opts.search.cpuctBase = settings.cpuctBase;
+        opts.search.fpuReduction = settings.fpuReduction;
+        opts.search.enableMCGS = settings.enableMCGS;
+        opts.search.enableTranspositions = settings.enableTranspositions;
+        opts.search.drawContempt = settings.drawContempt;
+        opts.search.pwCoefficient = settings.pwCoefficient;
+        opts.search.pwExponent = settings.pwExponent;
+        opts.search.qValueWeight = settings.qValueWeight;
+        opts.search.qVetoDelta = settings.qVetoDelta;
         return opts;
     }
     
@@ -58,6 +69,16 @@ struct SearchOptions {
         opts.checkMateIn1 = false;
         opts.dirichletAlpha = settings.dirichletAlpha;
         opts.dirichletEpsilon = settings.dirichletEpsilon;
+        opts.search.cpuctInit = settings.cpuctInit;
+        opts.search.cpuctBase = settings.cpuctBase;
+        opts.search.fpuReduction = settings.fpuReduction;
+        opts.search.enableMCGS = settings.enableMCGS;
+        opts.search.enableTranspositions = settings.enableTranspositions;
+        opts.search.drawContempt = settings.drawContempt;
+        opts.search.pwCoefficient = settings.pwCoefficient;
+        opts.search.pwExponent = settings.pwExponent;
+        opts.search.qValueWeight = settings.qValueWeight;
+        opts.search.qVetoDelta = settings.qVetoDelta;
         return opts;
     }
 };
@@ -77,6 +98,7 @@ private:
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
     int numThreads;                                          // Number of search threads
+    SearchParams::RuntimeConfig lastRuntimeConfig_;
     
     // Tree reuse support (CrazyAra-style)
     std::shared_ptr<Node> ownNextRoot_;      // Expected next root after our move

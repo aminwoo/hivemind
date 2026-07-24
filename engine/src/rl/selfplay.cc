@@ -214,7 +214,10 @@ GameResult SelfPlay::generate_game(bool whiteHasTimeAdvantage, bool verbose) {
             
             // Sample action with temperature from visit distribution
             if (!childActionVisits.empty()) {
-                bestAction = sample_action_with_temperature(childActionVisits, temperature);
+                auto samplingPolicy = rootNode->get_mcts_policy_with_q_weight(
+                    opts.search.qVetoDelta, opts.search.qValueWeight);
+                bestAction = sample_action_with_temperature(
+                    childActionVisits, samplingPolicy, temperature);
             } else {
                 cerr << "Warning: No child actions found in MCTS root node!" << endl;
             }

@@ -51,7 +51,6 @@ void SearchThread::set_search_info(SearchInfo* info) {
 
 void SearchThread::set_root_node(Node* node) {
     root = node;
-    root->set_value(0.0f);
 }
 
 Node* SearchThread::get_root_node() {
@@ -60,6 +59,10 @@ Node* SearchThread::get_root_node() {
 
 void SearchThread::set_transposition_table(TranspositionTable* table) {
     transpositionTable = table;
+}
+
+void SearchThread::set_runtime_config(const SearchParams::RuntimeConfig& config) {
+    runtimeConfig = config;
 }
 
 TranspositionTable* SearchThread::get_transposition_table() {
@@ -155,12 +158,12 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             //   - Leaf is root team (even depth):  -CONTEMPT → backs up to -CONTEMPT at root
             //   - Leaf is opponent  (odd depth):   +CONTEMPT → backs up to -CONTEMPT at root
             ctx.terminalValue = (ctx.teamToPlay == root->get_team_to_play())
-                                    ? -SearchParams::DRAW_CONTEMPT
-                                    :  SearchParams::DRAW_CONTEMPT;
+                                    ? -runtimeConfig.drawContempt
+                                    :  runtimeConfig.drawContempt;
             
             // MCTS Solver: mark leaf as draw
             if (SearchParams::ENABLE_MCTS_SOLVER) {
-                ctx.leaf->mark_as_draw();
+                ctx.leaf->mark_as_draw(runtimeConfig.drawContempt);
             }
             
             batchContexts.push_back(std::move(ctx));
@@ -236,7 +239,10 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         
         // This leaf needs neural network inference
         ctx.isTerminal = false;
-        ctx.leafHash = board.hash_key(teamHasTimeAdvantage);  // Store hash for MCGS transposition lookup
+        bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == root->get_team_to_play())
+            ? teamHasTimeAdvantage
+            : !teamHasTimeAdvantage;
+        ctx.leafHash = board.hash_key(leafTeamHasTimeAdvantage);
         
         ctx.boardState = std::make_unique<Board>(board);  // Copy board state for later processing
         
@@ -374,7 +380,10 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                              leafTeamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, ctx.leafHash);
                 
             // Backup value
-            backup(ctx.trajectory, leafBoard, *batchValue);
+            float neuralValue = std::isfinite(*batchValue)
+                ? std::clamp(*batchValue, -1.0f, 1.0f)
+                : 0.0f;
+            backup(ctx.trajectory, leafBoard, neuralValue);
             
             inferenceIdx++;
         }
@@ -409,10 +418,11 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
         }
 
         // Check if we should expand a new child (progressive widening)
-        if (currentNode->should_expand_new_child()) {
+        if (currentNode->should_expand_new_child(runtimeConfig)) {
             // Expand first to atomically get the action
             JointActionCandidate expandedAction;
-            nextNode = currentNode->expand_next_joint_child(nullptr, 0, expandedAction);
+            nextNode = currentNode->expand_next_joint_child(
+                nullptr, 0, expandedAction, runtimeConfig);
             
             if (nextNode && expandedAction.jointPrior > 0.0f) {
                 childIdx = currentNode->get_expanded_count() - 1;
@@ -421,12 +431,25 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
                 board.make_moves(expandedAction.moveA, expandedAction.moveB);
                 
                 // MCGS: Compute position hash and register in transposition table
-                uint64_t childHash = board.hash_key(teamHasTimeAdvantage);
+                bool childTeamHasTimeAdvantage = (nextNode->get_team_to_play() == root->get_team_to_play())
+                    ? teamHasTimeAdvantage
+                    : !teamHasTimeAdvantage;
+                uint64_t childHash = board.hash_key(childTeamHasTimeAdvantage);
                 nextNode->set_hash(childHash);
                 
-                // Register in transposition table (for stats tracking, if MCGS enabled)
-                if (SearchParams::ENABLE_MCGS && transpositionTable) {
-                    transpositionTable->insertOrGet(childHash, nextNode);
+                // Reuse the canonical node unless doing so would create a cycle in this trajectory.
+                if (runtimeConfig.enableMCGS && runtimeConfig.enableTranspositions && transpositionTable) {
+                    auto canonicalNode = transpositionTable->insertOrGet(childHash, nextNode);
+                    bool isAncestor = std::any_of(
+                        trajectoryBuffer.begin(), trajectoryBuffer.end(),
+                        [&canonicalNode](const TrajectoryEntry& entry) {
+                            return entry.node == canonicalNode.get();
+                        });
+                    if (canonicalNode != nextNode && !isAncestor) {
+                        canonicalNode->set_transposition(true);
+                        currentNode->replace_child(childIdx, canonicalNode);
+                        nextNode = canonicalNode;
+                    }
                 }
                 
                 // Apply virtual loss to discourage re-selection in same batch
@@ -452,7 +475,7 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
         }
 
         // Standard PUCT selection among expanded children
-        auto [selectedChild, selectedIdx] = currentNode->get_best_expanded_child_with_idx();
+        auto [selectedChild, selectedIdx] = currentNode->get_best_expanded_child_with_idx(runtimeConfig);
         if (!selectedChild || selectedIdx < 0) {
             break;  // No children available
         }
@@ -505,7 +528,9 @@ void SearchThread::expand_leaf_node(Node* leaf,
     
     // Atomically try to initialize and expand if not already done
     // This is safe for concurrent access from multiple threads
-    leaf->try_init_and_expand(actionsA, actionsB, priorsA, priorsB, teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
+    leaf->try_init_and_expand(actionsA, actionsB, priorsA, priorsB,
+                              teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
+                              runtimeConfig);
     
     // Note: The first child created during try_init_and_expand doesn't have its
     // hash computed yet (would require board access). However, when that child

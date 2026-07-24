@@ -50,15 +50,15 @@ private:
     std::vector<int> virtualLoss;  // Virtual visits for batch MCTS
     int bestChildIdx = -1;
 
-    float valueSum = -1.0f;
-    int m_depth = 0;
+    float valueSum = 0.0f;
+    std::atomic<int> m_depth{0};
     std::atomic<int> m_visits{0};  // Atomic for lock-free read/write
     bool m_is_expanded = false;
 
     Stockfish::Color teamToPlay;
     
     // MCGS (Monte Carlo Graph Search) support
-    uint64_t positionHash = 0;  // Zobrist hash for transposition detection
+    std::atomic<uint64_t> positionHash{0};  // Zobrist hash for transposition detection
     std::atomic<bool> isTransposition{false};  // True if this node was found via transposition
     std::atomic<int> inFlightCount{0};  // Number of in-flight evaluations (for MCGS backup)
     
@@ -118,11 +118,11 @@ public:
     }
 
     void set_depth(int value) {
-        m_depth = value;
+        m_depth.store(value, std::memory_order_relaxed);
     }
 
     int get_depth() {
-        return m_depth;
+        return m_depth.load(std::memory_order_relaxed);
     }
 
     int get_best_child_idx() {
@@ -186,9 +186,10 @@ public:
      * Progressive widening formula: m = ceil(C_PW * n^KAPPA)
      * Returns true if expandedCount < allowedChildren AND generator has more candidates.
      */
-    bool should_expand_new_child() {
+    bool should_expand_new_child(const SearchParams::RuntimeConfig& config) {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
-        int allowedChildren = SearchParams::get_allowed_children(m_visits.load(std::memory_order_relaxed));
+        int allowedChildren = SearchParams::get_allowed_children(
+            m_visits.load(std::memory_order_relaxed), config.pwCoefficient, config.pwExponent);
         return expandedCount < allowedChildren && candidateGenerator.hasNext();
     }
 
@@ -216,7 +217,8 @@ public:
      */
     std::shared_ptr<Node> expand_next_joint_child(std::shared_ptr<Node> existingNode,
                                                    uint64_t positionHash,
-                                                   JointActionCandidate& outAction) {
+                                                   JointActionCandidate& outAction,
+                                                   const SearchParams::RuntimeConfig& config) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (!candidateGenerator.hasNext()) {
             return nullptr;
@@ -241,7 +243,7 @@ public:
             
             int visits = m_visits.load(std::memory_order_relaxed);
             float parentQ = (visits > 0) ? (valueSum / visits) : 0.0f;
-            float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
+            float fpuValue = parentQ - config.fpuReduction;
             fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
             child->set_value(fpuValue);
             childQ = fpuValue;
@@ -263,7 +265,7 @@ public:
      */
     std::shared_ptr<Node> expand_next_joint_child() {
         JointActionCandidate unused;
-        return expand_next_joint_child(nullptr, 0, unused);
+        return expand_next_joint_child(nullptr, 0, unused, SearchParams::RuntimeConfig{});
     }
 
     /**
@@ -277,7 +279,8 @@ public:
                              const std::vector<float>& priorsB,
                              bool teamHasTimeAdvantage,
                              bool boardAOnTurn,
-                             bool boardBOnTurn) {
+                             bool boardBOnTurn,
+                             const SearchParams::RuntimeConfig& config) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
@@ -298,7 +301,7 @@ public:
             
             int visits = m_visits.load(std::memory_order_relaxed);
             float parentQ = (visits > 0) ? (valueSum / visits) : 0.0f;
-            float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
+            float fpuValue = parentQ - config.fpuReduction;
             fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
             
             child->set_value(fpuValue);
@@ -349,18 +352,27 @@ public:
      * This is used during the selection phase of MCTS with progressive widening.
      * Only considers children that have already been expanded.
      */
-    std::shared_ptr<Node> get_best_expanded_child();
+    std::shared_ptr<Node> get_best_expanded_child(
+        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{});
 
     /**
      * @brief Selects the best child and returns both the child pointer and index.
      * Thread-safe: Returns the child index atomically with the selection.
      * @return pair of (child pointer, child index), or (nullptr, -1) if no children
      */
-    std::pair<std::shared_ptr<Node>, int> get_best_expanded_child_with_idx();
+    std::pair<std::shared_ptr<Node>, int> get_best_expanded_child_with_idx(
+        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{});
 
     std::vector<std::shared_ptr<Node>> get_children() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return children;
+    }
+
+    void replace_child(int childIdx, const std::shared_ptr<Node>& child) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (childIdx >= 0 && static_cast<size_t>(childIdx) < children.size()) {
+            children[childIdx] = child;
+        }
     }
 
     std::vector<float> get_child_value_sums() const {
@@ -379,6 +391,7 @@ public:
     }
 
     void set_value(float value) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
         valueSum = value;
     }
 
@@ -422,6 +435,7 @@ public:
     }
 
     int get_virtual_loss(int childIdx) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < virtualLoss.size()) {
             return virtualLoss[childIdx];
         }
@@ -429,10 +443,12 @@ public:
     }
 
     float get_value_sum() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return valueSum;
     }
 
     float Q() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return valueSum / (1.0f + m_visits.load(std::memory_order_relaxed));
     }
     
@@ -495,14 +511,14 @@ public:
      * Used for transposition table lookups.
      */
     uint64_t get_hash() const {
-        return positionHash;
+        return positionHash.load(std::memory_order_relaxed);
     }
     
     /**
      * @brief Set the position hash for this node.
      */
     void set_hash(uint64_t hash) {
-        positionHash = hash;
+        positionHash.store(hash, std::memory_order_relaxed);
     }
     
     /**
@@ -548,7 +564,10 @@ public:
      * @param existingNode The node already in the transposition table
      * @return The index of the child that was added, or -1 if already exists
      */
-    int try_add_transposition_child(std::shared_ptr<Node> existingNode, float prior) {
+    int try_add_transposition_child(
+        std::shared_ptr<Node> existingNode,
+        float prior,
+        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{}) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Check if this child already exists (same hash)
@@ -561,7 +580,7 @@ public:
         // Add as new child
         int visits = m_visits.load(std::memory_order_relaxed);
         float parentQ = (visits > 0) ? (valueSum / visits) : 0.0f;
-        float fpuValue = parentQ - SearchParams::FPU_REDUCTION;
+        float fpuValue = parentQ - config.fpuReduction;
         fpuValue = std::max(-1.0f, std::min(1.0f, fpuValue));
         
         childValueSum.push_back(fpuValue);
@@ -599,6 +618,7 @@ public:
      * @brief Get the node type (UNSOLVED, WIN, LOSS, DRAW).
      */
     NodeType get_node_type() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return nodeType;
     }
     
@@ -614,6 +634,7 @@ public:
      * @brief Check if this node is solved (WIN, LOSS, or DRAW).
      */
     bool is_solved() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return nodeType != NodeType::UNSOLVED;
     }
     
@@ -640,10 +661,10 @@ public:
     /**
      * @brief Mark this node as a DRAW.
      */
-    void mark_as_draw() {
+    void mark_as_draw(float contempt = SearchParams::DRAW_CONTEMPT) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         nodeType = NodeType::DRAW;
-        valueSum = -SearchParams::DRAW_CONTEMPT * (m_visits.load(std::memory_order_relaxed) + 1);
+        valueSum = -contempt * (m_visits.load(std::memory_order_relaxed) + 1);
         endInPly = 0;
     }
     
@@ -651,6 +672,7 @@ public:
      * @brief Get the ply distance to terminal.
      */
     int get_end_in_ply() const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return endInPly;
     }
     
@@ -845,10 +867,14 @@ public:
         // Find most-visited child
         int bestVisitIdx = 0;
         int maxVisits = childVisits[0];
+        int secondVisitIdx = -1;
         for (size_t i = 1; i < childVisits.size(); i++) {
             if (childVisits[i] > maxVisits) {
+                secondVisitIdx = bestVisitIdx;
                 maxVisits = childVisits[i];
                 bestVisitIdx = static_cast<int>(i);
+            } else if (secondVisitIdx < 0 || childVisits[i] > childVisits[secondVisitIdx]) {
+                secondVisitIdx = static_cast<int>(i);
             }
         }
         
@@ -869,6 +895,16 @@ public:
                 return bestQIdx;
             }
         }
+
+        if (qValueWeight > 0.0f && secondVisitIdx >= 0 &&
+            qValues[secondVisitIdx] > qValues[bestVisitIdx]) {
+            float qDifference = qValues[secondVisitIdx] - qValues[bestVisitIdx];
+            float adjustedSecondVisits = childVisits[secondVisitIdx] +
+                qDifference * qValueWeight * childVisits[bestVisitIdx];
+            if (adjustedSecondVisits > childVisits[bestVisitIdx]) {
+                return secondVisitIdx;
+            }
+        }
         
         // Q-value weighting (for stochastic selection, not direct move choice)
         // For direct move selection, we just use visits or Q-veto
@@ -885,7 +921,9 @@ public:
      * 
      * @return Normalized policy vector
      */
-    std::vector<float> get_mcts_policy_with_q_weight() const {
+    std::vector<float> get_mcts_policy_with_q_weight(
+        float qVetoDelta = SearchParams::Q_VETO_DELTA,
+        float qValueWeight = SearchParams::Q_VALUE_WEIGHT) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         
         if (childVisits.empty()) return {};
@@ -935,19 +973,19 @@ public:
         }
         
         // Q-value veto
-        if (SearchParams::Q_VETO_DELTA > 0.0f && bestQIdx != bestVisitIdx) {
-            if (qValues[bestQIdx] > qValues[bestVisitIdx] + SearchParams::Q_VETO_DELTA &&
+        if (qVetoDelta > 0.0f && bestQIdx != bestVisitIdx) {
+            if (qValues[bestQIdx] > qValues[bestVisitIdx] + qVetoDelta &&
                 childVisits[bestQIdx] > 1) {
                 // Swap visit counts
                 std::swap(policy[bestQIdx], policy[bestVisitIdx]);
             }
         }
         // Q-value weighting (second-best boost)
-        else if (SearchParams::Q_VALUE_WEIGHT > 0.0f && secondVisitIdx >= 0) {
+        else if (qValueWeight > 0.0f && secondVisitIdx >= 0) {
             if (qValues[secondVisitIdx] > qValues[bestVisitIdx]) {
                 float qDiff = qValues[secondVisitIdx] - qValues[bestVisitIdx];
-                policy[secondVisitIdx] += qDiff * SearchParams::Q_VALUE_WEIGHT * policy[bestVisitIdx];
-                total += qDiff * SearchParams::Q_VALUE_WEIGHT * policy[bestVisitIdx];
+            policy[secondVisitIdx] += qDiff * qValueWeight * policy[bestVisitIdx];
+            total += qDiff * qValueWeight * policy[bestVisitIdx];
             }
         }
         

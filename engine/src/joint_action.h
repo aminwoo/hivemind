@@ -49,8 +49,7 @@ struct JointActionCandidate {
           idxA(iA), idxB(iB) {
 
         bool bothSitting = (mA == Stockfish::MOVE_NONE) && (mB == Stockfish::MOVE_NONE);
-        bool bothOnTurn = boardAOnTurn && boardBOnTurn;
-        bool isInvalidSit = bothSitting && (teamHasTimeAdvantage ? bothOnTurn : true);
+        bool isInvalidSit = bothSitting && !teamHasTimeAdvantage;
         
         jointPrior = isInvalidSit ? -1.0f : pA * pB;
     }

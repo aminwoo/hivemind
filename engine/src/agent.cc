@@ -171,6 +171,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
                                         const SearchOptions& options) {
     JointActionCandidate result;
+    lastRuntimeConfig_ = options.search;
+    if (engines.empty()) {
+        cerr << "Cannot search without an inference engine" << endl;
+        return result;
+    }
     
     // Check for no legal moves
     if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty() || 
@@ -211,7 +216,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTimeMs);
     
     // MCGS: Clear and set up transposition table for new search (if enabled)
-    if (SearchParams::ENABLE_MCGS && transpositionTable) {
+    if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
         transpositionTable->clear();
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
     }
@@ -220,9 +225,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     for (auto* st : searchThreads) {
         st->set_root_node(rootNode.get());
         st->set_search_info(&searchInfo);
-        if (SearchParams::ENABLE_MCGS) {
-            st->set_transposition_table(transpositionTable.get());
-        }
+        st->set_runtime_config(options.search);
+        st->set_transposition_table(
+            options.search.enableMCGS && options.search.enableTranspositions
+                ? transpositionTable.get()
+                : nullptr);
     }
     
     running = true;
@@ -296,8 +303,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             double elapsedMs = searchInfo.elapsed();
             int nodes = searchInfo.get_nodes_searched();
             int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-            size_t tbhits = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getHits() : 0;
-            int hashfull = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+            size_t tbhits = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getHits() : 0;
+            int hashfull = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
             
             if (rootNode && rootNode->is_expanded()) {
                 auto childVisits = rootNode->get_child_visits();
@@ -371,7 +378,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         lastReportedDepth = depth;
                         
                         // Use solver-aware selection for the best child to display
-                        int solverBestIdx = rootNode->get_best_move_idx_with_q_weight();
+                        int solverBestIdx = rootNode->get_best_move_idx_with_q_weight(
+                            options.search.qVetoDelta, options.search.qValueWeight);
                         size_t displayIdx = (solverBestIdx >= 0) 
                             ? static_cast<size_t>(solverBestIdx) : static_cast<size_t>(firstIdx);
                         
@@ -506,7 +514,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             size_t numChildren = min(visits.size(), children.size());
             
             // Use Q-value weighted selection (with veto and weighting)
-            int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+            int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+                options.search.qVetoDelta, options.search.qValueWeight);
             
             // Fallback to most-visited if Q-value selection failed
             if (bestIdx < 0) {
@@ -541,8 +550,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         int nodes = searchInfo.get_nodes_searched();
         int depth = searchInfo.get_max_depth();
         int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-        size_t tbhits = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getHits() : 0;
-        int hashfull = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+        size_t tbhits = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getHits() : 0;
+        int hashfull = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
         
         // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
         constexpr float C = 180.0f;
@@ -563,7 +572,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             
             // When root is proven WIN/LOSS, prioritize the solver's best move as PV 1
             if (rootNode->get_node_type() != NodeType::UNSOLVED) {
-                int solverIdx = rootNode->get_best_move_idx_with_q_weight();
+                int solverIdx = rootNode->get_best_move_idx_with_q_weight(
+                    options.search.qVetoDelta, options.search.qValueWeight);
                 if (solverIdx >= 0) {
                     auto it = std::find(sortedIndices.begin(), sortedIndices.end(), static_cast<size_t>(solverIdx));
                     if (it != sortedIndices.end() && it != sortedIndices.begin()) {
@@ -635,7 +645,8 @@ string Agent::extract_best_move(Board& board) {
     }
 
     // Use solver-aware move selection (handles proven wins/losses)
-    int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
     if (bestIdx < 0) {
         return "(none)";
     }
@@ -787,7 +798,8 @@ string Agent::extract_pv_from_child(Board& board, int childIdx, int maxDepth) {
         }
         
         // Find best child: prefer solver-proven path, fallback to most visits
-        int bestIdx = currentNode->get_best_move_idx_with_q_weight();
+        int bestIdx = currentNode->get_best_move_idx_with_q_weight(
+            lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
         
         // Fallback to most-visited (handles unsolved nodes and edge cases)
         if (bestIdx < 0) {
@@ -926,7 +938,8 @@ void Agent::store_next_root_candidates() {
     }
     
     // Find best child (most visited, with Q-value consideration)
-    int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
     if (bestIdx < 0) {
         // Fallback to most-visited
         int maxVisits = 0;
