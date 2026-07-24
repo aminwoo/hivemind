@@ -267,59 +267,60 @@ bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Co
     // Check if there's at least one blocking square valid for pawns (ranks 2-7)
     Stockfish::Bitboard pawn_valid_blocks = available_blocks & ~(Stockfish::Rank1BB | Stockfish::Rank8BB);
     
-    // If it's the partner's turn, check their current legal capture moves
-    if (is_partner_turn) {
-        Stockfish::MoveList<Stockfish::LEGAL> partner_moves(*pos[partner_board]);
-        
+    auto has_useful_capture = [&](Board& candidateBoard) {
+        Stockfish::MoveList<Stockfish::LEGAL> partner_moves(*candidateBoard.pos[partner_board]);
+
         for (const Stockfish::ExtMove& ext_move : partner_moves) {
             Stockfish::Move move = ext_move;
-            
-            // Check if this is a capture move
             Stockfish::Square to = Stockfish::to_sq(move);
             Stockfish::Piece captured = Stockfish::type_of(move) == Stockfish::EN_PASSANT 
                 ? Stockfish::make_piece(~partner_side, Stockfish::PAWN) 
-                : pos[partner_board]->piece_on(to);
-            
+                : candidateBoard.pos[partner_board]->piece_on(to);
+
             if (captured == Stockfish::NO_PIECE) {
-                continue;  // Not a capture
+                continue;
             }
-            
-            // Check if this piece type could be dropped on a blocking square
-            Stockfish::PieceType captured_type = Stockfish::type_of(captured);
-            
-            // Pawns can only be dropped on ranks 2-7
+
+            Stockfish::PieceType captured_type =
+                (candidateBoard.pos[partner_board]->promotedPieces & to)
+                    ? Stockfish::PAWN
+                    : Stockfish::type_of(captured);
+
             if (captured_type == Stockfish::PAWN) {
                 if (pawn_valid_blocks) {
                     return true;
                 }
             } else {
-                // Non-pawn pieces can be dropped on any empty blocking square
                 return true;
             }
         }
-    } else {
-        // Team has time advantage but it's not partner's turn yet
-        // Check if opponent has any pieces that could potentially be captured in the future
-        Stockfish::Color opponent_side = ~partner_side;
-        
-        // Check for each piece type if opponent has it and it could block if captured
-        for (Stockfish::PieceType pt = Stockfish::PAWN; pt <= Stockfish::QUEEN; ++pt) {
-            Stockfish::Bitboard opponent_pieces = pos[partner_board]->pieces(opponent_side, pt);
-            
-            if (opponent_pieces) {
-                // Opponent has pieces of this type that could be captured in the future
-                if (pt == Stockfish::PAWN) {
-                    if (pawn_valid_blocks) {
-                        return true;  // Pawn could block on valid squares
-                    }
-                } else {
-                    return true;  // Non-pawn piece could block on any empty square
-                }
+        return false;
+    };
+
+    if (is_partner_turn) {
+        return has_useful_capture(*this);
+    }
+
+    // With time advantage the checked team may wait, but the opponent chooses the
+    // intervening move. A future blocker is guaranteed only if every reply leaves
+    // the partner an immediate useful capture.
+    if (teamHasTimeAdvantage) {
+        Stockfish::MoveList<Stockfish::LEGAL> opponent_moves(*pos[partner_board]);
+        if (!opponent_moves.size()) {
+            return false;
+        }
+
+        for (const Stockfish::ExtMove& opponentMove : opponent_moves) {
+            Board future(*this);
+            future.push_move(partner_board, opponentMove);
+            if (!has_useful_capture(future)) {
+                return false;
             }
         }
+        return true;
     }
-    
-    return false;  // No partner capture can provide a blocking piece
+
+    return false;
 }
 
 void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {

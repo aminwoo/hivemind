@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <memory>
+#include <string>
 #include "constants.h"
 
 /**
@@ -31,7 +32,7 @@ public:
  */
 class Engine {
 public:
-    explicit Engine(int deviceId);
+    explicit Engine(int deviceId, int batchSize = SearchParams::BATCH_SIZE);
     ~Engine();
 
     // Prevent copying to avoid double-free of CUDA resources
@@ -54,7 +55,7 @@ public:
 private:
     // Device ID and Logger
     int m_deviceId;
-    int m_batchSize = 8;  // Default, will be extracted from engine
+    int m_batchSize = SearchParams::BATCH_SIZE;
     Logger m_logger;
     
     // TensorRT Core Objects
@@ -75,6 +76,11 @@ private:
     void* m_deviceValueBuffer = nullptr;
     void* m_devicePolicyABuffer = nullptr;
     void* m_devicePolicyBBuffer = nullptr;
+
+    std::string m_inputName;
+    std::string m_valueName;
+    std::string m_policyAName;
+    std::string m_policyBName;
 
     // Internal helper methods
     bool buildEngineFromONNX(const std::string& onnxFile);

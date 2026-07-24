@@ -40,8 +40,15 @@ class Board {
         * @return long unsigned int Combined hash of the positions.
         */
         unsigned long hash_key(bool teamHasTimeAdvantage = false) {
-            auto k0 = pos[0]->key() ^ Stockfish::Zobrist::ply[game_ply(0)];
-            auto k1 = pos[1]->key() ^ Stockfish::Zobrist::ply[game_ply(1)];
+            auto mix_counter = [](uint64_t key, uint64_t counter) {
+                counter += 0x9e3779b97f4a7c15ULL;
+                counter = (counter ^ (counter >> 30)) * 0xbf58476d1ce4e5b9ULL;
+                counter = (counter ^ (counter >> 27)) * 0x94d049bb133111ebULL;
+                return key ^ (counter ^ (counter >> 31));
+            };
+
+            auto k0 = mix_counter(pos[0]->key(), static_cast<uint64_t>(rule50_count(0)));
+            auto k1 = mix_counter(pos[1]->key(), static_cast<uint64_t>(rule50_count(1)));
             // Combines the two keys using a hash_combine technique.
             auto combined = k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
             // XOR in time advantage key if team is up on time
