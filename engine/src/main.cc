@@ -330,7 +330,7 @@ int main(int argc, char* argv[]) {
     std::vector<int> deviceIds(deviceCount);
     iota(deviceIds.begin(), deviceIds.end(), 0);
 
-    std::cout << "HiveMind 1.0" << std::endl;
+    std::cout << "Hivemind 1.0" << std::endl;
 
     uci.initializeEngines(deviceIds);
     uci.loop();
