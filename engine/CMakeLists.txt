@@ -1,15 +1,32 @@
 cmake_minimum_required(VERSION 3.16)
 project(hivemind)
 
+option(HIVEMIND_FAST_BUILD "Favor faster local builds over maximum runtime optimization" ON)
+option(HIVEMIND_USE_UNITY_BUILD "Enable unity builds for project targets" ON)
+option(HIVEMIND_USE_CCACHE "Use ccache when available" ON)
+
 # Set C++ version and optimization level
 set(CMAKE_CXX_STANDARD 23)
 
-# Performance flags:
-#   -Ofast: Maximum optimization (includes -O3 + fast-math)
-#   -march=native: CPU-specific optimizations (AVX2, FMA, etc.)
-#   -flto: Link-time optimization for cross-file inlining
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Ofast -DNDEBUG -DNNUE_EMBEDDING_OFF -march=native -flto")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
+if(HIVEMIND_USE_CCACHE)
+    find_program(CCACHE_PROGRAM ccache)
+    if(CCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    endif()
+endif()
+
+# Fast local builds trade some runtime optimization for much shorter compile/link times.
+set(HIVEMIND_COMMON_FLAGS "-Wall -DNDEBUG -DNNUE_EMBEDDING_OFF -march=native")
+if(HIVEMIND_FAST_BUILD)
+    string(APPEND HIVEMIND_COMMON_FLAGS " -O2")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
+else()
+    string(APPEND HIVEMIND_COMMON_FLAGS " -Ofast -flto")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${HIVEMIND_COMMON_FLAGS}")
 
 # Add source files
 set(LIB_SOURCES
@@ -49,14 +66,24 @@ set(CMAKE_INSTALL_RPATH "${TensorRT_DIR}/lib;${CUDA_TOOLKIT_ROOT_DIR}/lib64;${CU
 
 add_subdirectory(src/Fairy-Stockfish)
 
+if(HIVEMIND_USE_UNITY_BUILD)
+    set_target_properties(Fairy-Stockfish PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
+endif()
+
 add_library(${PROJECT_NAME}_lib STATIC ${LIB_SOURCES})
 target_include_directories(${PROJECT_NAME}_lib PUBLIC ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(${PROJECT_NAME}_lib PUBLIC TENSORRT_LIBRARY_DIR="${TensorRT_DIR}/lib")
+if(HIVEMIND_USE_UNITY_BUILD)
+    set_target_properties(${PROJECT_NAME}_lib PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
+endif()
 target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CUDA_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${TensorRT_LIBRARIES} Fairy-Stockfish Threads::Threads)
 target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CMAKE_DL_LIBS})
 
 add_executable(${PROJECT_NAME} src/main.cc)
 set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME hivemind.bin)
+if(HIVEMIND_USE_UNITY_BUILD)
+    set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
+endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
 
 file(WRITE "${CMAKE_BINARY_DIR}/hivemind"

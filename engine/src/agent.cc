@@ -170,6 +170,7 @@ Agent::~Agent() {
 JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engines, 
                                         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
                                         const SearchOptions& options) {
+    std::unique_lock searchLock(searchMutex_);
     JointActionCandidate result;
     lastRuntimeConfig_ = options.search;
     if (engines.empty()) {
@@ -221,8 +222,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
     }
 
-    // Set up all search threads with shared root node, search info, and transposition table
-    for (auto* st : searchThreads) {
+    const size_t workerCount = std::max(static_cast<size_t>(numThreads), engines.size());
+    while (searchThreads.size() < workerCount) {
+        searchThreads.push_back(new SearchThread());
+    }
+
+    // Set up active search threads with shared root node, search info, and transposition table
+    for (size_t i = 0; i < workerCount; ++i) {
+        SearchThread* st = searchThreads[i];
         st->set_root_node(rootNode.get());
         st->set_search_info(&searchInfo);
         st->set_runtime_config(options.search);
@@ -254,7 +261,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     // Launch worker threads
     vector<thread> workers;
-    for (int i = 0; i < numThreads; i++) {
+    workers.reserve(workerCount);
+    for (size_t i = 0; i < workerCount; ++i) {
         Engine* engine = engines[i % engines.size()];
         SearchThread* st = searchThreads[i];
         
