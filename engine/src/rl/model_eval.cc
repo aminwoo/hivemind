@@ -344,7 +344,10 @@ GameResult ModelEvaluator::playGame(bool newModelIsWhite, size_t gameNumber) {
         if (rootNode && rootNode->is_expanded() && tempForThisMove > 0.0f) {
             auto childActionVisits = rootNode->get_child_action_visits();
             if (!childActionVisits.empty()) {
-                bestAction = sample_action_with_temperature(childActionVisits, tempForThisMove);
+                auto samplingPolicy = rootNode->get_mcts_policy_with_q_weight(
+                    opts.search.qVetoDelta, opts.search.qValueWeight);
+                bestAction = sample_action_with_temperature(
+                    childActionVisits, samplingPolicy, tempForThisMove);
             }
         }
         
@@ -580,8 +583,11 @@ void run_model_eval(const string& newModelPath,
     // Load new model engines
     vector<Engine*> newModelEngines;
     for (int i = 0; i < deviceCount; i++) {
-        Engine* engine = new Engine(i);
-        string engineFile = getEnginePath(newModelPath, "fp16", SearchParams::BATCH_SIZE, i, "v1");
+        int batchSize = settings.usePlayerConfigs
+            ? settings.player1.batchSize
+            : SearchParams::BATCH_SIZE;
+        Engine* engine = new Engine(i, batchSize);
+        string engineFile = getEnginePath(newModelPath, "fp16", batchSize, i, "v1");
         if (!engine->loadNetwork(newModelPath, engineFile)) {
             cerr << "Failed to load new model on GPU " << i << endl;
             for (auto* e : newModelEngines) delete e;
@@ -593,8 +599,11 @@ void run_model_eval(const string& newModelPath,
     // Load old model engines
     vector<Engine*> oldModelEngines;
     for (int i = 0; i < deviceCount; i++) {
-        Engine* engine = new Engine(i);
-        string engineFile = getEnginePath(oldModelPath, "fp16", SearchParams::BATCH_SIZE, i, "v1");
+        int batchSize = settings.usePlayerConfigs
+            ? settings.player2.batchSize
+            : SearchParams::BATCH_SIZE;
+        Engine* engine = new Engine(i, batchSize);
+        string engineFile = getEnginePath(oldModelPath, "fp16", batchSize, i, "v1");
         if (!engine->loadNetwork(oldModelPath, engineFile)) {
             cerr << "Failed to load old model on GPU " << i << endl;
             for (auto* e : newModelEngines) delete e;
@@ -659,7 +668,7 @@ void run_param_eval(const string& modelPath,
     cout << "Loading engines for Player 1..." << endl;
     vector<Engine*> player1Engines;
     for (int i = 0; i < deviceCount; i++) {
-        Engine* engine = new Engine(i);
+        Engine* engine = new Engine(i, settings.player1.batchSize);
         string engineFile = getEnginePath(modelPath, "fp16", settings.player1.batchSize, i, "v1");
         if (!engine->loadNetwork(modelPath, engineFile)) {
             cerr << "Failed to load model for Player 1 on GPU " << i << endl;
@@ -673,7 +682,7 @@ void run_param_eval(const string& modelPath,
     cout << "Loading engines for Player 2..." << endl;
     vector<Engine*> player2Engines;
     for (int i = 0; i < deviceCount; i++) {
-        Engine* engine = new Engine(i);
+        Engine* engine = new Engine(i, settings.player2.batchSize);
         string engineFile = getEnginePath(modelPath, "fp16", settings.player2.batchSize, i, "v1");
         if (!engine->loadNetwork(modelPath, engineFile)) {
             cerr << "Failed to load model for Player 2 on GPU " << i << endl;

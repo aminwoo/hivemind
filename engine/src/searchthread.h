@@ -61,6 +61,7 @@ private:
     Node* root; 
     SearchInfo* searchInfo;
     TranspositionTable* transpositionTable;  // Shared across all search threads (MCGS)
+    SearchParams::RuntimeConfig runtimeConfig;
     
     // Trajectory stores entries for backup and move undoing
     vector<TrajectoryEntry> trajectoryBuffer;
@@ -89,6 +90,7 @@ public:
     void set_search_info(SearchInfo* info);
     void set_root_node(Node* node);
     void set_transposition_table(TranspositionTable* table);
+    void set_runtime_config(const SearchParams::RuntimeConfig& config);
     TranspositionTable* get_transposition_table();
     
     // MCGS (Monte Carlo Graph Search) with joint action progressive widening

@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 #include "../src/board.h"
 #include "../src/constants.h"
+#include "../src/joint_action.h"
+#include "../src/node.h"
+#include "../src/transposition_table.h"
+#include "../src/utils.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/bitboard.h"
@@ -19,6 +23,53 @@ protected:
         init_policy_index();
     }
 };
+
+TEST(JointActionTest, DoubleSitRequiresTimeAdvantage) {
+    JointActionCandidate disadvantaged(
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        true, true, false);
+    JointActionCandidate advantaged(
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        true, true, true);
+
+    EXPECT_LT(disadvantaged.jointPrior, 0.0f);
+    EXPECT_FLOAT_EQ(advantaged.jointPrior, 0.25f);
+}
+
+TEST(PolicyTest, NormalizesExtremeAndNonFiniteLogits) {
+    auto probabilities = normalize_logits({1000.0f, 999.0f, -1000.0f});
+    ASSERT_EQ(probabilities.size(), 3);
+    EXPECT_TRUE(std::all_of(probabilities.begin(), probabilities.end(), [](float value) {
+        return std::isfinite(value);
+    }));
+    EXPECT_NEAR(std::accumulate(probabilities.begin(), probabilities.end(), 0.0f), 1.0f, 1e-6f);
+    EXPECT_GT(probabilities[0], probabilities[1]);
+
+    auto fallback = normalize_logits({
+        std::numeric_limits<float>::quiet_NaN(),
+        -std::numeric_limits<float>::infinity()});
+    EXPECT_FLOAT_EQ(fallback[0], 0.5f);
+    EXPECT_FLOAT_EQ(fallback[1], 0.5f);
+}
+
+TEST(SearchConfigTest, RuntimeValuesChangeSearchCalculations) {
+    EXPECT_NE(SearchParams::get_cpuct(100.0f, 1.0f, 100.0f),
+              SearchParams::get_cpuct(100.0f, 3.0f, 100.0f));
+    EXPECT_LT(SearchParams::get_allowed_children(100, 0.5f, 0.3f),
+              SearchParams::get_allowed_children(100, 2.0f, 0.3f));
+}
+
+TEST(TranspositionTableTest, InsertOrGetReturnsCanonicalNode) {
+    TranspositionTable table;
+    auto first = std::make_shared<Node>(Stockfish::WHITE, 42);
+    auto duplicate = std::make_shared<Node>(Stockfish::WHITE, 42);
+
+    EXPECT_EQ(table.insertOrGet(42, first), first);
+    EXPECT_EQ(table.insertOrGet(42, duplicate), first);
+    EXPECT_EQ(table.getHits(), 1);
+}
 
 TEST_F(EngineTest, InitialMoves) {
     Board board;
@@ -220,6 +271,19 @@ TEST_F(EngineTest, ZobristHashConsistency) {
         
         EXPECT_EQ(after_unmake_hash, initial_hash) << "Hash should restore after unmake of move " << board.uci_move(BOARD_A, move);
     }
+}
+
+TEST_F(EngineTest, CombinedHashUsesRule50AndTimeAdvantageNotGamePly) {
+    Board early;
+    Board late;
+    early.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 7 1");
+    late.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 7 900");
+
+    EXPECT_EQ(early.hash_key(false), late.hash_key(false));
+    EXPECT_NE(early.hash_key(false), early.hash_key(true));
+
+    late.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 8 900");
+    EXPECT_NE(early.hash_key(false), late.hash_key(false));
 }
 
 TEST_F(EngineTest, ZobristHashUniqueness) {

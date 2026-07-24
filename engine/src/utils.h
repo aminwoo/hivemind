@@ -128,6 +128,48 @@ inline Stockfish::Square flip_vertical(Stockfish::Square sq) {
     return Stockfish::Square(int(sq) ^ 56);
 }
 
+inline std::vector<float> normalize_logits(const std::vector<float>& logits) {
+    std::vector<float> probabilities(logits.size(), 0.0f);
+    float maxLogit = -std::numeric_limits<float>::infinity();
+    for (float logit : logits) {
+        if (std::isfinite(logit)) {
+            maxLogit = std::max(maxLogit, logit);
+        }
+    }
+
+    if (!std::isfinite(maxLogit)) {
+        if (!probabilities.empty()) {
+            std::fill(probabilities.begin(), probabilities.end(), 1.0f / probabilities.size());
+        }
+        return probabilities;
+    }
+
+    double sum = 0.0;
+    for (size_t i = 0; i < logits.size(); ++i) {
+        if (std::isfinite(logits[i])) {
+            probabilities[i] = std::exp(logits[i] - maxLogit);
+            sum += probabilities[i];
+        }
+    }
+
+    if (!std::isfinite(sum) || sum <= 0.0) {
+        size_t finiteCount = std::count_if(logits.begin(), logits.end(), [](float value) {
+            return std::isfinite(value);
+        });
+        if (finiteCount > 0) {
+            for (size_t i = 0; i < logits.size(); ++i) {
+                probabilities[i] = std::isfinite(logits[i]) ? 1.0f / finiteCount : 0.0f;
+            }
+        }
+        return probabilities;
+    }
+
+    for (float& probability : probabilities) {
+        probability = static_cast<float>(probability / sum);
+    }
+    return probabilities;
+}
+
 inline std::vector<float> get_normalized_probability(float* policyOutput,
 std::vector<Stockfish::Move> actions,
 int board_num, Board& board, bool prioritizePass = false) {
@@ -151,11 +193,13 @@ int board_num, Board& board, bool prioritizePass = false) {
         }
         
         // Mirror move for Black's perspective
-        if (board.side_to_move(board_num) == Stockfish::BLACK) {
-            logits[i] = policyOutput[POLICY_INDEX[mirror_move(uci)]];
-        } else {
-            logits[i] = policyOutput[POLICY_INDEX[uci]];
-        }
+        std::string policyMove = board.side_to_move(board_num) == Stockfish::BLACK
+            ? mirror_move(uci)
+            : uci;
+        auto policyIt = POLICY_INDEX.find(policyMove);
+        logits[i] = policyIt != POLICY_INDEX.end()
+            ? policyOutput[policyIt->second]
+            : -std::numeric_limits<float>::infinity();
         
         // Rook or bishop underpromotions should be ignored
         if (uci.back() == 'r' || uci.back() == 'b') {
@@ -177,17 +221,7 @@ int board_num, Board& board, bool prioritizePass = false) {
         logits[passIdx] = passLogit * (1.0f - PASS_BOOST_ALPHA) + maxLogit * PASS_BOOST_ALPHA;
     }
     
-    std::vector<float> probs(length);
-    double sum = 0.0;
-    for (size_t i = 0; i < logits.size(); ++i) {
-        probs[i] = exp(logits[i]);
-        sum += probs[i];
-    }
-    
-    for (size_t i = 0; i < probs.size(); ++i) {
-        probs[i] /= sum;
-    }
-    return probs;
+    return normalize_logits(logits);
 }
 
 // ============================================================================
@@ -310,4 +344,50 @@ inline JointActionCandidate sample_action_with_temperature(
     // Use the shared utility function
     size_t selectedIdx = sample_index_with_temperature(visits, temperature);
     return childActionVisits[selectedIdx].first;
+}
+
+inline JointActionCandidate sample_action_with_temperature(
+    const std::vector<std::pair<JointActionCandidate, int>>& childActionVisits,
+    const std::vector<float>& policyWeights,
+    float temperature
+) {
+    if (childActionVisits.empty() || childActionVisits.size() != policyWeights.size()) {
+        return sample_action_with_temperature(childActionVisits, temperature);
+    }
+
+    if (temperature < 0.01f) {
+        return childActionVisits[std::distance(
+            policyWeights.begin(),
+            std::max_element(policyWeights.begin(), policyWeights.end()))].first;
+    }
+
+    std::vector<float> tempered(policyWeights.size(), 0.0f);
+    float maxLogWeight = -std::numeric_limits<float>::infinity();
+    for (float weight : policyWeights) {
+        if (weight > 0.0f && std::isfinite(weight)) {
+            maxLogWeight = std::max(maxLogWeight, std::log(weight) / temperature);
+        }
+    }
+
+    double total = 0.0;
+    for (size_t i = 0; i < policyWeights.size(); ++i) {
+        if (policyWeights[i] > 0.0f && std::isfinite(policyWeights[i])) {
+            tempered[i] = std::exp(std::log(policyWeights[i]) / temperature - maxLogWeight);
+            total += tempered[i];
+        }
+    }
+    if (total <= 0.0 || !std::isfinite(total)) {
+        return sample_action_with_temperature(childActionVisits, temperature);
+    }
+
+    std::uniform_real_distribution<double> distribution(0.0, total);
+    double draw = distribution(get_thread_local_rng());
+    double cumulative = 0.0;
+    for (size_t i = 0; i < tempered.size(); ++i) {
+        cumulative += tempered[i];
+        if (draw <= cumulative) {
+            return childActionVisits[i].first;
+        }
+    }
+    return childActionVisits.back().first;
 }

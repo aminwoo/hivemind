@@ -273,6 +273,19 @@ constexpr float PW_COEFFICIENT = 1.0f;
 /// Lower values slow down the expansion rate
 constexpr float PW_EXPONENT = 0.3f;
 
+struct RuntimeConfig {
+    float cpuctInit = CPUCT_INIT;
+    float cpuctBase = CPUCT_BASE;
+    float fpuReduction = FPU_REDUCTION;
+    bool enableMCGS = ENABLE_MCGS;
+    bool enableTranspositions = ENABLE_TRANSPOSITIONS;
+    float drawContempt = DRAW_CONTEMPT;
+    float pwCoefficient = PW_COEFFICIENT;
+    float pwExponent = PW_EXPONENT;
+    float qValueWeight = Q_VALUE_WEIGHT;
+    float qVetoDelta = Q_VETO_DELTA;
+};
+
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -286,8 +299,8 @@ constexpr float PW_EXPONENT = 0.3f;
  * @param totalVisits Parent node's total visit count
  * @return Dynamic CPUCT value
  */
-inline float get_cpuct(float totalVisits) {
-    return std::log((totalVisits + CPUCT_BASE + 1.0f) / CPUCT_BASE) + CPUCT_INIT;
+inline float get_cpuct(float totalVisits, float init = CPUCT_INIT, float base = CPUCT_BASE) {
+    return std::log((totalVisits + base + 1.0f) / base) + init;
 }
 
 /**
@@ -297,9 +310,11 @@ inline float get_cpuct(float totalVisits) {
  * @param visitCount Current visit count of the node
  * @return Number of children allowed to be expanded
  */
-inline int get_allowed_children(int visitCount) {
+inline int get_allowed_children(int visitCount,
+                                float coefficient = PW_COEFFICIENT,
+                                float exponent = PW_EXPONENT) {
     if (visitCount <= 0) return 1;
-    return static_cast<int>(std::ceil(PW_COEFFICIENT * std::pow(static_cast<float>(visitCount), PW_EXPONENT)));
+    return static_cast<int>(std::ceil(coefficient * std::pow(static_cast<float>(visitCount), exponent)));
 }
 
 /**
