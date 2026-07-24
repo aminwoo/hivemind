@@ -1,11 +1,46 @@
 #include "engine.h"
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <dlfcn.h>
 #include <iostream>
 #include <fstream>
 #include <vector>
 
 namespace {
+
+void preloadTensorRTBuilderResources() {
+    static std::once_flag preloadOnce;
+    std::call_once(preloadOnce, []() {
+        namespace fs = std::filesystem;
+        std::error_code errorCode;
+        const fs::path libraryDir(TENSORRT_LIBRARY_DIR);
+        if (!fs::exists(libraryDir, errorCode)) {
+            std::cerr << "TensorRT library directory not found: " << libraryDir << std::endl;
+            return;
+        }
+
+        for (const auto& entry : fs::directory_iterator(libraryDir, errorCode)) {
+            if (errorCode) {
+                break;
+            }
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+
+            const std::string fileName = entry.path().filename().string();
+            if (fileName.rfind("libnvinfer_builder_resource_", 0) != 0) {
+                continue;
+            }
+
+            void* handle = dlopen(entry.path().c_str(), RTLD_NOW | RTLD_GLOBAL);
+            if (!handle) {
+                std::cerr << "Failed to preload TensorRT resource library "
+                          << entry.path() << ": " << dlerror() << std::endl;
+            }
+        }
+    });
+}
 
 bool checkCuda(cudaError_t result, const char* operation) {
     if (result == cudaSuccess) {
@@ -64,7 +99,10 @@ bool Engine::loadNetwork(const std::string& onnxFile, const std::string& engineF
     std::ifstream checkFile(engineFile, std::ios::binary);
     if (checkFile.good()) {
         checkFile.close();
-        return loadEngineFromFile(engineFile);
+        if (loadEngineFromFile(engineFile)) {
+            return true;
+        }
+        std::cerr << "Cached TensorRT engine is invalid or stale; rebuilding from ONNX" << std::endl;
     }
     return buildEngineFromONNX(onnxFile) && saveEngineToFile(engineFile);
 }
@@ -99,9 +137,9 @@ bool Engine::saveEngineToFile(const std::string& engineFile) {
 
 bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     std::cout << "Building TensorRT engine from ONNX: " << onnxFile << std::endl;
+    preloadTensorRTBuilderResources();
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(m_logger));
-    // TensorRT 10: explicit batch is now the default, just pass 0
-    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
+    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0U));
     auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, m_logger));
 
     if (!parser->parseFromFile(onnxFile.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
@@ -112,11 +150,15 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     
     config->setBuilderOptimizationLevel(5);
     config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1ULL << 30); // 1GB
-    config->setFlag(nvinfer1::BuilderFlag::kFP16);
     
     auto profile = builder->createOptimizationProfile();
     const char* inputName = network->getInput(0)->getName();
-    nvinfer1::Dims4 dims{m_batchSize, NB_INPUT_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH};
+    nvinfer1::Dims dims{};
+    dims.nbDims = 4;
+    dims.d[0] = m_batchSize;
+    dims.d[1] = NB_INPUT_CHANNELS;
+    dims.d[2] = BOARD_HEIGHT;
+    dims.d[3] = BOARD_WIDTH;
     profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, dims);
     profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, dims);
     profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, dims);
@@ -205,7 +247,12 @@ bool Engine::initializeResources() {
     }
 
     m_batchSize = inputDims.d[0] > 0 ? inputDims.d[0] : SearchParams::BATCH_SIZE;
-    nvinfer1::Dims4 dims{m_batchSize, NB_INPUT_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH};
+    nvinfer1::Dims dims{};
+    dims.nbDims = 4;
+    dims.d[0] = m_batchSize;
+    dims.d[1] = NB_INPUT_CHANNELS;
+    dims.d[2] = BOARD_HEIGHT;
+    dims.d[3] = BOARD_WIDTH;
     if (!m_context->setInputShape(m_inputName.c_str(), dims)) {
         std::cerr << "Failed to set TensorRT input shape" << std::endl;
         return false;
