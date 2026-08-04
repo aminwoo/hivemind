@@ -7,6 +7,7 @@
 #include <string>
 #include <algorithm>
 #include <iostream>
+#include <optional>
 #include <vector>
 #include <functional>
 
@@ -28,8 +29,9 @@ class Board {
         Stockfish::StateListPtr states[2];             ///< Array of state history pointers.
         const std::string startingFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"; ///< Standard starting position in FEN notation.
         
-        /// History of board-only position keys for repetition detection (ignores pocket pieces)
+        /// History of repetition keys for on-board positions.
         std::vector<uint64_t> positionHistory[2];
+        std::vector<Stockfish::Move> moveHistory[2];
 
         Board();
         Board(const Board& board);
@@ -40,22 +42,45 @@ class Board {
         * @return long unsigned int Combined hash of the positions.
         */
         unsigned long hash_key(bool teamHasTimeAdvantage = false) {
-            auto k0 = pos[0]->key() ^ Stockfish::Zobrist::ply[game_ply(0)];
-            auto k1 = pos[1]->key() ^ Stockfish::Zobrist::ply[game_ply(1)];
+            auto mix_counter = [](uint64_t key, uint64_t counter) {
+                counter += 0x9e3779b97f4a7c15ULL;
+                counter = (counter ^ (counter >> 30)) * 0xbf58476d1ce4e5b9ULL;
+                counter = (counter ^ (counter >> 27)) * 0x94d049bb133111ebULL;
+                return key ^ (counter ^ (counter >> 31));
+            };
+
+            auto history_key = [&mix_counter](const std::vector<uint64_t>& history) {
+                uint64_t key = 0xcbf29ce484222325ULL;
+                for (uint64_t positionKey : history) {
+                    key = mix_counter(key, positionKey);
+                }
+                return mix_counter(key, history.size());
+            };
+
+            auto k0 = mix_counter(pos[0]->key(), static_cast<uint64_t>(rule50_count(0)));
+            auto k1 = mix_counter(pos[1]->key(), static_cast<uint64_t>(rule50_count(1)));
             // Combines the two keys using a hash_combine technique.
             auto combined = k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
+            auto repetitionContext = history_key(positionHistory[0]);
+            repetitionContext ^= history_key(positionHistory[1])
+                + 0x9e3779b97f4a7c15ULL
+                + (repetitionContext << 6)
+                + (repetitionContext >> 2);
+            combined ^= repetitionContext
+                + 0x9e3779b97f4a7c15ULL
+                + (combined << 6)
+                + (combined >> 2);
             // XOR in time advantage key if team is up on time
             return teamHasTimeAdvantage ? (combined ^ Stockfish::Zobrist::timeAdvantage) : combined;
         }
 
         /**
-         * @brief Computes a hash key for a single board ignoring pocket pieces.
-         * Used for 3-fold repetition detection where only board position matters.
+         * @brief Computes a repetition key for a single board.
+         * Pocket pieces are ignored for bughouse repetition claims.
          * @param board_num The board index.
-         * @return uint64_t Hash of the board position without pocket pieces.
+         * @return uint64_t Hash of the on-board position.
          */
         uint64_t board_only_key(int board_num) {
-            // Extract the FEN and hash only the board-relevant parts (not pocket)
             std::string fenStr = pos[board_num]->fen();
             
             // FEN format: piece_placement side_to_move castling en_passant halfmove fullmove [pocket]
@@ -64,12 +89,14 @@ class Board {
             std::string piecePlacement, sideToMove, castling, enPassant;
             ss >> piecePlacement >> sideToMove >> castling >> enPassant;
 
-            size_t pos = piecePlacement.find('[');
-            if (pos != std::string::npos) {
-                piecePlacement = piecePlacement.substr(0, pos);
+            // Fairy-Stockfish appends pockets to piece placement as "[pieces]".
+            // Bughouse repetition depends only on pieces currently on the board.
+            const size_t pocketStart = piecePlacement.find('[');
+            if (pocketStart != std::string::npos) {
+                piecePlacement.erase(pocketStart);
             }
-            
-            // Create a normalized string for hashing (ignore halfmove, fullmove, pocket)
+
+            // Ignore move counters, which do not define repetition identity.
             std::string boardOnlyFen = piecePlacement + " " + sideToMove + " " + castling + " " + enPassant;
             
             // Use std::hash for the string
@@ -102,15 +129,6 @@ class Board {
             positionHistory[board_num].clear();
         }
 
-        /**
-         * @brief Swaps the positions and states of the two boards.
-         */
-        void swap_boards() {
-            std::swap(pos[0], pos[1]);
-            std::swap(states[0], states[1]);
-            std::swap(positionHistory[0], positionHistory[1]);
-        }
-
         void set(std::string fen); 
         void push_move(int board_num, Stockfish::Move move);
         void make_moves(Stockfish::Move moveA, Stockfish::Move moveB);
@@ -125,7 +143,7 @@ class Board {
          * @param p The piece to add.
          */
         void add_to_hand(int board_num, Stockfish::Piece p) {
-            pos[board_num]->add_to_hand(p);
+            pos[board_num]->add_to_hand_with_key(p);
         }
 
         /**
@@ -134,7 +152,7 @@ class Board {
          * @param p The piece to remove.
          */
         void remove_from_hand(int board_num, Stockfish::Piece p) {
-            pos[board_num]->remove_from_hand(p);
+            pos[board_num]->remove_from_hand_with_key(p);
         }
 
         /**
@@ -158,6 +176,7 @@ class Board {
             // Reset position history for this board
             clear_position_history(board_num);
             record_position(board_num);
+            moveHistory[board_num].clear();
         }
 
         /**
@@ -288,6 +307,21 @@ class Board {
             return pos[board_num]->rule50_count(); 
         }
 
+        Stockfish::Move last_move(int board_num) const {
+            if (moveHistory[board_num].empty()) {
+                return Stockfish::MOVE_NONE;
+            }
+            return moveHistory[board_num].back();
+        }
+
+        int repetition_count(int board_num) {
+            const uint64_t currentKey = board_only_key(board_num);
+            return static_cast<int>(std::count(
+                positionHistory[board_num].begin(),
+                positionHistory[board_num].end(),
+                currentKey));
+        }
+
         /**
          * @brief Converts a move to a UCI string.
          * @param board_num The board index.
@@ -322,7 +356,6 @@ class Board {
         }
 
         bool is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage = false);
-        bool check_mate_in_one(Stockfish::Color side);
         
         /**
          * @brief Checks if partner can capture a piece that could block a check.
@@ -336,6 +369,10 @@ class Board {
 
         bool is_in_check(int board_num) {
             return pos[board_num]->checkers();
+        }
+
+        bool gives_check(int board_num, Stockfish::Move move) const {
+            return move != Stockfish::MOVE_NONE && pos[board_num]->gives_check(move);
         }
 
         /**
@@ -356,7 +393,7 @@ class Board {
         }
 
         /**
-         * @brief Check if either board is in a draw state (3-fold repetition ignoring pocket pieces).
+         * @brief Check if either board is in a draw state.
          * @param ply The current search depth (used for repetition detection)
          *            When ply > 0, 2-fold repetition within search is treated as draw.
          *            When ply = 0, requires 3-fold repetition.
@@ -367,7 +404,7 @@ class Board {
         }
 
         /**
-         * @brief Check if a specific board is in a draw state (3-fold repetition ignoring pocket pieces).
+         * @brief Check if a specific board is in a draw state.
          * @param board_num The board index.
          * @param ply The current search depth (used for repetition detection)
          *            When ply > 0, 2-fold repetition within search is treated as draw.
@@ -380,7 +417,7 @@ class Board {
                 return true;
             }
             
-            // Check for 3-fold (or 2-fold in search) repetition ignoring pocket pieces
+            // Check for 3-fold (or 2-fold in search) repetition.
             uint64_t currentKey = board_only_key(board_num);
             const auto& history = positionHistory[board_num];
             

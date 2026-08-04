@@ -20,34 +20,36 @@
 # ^^^^^
 # A user may set ``TensorRT_DIR`` to an installation root to tell this module where to look.
 #
-set(_TensorRT_SEARCHES)
-
 if(TensorRT_DIR)
-    set(_TensorRT_SEARCH_ROOT PATHS ${TensorRT_DIR} NO_DEFAULT_PATH)
-    list(APPEND _TensorRT_SEARCHES _TensorRT_SEARCH_ROOT)
+    find_path(TensorRT_INCLUDE_DIR
+        NAMES NvInfer.h
+        PATHS "${TensorRT_DIR}"
+        NO_DEFAULT_PATH
+        PATH_SUFFIXES include)
+
+    find_library(TensorRT_LIBRARY
+        NAMES nvinfer
+        PATHS "${TensorRT_DIR}"
+        NO_DEFAULT_PATH
+        PATH_SUFFIXES lib)
+
+    find_library(TensorRT_NVONNXPARSER_LIBRARY
+        NAMES nvonnxparser
+        PATHS "${TensorRT_DIR}"
+        NO_DEFAULT_PATH
+        PATH_SUFFIXES lib)
 endif()
 
-# appends some common paths
-set(_TensorRT_SEARCH_NORMAL
-        PATHS "/usr"
-        )
-list(APPEND _TensorRT_SEARCHES _TensorRT_SEARCH_NORMAL)
-
-# Include dir
-foreach(search ${_TensorRT_SEARCHES})
-    find_path(TensorRT_INCLUDE_DIR NAMES NvInfer.h ${${search}} PATH_SUFFIXES include)
-endforeach()
+if(NOT TensorRT_INCLUDE_DIR)
+    find_path(TensorRT_INCLUDE_DIR NAMES NvInfer.h PATHS "/usr" PATH_SUFFIXES include)
+endif()
 
 if(NOT TensorRT_LIBRARY)
-    foreach(search ${_TensorRT_SEARCHES})
-        find_library(TensorRT_LIBRARY NAMES nvinfer ${${search}} PATH_SUFFIXES lib)
-    endforeach()
+    find_library(TensorRT_LIBRARY NAMES nvinfer PATHS "/usr" PATH_SUFFIXES lib)
 endif()
 
 if(NOT TensorRT_NVONNXPARSER_LIBRARY)
-    foreach(search ${_TensorRT_SEARCHES})
-        find_library(TensorRT_NVONNXPARSER_LIBRARY NAMES nvonnxparser ${${search}} PATH_SUFFIXES lib)
-    endforeach()
+    find_library(TensorRT_NVONNXPARSER_LIBRARY NAMES nvonnxparser PATHS "/usr" PATH_SUFFIXES lib)
 endif()
 
 mark_as_advanced(TensorRT_INCLUDE_DIR)

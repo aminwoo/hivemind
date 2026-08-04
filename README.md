@@ -126,7 +126,7 @@ uv run python src/preprocessing/convert_selfplay_data.py \
 
 ## Neural Network Architecture
 
-HiveMind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimized architecture combining:
+Hivemind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimized architecture combining:
 
 - Mixed depthwise convolutions
 - Squeeze-and-excitation blocks

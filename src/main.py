@@ -9,12 +9,22 @@ import chess.engine
 from src.architectures.rise_mobile_v3 import get_rise_v33_model
 from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
+from src.constants import NUM_BUGHOUSE_CHANNELS
 from configs.main_config import main_config
 
 def load_model_from_checkpoint(model_path: str, device='cuda'):
     """
     Load the trained RiseV3 model from checkpoint
     """
+    if device == 'cuda' and torch.cuda.is_available():
+        device_obj = torch.device('cuda')
+    else:
+        device_obj = torch.device('cpu')
+    checkpoint = torch.load(model_path, map_location=device_obj)
+    state_dict = checkpoint['model_state_dict']
+    has_moves_left = any('value_head.body_plys' in key for key in state_dict)
+    has_shared_policy = any('policy_heads.shared_body' in key for key in state_dict)
+
     class Args:
         def __init__(self):
             # Model type, e.g., "risev33" (specific architecture or version of the model)
@@ -33,8 +43,7 @@ def load_model_from_checkpoint(model_path: str, device='cuda'):
             self.context = "gpu"
 
             # Input shape of the model, represented as (channels, height, width)
-            # Example: 64 channels, 8 rows (height), and 8 columns (width) for an 8x8 board
-            self.input_shape = (64, 8, 8)
+            self.input_shape = (NUM_BUGHOUSE_CHANNELS, 8, 8)
 
             # Number of labels for the policy head (output layer for move predictions)
             # Example: 4672 possible moves or actions in the policy output
@@ -50,15 +59,16 @@ def load_model_from_checkpoint(model_path: str, device='cuda'):
 
             # Whether to use a Win/Draw/Loss (WDL) head
             # If True, the model will predict the game outcome (win, draw, or loss)
-            self.use_wdl = False
+            self.use_wdl = has_moves_left
 
             # Whether to use a "plys to end" head
             # If True, the model will predict the number of plies (half-moves) remaining until the end of the game
-            self.use_plys_to_end = False
+            self.use_plys_to_end = has_moves_left
 
             # Whether to use a Multi-Layer Perceptron (MLP) for the WDL and "plys to end" heads
             # If True, an MLP will be used to process these outputs instead of a simpler method
             self.use_mlp_wdl_ply = False
+            self.shared_policy_trunk = has_shared_policy
 
 
     args = Args()
@@ -66,16 +76,8 @@ def load_model_from_checkpoint(model_path: str, device='cuda'):
     # Initialize the model architecture
     model = get_rise_v33_model(args)
     
-    # Load the checkpoint
-    if device == 'cuda' and torch.cuda.is_available():
-        device_obj = torch.device('cuda')
-        checkpoint = torch.load(model_path, map_location='cuda')
-    else:
-        device_obj = torch.device('cpu')
-        checkpoint = torch.load(model_path, map_location='cpu')
-    
     # Load the model state
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(state_dict)
     model = model.to(device_obj)
     model.eval()
     
@@ -93,14 +95,20 @@ def perform_inference(model, board_tensor, device):
         board_tensor = board_tensor.to(device)
         
         # Forward pass
-        value_out, policy_out = model(board_tensor)
+        outputs = model(board_tensor)
+        value_out, policy_out = outputs[:2]
+        moves_left_out = outputs[4] if len(outputs) == 5 else None
         
         # Extract outputs
         value = value_out.squeeze().cpu().numpy()
         policy_a = torch.softmax(policy_out[0], dim=1).squeeze().cpu().numpy()
         policy_b = torch.softmax(policy_out[1], dim=1).squeeze().cpu().numpy()
         
-        return value, policy_a, policy_b
+        moves_left = None
+        if moves_left_out is not None:
+            moves_left = float(moves_left_out.squeeze().cpu()) * 100.0
+
+        return value, policy_a, policy_b, moves_left
 
 def get_starting_position_planes():
     """
@@ -168,12 +176,14 @@ def main():
     # Perform inference
     print("Performing inference...")
     try:
-        value, policy_a, policy_b = perform_inference(model, board_tensor, device)
+        value, policy_a, policy_b, moves_left = perform_inference(model, board_tensor, device)
         
         print("\n=== INFERENCE RESULTS ===")
         print(f"Position value: {value:.6f}")
         print(f"Policy A shape: {policy_a.shape}")
         print(f"Policy B shape: {policy_b.shape}")
+        if moves_left is not None:
+            print(f"Predicted plies to end: {moves_left:.1f}")
         
         # Show top policy moves for both heads
         print(f"\nTop 5 Policy A moves:")
