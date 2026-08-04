@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <memory>
+#include <string>
 #include "constants.h"
 
 /**
@@ -31,7 +32,7 @@ public:
  */
 class Engine {
 public:
-    explicit Engine(int deviceId);
+    explicit Engine(int deviceId, int batchSize = SearchParams::BATCH_SIZE);
     ~Engine();
 
     // Prevent copying to avoid double-free of CUDA resources
@@ -44,7 +45,8 @@ public:
      * @brief Performs inference. For max QPS, ensure input/output pointers 
      * are allocated via cudaMallocHost (Pinned Memory).
      */
-    bool runInference(float* obs, float* value, float* piA, float* piB);
+    bool runInference(float* obs, float* value, float* piA, float* piB,
+                      float* wdl, float* movesLeft);
     
     /**
      * @brief Get the batch size this engine was built with.
@@ -54,7 +56,7 @@ public:
 private:
     // Device ID and Logger
     int m_deviceId;
-    int m_batchSize = 8;  // Default, will be extracted from engine
+    int m_batchSize = SearchParams::BATCH_SIZE;
     Logger m_logger;
     
     // TensorRT Core Objects
@@ -75,6 +77,15 @@ private:
     void* m_deviceValueBuffer = nullptr;
     void* m_devicePolicyABuffer = nullptr;
     void* m_devicePolicyBBuffer = nullptr;
+    void* m_deviceWdlBuffer = nullptr;
+    void* m_deviceMovesLeftBuffer = nullptr;
+
+    std::string m_inputName;
+    std::string m_valueName;
+    std::string m_policyAName;
+    std::string m_policyBName;
+    std::string m_wdlName;
+    std::string m_movesLeftName;
 
     // Internal helper methods
     bool buildEngineFromONNX(const std::string& onnxFile);

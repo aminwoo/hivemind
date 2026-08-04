@@ -16,11 +16,11 @@ struct SearchInfo {
     int moveTime; 
     std::atomic<int> nodes{0};
     std::atomic<int> maxDepth{0};
-    std::atomic<int> collisions{0};
+    std::atomic<int> sameBatchCollisions{0};
+    std::atomic<int> reservationCollisions{0};
     
     // Time management state
     mutable std::mutex timeMutex_;
-    float lastRootEval_ = 0.0f;        // Last recorded root evaluation
     float overallNPS_ = 0.0f;          // Running average of nodes per second
     int timeExtensionCount_ = 0;       // Number of time extensions applied
     int effectiveMoveTime_ = 0;        // Current move time (may be extended)
@@ -69,6 +69,19 @@ struct SearchInfo {
         return maxDepth.load(std::memory_order_relaxed); 
     }
 
+    inline int get_collisions() const {
+        return sameBatchCollisions.load(std::memory_order_relaxed)
+            + reservationCollisions.load(std::memory_order_relaxed);
+    }
+
+    inline int get_same_batch_collisions() const {
+        return sameBatchCollisions.load(std::memory_order_relaxed);
+    }
+
+    inline int get_reservation_collisions() const {
+        return reservationCollisions.load(std::memory_order_relaxed);
+    }
+
     // Atomically increments the node counter.
     inline void increment_nodes(int value) {
         nodes.fetch_add(value, std::memory_order_relaxed); 
@@ -82,13 +95,12 @@ struct SearchInfo {
     }
 
     // Atomically increments the collision counter.
-    inline void increment_collisions(int value = 1) {
-        collisions.fetch_add(value, std::memory_order_relaxed);
+    inline void increment_same_batch_collisions(int value = 1) {
+        sameBatchCollisions.fetch_add(value, std::memory_order_relaxed);
     }
 
-    // Returns the collision count.
-    inline int get_collisions() const {
-        return collisions.load(std::memory_order_relaxed);
+    inline void increment_reservation_collisions(int value = 1) {
+        reservationCollisions.fetch_add(value, std::memory_order_relaxed);
     }
     
     // =========================================================================
@@ -127,31 +139,6 @@ struct SearchInfo {
     void set_in_game(bool inGame) {
         std::lock_guard<std::mutex> lock(timeMutex_);
         inGame_ = inGame;
-    }
-    
-    /**
-     * @brief Check if this is an in-game search.
-     */
-    bool is_in_game() const {
-        std::lock_guard<std::mutex> lock(timeMutex_);
-        return inGame_;
-    }
-    
-    /**
-     * @brief Update the last root evaluation.
-     * @param eval Current root Q-value
-     */
-    void set_last_eval(float eval) {
-        std::lock_guard<std::mutex> lock(timeMutex_);
-        lastRootEval_ = eval;
-    }
-    
-    /**
-     * @brief Get the last root evaluation.
-     */
-    float get_last_eval() const {
-        std::lock_guard<std::mutex> lock(timeMutex_);
-        return lastRootEval_;
     }
     
     /**

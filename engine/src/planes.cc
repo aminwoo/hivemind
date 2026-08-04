@@ -1,6 +1,12 @@
 #include "planes.h"
 #include <algorithm>
 
+namespace {
+
+constexpr int MAX_NUM_NO_PROGRESS = 50;
+
+}
+
 // Check for AVX2 support at compile time
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -141,10 +147,42 @@ inline void set_plane_castling_rights_board(PlaneData& p, int boardIdx) {
     }
 }
 
+inline Stockfish::Square orient_square(Stockfish::Square square, bool flip) {
+    return flip ? Stockfish::Square(static_cast<int>(square) ^ 56) : square;
+}
+
+inline void set_plane_last_move_board(PlaneData& p, int boardIdx) {
+    const Stockfish::Move move = p.board.last_move(boardIdx);
+    if (move == Stockfish::MOVE_NONE) {
+        p.increment_channel();
+        p.increment_channel();
+        return;
+    }
+
+    const bool flip = p.needs_flipping(boardIdx);
+    if (Stockfish::type_of(move) != Stockfish::DROP) {
+        p.curIt[orient_square(Stockfish::from_sq(move), flip)] = 1.0f;
+    }
+    p.increment_channel();
+    p.curIt[orient_square(Stockfish::to_sq(move), flip)] = 1.0f;
+    p.increment_channel();
+}
+
+inline void set_plane_history_board(PlaneData& p, int boardIdx) {
+    set_plane_last_move_board(p, boardIdx);
+    const float halfmoveClock = std::min(
+        p.board.rule50_count(boardIdx), MAX_NUM_NO_PROGRESS
+    ) / static_cast<float>(MAX_NUM_NO_PROGRESS);
+    p.set_plane_to_value(halfmoveClock);
+
+    const int repetitions = p.board.repetition_count(boardIdx);
+    p.set_plane_to_value(repetitions >= 2 ? 1.0f : 0.0f);
+    p.set_plane_to_value(repetitions >= 3 ? 1.0f : 0.0f);
+}
+
 void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage=false) {
     // Initialize all to 0 using SIMD when available
-    // NB_INPUT_VALUES = 64 * 8 * 8 = 4096 floats (exactly 512 AVX2 iterations)
-    constexpr size_t totalFloats = 64 * 8 * 8;  // NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH
+    constexpr size_t totalFloats = NB_INPUT_VALUES();
 #if USE_AVX2
     __m256 zero = _mm256_setzero_ps();
     for (size_t i = 0; i < totalFloats; i += 8) {
@@ -164,8 +202,9 @@ void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide
     planeData.set_plane_to_value(1.0f);             // Constant plane
     set_plane_castling_rights_board(planeData, 0);  
     planeData.set_plane_to_value(hasTimeAdvantage ? 1.0f : 0.0f); 
+    set_plane_history_board(planeData, 0);
     
-    // Process Board 1 (Channels 32-63)
+    // Process Board 1
     set_plane_pieces_board(planeData, 1);           
     set_plane_pockets_board(planeData, 1);          
     set_plane_promoted_pieces_board(planeData, 1);  
@@ -174,4 +213,5 @@ void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide
     planeData.set_plane_to_value(1.0f);             // Constant plane
     set_plane_castling_rights_board(planeData, 1);  
     planeData.set_plane_to_value(hasTimeAdvantage ? 1.0f : 0.0f);
+    set_plane_history_board(planeData, 1);
 }

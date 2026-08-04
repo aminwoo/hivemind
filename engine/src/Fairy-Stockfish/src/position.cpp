@@ -46,6 +46,18 @@ namespace Zobrist {
   Key checks[COLOR_NB][CHECKS_NB];
 }
 
+void Position::add_to_hand_with_key(Piece pc) {
+    int count = pieceCountInHand[color_of(pc)][type_of(pc)];
+    st->key ^= Zobrist::inHand[pc][count] ^ Zobrist::inHand[pc][count + 1];
+    add_to_hand(pc);
+}
+
+void Position::remove_from_hand_with_key(Piece pc) {
+    int count = pieceCountInHand[color_of(pc)][type_of(pc)];
+    st->key ^= Zobrist::inHand[pc][count] ^ Zobrist::inHand[pc][count - 1];
+    remove_from_hand(pc);
+}
+
 
 /// operator<<(Position) returns an ASCII representation of the position
 

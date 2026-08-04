@@ -10,6 +10,12 @@
 #include "Fairy-Stockfish/src/types.h"
 #include "search_params.h"
 
+inline bool is_double_sit_legal(bool teamHasTimeAdvantage,
+                                bool boardAOnTurn,
+                                bool boardBOnTurn) {
+    return teamHasTimeAdvantage && (boardAOnTurn != boardBOnTurn);
+}
+
 // Hash function for pair<size_t, size_t> used in visited set
 struct PairHash {
     size_t operator()(const std::pair<size_t, size_t>& p) const {
@@ -31,33 +37,35 @@ struct JointActionCandidate {
     float priorA;                  // Prior probability for move A
     float priorB;                  // Prior probability for move B
     float jointPrior;              // P(a|s) = P_A(a_A|s) * P_B(a_B|s)
+    float expansionPriority;       // Candidate ordering (same as jointPrior)
     size_t idxA;                   // Index in sorted actionsA
     size_t idxB;                   // Index in sorted actionsB
 
     JointActionCandidate() 
         : moveA(Stockfish::MOVE_NONE), moveB(Stockfish::MOVE_NONE),
-          priorA(0.0f), priorB(0.0f), jointPrior(0.0f),
+          priorA(0.0f), priorB(0.0f), jointPrior(0.0f), expansionPriority(0.0f),
           idxA(0), idxB(0) {}
 
     JointActionCandidate(Stockfish::Move mA, float pA, size_t iA,
                          Stockfish::Move mB, float pB, size_t iB,
-                         bool boardAOnTurn = false,
-                         bool boardBOnTurn = false,
-                         bool teamHasTimeAdvantage = false)
+                                                 bool boardAOnTurn = false,
+                                                 bool boardBOnTurn = false,
+                                                 bool teamHasTimeAdvantage = false)
         : moveA(mA), moveB(mB),
           priorA(pA), priorB(pB),
           idxA(iA), idxB(iB) {
 
         bool bothSitting = (mA == Stockfish::MOVE_NONE) && (mB == Stockfish::MOVE_NONE);
-        bool bothOnTurn = boardAOnTurn && boardBOnTurn;
-        bool isInvalidSit = bothSitting && (teamHasTimeAdvantage ? bothOnTurn : true);
+        bool isInvalidSit = bothSitting
+            && !is_double_sit_legal(teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
         
         jointPrior = isInvalidSit ? -1.0f : pA * pB;
+        expansionPriority = jointPrior;
     }
 
-    // For max-heap comparison (we want highest jointPrior first)
+    // For max-heap comparison (forcing expansion priority first)
     bool operator<(const JointActionCandidate& other) const {
-        return jointPrior < other.jointPrior;
+        return expansionPriority < other.expansionPriority;
     }
 };
 
@@ -68,10 +76,10 @@ struct JointActionCandidate {
  * to lazily generate pairs in order of decreasing joint prior P_A * P_B.
  * 
  * Algorithm:
- * 1. Sort moves from each board by prior (descending)
+ * 1. Sort moves by prior (descending) on each board
  * 2. Start with (0,0) - the best pair from both boards
  * 3. When popping (i,j), push (i+1,j) and (i,j+1) if not already visited
- * 4. This guarantees pairs are generated in order of joint prior
+ * 4. This lazily generates joint moves by descending joint prior
  */
 class JointCandidateGenerator {
 private:
@@ -80,7 +88,6 @@ private:
     std::vector<Stockfish::Move> sortedActionsB;
     std::vector<float> sortedPriorsA;
     std::vector<float> sortedPriorsB;
-    
     // Max-heap for lazy generation
     std::priority_queue<JointActionCandidate> heap;
     

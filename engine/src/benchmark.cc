@@ -15,6 +15,8 @@ void benchmark_inference(Engine& engine, int iterations) {
     float* value = new float[SearchParams::BATCH_SIZE];
     float* piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
     float* piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
+    float* wdl = new float[SearchParams::BATCH_SIZE * 3];
+    float* movesLeft = new float[SearchParams::BATCH_SIZE];
     
     // Initialize with random data
     for (size_t i = 0; i < SearchParams::BATCH_SIZE * NB_INPUT_VALUES(); i++) {
@@ -23,13 +25,13 @@ void benchmark_inference(Engine& engine, int iterations) {
     
     // Warmup
     for (int i = 0; i < 10; i++) {
-        engine.runInference(obs, value, piA, piB);
+        engine.runInference(obs, value, piA, piB, wdl, movesLeft);
     }
     
     // Benchmark
     auto start = chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; i++) {
-        engine.runInference(obs, value, piA, piB);
+        engine.runInference(obs, value, piA, piB, wdl, movesLeft);
     }
     auto end = chrono::high_resolution_clock::now();
     
@@ -48,6 +50,8 @@ void benchmark_inference(Engine& engine, int iterations) {
     delete[] value;
     delete[] piA;
     delete[] piB;
+    delete[] wdl;
+    delete[] movesLeft;
 }
 
 static long long perft(Board& board, int depth) {

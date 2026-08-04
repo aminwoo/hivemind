@@ -78,6 +78,28 @@ TEST_F(MateDetectionTest, SimpleRookMate) {
         << "Corner queen mate should be checkmate";
 }
 
+TEST_F(MateDetectionTest, ReportedKingMoveAllowsQueenDropMate) {
+    Board board;
+    board.set(
+        "r4r2/ppp2pkp/5B2/3pP1p1/8/2P5/PPP2bPP/RN1rNK1R[QBBPbpp] b - - 1 27|"
+        "rnb3k1/ppp1qqpp/2P1pnbQ/1B2N3/8/2P2N2/P1P2PPP/R3K2R[Pnnp] w KQ - 0 24");
+
+    std::string kingMoveUci = "g7g8";
+    Stockfish::Move kingMove = Stockfish::UCI::to_move(*board.pos[BOARD_A], kingMoveUci);
+    ASSERT_NE(kingMove, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_A, kingMove);
+
+    std::string queenDropUci = "Q@g7";
+    Stockfish::Move queenDrop = Stockfish::UCI::to_move(*board.pos[BOARD_A], queenDropUci);
+    ASSERT_NE(queenDrop, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_A, queenDrop);
+
+    EXPECT_TRUE(board.is_in_check(BOARD_A));
+    EXPECT_TRUE(board.legal_moves(BOARD_A).empty());
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, true));
+}
+
 // =============================================================================
 // NOT Checkmate - Partner Can Provide Blocking Piece
 // =============================================================================
@@ -441,6 +463,30 @@ TEST_F(MateDetectionTest, LegalMovesNonEmptyWhenNotMated) {
 // Regression Tests (Add specific bug scenarios here)
 // =============================================================================
 
+TEST_F(MateDetectionTest, CaptureProvidesPartnerKnightDropMate) {
+    Board board;
+    board.set_fen(BOARD_A, "2rq1rk1/pppnb1p1/4p1p1/3pP1pp/4P3/2N1P1B1/PPP2NPP/R2Q1RK1/NN b - - 0 3");
+    board.set_fen(BOARD_B, "r4rk1/ppp2p1p/4bB1p/8/6b1/2P5/P1PB1PPP/R3R1K1/qbbnnppPB w");
+
+    std::string captureUci = "f8f2";
+    Stockfish::Move capture = Stockfish::UCI::to_move(*board.pos[BOARD_A], captureUci);
+    ASSERT_NE(capture, Stockfish::MOVE_NONE);
+
+    board.make_moves(capture, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.count_in_hand(BOARD_B, Stockfish::WHITE, Stockfish::KNIGHT), 1);
+
+    auto opponentMoves = board.legal_moves(BOARD_A);
+    ASSERT_FALSE(opponentMoves.empty());
+    board.make_moves(opponentMoves.front(), Stockfish::MOVE_NONE);
+
+    std::string mateUci = "N@e7";
+    Stockfish::Move mate = Stockfish::UCI::to_move(*board.pos[BOARD_B], mateUci);
+    ASSERT_NE(mate, Stockfish::MOVE_NONE);
+
+    board.make_moves(Stockfish::MOVE_NONE, mate);
+    EXPECT_TRUE(board.is_checkmate(Stockfish::WHITE, false));
+}
+
 // Test: Verify legal_moves returns moves when team is not mated
 TEST_F(MateDetectionTest, LegalMovesForTeamWhenNotMated) {
     Board board;
@@ -722,4 +768,68 @@ TEST_F(MateDetectionTest, EmptyMovesNotCheckmate) {
     auto whiteMoves = board.legal_moves(Stockfish::WHITE, false);
     EXPECT_GT(whiteMoves.size(), 1)
         << "White team should have many legal moves";
+}
+
+// Test: User-reported sequence where Board 2 has 2Q@d2 as mate in one.
+TEST_F(MateDetectionTest, ReportedQueenDropD2IsMateInOne) {
+    Board board;
+    board.set(board.startingFen + "|" + board.startingFen);
+
+    const std::string moves =
+        "1e2e4 1e7e5 1g1f3 1b8c6 1f1c4 2e2e4 2c7c6 2b1c3 2d7d5 2e4d5 "
+        "1P@e6 1d2d4 1e5d4 1c1g5 1f8e7 1g5e7 1d8e7 1e4e5 1d7d6 2c6d5 "
+        "1P@f6 1g8f6 1e5f6 1g7f6 1e1g1 2d2d4 2g8f6 2g1f3 2b8c6 2f1b5 "
+        "2c8g4 2P@a6 2d8c7 2a6b7 2c7b7 2P@a6 2b7c7 2b5c6 1N@f4 1P@g3 "
+        "2c7c6 2B@b5 2g4f3 2d1f3 1B@h3 1N@g7 1e8d8 1B@h1 1h3g2 1h1g2 "
+        "2c6b5 2c3b5 2B@d6 2b5d6 1B@h3 1B@h1 1h3g2 1h1g2 1Q@h3 2e7d6 "
+        "2P@b7 2a8d8 2b7b8q 2d8b8 2P@c7 2b8c8 2B@a4 2B@d7 2a4d7 2f6d7 "
+        "1B@h1 1f4g2 1h1g2 1h3g2 1g1g2 1B@g4 1h2h3 1g4h3 1g2h3 1P@g4 "
+        "1h3g4 1h7h5 1g4h3 2f3d5 2c8c7 2d5a8 2B@d8 2B@g5 2B@f6 2g5f6 "
+        "1B@g4 1h3h2 1g4f3 1d1f3 2d7f6 2B@b5 2P@d7 2c1g5 2f8e7 2g5f6 "
+        "1N@g4 1h2g2 1c6e5 1g7e6 1c8e6 2e7f6 2N@d5 2B@d2 2e1d2 2N@e4 2d2d1";
+
+    std::istringstream ms(moves);
+    std::string token;
+    int moveIndex = 0;
+    while (ms >> token) {
+        ASSERT_GE(token.size(), 2U) << "Malformed token at index " << moveIndex << ": " << token;
+        ASSERT_TRUE(token[0] == '1' || token[0] == '2')
+            << "Missing board prefix at index " << moveIndex << ": " << token;
+
+        const int boardNum = token[0] - '1';
+        std::string moveStr = token.substr(1);
+        Stockfish::Move m = Stockfish::UCI::to_move(*board.pos[boardNum], moveStr);
+        ASSERT_NE(m, Stockfish::MOVE_NONE)
+            << "Invalid move at index " << moveIndex << ": " << token
+            << " FEN(" << (boardNum + 1) << "): " << board.fen(boardNum);
+        board.push_move(boardNum, m);
+        moveIndex++;
+    }
+
+    auto board2Moves = board.legal_moves(BOARD_B);
+    Stockfish::Move qDropD2 = Stockfish::MOVE_NONE;
+    for (const auto& m : board2Moves) {
+        if (board.uci_move(BOARD_B, m) == "Q@d2") {
+            qDropD2 = m;
+            break;
+        }
+    }
+
+    ASSERT_NE(qDropD2, Stockfish::MOVE_NONE)
+        << "Expected Q@d2 to be a legal move on Board 2 in the reported position";
+
+    const Stockfish::Color board2MoverColor = board.side_to_move(BOARD_B);
+    const Stockfish::Color moverTeam = ~board2MoverColor;
+    const Stockfish::Color opponentTeam = ~moverTeam;
+
+    board.push_move(BOARD_B, qDropD2);
+
+    EXPECT_TRUE(board.is_in_check(BOARD_B)) << "Q@d2 should give check on Board 2";
+
+    auto evasions = board.legal_moves(BOARD_B);
+    EXPECT_EQ(evasions.size(), 0U) << "Q@d2 should leave no legal evasions";
+    EXPECT_TRUE(board.is_checkmate(opponentTeam, false))
+        << "Q@d2 should be mate in one in this exact position";
+    EXPECT_TRUE(board.is_checkmate(opponentTeam, true))
+        << "Immediate Q@d2 mate must not depend on clock advantage";
 }
