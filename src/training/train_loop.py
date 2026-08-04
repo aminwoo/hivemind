@@ -1,41 +1,55 @@
-<<<<<<< HEAD
-import glob
-=======
 import argparse
 import glob
+import re
 import sys
 from pathlib import Path
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
-
->>>>>>> feat/multi-pv
 import polars as pl
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset, DataLoader
-<<<<<<< HEAD
-from configs.train_config import TrainConfig, TrainObjects
-from configs.main_config import main_config
-from src.training.data_loaders import load_parquet_shard
-=======
 from configs.train_config import TrainConfig, TrainObjects, rl_train_config
 from configs.main_config import main_config
 from src.training.data_loaders import load_parquet_shard, load_rl_data_from_directory, load_rl_parquet_shard, RLDataset, StreamingRLDataset, CombinedRLDataset
->>>>>>> feat/multi-pv
 
 from src.training.lr_schedules.lr_schedules import *
 from src.architectures.rise_mobile_v3 import get_rise_v33_model
 from src.training.trainer_agent import TrainerAgentPytorch, save_torch_state,\
     load_torch_state, export_to_onnx, get_context, get_data_loader, evaluate_metrics
 from src.training.train_util import get_metrics, value_to_wdl_label, prepare_plys_label
+from src.constants import NUM_BUGHOUSE_CHANNELS
 
 
-<<<<<<< HEAD
-if __name__ == '__main__':
-=======
-def get_model_args():
+def _resolve_validation_shard() -> str:
+    preferred = Path('../../data/planes/val/evaluation_shard.parquet')
+    if preferred.exists():
+        return str(preferred)
+
+    val_dir = Path(main_config['planes_val_dir'])
+    parquet_files = sorted(val_dir.glob('*.parquet'))
+    if parquet_files:
+        return str(parquet_files[0])
+
+    raise FileNotFoundError(
+        f"No validation parquet shard found. Checked {preferred} and {val_dir}"
+    )
+
+
+def _resolve_train_evaluation_shard(shard_path: str = None) -> str:
+    path = (
+        Path(shard_path).expanduser().resolve()
+        if shard_path
+        else Path('../../data/planes/train_eval/evaluation_shard.parquet')
+    )
+    if not path.is_file():
+        raise FileNotFoundError(f"Training evaluation shard not found: {path}")
+    return str(path)
+
+
+def get_model_args(train_config=None):
     """Get model configuration arguments."""
     class Args:
         def __init__(self):
@@ -44,41 +58,76 @@ def get_model_args():
             self.export_dir = "../../checkpoints"
             self.device_id = 0
             self.context = "gpu"
-            self.input_shape = (64, 8, 8)
+            self.input_shape = (NUM_BUGHOUSE_CHANNELS, 8, 8)
             self.n_labels = 0
             self.channels_policy_head = 73
             self.select_policy_from_plane = True
-            self.use_wdl = False
-            self.use_plys_to_end = False
-            self.use_mlp_wdl_ply = False
+            self.use_wdl = bool(train_config and train_config.use_wdl)
+            self.use_plys_to_end = bool(
+                train_config and train_config.use_plys_to_end
+            )
+            self.use_mlp_wdl_ply = bool(
+                train_config and train_config.use_mlp_wdl_ply
+            )
+            self.shared_policy_trunk = bool(train_config and train_config.use_wdl)
     return Args()
 
 
-def train_supervised():
+def _checkpoint_k_steps(checkpoint_path: Path) -> int:
+    match = re.search(r"-(\d+)\.tar$", checkpoint_path.name)
+    if match is None:
+        raise ValueError(
+            "Cannot infer training progress from checkpoint filename. "
+            "Expected a name ending in '-<step>.tar'."
+        )
+    return int(match.group(1))
+
+
+def train_supervised(
+    checkpoint_path: str = None,
+    train_eval_shard: str = None,
+):
     """Run supervised learning training on human game data."""
->>>>>>> feat/multi-pv
     tc = TrainConfig()
+    tc.use_wdl = True
+    tc.use_plys_to_end = True
+    tc.policy_loss_factor = 0.978
+    checkpoint = None
+    if checkpoint_path:
+        checkpoint = Path(checkpoint_path).expanduser().resolve()
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+        tc.k_steps_initial = _checkpoint_k_steps(checkpoint)
     to = TrainObjects()
     to.metrics = get_metrics(tc)
 
-    tc.nb_parts = len(glob.glob(main_config['planes_train_dir'] + '*'))
+    train_shards = glob.glob(main_config['planes_train_dir'] + '*.parquet')
+    tc.nb_parts = len(train_shards)
+    if tc.nb_parts == 0:
+        raise FileNotFoundError(
+            f"No training parquet shards found in {main_config['planes_train_dir']}"
+        )
 
-<<<<<<< HEAD
-    # Load validation data using load_parquet_shard instead of numpy
-    # Assuming you have a validation parquet file, replace the path as needed
-=======
     # Load validation data
->>>>>>> feat/multi-pv
-    x_val, y_val_value, y_val_policy = load_parquet_shard('../../data/planes/val/evaluation_shard.parquet')
-    dataset = TensorDataset(x_val, y_val_value, y_val_policy)
+    val_shard = _resolve_validation_shard()
+    val_tensors = load_parquet_shard(
+        val_shard,
+        include_auxiliary=True,
+    )
+    dataset = TensorDataset(*val_tensors)
     val_data = DataLoader(dataset, batch_size=tc.batch_size, shuffle=False)
 
-<<<<<<< HEAD
-    nb_it_per_epoch = (2**16 * tc.nb_parts) // tc.batch_size  # calculate how many iterations per epoch exist
-    # one iteration is defined by passing 1 batch and doing backprop
-=======
+    train_eval_tensors = load_parquet_shard(
+        _resolve_train_evaluation_shard(train_eval_shard),
+        include_auxiliary=True,
+    )
+    train_eval_data = DataLoader(
+        TensorDataset(*train_eval_tensors),
+        batch_size=tc.batch_size,
+        shuffle=False,
+    )
+
     nb_it_per_epoch = (2**16 * tc.nb_parts) // tc.batch_size
->>>>>>> feat/multi-pv
     tc.total_it = int(nb_it_per_epoch * tc.nb_training_epochs)
 
     to.lr_schedule = OneCycleSchedule(start_lr=tc.max_lr / 8, max_lr=tc.max_lr, cycle_length=tc.total_it * .3,
@@ -86,66 +135,25 @@ def train_supervised():
     to.lr_schedule = LinearWarmUp(to.lr_schedule, start_lr=tc.min_lr, length=tc.total_it / 30)
     to.momentum_schedule = MomentumSchedule(to.lr_schedule, tc.min_lr, tc.max_lr, tc.min_momentum, tc.max_momentum)
 
-<<<<<<< HEAD
-    class Args:
-        def __init__(self):
-            # Model type, e.g., "risev33" (specific architecture or version of the model)
-            self.model_type = "risev33"
-
-            # Input version, e.g., "1.0" (version of the input data or model configuration)
-            self.input_version = "1.0"
-
-            # Directory where the model checkpoints will be exported or saved
-            self.export_dir = "../../checkpoints"
-
-            # Device ID for running the model (e.g., GPU device ID)
-            self.device_id = 0
-
-            # Context in which the model will run, e.g., "gpu" or "cpu"
-            self.context = "gpu"
-
-            # Input shape of the model, represented as (channels, height, width)
-            # Example: 64 channels, 8 rows (height), and 8 columns (width) for an 8x8 board
-            self.input_shape = (64, 8, 8)
-
-            # Number of labels for the policy head (output layer for move predictions)
-            # Example: 4672 possible moves or actions in the policy output
-            self.n_labels = 0
-
-            # Number of channels in the policy head (output layer for move predictions)
-            # Example: 75 channels in the policy head
-            self.channels_policy_head = 73
-
-            # Whether to select the policy directly from the plane (spatial output)
-            # If True, the policy is derived from the spatial dimensions of the output
-            self.select_policy_from_plane = True
-
-            # Whether to use a Win/Draw/Loss (WDL) head
-            # If True, the model will predict the game outcome (win, draw, or loss)
-            self.use_wdl = False
-
-            # Whether to use a "plys to end" head
-            # If True, the model will predict the number of plies (half-moves) remaining until the end of the game
-            self.use_plys_to_end = False
-
-            # Whether to use a Multi-Layer Perceptron (MLP) for the WDL and "plys to end" heads
-            # If True, an MLP will be used to process these outputs instead of a simpler method
-            self.use_mlp_wdl_ply = False
-
-
-    # Create an instance of the Args class
-    args = Args()
-
+    args = get_model_args(tc)
     model = get_rise_v33_model(args)
 
-    trainer = TrainerAgentPytorch(model, val_data, tc, to, True)
-    trainer.train()
-=======
-    args = get_model_args()
-    model = get_rise_v33_model(args)
-
-    trainer = TrainerAgentPytorch(model, val_data, tc, to, use_rtpt=True, is_rl=False)
-    trainer.train()
+    trainer = TrainerAgentPytorch(
+        model,
+        val_data,
+        tc,
+        to,
+        use_rtpt=True,
+        is_rl=False,
+        train_eval_loader=train_eval_data,
+    )
+    if checkpoint is not None:
+        print(
+            f"Resuming supervised training from {checkpoint} "
+            f"at step {tc.k_steps_initial} ({tc.k_steps_initial * tc.batch_steps} batches)"
+        )
+        load_torch_state(model, trainer.optimizer, checkpoint, tc.device_id)
+    trainer.train(cur_it=tc.k_steps_initial * tc.batch_steps)
 
 
 def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, augment_flip: bool = True):
@@ -239,7 +247,7 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, a
     to.momentum_schedule = MomentumSchedule(to.lr_schedule, tc.min_lr, tc.max_lr, tc.min_momentum, tc.max_momentum)
     
     # Load model
-    args = get_model_args()
+    args = get_model_args(tc)
     model = get_rise_v33_model(args)
     
     # Optionally load checkpoint
@@ -256,7 +264,7 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, a
     # Export final model to ONNX
     print("\nExporting final model to ONNX...")
     ctx = get_context(tc.context, tc.device_id)
-    dummy_input = torch.zeros(1, 64, 8, 8).to(ctx)
+    dummy_input = torch.zeros(1, NUM_BUGHOUSE_CHANNELS, 8, 8).to(ctx)
     model_prefix = f"model-rl-final"
     export_to_onnx(model, 1, dummy_input, weights_dir, model_prefix, False, True)
     print(f"ONNX model exported to {weights_dir}/{model_prefix}.onnx")
@@ -272,11 +280,15 @@ if __name__ == '__main__':
                         help='Directory containing RL validation parquet files')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to checkpoint to resume training from')
+    parser.add_argument('--train-eval-shard', type=str, default=None,
+                        help='Fixed representative training shard used only for metrics')
     
     args = parser.parse_args()
 
     if args.mode == 'sl':
-        train_supervised()
+        train_supervised(
+            checkpoint_path=args.checkpoint,
+            train_eval_shard=args.train_eval_shard,
+        )
     else:
         train_rl(args.rl_data_dir, args.val_data_dir, checkpoint_path=args.checkpoint)
->>>>>>> feat/multi-pv

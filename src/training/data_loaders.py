@@ -2,25 +2,53 @@
 """
 Data loading utilities for parquet files
 """
-<<<<<<< HEAD
-=======
 import numpy as np
->>>>>>> feat/multi-pv
 import polars as pl
 import torch
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
 
 
-<<<<<<< HEAD
-def load_parquet_shard(file_path):
-    """
-    Loads a single parquet shard and converts it to PyTorch tensors.
-=======
-# Constants matching C++ code
-NB_INPUT_CHANNELS = 64
+# Constants matching the Python representation
+NB_INPUT_CHANNELS = NUM_BUGHOUSE_CHANNELS
+NB_BUGHOUSE_BOARD_CHANNELS = NUM_BUGHOUSE_CHANNELS_PER_BOARD
 BOARD_SIZE = 8
-NB_INPUT_VALUES = NB_INPUT_CHANNELS * BOARD_SIZE * BOARD_SIZE  # 4096
+NB_INPUT_VALUES = NB_INPUT_CHANNELS * BOARD_SIZE * BOARD_SIZE
 NB_POLICY_CHANNELS = 73
 NB_POLICY_VALUES = NB_POLICY_CHANNELS * BOARD_SIZE * BOARD_SIZE  # 4672
+POCKET_CHANNELS = (
+    slice(12, 22),
+    slice(NB_BUGHOUSE_BOARD_CHANNELS + 12, NB_BUGHOUSE_BOARD_CHANNELS + 22),
+)
+
+
+def _decode_plane_bytes(encoded_planes) -> np.ndarray:
+    planes = np.frombuffer(encoded_planes, dtype=np.uint8)
+    if planes.size != NB_INPUT_VALUES:
+        raise ValueError(
+            f"Expected {NB_INPUT_VALUES} input values, found {planes.size}"
+        )
+    return planes
+
+
+def _decode_fixed_width_binary_column(values, dtype, width) -> np.ndarray:
+    if not values:
+        return np.empty((0, width), dtype=dtype)
+
+    expected_nbytes = width * np.dtype(dtype).itemsize
+    for idx, value in enumerate(values):
+        if len(value) != expected_nbytes:
+            raise ValueError(
+                f"Invalid binary payload size at row {idx}: expected {expected_nbytes}, found {len(value)}"
+            )
+
+    joined = b"".join(values)
+    return np.frombuffer(joined, dtype=dtype).reshape(len(values), width)
+
+
+def _normalize_input_planes(x_tensor: torch.Tensor) -> torch.Tensor:
+    for channels in POCKET_CHANNELS:
+        x_tensor[:, channels, :, :] /= 16.0
+    return x_tensor
 
 
 def flip_bughouse_sample(x, policy_a, policy_b):
@@ -35,7 +63,7 @@ def flip_bughouse_sample(x, policy_a, policy_b):
     because the board perspective changes (like viewing from the opposite side).
     
     Args:
-        x: Input planes (64, 8, 8) where channels 0-31 are Board A, 32-63 are Board B
+        x: Input planes (C, 8, 8) where C depends on NUM_BUGHOUSE_CHANNELS
         policy_a: Policy distribution for Board A (4672,)
         policy_b: Policy distribution for Board B (4672,)
     
@@ -47,9 +75,10 @@ def flip_bughouse_sample(x, policy_a, policy_b):
     # Clone to avoid modifying originals
     flipped_x = x.clone()
     
-    # Swap the 32-channel blocks (Board A ↔ Board B)
-    flipped_x[:32] = x[32:64]  # Board A gets Board B's channels
-    flipped_x[32:64] = x[:32]  # Board B gets Board A's channels
+    # Swap the board channel blocks (Board A ↔ Board B)
+    offset = NB_BUGHOUSE_BOARD_CHANNELS
+    flipped_x[:offset] = x[offset:NB_INPUT_CHANNELS]
+    flipped_x[offset:NB_INPUT_CHANNELS] = x[:offset]
     
     # Swap the policy distributions (NO MIRRORING - just swap)
     # What was Board B becomes Board A -> use policy_b as-is
@@ -61,30 +90,45 @@ def flip_bughouse_sample(x, policy_a, policy_b):
     return flipped_x, flipped_policy_a, flipped_policy_b
 
 
-def load_parquet_shard(file_path):
+def load_parquet_shard(file_path, include_auxiliary=False):
     """
     Loads a single supervised learning parquet shard and converts it to PyTorch tensors.
->>>>>>> feat/multi-pv
     x: board planes (64, 8, 8)
     y_value: game outcome
     y_policy_idx: tuple containing (move_index, ...)
     """
-    # Read the parquet file
-    df = pl.read_parquet(file_path)
+    required_columns = ['x', 'y_value', 'y_policy_idx']
+    if include_auxiliary:
+        required_columns.append('y_plys_to_end')
 
-    # 1. Process X (Planes): Convert list of floats to (Batch, 64, 8, 8)
-    # If x is stored as a flat list of 4096 values, reshape it.
-    x_tensor = torch.tensor(df['x'].to_list(), dtype=torch.float32).view(-1, 64, 8, 8)
+    df = pl.read_parquet(file_path, columns=required_columns)
 
-    # 2. Process Y_Value
+    x_array = _decode_fixed_width_binary_column(
+        df['x'].to_list(),
+        dtype=np.uint8,
+        width=NB_INPUT_VALUES,
+    )
+    x_tensor = torch.from_numpy(x_array.copy()).float().view(
+        -1, NB_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE
+    )
+    x_tensor = _normalize_input_planes(x_tensor)
+
     y_val_tensor = torch.tensor(df['y_value'].to_list(), dtype=torch.float32)
-
-    # 3. Process Y_policy
     y_pol_tensor = torch.tensor(df['y_policy_idx'].to_list(), dtype=torch.long)
 
-<<<<<<< HEAD
-    return x_tensor, y_val_tensor, y_pol_tensor
-=======
+    if include_auxiliary:
+        if 'y_plys_to_end' not in df.columns:
+            raise ValueError(
+                "Moves-left training requires a y_plys_to_end column; regenerate this shard"
+            )
+        if not torch.all((y_val_tensor == -1) | (y_val_tensor == 0) | (y_val_tensor == 1)):
+            raise ValueError("WDL training requires y_value labels in {-1, 0, 1}")
+        wdl_tensor = (y_val_tensor + 1).long()
+        plys_tensor = torch.tensor(
+            df['y_plys_to_end'].to_list(), dtype=torch.float32
+        ).clamp_(0, 100) / 100.0
+        return x_tensor, y_val_tensor, y_pol_tensor, wdl_tensor, plys_tensor
+
     return x_tensor, y_val_tensor, y_pol_tensor
 
 
@@ -93,7 +137,7 @@ def load_rl_parquet_shard(file_path):
     Loads a single RL/self-play parquet shard and converts it to PyTorch tensors.
     
     RL data format (from C++ self-play):
-    - x: bytes (4096 uint8 planes)
+    - x: bytes (NB_INPUT_VALUES uint8 planes)
     - policy_a: bytes (4672 float32 dense policy distribution for board A)
     - policy_b: bytes (4672 float32 dense policy distribution for board B)
     - y_value: float (game outcome)
@@ -104,35 +148,33 @@ def load_rl_parquet_shard(file_path):
         policy_a_tensor: (N, 4672) float32 policy distribution for board A
         policy_b_tensor: (N, 4672) float32 policy distribution for board B
     """
-    df = pl.read_parquet(file_path)
-    
-    # Process X (Planes): Convert bytes to (Batch, 64, 8, 8)
-    x_list = []
-    for x_bytes in df['x']:
-        planes = np.frombuffer(x_bytes, dtype=np.uint8).astype(np.float32)
-        x_list.append(planes)
-    x_tensor = torch.tensor(np.stack(x_list), dtype=torch.float32).view(-1, 64, 8, 8)
-    
-    # Normalize pocket planes (channels 12-21 and 44-53): stored as 0-16, convert to 0.0-1.0
-    x_tensor[:, 12:22, :, :] /= 16.0
-    x_tensor[:, 44:54, :, :] /= 16.0
+    df = pl.read_parquet(file_path, columns=['x', 'policy_a', 'policy_b', 'y_value'])
+
+    x_array = _decode_fixed_width_binary_column(
+        df['x'].to_list(),
+        dtype=np.uint8,
+        width=NB_INPUT_VALUES,
+    )
+    x_tensor = torch.from_numpy(x_array.copy()).float().view(
+        -1, NB_INPUT_CHANNELS, BOARD_SIZE, BOARD_SIZE
+    )
+    x_tensor = _normalize_input_planes(x_tensor)
     
     # Process Y_Value
     y_val_tensor = torch.tensor(df['y_value'].to_list(), dtype=torch.float32)
     
-    # Process Policy A (dense float32 distribution)
-    policy_a_list = []
-    for p_bytes in df['policy_a']:
-        policy = np.frombuffer(p_bytes, dtype=np.float32)
-        policy_a_list.append(policy)
-    policy_a_tensor = torch.tensor(np.stack(policy_a_list), dtype=torch.float32)
-    
-    # Process Policy B (dense float32 distribution)
-    policy_b_list = []
-    for p_bytes in df['policy_b']:
-        policy = np.frombuffer(p_bytes, dtype=np.float32)
-        policy_b_list.append(policy)
-    policy_b_tensor = torch.tensor(np.stack(policy_b_list), dtype=torch.float32)
+    policy_a_array = _decode_fixed_width_binary_column(
+        df['policy_a'].to_list(),
+        dtype=np.float32,
+        width=NB_POLICY_VALUES,
+    )
+    policy_b_array = _decode_fixed_width_binary_column(
+        df['policy_b'].to_list(),
+        dtype=np.float32,
+        width=NB_POLICY_VALUES,
+    )
+    policy_a_tensor = torch.tensor(policy_a_array.copy(), dtype=torch.float32)
+    policy_b_tensor = torch.tensor(policy_b_array.copy(), dtype=torch.float32)
     
     return x_tensor, y_val_tensor, policy_a_tensor, policy_b_tensor
 
@@ -310,4 +352,3 @@ def load_rl_data_from_directory(data_dir, max_samples=None):
         policy_b_tensor = policy_b_tensor[:max_samples]
     
     return x_tensor, y_val_tensor, policy_a_tensor, policy_b_tensor
->>>>>>> feat/multi-pv

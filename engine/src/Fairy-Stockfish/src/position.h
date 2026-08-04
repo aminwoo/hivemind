@@ -321,6 +321,8 @@ public:
 
   void add_to_hand(Piece pc);
   void remove_from_hand(Piece pc);
+  void add_to_hand_with_key(Piece pc);
+  void remove_from_hand_with_key(Piece pc);
 
   Bitboard promotedPieces;
 

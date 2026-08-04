@@ -21,7 +21,6 @@ from time import time
 import datetime
 import onnx
 from rtpt import RTPT
-from torch.export import Dim
 from tqdm import tqdm
 from torch.utils.data import TensorDataset, DataLoader
 from torch.optim.optimizer import Optimizer
@@ -46,13 +45,10 @@ class TrainerAgentPytorch:
         train_config: TrainConfig,
         train_objects: TrainObjects,
         use_rtpt: bool,
-<<<<<<< HEAD
-        additional_loaders=None
-=======
         additional_loaders=None,
         is_rl: bool = False,
-        rl_train_loader: DataLoader = None
->>>>>>> feat/multi-pv
+        rl_train_loader: DataLoader = None,
+        train_eval_loader: DataLoader = None,
     ):
         """
         Class for training the neural network.
@@ -63,20 +59,15 @@ class TrainerAgentPytorch:
         :param use_rtpt: If True, an RTPT object will be created and modified within this class.
         :param additional_loaders: optional dictionary of {dataset_name: DataLoader} whose dataloaders will also be
          used for evaluation (only used for informative purposes)
-<<<<<<< HEAD
-=======
         :param is_rl: If True, use RL training mode with soft policy targets
         :param rl_train_loader: DataLoader for RL training data (used when is_rl=True)
->>>>>>> feat/multi-pv
         """
         self.additional_loaders = additional_loaders
         self.tc = train_config
         self.to = train_objects
-<<<<<<< HEAD
-=======
         self.is_rl = is_rl
         self.rl_train_loader = rl_train_loader
->>>>>>> feat/multi-pv
+        self._train_eval_loader = train_eval_loader
         if self.to.metrics is None:
             self.to.metrics = {}
         self._model = model
@@ -101,14 +92,11 @@ class TrainerAgentPytorch:
         # Define the optimizer
         self.optimizer = create_optimizer(self._model, self.tc)
 
-        self.ordering = glob.glob(main_config['planes_train_dir'] + '*')
-<<<<<<< HEAD
-=======
-        
+        self.ordering = glob.glob(main_config['planes_train_dir'] + '*.parquet')
+
         # For RL mode, we don't use the ordering (file-based loading)
         if self.is_rl and not self.ordering:
             self.ordering = ['rl_data']  # Placeholder to prevent empty ordering check
->>>>>>> feat/multi-pv
 
         # few variables which are internally used
         self.val_loss_best = self.val_p_acc_best = self.k_steps_best = \
@@ -149,13 +137,6 @@ class TrainerAgentPytorch:
             logging.info("=========================")
             self.t_s_steps = time()
 
-<<<<<<< HEAD
-            for shard_file_path in tqdm(self.ordering):
-                train_loader = self._get_train_loader(shard_file_path)
-
-                for _, batch in enumerate(train_loader):
-                    data = self.train_update(batch)
-=======
             # RL mode: iterate over the rl_train_loader directly
             if self.is_rl and self.rl_train_loader is not None:
                 for _, batch in enumerate(self.rl_train_loader):
@@ -177,15 +158,16 @@ class TrainerAgentPytorch:
 
                     for _, batch in enumerate(train_loader):
                         data = self.train_update(batch)
->>>>>>> feat/multi-pv
 
-                    # add the graph representation of the network to the tensorboard log file
-                    if not self.graph_exported and self.tc.log_metrics_to_tensorboard:
-                        self.sum_writer.add_graph(self._model, data)
-                        self.graph_exported = True
+                        # add the graph representation of the network to the tensorboard log file
+                        if not self.graph_exported and self.tc.log_metrics_to_tensorboard:
+                            self.sum_writer.add_graph(self._model, data)
+                            self.graph_exported = True
 
-                    if self.batch_proc_tmp >= self.tc.batch_steps or self.cur_it >= self.tc.total_it:  # show metrics every thousands steps
-                        train_metric_values, val_metric_values, additional_metric_values = self.evaluate(train_loader)
+                        if self.batch_proc_tmp >= self.tc.batch_steps or self.cur_it >= self.tc.total_it:  # show metrics every thousands steps
+                            train_metric_values, val_metric_values, additional_metric_values = self.evaluate(train_loader)
+                        else:
+                            continue
 
                         if self.use_rtpt:
                             # update process title according to loss
@@ -329,10 +311,13 @@ class TrainerAgentPytorch:
                 os.remove(f)
 
     def _get_train_loader(self, shard_file_path):
-        x, y_value, y_policy = load_parquet_shard(shard_file_path)
+        tensors = load_parquet_shard(
+            shard_file_path,
+            include_auxiliary=self.tc.use_wdl and self.tc.use_plys_to_end,
+        )
 
         # Create dataset and dataloader
-        dataset = TensorDataset(x, y_value, y_policy)
+        dataset = TensorDataset(*tensors)
         train_loader = DataLoader(dataset, batch_size=self.tc.batch_size, shuffle=True)
 
         return train_loader
@@ -351,11 +336,16 @@ class TrainerAgentPytorch:
         logging.debug("lr: %.7f - momentum: %.7f", self.to.lr_schedule(self.cur_it),
                       self.to.momentum_schedule(self.cur_it))
         print("starting train eval")
+        evaluation_loader = (
+            self._train_eval_loader
+            if self._train_eval_loader is not None
+            else train_loader
+        )
         train_metric_values = evaluate_metrics(
             self.to.metrics,
-            train_loader,
+            evaluation_loader,
             self._model,
-            nb_batches=25,
+            nb_batches=None if self._train_eval_loader is not None else 25,
             ctx=self._ctx,
             phase_weights=self.to.phase_weights,
             sparse_policy_label=self.tc.sparse_policy_label,
@@ -403,7 +393,12 @@ class TrainerAgentPytorch:
     def train_update(self, batch):
         self.optimizer.zero_grad()
 
-        data, value_label, policy_label = batch
+        if self.tc.use_wdl and self.tc.use_plys_to_end:
+            data, value_label, policy_label, wdl_label, plys_label = batch
+            wdl_label = wdl_label.to(self._ctx)
+            plys_label = plys_label.to(self._ctx)
+        else:
+            data, value_label, policy_label = batch
         data = data.to(self._ctx)
         value_label = value_label.to(self._ctx)
         policy_label = policy_label.to(self._ctx)
@@ -417,7 +412,14 @@ class TrainerAgentPytorch:
         #     self.to.metrics["value_loss"].update(self.old_label, value_out)
         self.old_label = value_label
 
-        value_out, policy_out = self._model(data)
+        if self.tc.use_wdl and self.tc.use_plys_to_end:
+            value_out, policy_out, _, wdl_out, plys_out = self._model(data)
+            wdl_loss = self.wdl_loss(wdl_out, wdl_label, sample_weights)
+            ply_loss = self.ply_loss(
+                torch.flatten(plys_out), plys_label, sample_weights
+            )
+        else:
+            value_out, policy_out = self._model(data)
         # policy_out = policy_out.softmax(dim=1)
         value_loss = self.value_loss(torch.flatten(value_out), value_label, sample_weights)
 
@@ -428,13 +430,18 @@ class TrainerAgentPytorch:
         policy_loss_1 = self.policy_loss(policy_out_1, policy_label_1, sample_weights)
         policy_loss_2 = self.policy_loss(policy_out_2, policy_label_2, sample_weights)
 
-        # Combine the policy losses (you can adjust the weighting if needed)
-        policy_loss = policy_loss_1 + policy_loss_2
+        policy_loss = 0.5 * (policy_loss_1 + policy_loss_2)
 
         # weight the components of the combined loss
         combined_loss = (
             self.tc.val_loss_factor * value_loss + self.tc.policy_loss_factor * policy_loss
         )
+        if self.tc.use_wdl and self.tc.use_plys_to_end:
+            combined_loss = (
+                combined_loss
+                + self.tc.wdl_loss_factor * wdl_loss
+                + self.tc.plys_to_end_loss_factor * ply_loss
+            )
         combined_loss.backward()
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = self.to.lr_schedule(self.cur_it)  # update the learning rate
@@ -445,8 +452,6 @@ class TrainerAgentPytorch:
         self.batch_proc_tmp += 1
         return data
 
-<<<<<<< HEAD
-=======
     def train_update_rl(self, batch):
         """
         Training update for RL mode with separate policy_a and policy_b targets.
@@ -472,7 +477,7 @@ class TrainerAgentPytorch:
         policy_loss_1 = self.policy_loss(policy_out_1, policy_a, sample_weights)
         policy_loss_2 = self.policy_loss(policy_out_2, policy_b, sample_weights)
 
-        policy_loss = policy_loss_1 + policy_loss_2
+        policy_loss = 0.5 * (policy_loss_1 + policy_loss_2)
 
         combined_loss = (
             self.tc.val_loss_factor * value_loss + self.tc.policy_loss_factor * policy_loss
@@ -632,7 +637,6 @@ class TrainerAgentPytorch:
         return return_metrics_and_stop_training(
             self.k_steps, val_metric_values, self.k_steps_best, self.val_metric_values_best)
 
->>>>>>> feat/multi-pv
     def _log_metrics(self, metric_values, global_step, prefix="train_"):
         """
         Logs a dictionary object of metric value to the console and to tensorboard
@@ -830,16 +834,24 @@ def export_to_onnx(model, batch_size: int, dummy_input: torch.Tensor, dir: Path,
     """
     if has_auxiliary_output:
         input_names = ["data"]
-        output_names = [main_config["value_output"], main_config["policy_output"], main_config["auxiliary_output"],
-                        main_config["wdl_output"], main_config["plys_to_end_output"]]
+        output_names = [
+            "value",
+            "pi_a",
+            "pi_b",
+            main_config["auxiliary_output"],
+            main_config["wdl_output"],
+            "moves_left",
+        ]
     else:
         input_names = ["obs"]
         output_names = ["value", "pi_a", "pi_b"]
 
-    dynamic_shapes = None
+    dynamic_axes = None
     if dynamic_batch_size:
-        batch = Dim("batch", min=1, max=2048)
-        dynamic_shapes = {'x': {0: batch}}
+        dynamic_axes = {
+            name: {0: "batch"}
+            for name in [*input_names, *output_names]
+        }
 
     if input_version is None:
         input_version = f"{main_config['version']}.0"
@@ -858,7 +870,8 @@ def export_to_onnx(model, batch_size: int, dummy_input: torch.Tensor, dir: Path,
     torch.onnx.export(model, (dummy_input,), model_filepath,
                       input_names=input_names,
                       output_names=output_names,
-                      dynamic_shapes=dynamic_shapes,
+                      dynamic_axes=dynamic_axes,
+                      dynamo=False,
                       export_params=True,
                       opset_version=18,
                       do_constant_folding=True,
@@ -883,12 +896,15 @@ def export_to_onnx(model, batch_size: int, dummy_input: torch.Tensor, dir: Path,
         # Generate a name for all node if they have none.
         outputs_to_remove = []
         for output in graph.output:
-            if output.name == main_config["auxiliary_output"] or output.name == main_config["wdl_output"] \
-                    or output.name == main_config["plys_to_end_output"]:
+            if output.name == main_config["auxiliary_output"]:
                 outputs_to_remove.append(output)
         for output in outputs_to_remove:
             graph.output.remove(output)
-        onnx.save(model, model_filepath)
+    else:
+        model = onnx.load(model_filepath)
+        graph = model.graph
+
+    onnx.save(model, model_filepath)
 
 
 def export_as_script_module(model, batch_size, dummy_input, dir) -> None:
@@ -943,7 +959,7 @@ def evaluate_metrics(metrics, data_iterator, model, nb_batches, ctx, phase_weigh
         print("eval iterator length:", len(data_iterator), "eval phase weights:", phase_weights)
         for i, batch in enumerate(data_iterator):
             if use_wdl and use_plys_to_end:
-                data, value_label, policy_label, wdl_label, plys_label, phase_vector = batch
+                data, value_label, policy_label, wdl_label, plys_label = batch
                 plys_label = plys_label.to(ctx)
                 wdl_label = wdl_label.to(ctx).long()
             else:
@@ -983,7 +999,19 @@ def evaluate_metrics(metrics, data_iterator, model, nb_batches, ctx, phase_weigh
             if nb_batches and i+1 == nb_batches:
                 break
 
-    metric_values = {"loss": 0.01 * metrics["value_loss"].compute() + 0.99 * metrics["policy_loss"].compute()}
+    value_weight = 0.01
+    policy_weight = 0.978 if use_wdl and use_plys_to_end else 0.99
+    total_loss = (
+        value_weight * metrics["value_loss"].compute()
+        + policy_weight * metrics["policy_loss"].compute()
+    )
+    if use_wdl and use_plys_to_end:
+        total_loss = (
+            total_loss
+            + 0.01 * metrics["wdl_loss"].compute()
+            + 0.002 * metrics["plys_to_end_loss"].compute()
+        )
+    metric_values = {"loss": total_loss}
 
     for metric_name in metrics:
         metric_values[metric_name] = metrics[metric_name].compute()

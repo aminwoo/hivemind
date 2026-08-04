@@ -171,7 +171,7 @@ class TrainConfig:
                                 " prevent overfitting"
     val_loss_factor: float = 0.01
     info_policy_loss_factor: str = "policy_loss_factor defines the weighting factor for the policy loss."
-    policy_loss_factor: float = 0.988 if use_plys_to_end else 0.99
+    policy_loss_factor: float = 0.978 if use_plys_to_end and use_wdl else 0.99
 
     info_wdl_loss_factor: str = "wdl_loss_factor defines the weighting factor for the wdl-loss."
     wdl_loss_factor: float = 0.01
@@ -188,17 +188,6 @@ def rl_train_config():
     tc.batch_steps = 100 * tc.div_factor
     tc.batch_size = int(1024 / tc.div_factor)
 
-<<<<<<< HEAD
-    tc.max_lr = 0.1 / tc.div_factor
-    tc.min_lr = 0.00001 / tc.div_factor
-
-    tc.val_loss_factor = 0.499 if tc.use_plys_to_end else 0.5
-    tc.policy_loss_factor = 0.499 if tc.use_plys_to_end else 0.5
-    tc.plys_to_end_loss_factor = 0.002
-    tc.wdl_loss_factor = 0.499 if tc.use_plys_to_end else 0.5
-
-    tc.nb_training_epochs = 1  # define how many epochs the network will be trained
-=======
     tc.max_lr = 0.001 / tc.div_factor
     tc.min_lr = 0.00001 / tc.div_factor
 
@@ -207,8 +196,7 @@ def rl_train_config():
     tc.plys_to_end_loss_factor = 0.002
     tc.wdl_loss_factor = 0.499 if tc.use_plys_to_end else 0.5
 
-    tc.nb_training_epochs = 1 
->>>>>>> feat/multi-pv
+    tc.nb_training_epochs = 1
     tc.q_value_ratio = 0  # previously 0.15
     tc.sparse_policy_label = False
 
@@ -222,8 +210,4 @@ class TrainObjects:
     momentum_schedule = None
     metrics = None
     variant_metrics = None
-<<<<<<< HEAD
     phase_weights = {0: 1., 1: 1., 2: 1.}
-=======
-    phase_weights = {0: 1., 1: 1., 2: 1.}
->>>>>>> feat/multi-pv

@@ -36,6 +36,7 @@ void Board::set(std::string fen) {
         // Reset position history for this board
         clear_position_history(0);
         record_position(0);
+        moveHistory[0].clear();
     }
     
     getline(ss, line, '|');
@@ -49,6 +50,7 @@ void Board::set(std::string fen) {
         // Reset position history for this board
         clear_position_history(1);
         record_position(1);
+        moveHistory[1].clear();
     }
 }
 
@@ -91,6 +93,8 @@ Board::Board(const Board& board) {
     // Copy position history
     positionHistory[0] = board.positionHistory[0];
     positionHistory[1] = board.positionHistory[1];
+    moveHistory[0] = board.moveHistory[0];
+    moveHistory[1] = board.moveHistory[1];
 }
 
 // Executes a move on the board and updates the corresponding state.
@@ -100,10 +104,11 @@ void Board::push_move(int board_num, Stockfish::Move move) {
     pos[board_num]->do_move(move, states[board_num]->back());
     Stockfish::Piece p = states[board_num]->back().pieceToHand; 
     if (p) {
-        pos[1 - board_num]->add_to_hand(p);
+        pos[1 - board_num]->add_to_hand_with_key(p);
     }
     // Record position for repetition detection
     record_position(board_num);
+    moveHistory[board_num].push_back(move);
 }
 
 // Reverts the last move on the board and updates the state.
@@ -112,12 +117,15 @@ void Board::pop_move(int board_num) {
     Stockfish::Move m = states[board_num]->back().move; 
     Stockfish::Piece p = states[board_num]->back().pieceToHand; 
     if (p) {
-        pos[1 - board_num]->remove_from_hand(p);
+        pos[1 - board_num]->remove_from_hand_with_key(p);
     }
     pos[board_num]->undo_move(m); 
     states[board_num]->pop_back();
     // Remove position from history
     unrecord_position(board_num);
+    if (!moveHistory[board_num].empty()) {
+        moveHistory[board_num].pop_back();
+    }
 }
 
 // Returns a list of legal moves for the specified board index.
@@ -331,7 +339,7 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         pos[BOARD_A]->do_move(moveA, states[BOARD_A]->back());
         p = states[BOARD_A]->back().pieceToHand; 
         if (p) {
-            pos[BOARD_B]->add_to_hand(p);
+            pos[BOARD_B]->add_to_hand_with_key(p);
         }
         // Record position for repetition detection
         record_position(BOARD_A);
@@ -342,7 +350,7 @@ void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
         pos[BOARD_B]->do_move(moveB, states[BOARD_B]->back());
         p = states[BOARD_B]->back().pieceToHand; 
         if (p) {
-            pos[BOARD_A]->add_to_hand(p);
+            pos[BOARD_A]->add_to_hand_with_key(p);
         }
         // Record position for repetition detection
         record_position(BOARD_B);
@@ -353,7 +361,7 @@ void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
     if (moveB != Stockfish::MOVE_NONE) {
         Stockfish::Piece pB = states[BOARD_B]->back().pieceToHand;
         if (pB) {
-            pos[BOARD_A]->remove_from_hand(pB);
+            pos[BOARD_A]->remove_from_hand_with_key(pB);
         }
         pos[BOARD_B]->undo_move(moveB);
         states[BOARD_B]->pop_back();
@@ -364,7 +372,7 @@ void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
     if (moveA != Stockfish::MOVE_NONE) {
         Stockfish::Piece pA = states[BOARD_A]->back().pieceToHand;
         if (pA) {
-            pos[BOARD_B]->remove_from_hand(pA);
+            pos[BOARD_B]->remove_from_hand_with_key(pA);
         }
         pos[BOARD_A]->undo_move(moveA);
         states[BOARD_A]->pop_back();

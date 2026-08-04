@@ -2,7 +2,7 @@
   
   ![hivemind-logo](https://github.com/aminwoo/hivemind/assets/124148472/d42c6a6e-ab2e-4d7a-bf90-4876d59c9558)
   
-  # HiveMind
+  # Hivemind
 
 A free and strong UCI Bughouse chess engine powered by deep reinforcement learning.
 
@@ -12,7 +12,7 @@ A free and strong UCI Bughouse chess engine powered by deep reinforcement learni
 
 ## Overview
 
-HiveMind is a neural network-based engine for [Bughouse chess](https://en.wikipedia.org/wiki/Bughouse_chess), a four-player chess variant played on two boards. The engine uses Monte Carlo Tree Search (MCTS) with a deep neural network for position evaluation and move prediction.
+Hivemind is a neural network-based engine for [Bughouse chess](https://en.wikipedia.org/wiki/Bughouse_chess), a four-player chess variant played on two boards. The engine uses Monte Carlo Tree Search (MCTS) with a deep neural network for position evaluation and move prediction.
 
 ### Key Features
 
@@ -126,7 +126,7 @@ uv run python src/preprocessing/convert_selfplay_data.py \
 
 ## Neural Network Architecture
 
-HiveMind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimized architecture combining:
+Hivemind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimized architecture combining:
 
 - Mixed depthwise convolutions
 - Squeeze-and-excitation blocks

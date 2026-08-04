@@ -14,6 +14,7 @@ A web-based graphical interface for running and viewing bughouse model evaluatio
 - **Two Evaluation Modes**:
   - Model vs Model: Compare two different neural networks
   - Parameter Test: Same model with different search parameters
+- **Bughouse PGN Viewer**: Paste Chess.com bughouse PGN, replay both boards, and copy engine-ready combined FEN
 
 ## Quick Start
 
@@ -39,6 +40,10 @@ Or use the convenience script:
 ### 3. Open your browser
 
 Navigate to `http://localhost:8080`
+
+For PGN replay and position export/import, open:
+
+- `http://localhost:8080/viewer`
 
 ### 4. Configure and Play
 

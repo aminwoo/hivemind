@@ -8,7 +8,8 @@ const int BOARD_A = 0;
 const int BOARD_B = 1;
 
 constexpr int NB_POLICY_CHANNELS = 73;
-constexpr int NB_INPUT_CHANNELS = 64;
+constexpr int NB_INPUT_CHANNELS_PER_BOARD = 37;
+constexpr int NB_INPUT_CHANNELS = 2 * NB_INPUT_CHANNELS_PER_BOARD;
 constexpr int BOARD_HEIGHT = 8; 
 constexpr int BOARD_WIDTH = 8; 
 
