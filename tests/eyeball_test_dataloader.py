@@ -29,6 +29,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.domain.move2planes import make_map
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
 from src.training.data_loaders import RLDataset, flip_bughouse_sample, load_rl_parquet_shard
 
 
@@ -46,7 +47,7 @@ def is_early_game(planes: torch.Tensor) -> bool:
     total_pocket_pieces = 0
     total_board_pieces = 0
     
-    for board_offset in [0, 32]:
+    for board_offset in [0, NUM_BUGHOUSE_CHANNELS_PER_BOARD]:
         # Count pocket pieces (channels 12-16 and 17-21, normalized 0-1)
         for i in range(5):  # 5 piece types in pocket
             total_pocket_pieces += int(planes_np[board_offset + 12 + i, 0, 0] * 16 + 0.5)
@@ -65,14 +66,14 @@ def planes_to_board_representation(planes: torch.Tensor) -> tuple[str, str, dict
     Convert input planes to board representation for both boards.
     
     Args:
-        planes: Tensor of shape (64, 8, 8)
+        planes: Tensor of shape (NUM_BUGHOUSE_CHANNELS, 8, 8)
     
     Returns: (board_a_repr, board_b_repr, metadata)
     """
     planes_np = planes.numpy()
     
     def get_board_representation(board_planes: np.ndarray) -> tuple[str, dict]:
-        """Convert 32 channels for one board to board representation."""
+        """Convert one board block to board representation."""
         
         on_turn = board_planes[25, 0, 0]
         
@@ -125,8 +126,9 @@ def planes_to_board_representation(planes: torch.Tensor) -> tuple[str, str, dict
         return board_repr, metadata
     
     # Split planes into two boards
-    board_a_planes = planes_np[:32]
-    board_b_planes = planes_np[32:]
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    board_a_planes = planes_np[:offset]
+    board_b_planes = planes_np[offset:]
     
     board_a_repr, metadata_a = get_board_representation(board_a_planes)
     board_b_repr, metadata_b = get_board_representation(board_b_planes)
@@ -294,7 +296,11 @@ def test_flip_augmentation(data_dir: str, num_samples: int = 2, early_game: bool
         print(f"{'='*80}")
         
         # Check boards swapped
-        boards_swapped = torch.allclose(x_flipped[:32], x[i][32:64], atol=1e-5)
+        boards_swapped = torch.allclose(
+            x_flipped[:NUM_BUGHOUSE_CHANNELS_PER_BOARD],
+            x[i][NUM_BUGHOUSE_CHANNELS_PER_BOARD:NUM_BUGHOUSE_CHANNELS],
+            atol=1e-5,
+        )
         print(f"✓ Boards swapped: {boards_swapped}")
         
         # Check policy sums preserved

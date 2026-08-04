@@ -12,6 +12,19 @@ using namespace std;
 
 class Node;
 
+enum class TerminalOutcome : uint8_t {
+    NONE,
+    WIN,
+    LOSS,
+    DRAW,
+};
+
+TerminalOutcome classify_terminal_position(Board& board,
+                                             Stockfish::Color teamToPlay,
+                                             Stockfish::Color rootTeam,
+                                             bool rootTeamHasTimeAdvantage,
+                                             int searchPly);
+
 /**
  * @brief Entry in an MCTS selection trajectory.
  * 
@@ -34,17 +47,18 @@ struct TrajectoryEntry {
  */
 struct LeafContext {
     Node* leaf;
-    std::unique_ptr<Board> boardState;  // Copy of board at the leaf position
     vector<TrajectoryEntry> trajectory;
     Stockfish::Color teamToPlay;
     bool sitPlaneActive;
     bool isTerminal;     // True if this is a terminal node (draw/checkmate)
+    bool hasEvaluationReservation;
     float terminalValue; // Value to use for terminal nodes
     bool isTransposition; // True if this leaf was found via transposition table (MCGS)
     uint64_t leafHash;    // Hash of the leaf position for transposition lookup
     
     LeafContext() : leaf(nullptr), teamToPlay(Stockfish::WHITE), 
-                    sitPlaneActive(false), isTerminal(false), terminalValue(0.0f),
+                    sitPlaneActive(false), isTerminal(false), hasEvaluationReservation(false),
+                    terminalValue(0.0f),
                     isTransposition(false), leafHash(0) {}
     
     // Move constructor
@@ -71,6 +85,8 @@ private:
     float* value = nullptr;
     float* piA = nullptr;
     float* piB = nullptr;
+    float* wdl = nullptr;
+    float* movesLeft = nullptr;
     
     // Batch collection for minibatch MCTS
     vector<LeafContext> batchContexts;
@@ -85,15 +101,12 @@ public:
     SearchThread();
     ~SearchThread(); 
 
-    Node* get_root_node(); 
-    SearchInfo* get_search_info();
     void set_search_info(SearchInfo* info);
     void set_root_node(Node* node);
     void set_transposition_table(TranspositionTable* table);
     void set_runtime_config(const SearchParams::RuntimeConfig& config);
-    TranspositionTable* get_transposition_table();
     
-    // MCGS (Monte Carlo Graph Search) with joint action progressive widening
+    // MCGS (Monte Carlo Graph Search) with prior-ordered joint action expansion
     Node* select_and_expand(Board& board, bool teamHasTimeAdvantage);
     void expand_leaf_node(Node* leaf, 
                           const vector<Stockfish::Move>& actionsA,
@@ -106,6 +119,7 @@ public:
                           uint64_t positionHash = 0);
     void backup(vector<TrajectoryEntry>& trajectory, 
                 Board& board, float value);
+    void cancel_virtual_losses(const vector<TrajectoryEntry>& trajectory);
     
     // Minibatch MCGS - collects SearchParams::BATCH_SIZE leaves, runs batched inference, processes results
     void run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage);

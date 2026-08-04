@@ -20,6 +20,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.domain.move2planes import make_map
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
 from src.training.data_loaders import flip_bughouse_sample, load_rl_parquet_shard
 
 
@@ -203,8 +204,9 @@ def main():
     print("\n" + "="*80)
     print("\nVERIFICATION:")
     print("\n1. Board comparison:")
-    print(f"   Original Board A == Flipped Board B? {torch.allclose(x_orig[:32], x_flipped[32:64], atol=1e-5)}")
-    print(f"   Original Board B == Flipped Board A? {torch.allclose(x_orig[32:64], x_flipped[:32], atol=1e-5)}")
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    print(f"   Original Board A == Flipped Board B? {torch.allclose(x_orig[:offset], x_flipped[offset:NUM_BUGHOUSE_CHANNELS], atol=1e-5)}")
+    print(f"   Original Board B == Flipped Board A? {torch.allclose(x_orig[offset:NUM_BUGHOUSE_CHANNELS], x_flipped[:offset], atol=1e-5)}")
     
     print("\n2. Move transformation check:")
     print("   Looking for specific move transformations...")
