@@ -45,7 +45,8 @@ public:
      * @brief Performs inference. For max QPS, ensure input/output pointers 
      * are allocated via cudaMallocHost (Pinned Memory).
      */
-    bool runInference(float* obs, float* value, float* piA, float* piB);
+    bool runInference(float* obs, float* value, float* piA, float* piB,
+                      float* wdl, float* movesLeft);
     
     /**
      * @brief Get the batch size this engine was built with.
@@ -76,11 +77,15 @@ private:
     void* m_deviceValueBuffer = nullptr;
     void* m_devicePolicyABuffer = nullptr;
     void* m_devicePolicyBBuffer = nullptr;
+    void* m_deviceWdlBuffer = nullptr;
+    void* m_deviceMovesLeftBuffer = nullptr;
 
     std::string m_inputName;
     std::string m_valueName;
     std::string m_policyAName;
     std::string m_policyBName;
+    std::string m_wdlName;
+    std::string m_movesLeftName;
 
     // Internal helper methods
     bool buildEngineFromONNX(const std::string& onnxFile);

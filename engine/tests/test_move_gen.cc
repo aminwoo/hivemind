@@ -1,8 +1,13 @@
 #include <gtest/gtest.h>
+#include <mutex>
+#include <thread>
 #include "../src/board.h"
 #include "../src/constants.h"
 #include "../src/joint_action.h"
 #include "../src/node.h"
+#include "../src/planes.h"
+#include "../src/search_params.h"
+#include "../src/searchthread.h"
 #include "../src/transposition_table.h"
 #include "../src/utils.h"
 #include "Fairy-Stockfish/src/position.h"
@@ -24,18 +29,222 @@ protected:
     }
 };
 
-TEST(JointActionTest, DoubleSitRequiresTimeAdvantage) {
+namespace {
+
+Stockfish::Move find_move(Board& board, int boardNum, const std::string& uci) {
+    for (Stockfish::Move move : board.legal_moves(boardNum)) {
+        if (board.uci_move(boardNum, move) == uci) {
+            return move;
+        }
+    }
+    return Stockfish::MOVE_NONE;
+}
+
+float plane_value(const std::vector<float>& planes, int channel, int square = 0) {
+    return planes[channel * BOARD_HEIGHT * BOARD_WIDTH + square];
+}
+
+}
+
+TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
+    EXPECT_EQ(NB_INPUT_CHANNELS, 74);
+    EXPECT_EQ(NB_INPUT_CHANNELS_PER_BOARD, 37);
+
+    Board board;
+    std::vector<float> planes(NB_INPUT_VALUES());
+    board_to_planes(board, planes.data(), Stockfish::WHITE, false);
+
+    for (int boardOffset : {0, NB_INPUT_CHANNELS_PER_BOARD}) {
+        for (int channel = 32; channel <= 36; ++channel) {
+            for (int square = 0; square < 64; ++square) {
+                EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + channel, square), 0.0f);
+            }
+        }
+    }
+}
+
+TEST_F(EngineTest, NewInputRepresentationEncodesOrientedMoveAndHalfmoveClock) {
+    Board board;
+    Stockfish::Move move = find_move(board, BOARD_A, "g1f3");
+    ASSERT_NE(move, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_A, move);
+
+    std::vector<float> planes(NB_INPUT_VALUES());
+    board_to_planes(board, planes.data(), Stockfish::WHITE, false);
+    EXPECT_FLOAT_EQ(plane_value(planes, 32, Stockfish::SQ_G1), 1.0f);
+    EXPECT_FLOAT_EQ(plane_value(planes, 33, Stockfish::SQ_F3), 1.0f);
+    EXPECT_FLOAT_EQ(plane_value(planes, 34), 1.0f / 50.0f);
+
+    Board copiedBoard(board);
+    board_to_planes(copiedBoard, planes.data(), Stockfish::WHITE, false);
+    EXPECT_FLOAT_EQ(plane_value(planes, 32, Stockfish::SQ_G1), 1.0f);
+    EXPECT_FLOAT_EQ(plane_value(planes, 33, Stockfish::SQ_F3), 1.0f);
+
+    board_to_planes(board, planes.data(), Stockfish::BLACK, false);
+    EXPECT_FLOAT_EQ(plane_value(planes, 32, Stockfish::SQ_G8), 1.0f);
+    EXPECT_FLOAT_EQ(plane_value(planes, 33, Stockfish::SQ_F6), 1.0f);
+}
+
+TEST_F(EngineTest, NewInputRepresentationEncodesRepetitionContext) {
+    Board board;
+    for (const std::string& uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+        Stockfish::Move move = find_move(board, BOARD_A, uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+        board.push_move(BOARD_A, move);
+    }
+
+    std::vector<float> planes(NB_INPUT_VALUES());
+    board_to_planes(board, planes.data(), Stockfish::WHITE, false);
+    EXPECT_FLOAT_EQ(plane_value(planes, 35), 1.0f);
+    EXPECT_FLOAT_EQ(plane_value(planes, 36), 0.0f);
+}
+
+TEST(JointActionTest, DoubleSitRequiresTimeAdvantageAndAnIdleBoard) {
+    EXPECT_TRUE(is_double_sit_legal(true, true, false));
+    EXPECT_TRUE(is_double_sit_legal(true, false, true));
+    EXPECT_FALSE(is_double_sit_legal(false, true, false));
+    EXPECT_FALSE(is_double_sit_legal(true, true, true));
+    EXPECT_FALSE(is_double_sit_legal(true, false, false));
+
     JointActionCandidate disadvantaged(
         Stockfish::MOVE_NONE, 0.5f, 0,
         Stockfish::MOVE_NONE, 0.5f, 0,
-        true, true, false);
+        true, false, false);
     JointActionCandidate advantaged(
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        true, false, true);
+    JointActionCandidate bothBoardsOnTurn(
         Stockfish::MOVE_NONE, 0.5f, 0,
         Stockfish::MOVE_NONE, 0.5f, 0,
         true, true, true);
 
     EXPECT_LT(disadvantaged.jointPrior, 0.0f);
     EXPECT_FLOAT_EQ(advantaged.jointPrior, 0.25f);
+    EXPECT_LT(bothBoardsOnTurn.jointPrior, 0.0f);
+}
+
+TEST(JointActionTest, JointCandidatesFollowPriorOrdering) {
+    Stockfish::Move quietA = static_cast<Stockfish::Move>(1);
+    Stockfish::Move checkingA = static_cast<Stockfish::Move>(2);
+    Stockfish::Move bestB = static_cast<Stockfish::Move>(3);
+    Stockfish::Move secondB = static_cast<Stockfish::Move>(4);
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {quietA, checkingA}, {bestB, secondB},
+        {0.9f, 0.01f}, {0.8f, 0.2f},
+        false, true, true);
+
+    JointActionCandidate first = generator.getNext();
+    EXPECT_EQ(first.moveA, quietA);
+    EXPECT_EQ(first.moveB, bestB);
+    EXPECT_FLOAT_EQ(first.jointPrior, 0.72f);
+
+    JointActionCandidate second = generator.getNext();
+    EXPECT_EQ(second.moveA, quietA);
+    EXPECT_EQ(second.moveB, secondB);
+    EXPECT_FLOAT_EQ(second.jointPrior, 0.18f);
+}
+
+TEST(JointActionTest, LowerPolicyChecksDoNotLeapfrogQuietMoves) {
+    Stockfish::Move quietA = static_cast<Stockfish::Move>(1);
+    Stockfish::Move firstCheckingA = static_cast<Stockfish::Move>(2);
+    Stockfish::Move secondCheckingA = static_cast<Stockfish::Move>(3);
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {quietA, firstCheckingA, secondCheckingA}, {Stockfish::MOVE_NONE},
+        {0.9f, 0.02f, 0.01f}, {1.0f},
+        false, true, false);
+
+    EXPECT_EQ(generator.getNext().moveA, quietA);
+    EXPECT_EQ(generator.getNext().moveA, firstCheckingA);
+    EXPECT_EQ(generator.getNext().moveA, secondCheckingA);
+}
+
+TEST(NodeTest, DoubleSitPassesTurnToOtherTeam) {
+    Node node(Stockfish::BLACK);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    ASSERT_EQ(node.get_children().size(), 1U);
+    EXPECT_EQ(node.get_children().front()->get_team_to_play(), Stockfish::WHITE);
+}
+
+TEST_F(EngineTest, DoubleSitLeavesBoardPositionUnchanged) {
+    Board board;
+    const std::string fenA = board.fen(BOARD_A);
+    const std::string fenB = board.fen(BOARD_B);
+    const uint64_t hash = board.hash_key(true);
+
+    board.make_moves(Stockfish::MOVE_NONE, Stockfish::MOVE_NONE);
+
+    EXPECT_EQ(board.fen(BOARD_A), fenA);
+    EXPECT_EQ(board.fen(BOARD_B), fenB);
+    EXPECT_EQ(board.hash_key(true), hash);
+}
+
+TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
+    Node parent(Stockfish::BLACK);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    auto child = parent.get_children().front();
+    JointActionCandidate sit = parent.get_joint_action(0);
+    std::vector<TrajectoryEntry> trajectory = {
+        TrajectoryEntry(&parent, JointActionCandidate(), 0),
+        TrajectoryEntry(child.get(), sit, -1),
+    };
+
+    Board board;
+    SearchThread searchThread;
+    searchThread.backup(trajectory, board, 0.5f);
+
+    EXPECT_FLOAT_EQ(parent.get_child_q(0), -0.5f);
+}
+
+TEST_F(EngineTest, CheckmatePrecedesFiftyMoveDraw) {
+    Board board;
+    board.set_fen(
+        BOARD_A,
+        "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 100 4");
+    board.set_fen(BOARD_B, "4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+
+    ASSERT_TRUE(board.is_draw());
+    ASSERT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 0),
+              TerminalOutcome::LOSS);
+}
+
+TEST_F(EngineTest, CancellingCollisionDoesNotCreateAVisit) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    auto child = parent.get_children().front();
+    std::vector<TrajectoryEntry> trajectory = {
+        TrajectoryEntry(&parent, JointActionCandidate(), 0),
+        TrajectoryEntry(child.get(), parent.get_joint_action(0), -1),
+    };
+
+    parent.apply_virtual_loss(0);
+    Board board;
+    SearchThread searchThread;
+    searchThread.cancel_virtual_losses(trajectory);
+
+    EXPECT_EQ(parent.get_child_visits()[0], 0);
+    EXPECT_EQ(parent.get_visits(), 0);
+    EXPECT_FLOAT_EQ(parent.get_child_q(0), SearchParams::Q_INIT);
 }
 
 TEST(PolicyTest, NormalizesExtremeAndNonFiniteLogits) {
@@ -54,11 +263,297 @@ TEST(PolicyTest, NormalizesExtremeAndNonFiniteLogits) {
     EXPECT_FLOAT_EQ(fallback[1], 0.5f);
 }
 
+TEST(PolicyTest, PassFloorPreservesNonPassRatios) {
+    std::vector<float> probabilities = {0.01f, 0.09f, 0.90f};
+
+    apply_probability_floor(probabilities, 0, 0.10f);
+
+    EXPECT_FLOAT_EQ(probabilities[0], 0.10f);
+    EXPECT_NEAR(probabilities[1] / probabilities[2], 0.1f, 1e-6f);
+    EXPECT_NEAR(std::accumulate(probabilities.begin(), probabilities.end(), 0.0f),
+                1.0f, 1e-6f);
+}
+
+TEST(PolicyTest, SelectsPassFloorByBughouseContext) {
+    SearchParams::RuntimeConfig config;
+    config.waitPassPriorFloor = 0.12f;
+    config.coordinationPassPriorFloor = 0.04f;
+
+    EXPECT_FLOAT_EQ(get_pass_prior_floor(true, true, false, config), 0.12f);
+    EXPECT_FLOAT_EQ(get_pass_prior_floor(false, true, true, config), 0.04f);
+    EXPECT_FLOAT_EQ(get_pass_prior_floor(false, true, false, config), 0.0f);
+}
+
+TEST_F(EngineTest, AppliesPassFloorToNetworkPolicy) {
+    Board board;
+    auto actions = board.legal_moves(BOARD_A);
+    actions.push_back(Stockfish::MOVE_NONE);
+    std::vector<float> policyOutput(NB_POLICY_VALUES(), 0.0f);
+    policyOutput[POLICY_INDEX.at("pass")] = -20.0f;
+
+    auto probabilities = get_normalized_probability(
+        policyOutput.data(), actions, BOARD_A, board, 0.10f);
+
+    ASSERT_EQ(probabilities.size(), actions.size());
+    EXPECT_FLOAT_EQ(probabilities.back(), 0.10f);
+    EXPECT_NEAR(std::accumulate(probabilities.begin(), probabilities.end(), 0.0f),
+                1.0f, 1e-6f);
+}
+
+TEST_F(EngineTest, LowPriorCheckingMoveDoesNotBypassPolicyOrdering) {
+    Board board;
+    board.set_fen(
+        BOARD_A,
+        "7k/ppp2rpP/8/4p1qP/3nP1N1/2NP1P2/PPP2K2/3R3R[Qpp] w - - 0 24");
+
+    auto actions = board.legal_moves(BOARD_A);
+    actions.push_back(Stockfish::MOVE_NONE);
+    std::vector<float> policyOutput(NB_POLICY_VALUES(), -10.0f);
+    policyOutput[POLICY_INDEX.at("h1h3")] = 5.0f;
+    policyOutput[POLICY_INDEX.at("Q@g8")] = -5.0f;
+
+    auto probabilities = get_normalized_probability(
+        policyOutput.data(), actions, BOARD_A, board);
+    size_t quietIdx = actions.size();
+    size_t checkingIdx = actions.size();
+    for (size_t i = 0; i < actions.size(); ++i) {
+        std::string move = board.uci_move(BOARD_A, actions[i]);
+        if (move == "h1h3") quietIdx = i;
+        if (move == "Q@g8") checkingIdx = i;
+    }
+
+    ASSERT_LT(quietIdx, actions.size());
+    ASSERT_LT(checkingIdx, actions.size());
+    ASSERT_TRUE(board.gives_check(BOARD_A, actions[checkingIdx]));
+    EXPECT_LT(probabilities[checkingIdx], probabilities[quietIdx]);
+
+    JointCandidateGenerator generator;
+    generator.initialize(
+        actions, {Stockfish::MOVE_NONE}, probabilities, {1.0f},
+        false, true, false);
+    JointActionCandidate first = generator.getNext();
+    EXPECT_EQ(board.uci_move(BOARD_A, first.moveA), "h1h3");
+    EXPECT_FLOAT_EQ(first.priorA, probabilities[quietIdx]);
+}
+
 TEST(SearchConfigTest, RuntimeValuesChangeSearchCalculations) {
     EXPECT_NE(SearchParams::get_cpuct(100.0f, 1.0f, 100.0f),
               SearchParams::get_cpuct(100.0f, 3.0f, 100.0f));
-    EXPECT_LT(SearchParams::get_allowed_children(100, 0.5f, 0.3f),
-              SearchParams::get_allowed_children(100, 2.0f, 0.3f));
+}
+
+TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
+    SearchParams::RuntimeConfig config;
+
+    EXPECT_FLOAT_EQ(config.drawContempt, 0.0f);
+    EXPECT_TRUE(SearchParams::ENABLE_MATE_EARLY_EXIT);
+    EXPECT_FALSE(SearchParams::ENABLE_Q_EARLY_EXIT);
+    EXPECT_FALSE(SearchParams::ENABLE_TIME_EXTENSION);
+    EXPECT_EQ(SearchParams::TT_MAX_SIZE, TranspositionTable::kDefaultMaxCapacity);
+}
+
+TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
+    SearchParams::RuntimeConfig config;
+
+    EXPECT_EQ(SearchParams::get_allowed_children(
+                  1000, config.pwCoefficient, config.pwExponent), 8);
+    EXPECT_EQ(SearchParams::get_allowed_children(
+                  1000, config.rootPwCoefficient, config.pwExponent), 32);
+    EXPECT_EQ(SearchParams::get_allowed_children(
+                  10000, config.pwCoefficient, config.pwExponent), 16);
+    EXPECT_EQ(SearchParams::get_allowed_children(
+                  10000, config.rootPwCoefficient, config.pwExponent), 64);
+}
+
+TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
+    Node node(Stockfish::WHITE);
+    node.set_depth(1);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
+    std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
+    std::vector<float> priorsA = {0.9f, 0.09f, 0.01f};
+    std::vector<float> priorsB = {1.0f};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, actionsB, priorsA, priorsB, false, true, false,
+        SearchParams::RuntimeConfig{}));
+    ASSERT_EQ(node.get_children().size(), 1U);
+    EXPECT_FLOAT_EQ(node.get_child_q(0), SearchParams::Q_INIT);
+    EXPECT_FLOAT_EQ(node.get_children().front()->Q(), 0.0f);
+    ASSERT_TRUE(node.has_unexpanded_joint_actions());
+    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+
+    node.update(0, 1.0f);
+    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    node.update(0, 1.0f);
+    EXPECT_TRUE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(
+        nullptr, 0, action, SearchParams::RuntimeConfig{}), nullptr);
+
+    EXPECT_TRUE(node.has_unexpanded_joint_actions());
+    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+}
+
+TEST(NodeTest, RootProgressiveWideningExploresMoreCandidates) {
+    SearchParams::RuntimeConfig config;
+    EXPECT_GT(SearchParams::get_allowed_children(
+                  10000, config.rootPwCoefficient, config.pwExponent),
+              SearchParams::get_allowed_children(
+                  10000, config.pwCoefficient, config.pwExponent));
+}
+
+TEST(NodeTest, RootVisitsGeneratedChildBeforeWidening) {
+    Node node(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
+    std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, actionsB, {0.8f, 0.15f, 0.05f}, {1.0f}, false, true, false,
+        SearchParams::RuntimeConfig{}));
+    ASSERT_EQ(node.get_children().size(), 1U);
+    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+
+    node.update(0, 0.25f);
+
+    EXPECT_TRUE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+}
+
+TEST(NodeTest, InFlightVisitAllowsBatchToWiden) {
+    Node node(Stockfish::WHITE);
+    node.set_depth(1);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.8f, 0.15f, 0.05f}, {1.0f},
+        false, true, false, SearchParams::RuntimeConfig{}));
+    node.update_terminal(0.0f);
+    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+
+    node.apply_virtual_loss(0);
+    EXPECT_TRUE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    node.remove_virtual_loss(0);
+}
+
+TEST(NodeTest, AtomicVirtualLossDivertsNextSelection) {
+    Node node(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.5f, 0.5f}, {1.0f},
+        false, true, false, config));
+    node.update(0, 0.0f);
+
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    auto [firstChild, firstIdx] = node.select_child_and_apply_virtual_loss(config);
+    auto [secondChild, secondIdx] = node.select_child_and_apply_virtual_loss(config);
+    ASSERT_NE(firstChild, nullptr);
+    ASSERT_NE(secondChild, nullptr);
+    EXPECT_EQ(firstIdx, 0);
+    EXPECT_EQ(secondIdx, 1);
+
+    node.remove_virtual_loss(firstIdx);
+    node.remove_virtual_loss(secondIdx);
+}
+
+TEST(NodeTest, ConcurrentExpansionReturnsMatchingActionIndex) {
+    Node node(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA;
+    std::vector<float> priorsA;
+    for (int i = 1; i <= 64; ++i) {
+        actionsA.push_back(Stockfish::Move(i));
+        priorsA.push_back(static_cast<float>(65 - i));
+    }
+    std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
+    std::vector<float> priorsB = {1.0f};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, actionsB, priorsA, priorsB, false, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    std::mutex resultsMutex;
+    std::vector<std::pair<int, Stockfish::Move>> results;
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 8; ++i) {
+        workers.emplace_back([&]() {
+            while (node.has_unexpanded_joint_actions()) {
+                JointActionCandidate action;
+                int childIdx = -1;
+                auto child = node.expand_next_joint_child(
+                    nullptr, 0, action, SearchParams::RuntimeConfig{}, &childIdx);
+                if (child) {
+                    std::lock_guard<std::mutex> guard(resultsMutex);
+                    results.emplace_back(childIdx, action.moveA);
+                }
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    ASSERT_EQ(results.size(), actionsA.size() - 1);
+    for (const auto& [childIdx, move] : results) {
+        EXPECT_EQ(node.get_joint_action(childIdx).moveA, move);
+    }
+}
+
+TEST(NodeTest, TranspositionEdgeUsesParentPerspectiveWithoutInheritedVisits) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        static_cast<Stockfish::Move>(1), static_cast<Stockfish::Move>(2)};
+    std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actionsA, actionsB, {0.75f, 0.25f}, {1.0f}, false, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    parent.update_terminal(1.0f);
+    parent.update_terminal(1.0f);
+
+    auto existing = std::make_shared<Node>(Stockfish::BLACK);
+    existing->set_value(0.75f);
+    JointActionCandidate action;
+    int childIdx = -1;
+    ASSERT_NE(parent.expand_next_joint_child(
+        existing, 123, action, SearchParams::RuntimeConfig{}, &childIdx), nullptr);
+
+    EXPECT_FLOAT_EQ(parent.get_child_q(childIdx), -0.75f);
+    EXPECT_EQ(parent.get_child_visits()[childIdx], 1);
+}
+
+TEST(NodeTest, EvaluationReservationIsExclusiveUntilReleased) {
+    Node node(Stockfish::WHITE);
+
+    EXPECT_TRUE(node.try_reserve_evaluation());
+    EXPECT_FALSE(node.try_reserve_evaluation());
+
+    node.release_evaluation_reservation();
+    EXPECT_TRUE(node.try_reserve_evaluation());
+    node.release_evaluation_reservation();
+}
+
+TEST(MctsSolverTest, PropagatesMateAtArbitraryDepth) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    auto child = parent.get_children().front();
+    child->mark_as_loss(7);
+    parent.init_child_node_types();
+
+    EXPECT_TRUE(parent.update_child_node_type(0, child->get_node_type()));
+    EXPECT_EQ(parent.get_node_type(), NodeType::WIN);
+    EXPECT_EQ(parent.get_end_in_ply(), 8);
 }
 
 TEST(TranspositionTableTest, InsertOrGetReturnsCanonicalNode) {
@@ -69,6 +564,12 @@ TEST(TranspositionTableTest, InsertOrGetReturnsCanonicalNode) {
     EXPECT_EQ(table.insertOrGet(42, first), first);
     EXPECT_EQ(table.insertOrGet(42, duplicate), first);
     EXPECT_EQ(table.getHits(), 1);
+}
+
+TEST(SearchParamsTest, EarlyStoppingRequiresFactoredVisitLead) {
+    EXPECT_TRUE(SearchParams::has_insurmountable_visit_lead(100.0f, 40.0f, 2.0f));
+    EXPECT_FALSE(SearchParams::has_insurmountable_visit_lead(100.0f, 60.0f, 2.0f));
+    EXPECT_FALSE(SearchParams::has_insurmountable_visit_lead(100.0f, 50.0f, 2.0f));
 }
 
 TEST_F(EngineTest, InitialMoves) {
@@ -284,6 +785,74 @@ TEST_F(EngineTest, CombinedHashUsesRule50AndTimeAdvantageNotGamePly) {
 
     late.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 8 900");
     EXPECT_NE(early.hash_key(false), late.hash_key(false));
+}
+
+TEST_F(EngineTest, CombinedHashIncludesRepetitionContext) {
+    Board historical;
+    auto findMove = [&historical](const std::string& uci) {
+        for (Stockfish::Move move : historical.legal_moves(BOARD_A)) {
+            if (historical.uci_move(BOARD_A, move) == uci) {
+                return move;
+            }
+        }
+        return Stockfish::MOVE_NONE;
+    };
+
+    for (const std::string& uci : {"g1f3", "b8c6", "f3g1", "c6b8"}) {
+        Stockfish::Move move = findMove(uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE);
+        historical.push_move(BOARD_A, move);
+    }
+
+    Board fresh;
+    fresh.set_fen(
+        BOARD_A,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 4 3");
+
+    EXPECT_EQ(historical.board_only_key(BOARD_A), fresh.board_only_key(BOARD_A));
+    EXPECT_EQ(historical.rule50_count(BOARD_A), fresh.rule50_count(BOARD_A));
+    EXPECT_NE(historical.hash_key(false), fresh.hash_key(false));
+}
+
+TEST_F(EngineTest, CombinedHashIncludesTransferredPocketPieces) {
+    Board board;
+    const uint64_t emptyPocketHash = board.hash_key(false);
+
+    board.add_to_hand(
+        BOARD_A, Stockfish::make_piece(Stockfish::BLACK, Stockfish::QUEEN));
+
+    EXPECT_NE(board.hash_key(false), emptyPocketHash);
+}
+
+TEST_F(EngineTest, CapturedDroppedQueenTransfersToPartnerWithUpdatedHash) {
+    Board board;
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    board.set_fen(BOARD_B, "6k1/8/8/8/8/8/8/7K[Q] w - - 0 1");
+
+    auto find_move = [&](int boardNum, const std::string& uci) {
+        for (Stockfish::Move move : board.legal_moves(boardNum)) {
+            if (board.uci_move(boardNum, move) == uci) {
+                return move;
+            }
+        }
+        return Stockfish::MOVE_NONE;
+    };
+
+    Stockfish::Move queenDrop = find_move(BOARD_B, "Q@h8");
+    ASSERT_NE(queenDrop, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_B, queenDrop);
+
+    const uint64_t beforeCaptureHash = board.hash_key(false);
+    Stockfish::Move kingCapture = find_move(BOARD_B, "g8h8");
+    ASSERT_NE(kingCapture, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_B, kingCapture);
+
+    EXPECT_EQ(board.count_in_hand(BOARD_A, Stockfish::WHITE, Stockfish::QUEEN), 1);
+    EXPECT_NE(board.hash_key(false), beforeCaptureHash);
+
+    board.pop_move(BOARD_B);
+    EXPECT_EQ(board.count_in_hand(BOARD_A, Stockfish::WHITE, Stockfish::QUEEN), 0);
+    EXPECT_EQ(board.hash_key(false), beforeCaptureHash);
 }
 
 TEST_F(EngineTest, ZobristHashUniqueness) {

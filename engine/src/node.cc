@@ -3,12 +3,7 @@
 #include <limits>
 #include <algorithm>
 
-std::shared_ptr<Node> Node::get_best_expanded_child(const SearchParams::RuntimeConfig& config) {
-    auto [child, idx] = get_best_expanded_child_with_idx(config);
-    return child;
-}
-
-std::pair<std::shared_ptr<Node>, int> Node::get_best_expanded_child_with_idx(
+std::pair<std::shared_ptr<Node>, int> Node::select_child_and_apply_virtual_loss(
     const SearchParams::RuntimeConfig& config) {
     std::unique_lock<std::shared_mutex> guard(nodeMutex);
     
@@ -19,16 +14,11 @@ std::pair<std::shared_ptr<Node>, int> Node::get_best_expanded_child_with_idx(
     }
 
     // 2. Precompute constants for the selection loop (CrazyAra-aligned)
-    int visits = m_visits.load(std::memory_order_relaxed);
+    int visits = m_visits.load(std::memory_order_relaxed) + virtualVisitSum;
     const float sqrtVisits = std::sqrt(static_cast<float>(visits));
     const float c = SearchParams::get_cpuct(
         static_cast<float>(visits), config.cpuctInit, config.cpuctBase);
     const float explorationBase = c * sqrtVisits;
-
-    // 3. Parent-Relative FPU Calculation (Lc0/CrazyAra-style)
-    // Sets the 'default' value for nodes with 0 visits
-    float parentQ = (visits > 0) ? (valueSum / static_cast<float>(visits)) : 0.0f;
-    const float fpuValue = std::max(-1.0f, parentQ - config.fpuReduction);
 
     float bestScore = -std::numeric_limits<float>::infinity();
     std::shared_ptr<Node> bestChild = nullptr;
@@ -47,7 +37,7 @@ std::pair<std::shared_ptr<Node>, int> Node::get_best_expanded_child_with_idx(
         // CrazyAra uses qValues array which stores the modified Q-value
         float q_i;
         if (n_effective == 0) {
-            q_i = fpuValue;
+            q_i = SearchParams::Q_INIT;
         } else {
             // Get base Q-value and apply virtual loss effect based on style
             SearchParams::VirtualStyle style = SearchParams::get_virtual_style(n_i);
@@ -76,6 +66,9 @@ std::pair<std::shared_ptr<Node>, int> Node::get_best_expanded_child_with_idx(
         }
     }
     
-    bestChildIdx = selectedIdx;  // Update for backward compatibility
+    if (selectedIdx >= 0) {
+        virtualLoss[static_cast<size_t>(selectedIdx)]++;
+        virtualVisitSum++;
+    }
     return {bestChild, selectedIdx};
 }

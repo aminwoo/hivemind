@@ -2,10 +2,6 @@
 
 #include <atomic>
 #include <mutex>
-#include <thread>
-#include <vector>
-#include "searchthread.h"
-#include "board.h"
 #include "node.h"
 #include "engine.h"
 #include "search_params.h"
@@ -13,7 +9,6 @@
 #include "gc_thread.h"
 #include "globals.h"
 #include "joint_action.h"
-#include "rl/rl_settings.h"
 
 /**
  * @brief Search options to configure Agent::run_search behavior.
@@ -25,12 +20,8 @@ struct SearchOptions {
     
     // UCI mode options
     bool verbose = false;        // Output UCI info strings (info, bestmove)
-    bool checkMateIn1 = false;   // Check for immediate mate before search
     int multiPV = 1;             // Number of principal variations to output
     
-    // Self-play exploration options  
-    float dirichletAlpha = 0.0f;   // Dirichlet noise alpha (0 = no noise)
-    float dirichletEpsilon = 0.0f; // Fraction of prior to replace with noise (0 = no noise)
     SearchParams::RuntimeConfig search;
     
     // Convenience constructors
@@ -38,50 +29,10 @@ struct SearchOptions {
         SearchOptions opts;
         opts.moveTimeMs = moveTimeMs;
         opts.verbose = true;
-        opts.checkMateIn1 = true;
         opts.multiPV = multiPV;
         return opts;
     }
     
-    static SearchOptions selfplay(size_t nodes, const RLSettings& settings) {
-        SearchOptions opts;
-        opts.targetNodes = nodes;
-        opts.verbose = false;
-        opts.checkMateIn1 = false;
-        opts.dirichletAlpha = settings.dirichletAlpha;
-        opts.dirichletEpsilon = settings.dirichletEpsilon;
-        opts.search.cpuctInit = settings.cpuctInit;
-        opts.search.cpuctBase = settings.cpuctBase;
-        opts.search.fpuReduction = settings.fpuReduction;
-        opts.search.enableMCGS = settings.enableMCGS;
-        opts.search.enableTranspositions = settings.enableTranspositions;
-        opts.search.drawContempt = settings.drawContempt;
-        opts.search.pwCoefficient = settings.pwCoefficient;
-        opts.search.pwExponent = settings.pwExponent;
-        opts.search.qValueWeight = settings.qValueWeight;
-        opts.search.qVetoDelta = settings.qVetoDelta;
-        return opts;
-    }
-    
-    static SearchOptions selfplay(int moveTimeMs, const RLSettings& settings) {
-        SearchOptions opts;
-        opts.moveTimeMs = moveTimeMs;
-        opts.verbose = false;
-        opts.checkMateIn1 = false;
-        opts.dirichletAlpha = settings.dirichletAlpha;
-        opts.dirichletEpsilon = settings.dirichletEpsilon;
-        opts.search.cpuctInit = settings.cpuctInit;
-        opts.search.cpuctBase = settings.cpuctBase;
-        opts.search.fpuReduction = settings.fpuReduction;
-        opts.search.enableMCGS = settings.enableMCGS;
-        opts.search.enableTranspositions = settings.enableTranspositions;
-        opts.search.drawContempt = settings.drawContempt;
-        opts.search.pwCoefficient = settings.pwCoefficient;
-        opts.search.pwExponent = settings.pwExponent;
-        opts.search.qValueWeight = settings.qValueWeight;
-        opts.search.qVetoDelta = settings.qVetoDelta;
-        return opts;
-    }
 };
 
 /**
@@ -123,7 +74,7 @@ public:
     ~Agent();
 
     /**
-     * @brief Unified search function for both UCI and self-play modes.
+     * @brief Runs a UCI search.
      * @param board The board on which to perform the search.
      * @param engines A vector of engine pointers to use during the search.
      * @param side The side to move.
@@ -178,34 +129,20 @@ public:
      * @param sizeMB Size in megabytes (1 - 33554432)
      */
     void setHashSize(size_t sizeMB);
-    
+
     /**
-     * @brief Get the transposition table for stats reporting.
+     * @brief Discard all search state retained between moves.
      */
-    TranspositionTable* getTranspositionTable() const {
-        return transpositionTable.get();
-    }
-    
-    /**
-     * @brief Get the root node after search for extracting visit distributions.
-     * Used for AlphaZero-style training data generation.
-     * @return Shared pointer to the root node, or nullptr if no search has been run.
-     */
-    std::shared_ptr<Node> get_root_node() const {
-        return rootNode;
-    }
+    void reset_search_state();
     
     /**
      * @brief Try to reuse the search tree from a previous search.
-     * 
-     * Checks if the given position matches either ownNextRoot_ or opponentsNextRoot_.
-     * If found, reuses that subtree as the new root. The old tree portions are
-     * queued for async garbage collection.
-     * 
-     * @param positionHash Hash of the current position
+     *
+     * Checks whether the current position matches a saved next-root candidate.
+     * @param positionHash Hash of the current position.
      * @return Shared pointer to reusable root, or nullptr if no reuse possible
      */
-    std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash);
+    std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash, Stockfish::Color teamSide);
     
     /**
      * @brief Store next-root candidates for tree reuse.
@@ -216,13 +153,4 @@ public:
      */
     void store_next_root_candidates();
     
-    /**
-     * @brief Clear the tree reuse state.
-     * Called when starting a new game.
-     */
-    void clear_tree_reuse() {
-        ownNextRoot_.reset();
-        opponentsNextRoot_.reset();
-        lastSearchHash_ = 0;
-    }
 };

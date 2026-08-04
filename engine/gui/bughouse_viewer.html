@@ -1,0 +1,1009 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hivemind Bughouse PGN Viewer</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+    />
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+
+      :root {
+        --bg-1: #0f172a;
+        --bg-2: #111827;
+        --bg-3: #1f2937;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --line: rgba(255, 255, 255, 0.14);
+        --accent-a: #f59e0b;
+        --accent-b: #22d3ee;
+        --accent-c: #f43f5e;
+        --ok: #34d399;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: 'Space Grotesk', sans-serif;
+        background:
+          radial-gradient(
+            circle at 20% 0%,
+            rgba(34, 211, 238, 0.16),
+            transparent 40%
+          ),
+          radial-gradient(
+            circle at 80% 10%,
+            rgba(245, 158, 11, 0.16),
+            transparent 42%
+          ),
+          linear-gradient(155deg, var(--bg-1), var(--bg-2) 58%, var(--bg-3));
+        min-height: 100vh;
+      }
+
+      .page {
+        max-width: 1480px;
+        margin: 0 auto;
+        padding: 24px 18px 40px;
+      }
+
+      .hero {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 18px;
+        background: linear-gradient(
+          90deg,
+          rgba(255, 255, 255, 0.04),
+          rgba(255, 255, 255, 0.01)
+        );
+        animation: pop-in 420ms ease-out;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(1.5rem, 2vw, 2.1rem);
+        letter-spacing: 0.02em;
+      }
+
+      .hero p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 0.96rem;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 360px 1fr 330px;
+        gap: 16px;
+      }
+
+      .layout > * {
+        min-width: 0;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(0, 0, 0, 0.16);
+        backdrop-filter: blur(4px);
+        overflow: hidden;
+      }
+
+      .board-panel {
+        min-width: 0;
+        overflow: visible;
+      }
+
+      .panel-header {
+        padding: 12px 14px;
+        font-size: 0.9rem;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-body {
+        padding: 14px;
+      }
+
+      .mono {
+        font-family: 'IBM Plex Mono', monospace;
+      }
+
+      textarea,
+      input[type='text'] {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(0, 0, 0, 0.18);
+        color: var(--text);
+        padding: 10px;
+        font-size: 0.92rem;
+      }
+
+      textarea {
+        min-height: 220px;
+        resize: vertical;
+      }
+
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .row > * {
+        flex: 1;
+      }
+
+      .btn {
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: 180ms ease;
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, var(--accent-a), #fb7185);
+        color: #0f172a;
+      }
+
+      .btn-secondary {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text);
+        border-color: var(--line);
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+      }
+
+      .status {
+        margin-top: 8px;
+        min-height: 22px;
+        font-size: 0.88rem;
+        color: var(--muted);
+      }
+
+      .status.error {
+        color: #fb7185;
+      }
+
+      .status.ok {
+        color: var(--ok);
+      }
+
+      .board-zone {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .board-card {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px;
+        background: rgba(0, 0, 0, 0.14);
+        min-width: 0;
+      }
+
+      .player-row {
+        margin: 0 0 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 8px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .player-row.bottom {
+        margin: 8px 0 0;
+      }
+
+      .player-label {
+        font-size: 0.72rem;
+        color: var(--muted);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .player-value {
+        font-size: 0.86rem;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-left: 8px;
+      }
+
+      .board-title {
+        margin: 2px 0 10px;
+        font-weight: 700;
+        display: flex;
+        justify-content: space-between;
+      }
+
+      .board-title .turn {
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+
+      .board {
+        width: 100%;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+
+      .pocket-grid {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 8px;
+      }
+
+      .pocket-cell {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        padding: 6px 4px;
+        text-align: center;
+      }
+
+      .pocket-cell .piece {
+        font-size: 1rem;
+        line-height: 1;
+      }
+
+      .pocket-cell .count {
+        font-size: 0.82rem;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+
+      .controls {
+        margin-top: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }
+
+      .timeline {
+        width: 100%;
+      }
+
+      .meta {
+        margin-top: 10px;
+        font-size: 0.86rem;
+        color: var(--muted);
+      }
+
+      .move-list {
+        max-height: 520px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .move-item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .move-item.active {
+        border-color: var(--accent-b);
+        box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35) inset;
+      }
+
+      .badge {
+        border-radius: 6px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        padding: 3px 6px;
+      }
+
+      .badge.a {
+        background: rgba(245, 158, 11, 0.2);
+        color: #fcd34d;
+      }
+
+      .badge.b {
+        background: rgba(34, 211, 238, 0.2);
+        color: #67e8f9;
+      }
+
+      .move-text {
+        font-family: 'IBM Plex Mono', monospace;
+      }
+
+      @keyframes pop-in {
+        from {
+          transform: translateY(6px);
+          opacity: 0;
+        }
+        to {
+          transform: translateY(0);
+          opacity: 1;
+        }
+      }
+
+      @media (max-width: 1230px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .board-zone {
+          grid-template-columns: 1fr;
+        }
+
+        .move-list {
+          max-height: 260px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero">
+        <h1>Hivemind Bughouse PGN Viewer</h1>
+        <p>
+          Paste Chess.com bughouse PGN, replay both boards, and export an
+          engine-ready position FEN.
+        </p>
+      </section>
+
+      <section class="layout">
+        <aside class="panel">
+          <div class="panel-header">PGN Input</div>
+          <div class="panel-body">
+            <textarea
+              id="pgnInput"
+              class="mono"
+              placeholder="Paste bughouse PGN here..."
+            ></textarea>
+            <div class="row" style="margin-top: 10px">
+              <button id="parseBtn" class="btn btn-primary">
+                Parse + Replay
+              </button>
+              <button id="clearBtn" class="btn btn-secondary">Clear</button>
+            </div>
+            <div id="parseStatus" class="status"></div>
+
+            <hr
+              style="
+                border-color: var(--line);
+                border-width: 0;
+                border-top-width: 1px;
+                margin: 14px 0;
+              "
+            />
+
+            <label
+              for="combinedFen"
+              style="font-size: 0.86rem; color: var(--muted)"
+              >Combined FEN (engine format: fenA | fenB)</label
+            >
+            <textarea
+              id="combinedFen"
+              class="mono"
+              style="min-height: 90px; margin-top: 6px"
+            ></textarea>
+            <div class="row" style="margin-top: 10px">
+              <button id="copyFenBtn" class="btn btn-secondary">
+                Copy FEN
+              </button>
+              <button id="applyFenBtn" class="btn btn-secondary">
+                Display FEN
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <main class="panel board-panel">
+          <div class="panel-header">Boards</div>
+          <div class="panel-body">
+            <div class="board-zone">
+              <article class="board-card">
+                <div class="board-title">
+                  <span>Board A</span>
+                  <span id="turnA" class="turn">Turn: w</span>
+                </div>
+                <div class="player-row">
+                  <span class="player-label">Black</span>
+                  <span id="aBlackPlayer" class="player-value">BlackA</span>
+                </div>
+                <div id="boardA" class="board"></div>
+                <div class="player-row bottom">
+                  <span class="player-label">White</span>
+                  <span id="aWhitePlayer" class="player-value">WhiteA</span>
+                </div>
+                <div
+                  style="
+                    margin-top: 8px;
+                    font-size: 0.8rem;
+                    color: var(--muted);
+                  "
+                >
+                  White pocket
+                </div>
+                <div id="aPocketW" class="pocket-grid"></div>
+                <div
+                  style="
+                    margin-top: 8px;
+                    font-size: 0.8rem;
+                    color: var(--muted);
+                  "
+                >
+                  Black pocket
+                </div>
+                <div id="aPocketB" class="pocket-grid"></div>
+              </article>
+
+              <article class="board-card">
+                <div class="board-title">
+                  <span>Board B</span>
+                  <span id="turnB" class="turn">Turn: w</span>
+                </div>
+                <div class="player-row">
+                  <span class="player-label">White</span>
+                  <span id="bWhitePlayer" class="player-value">WhiteB</span>
+                </div>
+                <div id="boardB" class="board"></div>
+                <div class="player-row bottom">
+                  <span class="player-label">Black</span>
+                  <span id="bBlackPlayer" class="player-value">BlackB</span>
+                </div>
+                <div
+                  style="
+                    margin-top: 8px;
+                    font-size: 0.8rem;
+                    color: var(--muted);
+                  "
+                >
+                  White pocket
+                </div>
+                <div id="bPocketW" class="pocket-grid"></div>
+                <div
+                  style="
+                    margin-top: 8px;
+                    font-size: 0.8rem;
+                    color: var(--muted);
+                  "
+                >
+                  Black pocket
+                </div>
+                <div id="bPocketB" class="pocket-grid"></div>
+              </article>
+            </div>
+
+            <div class="controls">
+              <div class="row">
+                <button id="firstBtn" class="btn btn-secondary">|&lt;</button>
+                <button id="prevBtn" class="btn btn-secondary">&lt;</button>
+                <button id="playBtn" class="btn btn-primary">Play</button>
+                <button id="nextBtn" class="btn btn-secondary">&gt;</button>
+                <button id="lastBtn" class="btn btn-secondary">&gt;|</button>
+              </div>
+              <input
+                id="timelineSlider"
+                type="range"
+                class="timeline"
+                min="0"
+                max="0"
+                value="0"
+                style="margin-top: 10px"
+              />
+              <div id="metaText" class="meta">Load a PGN to start replay.</div>
+            </div>
+          </div>
+        </main>
+
+        <aside class="panel">
+          <div class="panel-header">Moves</div>
+          <div class="panel-body">
+            <div id="moveList" class="move-list"></div>
+          </div>
+        </aside>
+      </section>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script>
+      const pieceGlyph = {
+        p: 'P',
+        n: 'N',
+        b: 'B',
+        r: 'R',
+        q: 'Q',
+      }
+
+      const state = {
+        timeline: [],
+        index: 0,
+        headers: {},
+        timer: null,
+        warnings: [],
+        parserVersion: null,
+      }
+
+      function pieceTheme(piece) {
+        return `https://chessboardjs.com/img/chesspieces/wikipedia/${piece}.png`
+      }
+
+      const boardA = Chessboard('boardA', {
+        draggable: false,
+        pieceTheme,
+        position: 'start',
+        orientation: 'white',
+      })
+
+      const boardB = Chessboard('boardB', {
+        draggable: false,
+        pieceTheme,
+        position: 'start',
+        orientation: 'black',
+      })
+
+      function getHeaderValue(keys, fallback = '') {
+        for (const key of keys) {
+          const value = state.headers?.[key]
+          if (value !== undefined && value !== null && String(value).trim()) {
+            return String(value).trim()
+          }
+        }
+        return fallback
+      }
+
+      function formatPlayer(name, rating) {
+        const cleanName = name && name.trim() ? name.trim() : '-'
+        const cleanRating = rating && rating.trim() ? rating.trim() : ''
+        return cleanRating ? `${cleanName} (${cleanRating})` : cleanName
+      }
+
+      function renderPlayers() {
+        const whiteA = getHeaderValue(['WhiteA'], 'WhiteA')
+        const blackA = getHeaderValue(['BlackA'], 'BlackA')
+        const whiteB = getHeaderValue(['WhiteB'], 'WhiteB')
+        const blackB = getHeaderValue(['BlackB'], 'BlackB')
+
+        const whiteAElo = getHeaderValue([
+          'WhiteAElo',
+          'WhiteA_Elo',
+          'WhiteElo',
+        ])
+        const blackAElo = getHeaderValue([
+          'BlackAElo',
+          'BlackA_Elo',
+          'BlackElo',
+        ])
+        const whiteBElo = getHeaderValue([
+          'WhiteBElo',
+          'WhiteB_Elo',
+          'WhiteElo',
+        ])
+        const blackBElo = getHeaderValue([
+          'BlackBElo',
+          'BlackB_Elo',
+          'BlackElo',
+        ])
+
+        const boardAWhite = { name: whiteA, rating: whiteAElo }
+        const boardABlack = { name: blackA, rating: blackAElo }
+        const boardBWhite = { name: whiteB, rating: whiteBElo }
+        const boardBBlack = { name: blackB, rating: blackBElo }
+
+        document.getElementById('aWhitePlayer').textContent = formatPlayer(
+          boardAWhite.name,
+          boardAWhite.rating,
+        )
+        document.getElementById('aBlackPlayer').textContent = formatPlayer(
+          boardABlack.name,
+          boardABlack.rating,
+        )
+
+        // Show the mirrored partner perspective on the second board so the
+        // teammate pairing stays consistent with the flipped board view.
+        document.getElementById('bWhitePlayer').textContent = formatPlayer(
+          boardBWhite.name,
+          boardBWhite.rating,
+        )
+        document.getElementById('bBlackPlayer').textContent = formatPlayer(
+          boardBBlack.name,
+          boardBBlack.rating,
+        )
+      }
+
+      function resizeBoards() {
+        requestAnimationFrame(() => {
+          boardA.resize()
+          boardB.resize()
+        })
+      }
+
+      function setStatus(msg, kind) {
+        const el = document.getElementById('parseStatus')
+        el.textContent = msg || ''
+        el.className = 'status'
+        if (kind) {
+          el.classList.add(kind)
+        }
+      }
+
+      function boardFenForDisplay(crazyFen) {
+        const placement = (crazyFen || '').split(' ')[0] || ''
+        return placement.replace(/\[[^\]]*\]/g, '')
+      }
+
+      function parsePocketFromFen(crazyFen) {
+        const placement = (crazyFen || '').split(' ')[0] || ''
+        const match = placement.match(/\[([^\]]*)\]/)
+        const bag = match ? match[1] : ''
+        const out = {
+          w: { p: 0, n: 0, b: 0, r: 0, q: 0 },
+          b: { p: 0, n: 0, b: 0, r: 0, q: 0 },
+        }
+
+        for (const ch of bag) {
+          if (/[PNBRQ]/.test(ch)) {
+            out.w[ch.toLowerCase()] += 1
+          } else if (/[pnbrq]/.test(ch)) {
+            out.b[ch] += 1
+          }
+        }
+        return out
+      }
+
+      function renderPocket(targetId, counts) {
+        const container = document.getElementById(targetId)
+        const order = ['p', 'n', 'b', 'r', 'q']
+        container.innerHTML = order
+          .map((piece) => {
+            const c = counts[piece] || 0
+            return `
+              <div class="pocket-cell">
+                <div class="piece">${pieceGlyph[piece]}</div>
+                <div class="count">${c}</div>
+              </div>
+            `
+          })
+          .join('')
+      }
+
+      function renderMoveList() {
+        const list = document.getElementById('moveList')
+        if (!state.timeline.length) {
+          list.innerHTML = ''
+          return
+        }
+
+        list.innerHTML = state.timeline
+          .slice(1)
+          .map((snap) => {
+            const activeClass = snap.index === state.index ? 'active' : ''
+            const badgeClass = snap.board === 'A' ? 'a' : 'b'
+            return `
+              <div class="move-item ${activeClass}" data-index="${snap.index}">
+                <span class="badge ${badgeClass}">${snap.board}</span>
+                <span class="move-text">${snap.ply}. ${snap.san}</span>
+              </div>
+            `
+          })
+          .join('')
+
+        list.querySelectorAll('.move-item').forEach((item) => {
+          item.addEventListener('click', () => {
+            stopPlayback()
+            setTimelineIndex(Number(item.dataset.index))
+          })
+        })
+      }
+
+      function renderSnapshot() {
+        if (!state.timeline.length) {
+          return
+        }
+
+        const snap = state.timeline[state.index]
+        boardA.position(boardFenForDisplay(snap.fenA), false)
+        boardB.position(boardFenForDisplay(snap.fenB), false)
+
+        document.getElementById('turnA').textContent = `Turn: ${snap.turnA}`
+        document.getElementById('turnB').textContent = `Turn: ${snap.turnB}`
+        renderPlayers()
+
+        const pocketsA = snap.pocketsA || {
+          w: parsePocketFromFen(snap.fenA).w,
+          b: parsePocketFromFen(snap.fenA).b,
+        }
+        const pocketsB = snap.pocketsB || {
+          w: parsePocketFromFen(snap.fenB).w,
+          b: parsePocketFromFen(snap.fenB).b,
+        }
+
+        renderPocket('aPocketW', pocketsA.w)
+        renderPocket('aPocketB', pocketsA.b)
+        renderPocket('bPocketW', pocketsB.w)
+        renderPocket('bPocketB', pocketsB.b)
+
+        document.getElementById('timelineSlider').value = String(state.index)
+        document.getElementById('combinedFen').value = snap.combinedFen
+
+        const whiteA = state.headers.WhiteA || '-'
+        const blackA = state.headers.BlackA || '-'
+        const whiteB = state.headers.WhiteB || '-'
+        const blackB = state.headers.BlackB || '-'
+        const result = state.headers.Result || '-'
+        document.getElementById('metaText').textContent =
+          `Move ${state.index}/${state.timeline.length - 1} | A: ${whiteA} vs ${blackA} | B: ${whiteB} vs ${blackB} | Result: ${result}`
+
+        renderMoveList()
+        resizeBoards()
+      }
+
+      function setTimelineIndex(index) {
+        const max = Math.max(0, state.timeline.length - 1)
+        state.index = Math.min(max, Math.max(0, index))
+        renderSnapshot()
+      }
+
+      function stopPlayback() {
+        if (state.timer) {
+          clearInterval(state.timer)
+          state.timer = null
+        }
+        document.getElementById('playBtn').textContent = 'Play'
+      }
+
+      function togglePlayback() {
+        if (!state.timeline.length) {
+          return
+        }
+
+        if (state.timer) {
+          stopPlayback()
+          return
+        }
+
+        document.getElementById('playBtn').textContent = 'Pause'
+        state.timer = setInterval(() => {
+          if (state.index >= state.timeline.length - 1) {
+            stopPlayback()
+            return
+          }
+          setTimelineIndex(state.index + 1)
+        }, 900)
+      }
+
+      function parseAndLoadPGN() {
+        const pgn = document.getElementById('pgnInput').value.trim()
+        if (!pgn) {
+          setStatus('Paste PGN text first.', 'error')
+          return
+        }
+
+        setStatus('Parsing PGN...', '')
+        stopPlayback()
+
+        fetch('/api/parse-bughouse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pgn }),
+        })
+          .then(async (res) => {
+            const data = await res.json()
+            if (!res.ok) {
+              throw new Error(data.error || 'Parse failed')
+            }
+            return data
+          })
+          .then((data) => {
+            state.timeline = data.timeline || []
+            state.headers = data.headers || {}
+            state.warnings = data.warnings || []
+            state.parserVersion = data.parserVersion || 'unknown'
+            state.index = 0
+
+            const slider = document.getElementById('timelineSlider')
+            slider.min = '0'
+            slider.max = String(Math.max(0, state.timeline.length - 1))
+            slider.value = '0'
+
+            renderSnapshot()
+            const warningText =
+              state.warnings.length > 0
+                ? ` Warnings: ${state.warnings.length}.`
+                : ''
+            setStatus(
+              `Loaded ${data.moveCount} half-moves. Parser: ${state.parserVersion}.${warningText}`,
+              'ok',
+            )
+          })
+          .catch((err) => {
+            setStatus(err.message, 'error')
+          })
+      }
+
+      function applyCombinedFen() {
+        const combined = document.getElementById('combinedFen').value.trim()
+        if (!combined.includes('|')) {
+          setStatus(
+            'Combined FEN must contain two boards separated by |',
+            'error',
+          )
+          return
+        }
+
+        const parts = combined.split('|')
+        if (parts.length !== 2) {
+          setStatus(
+            'Expected exactly one | separator between board FENs.',
+            'error',
+          )
+          return
+        }
+
+        const fenA = parts[0].trim()
+        const fenB = parts[1].trim()
+        if (!fenA || !fenB) {
+          setStatus('Both board FEN values are required.', 'error')
+          return
+        }
+
+        const manualSnap = {
+          index: 0,
+          ply: 0,
+          board: '-',
+          san: 'manual',
+          fenA,
+          fenB,
+          turnA: (fenA.split(/\s+/)[1] || 'w').toLowerCase(),
+          turnB: (fenB.split(/\s+/)[1] || 'w').toLowerCase(),
+          pocketsA: parsePocketFromFen(fenA),
+          pocketsB: parsePocketFromFen(fenB),
+          combinedFen: `${fenA} | ${fenB}`,
+        }
+
+        stopPlayback()
+        state.timeline = [manualSnap]
+        state.index = 0
+
+        const slider = document.getElementById('timelineSlider')
+        slider.min = '0'
+        slider.max = '0'
+        slider.value = '0'
+
+        renderSnapshot()
+        setStatus('Displayed pasted FEN position.', 'ok')
+      }
+
+      function copyFen() {
+        const text = document.getElementById('combinedFen').value
+        navigator.clipboard
+          .writeText(text)
+          .then(() => setStatus('Combined FEN copied to clipboard.', 'ok'))
+          .catch(() =>
+            setStatus('Clipboard copy failed. You can copy manually.', 'error'),
+          )
+      }
+
+      document
+        .getElementById('parseBtn')
+        .addEventListener('click', parseAndLoadPGN)
+      document.getElementById('clearBtn').addEventListener('click', () => {
+        stopPlayback()
+        document.getElementById('pgnInput').value = ''
+        document.getElementById('combinedFen').value = ''
+        document.getElementById('moveList').innerHTML = ''
+        state.timeline = []
+        state.headers = {}
+        state.index = 0
+        setStatus('Cleared.', '')
+      })
+
+      document.getElementById('copyFenBtn').addEventListener('click', copyFen)
+      document
+        .getElementById('applyFenBtn')
+        .addEventListener('click', applyCombinedFen)
+
+      document.getElementById('firstBtn').addEventListener('click', () => {
+        stopPlayback()
+        setTimelineIndex(0)
+      })
+      document.getElementById('prevBtn').addEventListener('click', () => {
+        stopPlayback()
+        setTimelineIndex(state.index - 1)
+      })
+      document.getElementById('nextBtn').addEventListener('click', () => {
+        stopPlayback()
+        setTimelineIndex(state.index + 1)
+      })
+      document.getElementById('lastBtn').addEventListener('click', () => {
+        stopPlayback()
+        setTimelineIndex(state.timeline.length - 1)
+      })
+      document
+        .getElementById('playBtn')
+        .addEventListener('click', togglePlayback)
+
+      document
+        .getElementById('timelineSlider')
+        .addEventListener('input', (e) => {
+          stopPlayback()
+          setTimelineIndex(Number(e.target.value))
+        })
+
+      document.addEventListener('keydown', (e) => {
+        const target = e.target
+        const tag = target?.tagName?.toLowerCase()
+        const isTypingField =
+          tag === 'input' ||
+          tag === 'textarea' ||
+          target?.isContentEditable === true
+
+        if (isTypingField) {
+          return
+        }
+
+        if (!state.timeline.length) {
+          return
+        }
+
+        if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          stopPlayback()
+          setTimelineIndex(state.index + 1)
+          return
+        }
+
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          stopPlayback()
+          setTimelineIndex(state.index - 1)
+          return
+        }
+
+        if (e.key === 'Home') {
+          e.preventDefault()
+          stopPlayback()
+          setTimelineIndex(0)
+          return
+        }
+
+        if (e.key === 'End') {
+          e.preventDefault()
+          stopPlayback()
+          setTimelineIndex(state.timeline.length - 1)
+          return
+        }
+
+        if (e.key === ' ') {
+          e.preventDefault()
+          togglePlayback()
+        }
+      })
+
+      window.addEventListener('resize', resizeBoards)
+      window.addEventListener('load', () => {
+        renderPlayers()
+        resizeBoards()
+      })
+    </script>
+  </body>
+</html>

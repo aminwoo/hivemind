@@ -137,12 +137,34 @@ class TrainingGameReader:
         return new_moves
 
 
-def process_parquet_file(path, min_rating=2200):
+def process_parquet_file(
+    path,
+    min_rating=2200,
+    split=None,
+    val_fraction=0.02,
+    seed=42,
+):
     df = pl.read_parquet(path)
     df = df.filter(
         (pl.col("white_rating") >= min_rating) &
         (pl.col("black_rating") >= min_rating)
     )
+
+    if split is not None:
+        if split not in {"train", "val"}:
+            raise ValueError(f"Unknown dataset split: {split}")
+        if not 0 < val_fraction < 1:
+            raise ValueError("val_fraction must be between 0 and 1")
+
+        pair_id = (
+            pl.when(pl.col("game_id") <= pl.col("partner_game_id"))
+            .then(pl.col("game_id"))
+            .otherwise(pl.col("partner_game_id"))
+        )
+        is_validation = pair_id.hash(seed=seed).mod(1_000_000) < int(
+            val_fraction * 1_000_000
+        )
+        df = df.filter(is_validation if split == "val" else ~is_validation)
 
     # Self-join with consistent, long-form aliases
     joined_df = df.join(

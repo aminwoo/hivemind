@@ -19,6 +19,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.domain.move2planes import make_map
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
 from src.training.data_loaders import (
     RLDataset,
     flip_bughouse_sample,
@@ -31,7 +32,7 @@ def test_flip_function():
     print("Test 1: flip_bughouse_sample works correctly")
     
     # Create synthetic sample
-    x = torch.randn(64, 8, 8)
+    x = torch.randn(NUM_BUGHOUSE_CHANNELS, 8, 8)
     policy_a = torch.zeros(4672)
     policy_b = torch.zeros(4672)
     
@@ -51,8 +52,9 @@ def test_flip_function():
     flipped_x, flipped_pol_a, flipped_pol_b = flip_bughouse_sample(x, policy_a, policy_b)
     
     # Verify channels were swapped
-    assert torch.allclose(flipped_x[:32], x[32:64]), "Board A should contain original Board B"
-    assert torch.allclose(flipped_x[32:64], x[:32]), "Board B should contain original Board A"
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    assert torch.allclose(flipped_x[:offset], x[offset:NUM_BUGHOUSE_CHANNELS]), "Board A should contain original Board B"
+    assert torch.allclose(flipped_x[offset:NUM_BUGHOUSE_CHANNELS], x[:offset]), "Board B should contain original Board A"
     
     # Verify policies were swapped (NOT mirrored, just swapped)
     # What was Board B (with e7e5=0.6, g8f6=0.4) becomes Board A
@@ -73,7 +75,7 @@ def test_dataset_augmentation():
     print("\nTest 2: Dataset augmentation works correctly")
     
     # Create small synthetic dataset
-    x = torch.randn(100, 64, 8, 8)
+    x = torch.randn(100, NUM_BUGHOUSE_CHANNELS, 8, 8)
     y_value = torch.randn(100)
     policy_a = torch.softmax(torch.randn(100, 4672), dim=1)
     policy_b = torch.softmax(torch.randn(100, 4672), dim=1)
@@ -97,8 +99,9 @@ def test_dataset_augmentation():
     for i in range(100):
         x_i, y_i, pa_i, pb_i = dataset_with_aug[100 + i]
         # Boards should be swapped
-        assert torch.allclose(x_i[:32], x[i][32:64])
-        assert torch.allclose(x_i[32:64], x[i][:32])
+        offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+        assert torch.allclose(x_i[:offset], x[i][offset:NUM_BUGHOUSE_CHANNELS])
+        assert torch.allclose(x_i[offset:NUM_BUGHOUSE_CHANNELS], x[i][:offset])
         # Policies should be swapped (not mirrored)
         assert torch.allclose(pa_i, policy_b[i])
         assert torch.allclose(pb_i, policy_a[i])
@@ -145,8 +148,9 @@ def test_with_real_data():
         x_flip, _, pa_flip, pb_flip = dataset_with_aug[n_samples + i]
         
         # Boards should be swapped
-        assert torch.allclose(x_flip[:32], x_orig[32:64], atol=1e-5)
-        assert torch.allclose(x_flip[32:64], x_orig[:32], atol=1e-5)
+        offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+        assert torch.allclose(x_flip[:offset], x_orig[offset:NUM_BUGHOUSE_CHANNELS], atol=1e-5)
+        assert torch.allclose(x_flip[offset:NUM_BUGHOUSE_CHANNELS], x_orig[:offset], atol=1e-5)
         
         # Policies should be swapped (not mirrored)
         assert torch.allclose(pa_flip, pb_orig, atol=1e-5)

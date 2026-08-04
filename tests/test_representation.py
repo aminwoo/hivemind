@@ -3,6 +3,7 @@ import chess
 
 from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
+from src.constants import NUM_BUGHOUSE_CHANNELS_PER_BOARD
 
 
 def test_initial_pawn_placement():
@@ -58,21 +59,21 @@ def test_castling_rights_channels():
 
 
 def test_flip_augmentation_swap():
-    """Verify the 'flip' parameter swaps the entire 32-channel blocks."""
+    """Verify the 'flip' parameter swaps the entire board-channel blocks."""
     board = BughouseBoard()
     # Put a specific marker (e.g. Turn info) in Board A but not Board B
     planes_normal = board2planes(board, chess.WHITE, flip=False)
     planes_flipped = board2planes(board, chess.WHITE, flip=True)
 
-    # The first 32 channels of 'flipped' should match the last 32 of 'normal'
-    assert np.array_equal(planes_flipped[:32], planes_normal[32:])
-    assert np.array_equal(planes_flipped[32:], planes_normal[:32])
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    assert np.array_equal(planes_flipped[:offset], planes_normal[offset:])
+    assert np.array_equal(planes_flipped[offset:], planes_normal[:offset])
 
 
 def test_partner_board_piece_placement():
     board = BughouseBoard()
     planes = board2planes(board, chess.WHITE)
-    offset = 32
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
 
     # Because (not side) is BLACK, Board B was flipped.
     # Black pawns move from index 6 to index 1.
@@ -87,7 +88,7 @@ def test_partner_pocket_flow():
     board.boards[1].pockets[chess.BLACK].add(chess.KNIGHT)
 
     planes = board2planes(board, chess.WHITE)
-    offset = 32
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
 
     # Partner's friendly pocket knight is at offset + 13
     # 1/16 = 0.0625
@@ -99,7 +100,7 @@ def test_partner_castling_rights():
     assert board.boards[1].has_kingside_castling_rights(chess.BLACK) == True
 
     planes = board2planes(board, chess.WHITE)
-    offset = 32
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
 
     assert np.all(planes[offset + 27] == 1.0)
 
@@ -114,4 +115,24 @@ def test_turn_indicator_per_board():
 
     planes = board2planes(board, chess.WHITE)
     assert np.all(planes[25] == 1.0)  # My turn on Board A
-    assert np.all(planes[32 + 25] == 0.0)  # Not my partner's turn on Board B
+    assert np.all(planes[NUM_BUGHOUSE_CHANNELS_PER_BOARD + 25] == 0.0)  # Not my partner's turn on Board B
+
+
+def test_last_move_planes_are_encoded():
+    board = BughouseBoard()
+    board.push_uci(0, "e2e4")
+    planes = board2planes(board, chess.WHITE)
+
+    # Last move channels per board block: from=32, to=33
+    assert planes[32].flat[chess.E2] == 1.0
+    assert planes[33].flat[chess.E4] == 1.0
+
+
+def test_halfmove_and_repetition_planes_are_present():
+    board = BughouseBoard()
+    planes = board2planes(board, chess.WHITE)
+
+    # Halfmove starts at 0 and repetition flags start false.
+    assert np.allclose(planes[34], 0.0)
+    assert np.allclose(planes[35], 0.0)
+    assert np.allclose(planes[36], 0.0)

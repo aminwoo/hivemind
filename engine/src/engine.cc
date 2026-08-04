@@ -84,6 +84,8 @@ Engine::~Engine() {
     if (m_deviceValueBuffer) cudaFree(m_deviceValueBuffer);
     if (m_devicePolicyABuffer) cudaFree(m_devicePolicyABuffer);
     if (m_devicePolicyBBuffer) cudaFree(m_devicePolicyBBuffer);
+    if (m_deviceWdlBuffer) cudaFree(m_deviceWdlBuffer);
+    if (m_deviceMovesLeftBuffer) cudaFree(m_deviceMovesLeftBuffer);
 
     // Clean up Graph
     if (m_graphCreated) {
@@ -178,7 +180,13 @@ bool Engine::initializeResources() {
     m_context.reset(m_engine->createExecutionContext());
     if (!m_context) return false;
 
-    std::vector<std::string> policyNames;
+    auto normalizedName = [](std::string name) {
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+        return name;
+    };
+
     for (int i = 0; i < m_engine->getNbIOTensors(); ++i) {
         const char* tensorName = m_engine->getIOTensorName(i);
         if (!tensorName) return false;
@@ -197,44 +205,32 @@ bool Engine::initializeResources() {
             m_inputName = tensorName;
         } else {
             size_t outputElements = elementsPerBatch(tensorDims);
-            if (outputElements == 1 && m_valueName.empty()) {
+            const std::string lowerName = normalizedName(tensorName);
+            if (lowerName == "value" && outputElements == 1) {
                 m_valueName = tensorName;
-            } else if (outputElements == NB_POLICY_VALUES()) {
-                policyNames.emplace_back(tensorName);
+            } else if ((lowerName == "pi_a" || lowerName == "policy_a") &&
+                       outputElements == NB_POLICY_VALUES()) {
+                m_policyAName = tensorName;
+            } else if ((lowerName == "pi_b" || lowerName == "policy_b") &&
+                       outputElements == NB_POLICY_VALUES()) {
+                m_policyBName = tensorName;
+            } else if ((lowerName == "wdl_out" || lowerName == "wdl") &&
+                       outputElements == 3) {
+                m_wdlName = tensorName;
+            } else if ((lowerName == "moves_left" || lowerName == "plys_to_end_out") &&
+                       outputElements == 1) {
+                m_movesLeftName = tensorName;
             } else {
-                std::cerr << "Unexpected TensorRT output shape for tensor " << tensorName << std::endl;
+                std::cerr << "Unexpected TensorRT output tensor " << tensorName << std::endl;
                 return false;
             }
         }
     }
 
-    if (m_inputName.empty() || m_valueName.empty() || policyNames.size() != 2) {
-        std::cerr << "TensorRT model must expose one input, one value output, and two policy outputs" << std::endl;
+    if (m_inputName.empty() || m_valueName.empty() || m_policyAName.empty() ||
+        m_policyBName.empty() || m_wdlName.empty() || m_movesLeftName.empty()) {
+        std::cerr << "TensorRT model must expose data, value, pi_a, pi_b, wdl_out, and moves_left" << std::endl;
         return false;
-    }
-
-    auto normalizedName = [](std::string name) {
-        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char character) {
-            return static_cast<char>(std::tolower(character));
-        });
-        return name;
-    };
-    for (const std::string& policyName : policyNames) {
-        std::string lowerName = normalizedName(policyName);
-        if (lowerName.find("policy_a") != std::string::npos ||
-            lowerName.find("policya") != std::string::npos ||
-            lowerName.find("pi_a") != std::string::npos) {
-            m_policyAName = policyName;
-        } else if (lowerName.find("policy_b") != std::string::npos ||
-                   lowerName.find("policyb") != std::string::npos ||
-                   lowerName.find("pi_b") != std::string::npos) {
-            m_policyBName = policyName;
-        }
-    }
-    if (m_policyAName.empty() || m_policyBName.empty()) {
-        std::cerr << "TensorRT policy head names are ambiguous; using engine output order" << std::endl;
-        m_policyAName = policyNames[0];
-        m_policyBName = policyNames[1];
     }
 
     nvinfer1::Dims inputDims = m_engine->getTensorShape(m_inputName.c_str());
@@ -261,12 +257,16 @@ bool Engine::initializeResources() {
     size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
     size_t valSize = m_batchSize * sizeof(float);
     size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
+    size_t wdlSize = m_batchSize * 3 * sizeof(float);
+    size_t movesLeftSize = m_batchSize * sizeof(float);
 
     // Allocate GPU Device Memory
     if (!checkCuda(cudaMalloc(&m_deviceObsBuffer, inputSize), "cudaMalloc(input)") ||
         !checkCuda(cudaMalloc(&m_deviceValueBuffer, valSize), "cudaMalloc(value)") ||
         !checkCuda(cudaMalloc(&m_devicePolicyABuffer, polSize), "cudaMalloc(policy A)") ||
-        !checkCuda(cudaMalloc(&m_devicePolicyBBuffer, polSize), "cudaMalloc(policy B)")) {
+        !checkCuda(cudaMalloc(&m_devicePolicyBBuffer, polSize), "cudaMalloc(policy B)") ||
+        !checkCuda(cudaMalloc(&m_deviceWdlBuffer, wdlSize), "cudaMalloc(WDL)") ||
+        !checkCuda(cudaMalloc(&m_deviceMovesLeftBuffer, movesLeftSize), "cudaMalloc(moves left)")) {
         return false;
     }
 
@@ -274,7 +274,9 @@ bool Engine::initializeResources() {
     if (!m_context->setTensorAddress(m_inputName.c_str(), m_deviceObsBuffer) ||
         !m_context->setTensorAddress(m_valueName.c_str(), m_deviceValueBuffer) ||
         !m_context->setTensorAddress(m_policyAName.c_str(), m_devicePolicyABuffer) ||
-        !m_context->setTensorAddress(m_policyBName.c_str(), m_devicePolicyBBuffer)) {
+        !m_context->setTensorAddress(m_policyBName.c_str(), m_devicePolicyBBuffer) ||
+        !m_context->setTensorAddress(m_wdlName.c_str(), m_deviceWdlBuffer) ||
+        !m_context->setTensorAddress(m_movesLeftName.c_str(), m_deviceMovesLeftBuffer)) {
         std::cerr << "Failed to bind TensorRT tensor addresses" << std::endl;
         return false;
     }
@@ -282,9 +284,11 @@ bool Engine::initializeResources() {
     return true;
 }
 
-bool Engine::runInference(float* obs, float* value, float* piA, float* piB) {
+bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
+                          float* wdl, float* movesLeft) {
     std::lock_guard<std::mutex> lock(m_inferenceMutex);
-    if (!obs || !value || !piA || !piB || !m_context || !m_cudaStream ||
+    if (!obs || !value || !piA || !piB || !wdl || !movesLeft ||
+        !m_context || !m_cudaStream ||
         !checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice")) {
         return false;
     }
@@ -292,6 +296,8 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB) {
     size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
     size_t valSize = m_batchSize * sizeof(float);
     size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
+    size_t wdlSize = m_batchSize * 3 * sizeof(float);
+    size_t movesLeftSize = m_batchSize * sizeof(float);
 
     // Step 1: Upload Input (Async)
     if (!checkCuda(cudaMemcpyAsync(m_deviceObsBuffer, obs, inputSize, cudaMemcpyHostToDevice, m_cudaStream),
@@ -330,7 +336,11 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB) {
         !checkCuda(cudaMemcpyAsync(piA, m_devicePolicyABuffer, polSize, cudaMemcpyDeviceToHost, m_cudaStream),
                    "cudaMemcpyAsync(policy A)") ||
         !checkCuda(cudaMemcpyAsync(piB, m_devicePolicyBBuffer, polSize, cudaMemcpyDeviceToHost, m_cudaStream),
-                   "cudaMemcpyAsync(policy B)")) {
+                   "cudaMemcpyAsync(policy B)") ||
+        !checkCuda(cudaMemcpyAsync(wdl, m_deviceWdlBuffer, wdlSize, cudaMemcpyDeviceToHost, m_cudaStream),
+                   "cudaMemcpyAsync(WDL)") ||
+        !checkCuda(cudaMemcpyAsync(movesLeft, m_deviceMovesLeftBuffer, movesLeftSize, cudaMemcpyDeviceToHost, m_cudaStream),
+                   "cudaMemcpyAsync(moves left)")) {
         return false;
     }
 

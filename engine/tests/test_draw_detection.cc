@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <sstream>
 #include "../src/board.h"
 #include "../src/constants.h"
 #include "Fairy-Stockfish/src/position.h"
@@ -104,6 +106,50 @@ TEST_F(DrawDetectionTest, DrawNotInsufficientMaterialBughouse) {
     
     board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4KB2 w - - 0 1");
     EXPECT_FALSE(board.is_draw(BOARD_A)) << "Bughouse: King+Bishop vs King is not draw (can receive pieces)";
+}
+
+TEST_F(DrawDetectionTest, RepetitionKeyIgnoresPocketPieces) {
+    Board board;
+
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    uint64_t emptyPocketKey = board.board_only_key(BOARD_A);
+
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3[P] w - - 0 1");
+    uint64_t pawnPocketKey = board.board_only_key(BOARD_A);
+
+    EXPECT_EQ(emptyPocketKey, pawnPocketKey);
+}
+
+TEST_F(DrawDetectionTest, ReportedKnightKingCycleIsOnlyTwofold) {
+    Board board;
+    const std::string moves =
+        "1e2e4 1e7e5 1g1f3 1b8c6 1f1c4 1f8e7 1b1c3 2e2e4 2g8f6 2b1c3 "
+        "2d7d5 2e4d5 1P@e6 1d2d3 1g8f6 2f6d5 1P@h6 1h8g8 1h6g7 1g8g7 "
+        "1c1h6 1g7g2 2g1f3 2b8c6 2d2d4 2e7e6 2f1d3 2f8b4 2c1d2 2P@f4 "
+        "2P@h6 2g7h6 1P@g7 1g2g7 1h6g7 2c3d5 1N@g2 1e1d2 2d8d5 2d2b4 "
+        "1B@f4 2c6b4 1B@e3 1g2e3 1f2e3 1f4e3 1d2e3 1f6g4 1e3d2 1e7g5 "
+        "1d2e1 2P@g7 2b4d3 2d1d3 1N@g2 1e1e2 1g2f4 1e2e1 2h8g8 2B@e4 "
+        "2d5d8 2e4h7 1P@f2 1e1d2 1f4g2 1d2e2 1g2f4 1e2d2 1f4g2 1d2e2 "
+        "2g8g7 2P@g6";
+
+    std::istringstream stream(moves);
+    std::string token;
+    while (stream >> token) {
+        const int boardNum = token[0] - '1';
+        std::string moveText = token.substr(1);
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], moveText);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << "Invalid move: " << token;
+        board.push_move(boardNum, move);
+    }
+
+    const uint64_t currentKey = board.board_only_key(BOARD_A);
+    const int occurrences = static_cast<int>(std::count(
+        board.positionHistory[BOARD_A].begin(),
+        board.positionHistory[BOARD_A].end(), currentKey));
+
+    EXPECT_EQ(occurrences, 2);
+    EXPECT_FALSE(board.is_draw_on_board(BOARD_A));
+    EXPECT_FALSE(board.is_draw());
 }
 
 TEST_F(DrawDetectionTest, ThreefoldDetectionVerified) {
@@ -263,4 +309,37 @@ TEST_F(DrawDetectionTest, ThreefoldRepetitionIntermediatePosition) {
     // Back to Position X (occurrence #3)
     
     EXPECT_TRUE(board.is_draw(BOARD_A)) << "Three occurrences should be draw by threefold repetition";
+}
+
+TEST_F(DrawDetectionTest, ReportedBoardTwoMoveCompletesThreefoldRepetition) {
+    Board board;
+    const std::string moves =
+        "1g1f3 1d7d5 1d2d4 1b8c6 1b1c3 1c8g4 1c1f4 1e7e6 1h2h3 1g4f3 "
+        "1e2f3 1f8d6 1f4d6 1c7d6 2e2e4 2g8f6 2b1c3 2b8c6 2g1f3 2d7d5 "
+        "2e4d5 2f6d5 2d2d4 2e7e5 2c3d5 2d8d5 1N@h5 1N@f5 1P@g4 1P@e3 "
+        "1g4f5 2N@e3 2B@a5 2B@c3 2a5c3 2b2c3 1B@h4 1g2g3 1e3f2 1e1f2 "
+        "1h4g3 1f2g3 1d8g5 2d5a5 2d4e5 2a5c3 1P@g4 1g5h5 1g4h5 1g8f6 "
+        "1d1e2 1f6h5 1g3f2 1e8g8 1h1g1 1P@g3 1g1g3 1h5g3 1f2g3 1c6d4 "
+        "1e2e3 2c1d2 2c3c5 2N@e4 2c5e7 2P@f6 2e7d8 2f6g7 2f8g7 2P@f6 "
+        "2B@f8 2f6g7 2f8g7 2P@f6 2B@f8";
+
+    std::istringstream stream(moves);
+    std::string token;
+    while (stream >> token) {
+        const int boardNum = token[0] - '1';
+        std::string moveText = token.substr(1);
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], moveText);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << "Invalid move: " << token;
+        board.push_move(boardNum, move);
+    }
+
+    EXPECT_FALSE(board.is_draw());
+
+    std::string repetitionText = "f6g7";
+    Stockfish::Move repetition = Stockfish::UCI::to_move(*board.pos[BOARD_B], repetitionText);
+    ASSERT_NE(repetition, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_B, repetition);
+
+    EXPECT_TRUE(board.is_draw_on_board(BOARD_B));
+    EXPECT_TRUE(board.is_draw());
 }

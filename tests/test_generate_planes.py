@@ -4,6 +4,7 @@ import glob
 import numpy as np
 import polars as pl
 from src.domain.move2planes import make_map
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
 
 
 def test_generated_planes_validation():
@@ -36,14 +37,14 @@ def test_generated_planes_validation():
         for row in df.iter_rows(named=True):
             # Convert bytes back to numpy array
             x_bytes = row['x']
-            planes = np.frombuffer(x_bytes, dtype=np.uint8).reshape(64, 8, 8).astype(float)
+            planes = np.frombuffer(x_bytes, dtype=np.uint8).reshape(NUM_BUGHOUSE_CHANNELS, 8, 8).astype(float)
             policy_idx = row['y_policy_idx']
 
             total_samples += 1
 
             # Check if both boards are on turn (channels 25 and 57)
             board_a_on_turn = planes[25, 0, 0] > 0.5  # Board A turn plane
-            board_b_on_turn = planes[57, 0, 0] > 0.5  # Board B turn plane (channel 57 = 25 + 32)
+            board_b_on_turn = planes[NUM_BUGHOUSE_CHANNELS_PER_BOARD + 25, 0, 0] > 0.5
 
             # Extract the move indices
             move_0_idx, move_1_idx = policy_idx

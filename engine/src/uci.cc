@@ -2,7 +2,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <sstream>
 #include <vector>
 
 #include <memory>
@@ -66,6 +65,13 @@ void UCI::stop() {
         mainSearchThread = nullptr;
     }
     ongoingSearch.store(false, std::memory_order_release);
+}
+
+void UCI::new_game() {
+    stop();
+    if (agent) {
+        agent->reset_search_state();
+    }
 }
 
 void UCI::position(istringstream& is) {
@@ -168,6 +174,7 @@ void UCI::go(std::istringstream& is) {
         // Default to 1 second if nothing specified
         opts = SearchOptions::uci(1000, multiPV);
     }
+    opts.search = searchConfig;
     
     // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
@@ -207,6 +214,30 @@ void UCI::setoption(std::istringstream& is) {
             multiPV = mpv;
             std::cout << "info string MultiPV set to " << multiPV << std::endl;
         }
+    } else if (name == "WaitPassPriorPermille") {
+        int permille = std::clamp(std::stoi(value), 0, 1000);
+        searchConfig.waitPassPriorFloor = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string WaitPassPriorPermille set to " << permille << std::endl;
+    } else if (name == "CoordinationPassPriorPermille") {
+        int permille = std::clamp(std::stoi(value), 0, 1000);
+        searchConfig.coordinationPassPriorFloor = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string CoordinationPassPriorPermille set to " << permille << std::endl;
+    } else if (name == "DrawContemptPermille") {
+        int permille = std::clamp(std::stoi(value), 0, 1000);
+        searchConfig.drawContempt = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string DrawContemptPermille set to " << permille << std::endl;
+    } else if (name == "PWCoefficientPermille") {
+        int permille = std::clamp(std::stoi(value), 1, 10000);
+        searchConfig.pwCoefficient = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string PWCoefficientPermille set to " << permille << std::endl;
+    } else if (name == "RootPWCoefficientPermille") {
+        int permille = std::clamp(std::stoi(value), 1, 10000);
+        searchConfig.rootPwCoefficient = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string RootPWCoefficientPermille set to " << permille << std::endl;
+    } else if (name == "PWExponentPermille") {
+        int permille = std::clamp(std::stoi(value), 1, 1000);
+        searchConfig.pwExponent = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string PWExponentPermille set to " << permille << std::endl;
     } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
@@ -227,6 +258,12 @@ void UCI::send_uci_response() {
     cout << "id author aminwoo\n" << endl;
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
+    cout << "option name WaitPassPriorPermille type spin default 100 min 0 max 1000" << endl;
+    cout << "option name CoordinationPassPriorPermille type spin default 50 min 0 max 1000" << endl;
+    cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
+    cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
+    cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
+    cout << "option name PWExponentPermille type spin default 300 min 1 max 1000" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "uciok" << endl;
@@ -243,30 +280,48 @@ void UCI::policy() {
     float* value = new float[SearchParams::BATCH_SIZE];
     float* piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
     float* piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
+    float* wdl = new float[SearchParams::BATCH_SIZE * 3];
+    float* movesLeft = new float[SearchParams::BATCH_SIZE];
 
     // Convert board to planes
     board_to_planes(board, obs, teamSide, teamHasTimeAdvantage);
 
     // Run inference
     Engine* engine = engines[0].get();
-    if (!engine->runInference(obs, value, piA, piB)) {
+    if (!engine->runInference(obs, value, piA, piB, wdl, movesLeft)) {
         cerr << "Inference failed" << endl;
         delete[] obs;
         delete[] value;
         delete[] piA;
         delete[] piB;
+        delete[] wdl;
+        delete[] movesLeft;
         return;
     }
 
     cout << "Value: " << value[0] << endl;
+        const float maxWdl = std::max({wdl[0], wdl[1], wdl[2]});
+        const float lossExp = std::exp(wdl[0] - maxWdl);
+        const float drawExp = std::exp(wdl[1] - maxWdl);
+        const float winExp = std::exp(wdl[2] - maxWdl);
+        const float wdlTotal = lossExp + drawExp + winExp;
+        cout << "WDL: " << winExp / wdlTotal << " " << drawExp / wdlTotal
+            << " " << lossExp / wdlTotal << endl;
+        cout << "Predicted plies to end: " << movesLeft[0] * 100.0f << endl;
     cout << endl;
+
+    const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
+    const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
+    const float passPriorFloor = get_pass_prior_floor(
+        teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, searchConfig);
 
     // Board A policy
     cout << "Board A (" << board.fen(BOARD_A) << "):" << endl;
     if (board.side_to_move(BOARD_A) == teamSide) {
         vector<Stockfish::Move> actionsA = board.legal_moves(BOARD_A);
         actionsA.push_back(Stockfish::MOVE_NONE);  // Add sit option
-        vector<float> priorsA = get_normalized_probability(piA, actionsA, BOARD_A, board);
+        vector<float> priorsA = get_normalized_probability(
+            piA, actionsA, BOARD_A, board, passPriorFloor);
         
         // Sort by probability (descending)
         vector<size_t> indices = argsort(priorsA);
@@ -285,7 +340,8 @@ void UCI::policy() {
     if (board.side_to_move(BOARD_B) == ~teamSide) {
         vector<Stockfish::Move> actionsB = board.legal_moves(BOARD_B);
         actionsB.push_back(Stockfish::MOVE_NONE);  // Add sit option
-        vector<float> priorsB = get_normalized_probability(piB, actionsB, BOARD_B, board);
+        vector<float> priorsB = get_normalized_probability(
+            piB, actionsB, BOARD_B, board, passPriorFloor);
         
         // Sort by probability (descending)
         vector<size_t> indices = argsort(priorsB);
@@ -302,6 +358,8 @@ void UCI::policy() {
     delete[] value;
     delete[] piA;
     delete[] piB;
+    delete[] wdl;
+    delete[] movesLeft;
 }
 
 
@@ -322,6 +380,7 @@ void UCI::loop() {
         else if (token == "go")         go(is);
         else if (token == "setoption")  setoption(is);
         else if (token == "position")   position(is);
+        else if (token == "ucinewgame") new_game();
         else if (token == "stop")       stop();
         else if (token == "policy")     policy();
 
