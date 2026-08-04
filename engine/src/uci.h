@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <thread>
 #include <sstream>
 #include <vector>
@@ -19,8 +20,9 @@ private:
     Stockfish::Color teamSide = Stockfish::WHITE;
     bool teamHasTimeAdvantage = false;
     std::vector<std::unique_ptr<Engine>> engines;
-    bool ongoingSearch = false;
+    std::atomic<bool> ongoingSearch{false};
     int multiPV = 1;  // Number of principal variations to display
+    SearchParams::RuntimeConfig searchConfig;
 
 public:
     UCI();
@@ -34,6 +36,7 @@ public:
     void go(std::istringstream& is);
     void setoption(std::istringstream& is);
     void stop();
+    void new_game();
     void position(std::istringstream& is);
     void policy();
     void loop();

@@ -105,8 +105,11 @@ class AccuracySign(Metric):
         self.denominator = 0
 
     def update(self, preds: torch.Tensor, labels: torch.Tensor, sample_weights: torch.Tensor = None) -> None:
-        self.correct_cnt += float((preds.sign() == labels.data.sign()).sum())
-        self.denominator += labels.shape[0] - (labels == 0).sum()
+        decisive = labels != 0
+        self.correct_cnt += float(
+            (preds[decisive].sign() == labels[decisive].sign()).sum()
+        )
+        self.denominator += int(decisive.sum())
 
     def compute(self) -> float:
         if self.denominator != 0:

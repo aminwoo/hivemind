@@ -11,13 +11,14 @@
  * for easy experimentation. MCGS extends MCTS by using a transposition table
  * to detect when different move sequences reach the same position.
  * 
- * Default values are aligned with CrazyAra's search settings for consistency.
+ * Defaults use CrazyAra where the search semantics transfer directly, with
+ * Bughouse-specific settings for joint actions, passing, and terminal handling.
  */
 
 namespace SearchParams {
 
 // =============================================================================
-// Batch MCGS Parameters (aligned with CrazyAra defaults)
+// Batch MCGS Parameters
 // =============================================================================
 
 /// Number of leaves to collect before batched neural network inference
@@ -48,8 +49,10 @@ enum class VirtualStyle {
     VIRTUAL_MIX
 };
 
-/// Default virtual style (CrazyAra uses VIRTUAL_VISIT by default)
-constexpr VirtualStyle VIRTUAL_STYLE = VirtualStyle::VIRTUAL_VISIT;
+/// Full loss strongly separates two batched workers that can otherwise reach
+/// the same canonical MCGS node through different incoming joint-action edges.
+/// CrazyAra defaults to VIRTUAL_VISIT for its less transposition-heavy search.
+constexpr VirtualStyle VIRTUAL_STYLE = VirtualStyle::VIRTUAL_LOSS;
 
 /// Threshold for switching from VIRTUAL_VISIT to VIRTUAL_LOSS in VIRTUAL_MIX mode
 /// CrazyAra default: 1000
@@ -77,14 +80,9 @@ constexpr bool ENABLE_TRANSPOSITIONS = true;
 /// Higher values reduce rehashing overhead but use more memory
 constexpr size_t TT_INITIAL_CAPACITY = 100000;
 
-/// Maximum transposition table size (0 = unlimited)
+/// Maximum transposition table size
 /// Prevents unbounded memory growth in long games
-/// CrazyAra MAX_HASH_SIZE: 100000000
-constexpr size_t TT_MAX_SIZE = 0;
-
-/// Minimum visit count for a node to be used as a transposition
-/// Higher values ensure more reliable Q-value estimates before sharing
-constexpr int TT_MIN_VISITS = 0;
+constexpr size_t TT_MAX_SIZE = 1000000;
 
 // =============================================================================
 // PUCT (Polynomial Upper Confidence Trees) Parameters (aligned with CrazyAra)
@@ -104,20 +102,18 @@ constexpr float CPUCT_BASE = 19652.0f;
 // First Play Urgency (FPU) Parameters
 // =============================================================================
 
-/**
- * FPU Strategy: CrazyAra uses Q_INIT = -1.0 for unvisited children.
- * 
- * Your engine uses parent-relative FPU: FPU = parent_Q - FPU_REDUCTION
- * This is a valid alternative approach (used by Lc0 and others).
- * 
- * For consistency with CrazyAra-style behavior:
- * - Set FPU_REDUCTION to a high value (like 1.0) to start unvisited nodes pessimistically
- * - Or keep current value for Lc0-style parent-relative FPU
- * 
- * Current setting: 0.4 (Lc0-style parent-relative FPU)
- * CrazyAra equivalent: Would be approximately Q_INIT = -1.0 (fixed pessimistic)
- */
-constexpr float FPU_REDUCTION = 0.4f;
+/// Initial Q-value for an unvisited edge when network values use [-1, +1].
+constexpr float Q_INIT = -1.0f;
+
+// =============================================================================
+// Pass Prior Calibration
+// =============================================================================
+
+/// Minimum pass probability when the team can legally wait for its partner.
+constexpr float WAIT_PASS_PRIOR_FLOOR = 0.10f;
+
+/// Minimum pass probability per board when both teammates can move.
+constexpr float COORDINATION_PASS_PRIOR_FLOOR = 0.05f;
 
 // =============================================================================
 // Draw Contempt Parameters
@@ -137,7 +133,7 @@ constexpr float FPU_REDUCTION = 0.4f;
  * - 0.05: Light contempt (slightly prefer wins over draws)
  * - 0.10: Moderate contempt (more aggressive)
  */
-constexpr float DRAW_CONTEMPT = 0.15f;
+constexpr float DRAW_CONTEMPT = 0.0f;
 
 // =============================================================================
 // Q-Value Weighted Move Selection Parameters (CrazyAra 2019)
@@ -193,13 +189,13 @@ constexpr bool ENABLE_TREE_REUSE = true;
  * When the second-best move cannot catch up to the best move even with
  * all remaining search time, stop early to save time.
  * 
- * Condition: secondMax + remainingTime * NPS < firstMax * EARLY_STOP_FACTOR
+ * Condition: (secondMax + remainingTime * NPS) * EARLY_STOP_FACTOR < firstMax
  * 
- * CrazyAra default: true (when in-game with time controls)
+ * CrazyAra default: false
  */
 constexpr bool ENABLE_EARLY_STOPPING = true;
 
-/// Factor for early stopping comparison (best move must have this multiple of visits)
+/// Factor for early stopping comparison (best move must retain this multiple of projected visits)
 /// CrazyAra uses 2.0
 constexpr float EARLY_STOP_FACTOR = 2.0f;
 
@@ -215,13 +211,17 @@ constexpr float EARLY_STOP_FACTOR = 2.0f;
  */
 constexpr bool ENABLE_MATE_EARLY_EXIT = true;
 
+/// Permit heuristic Q-based exits in addition to solver-proven mate exits.
+/// Disabled by default because Bughouse evaluations can reverse sharply while
+/// progressive widening is still exposing joint actions.
+constexpr bool ENABLE_Q_EARLY_EXIT = false;
+
 /// Q-value threshold for early exit (positions above this are "completely winning")
-/// Value of 0.95 corresponds to roughly +3000 centipawns
-constexpr float WINNING_Q_THRESHOLD = 0.95f;
+constexpr float WINNING_Q_THRESHOLD = 0.99f;
 
 /// Minimum nodes searched before allowing Q-based early exit
 /// (ensures we've explored enough to trust the evaluation)
-constexpr int MIN_NODES_FOR_Q_EXIT = 500;
+constexpr int MIN_NODES_FOR_Q_EXIT = 5000;
 
 /**
  * Enable dynamic time extension: Extend search when evaluation is falling.
@@ -229,14 +229,14 @@ constexpr int MIN_NODES_FOR_Q_EXIT = 500;
  * If the root evaluation has dropped since the last check, extend the
  * allocated move time to avoid blundering in critical positions.
  * 
- * CrazyAra default: true
+ * CrazyAra NPS time-manager default: false
  */
-constexpr bool ENABLE_TIME_EXTENSION = true;
+constexpr bool ENABLE_TIME_EXTENSION = false;
 
 /// Maximum number of time extensions per move (to prevent infinite extension)
 constexpr int MAX_TIME_EXTENSIONS = 2;
 
-/// Minimum evaluation drop (in centipawns) to trigger time extension
+/// Minimum evaluation drop in normalized Q units to trigger time extension
 /// Smaller drops are normal fluctuation, not worth extending for
 constexpr float TIME_EXTENSION_THRESHOLD = 0.05f;
 
@@ -256,7 +256,8 @@ constexpr float TIME_EXTENSION_FACTOR = 1.5f;
  * - Parent is WIN if any child is LOSS (opponent)
  * - Parent is LOSS if all children are WIN (opponent)
  * 
- * CrazyAra default: true
+ * CrazyAra default: false. Bughouse enables it because forced mating sequences
+ * are common and the solver only proves losses after all joint actions exist.
  */
 constexpr bool ENABLE_MCTS_SOLVER = true;
 
@@ -264,14 +265,25 @@ constexpr bool ENABLE_MCTS_SOLVER = true;
 // Progressive Widening Parameters
 // =============================================================================
 
-/// Coefficient for progressive widening formula
-/// m = ceil(PW_COEFFICIENT * n^PW_EXPONENT)
-/// where m = allowed children, n = visit count
+/// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
 constexpr float PW_COEFFICIENT = 1.0f;
-
-/// Exponent for progressive widening formula
-/// Lower values slow down the expansion rate
+constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.3f;
+
+struct RuntimeConfig {
+    float cpuctInit = CPUCT_INIT;
+    float cpuctBase = CPUCT_BASE;
+    bool enableMCGS = ENABLE_MCGS;
+    bool enableTranspositions = ENABLE_TRANSPOSITIONS;
+    float drawContempt = DRAW_CONTEMPT;
+    float pwCoefficient = PW_COEFFICIENT;
+    float rootPwCoefficient = ROOT_PW_COEFFICIENT;
+    float pwExponent = PW_EXPONENT;
+    float qValueWeight = Q_VALUE_WEIGHT;
+    float qVetoDelta = Q_VETO_DELTA;
+    float waitPassPriorFloor = WAIT_PASS_PRIOR_FLOOR;
+    float coordinationPassPriorFloor = COORDINATION_PASS_PRIOR_FLOOR;
+};
 
 // =============================================================================
 // Utility Functions
@@ -286,20 +298,22 @@ constexpr float PW_EXPONENT = 0.3f;
  * @param totalVisits Parent node's total visit count
  * @return Dynamic CPUCT value
  */
-inline float get_cpuct(float totalVisits) {
-    return std::log((totalVisits + CPUCT_BASE + 1.0f) / CPUCT_BASE) + CPUCT_INIT;
+inline float get_cpuct(float totalVisits, float init = CPUCT_INIT, float base = CPUCT_BASE) {
+    return std::log((totalVisits + base + 1.0f) / base) + init;
 }
 
-/**
- * @brief Calculates the number of allowed children based on progressive widening.
- * 
- * Formula: m = ceil(PW_COEFFICIENT * n^PW_EXPONENT)
- * @param visitCount Current visit count of the node
- * @return Number of children allowed to be expanded
- */
-inline int get_allowed_children(int visitCount) {
+inline int get_allowed_children(int visitCount,
+                                float coefficient = PW_COEFFICIENT,
+                                float exponent = PW_EXPONENT) {
     if (visitCount <= 0) return 1;
-    return static_cast<int>(std::ceil(PW_COEFFICIENT * std::pow(static_cast<float>(visitCount), PW_EXPONENT)));
+    return static_cast<int>(std::ceil(
+        coefficient * std::pow(static_cast<float>(visitCount), exponent)));
+}
+
+inline bool has_insurmountable_visit_lead(float bestVisits,
+                                          float projectedSecondVisits,
+                                          float factor = EARLY_STOP_FACTOR) {
+    return projectedSecondVisits * factor < bestVisits;
 }
 
 /**
@@ -320,53 +334,4 @@ inline VirtualStyle get_virtual_style(uint32_t visits) {
     }
     return VIRTUAL_STYLE;
 }
-
-/**
- * @brief Apply virtual loss/visit to Q-value during selection.
- * 
- * CrazyAra virtual loss formula:
- * - VIRTUAL_LOSS: Q = (Q * n - 1) / (n + 1)  (treats as if a loss occurred)
- * - VIRTUAL_VISIT: Only increment visit count, Q unchanged
- * - VIRTUAL_OFFSET: Q -= VIRTUAL_OFFSET_STRENGTH
- * 
- * @param currentQ Current Q-value
- * @param visits Current visit count
- * @param style Virtual style to apply
- * @return Updated Q-value after virtual loss
- */
-inline float apply_virtual_loss(float currentQ, uint32_t visits, VirtualStyle style) {
-    switch (style) {
-    case VirtualStyle::VIRTUAL_LOSS:
-        return static_cast<float>((static_cast<double>(currentQ) * visits - 1.0) / (visits + 1.0));
-    case VirtualStyle::VIRTUAL_OFFSET:
-        return currentQ - static_cast<float>(VIRTUAL_OFFSET_STRENGTH);
-    case VirtualStyle::VIRTUAL_VISIT:
-    case VirtualStyle::VIRTUAL_MIX:
-    default:
-        return currentQ;  // Q unchanged, only visit count changes
-    }
-}
-
-/**
- * @brief Revert virtual loss during backup.
- * 
- * @param currentQ Current Q-value (with virtual loss applied)
- * @param visits Current visit count (including virtual visit)
- * @param style Virtual style that was applied
- * @return Q-value with virtual loss reverted
- */
-inline float revert_virtual_loss(float currentQ, uint32_t visits, VirtualStyle style) {
-    switch (style) {
-    case VirtualStyle::VIRTUAL_LOSS:
-        if (visits <= 1) return currentQ;
-        return static_cast<float>((static_cast<double>(currentQ) * visits + 1.0) / (visits - 1.0));
-    case VirtualStyle::VIRTUAL_OFFSET:
-        return currentQ + static_cast<float>(VIRTUAL_OFFSET_STRENGTH);
-    case VirtualStyle::VIRTUAL_VISIT:
-    case VirtualStyle::VIRTUAL_MIX:
-    default:
-        return currentQ;  // Q was unchanged
-    }
-}
-
 } // namespace SearchParams

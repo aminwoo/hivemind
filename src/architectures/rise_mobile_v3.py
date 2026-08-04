@@ -34,6 +34,28 @@ from configs.train_config import TrainConfig
 from src.architectures.next_vit_official_modules import NTB
 
 
+class _SharedPolicyHeads(Module):
+    def __init__(self, channels, policy_channels, act_type):
+        super().__init__()
+        self.nb_flatten = policy_channels * 8 * 8
+        self.shared_body = Sequential(
+            Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
+            BatchNorm2d(channels),
+            get_act(act_type),
+        )
+        self.board_projections = nn.ModuleList([
+            Conv2d(channels, policy_channels, kernel_size=3, padding=1, bias=False),
+            Conv2d(channels, policy_channels, kernel_size=3, padding=1, bias=False),
+        ])
+
+    def forward(self, x):
+        shared = self.shared_body(x)
+        return tuple(
+            projection(shared).view(-1, self.nb_flatten)
+            for projection in self.board_projections
+        )
+
+
 def _get_res_blocks(act_types, channels, channels_operating_init, channel_expansion, kernels, se_types, use_transformers, path_dropout_rates, conv_block, kernel_5_channel_ratio, round_channels_to_next_32):
     """Helper function which generates the residual blocks for Risev3"""
 
@@ -89,6 +111,7 @@ class RiseV3(Module):
                  use_mlp_wdl_ply=False,
                  use_transformers=None, path_dropout=0, conv_block="mobile_bottlekneck_res_block",
                  kernel_5_channel_ratio=None, round_channels_to_next_32=False,
+                 shared_policy_trunk=False,
                  ):
         """
         RISEv3 architecture
@@ -127,6 +150,7 @@ class RiseV3(Module):
         self.nb_input_channels = nb_input_channels
         self.use_plys_to_end = use_plys_to_end
         self.use_wdl = use_wdl
+        self.shared_policy_trunk = shared_policy_trunk
 
         if round_channels_to_next_32:
             channels = round_to_next_multiple_of_32(channels)
@@ -161,12 +185,21 @@ class RiseV3(Module):
                                      act_types[-1], False, nb_input_channels,
                                      use_wdl, use_plys_to_end, use_mlp_wdl_ply)
 
-        self.policy_heads = nn.ModuleList([
-            _PolicyHead(board_height, board_width, channels, channels_policy_head, n_labels,
-                        act_types[-1], select_policy_from_plane),
-            _PolicyHead(board_height, board_width, channels, channels_policy_head, n_labels,
-                        act_types[-1], select_policy_from_plane)
-        ])
+        if shared_policy_trunk:
+            if not select_policy_from_plane or board_height != 8 or board_width != 8:
+                raise ValueError(
+                    "The shared policy trunk requires 8x8 plane policy output"
+                )
+            self.policy_heads = _SharedPolicyHeads(
+                channels, channels_policy_head, act_types[-1]
+            )
+        else:
+            self.policy_heads = nn.ModuleList([
+                _PolicyHead(board_height, board_width, channels, channels_policy_head, n_labels,
+                            act_types[-1], select_policy_from_plane),
+                _PolicyHead(board_height, board_width, channels, channels_policy_head, n_labels,
+                            act_types[-1], select_policy_from_plane)
+            ])
 
     def forward(self, x):
         """
@@ -176,6 +209,21 @@ class RiseV3(Module):
         :return: Value & Policy Output
         """
         out = self.body_spatial(x)
+
+        if self.shared_policy_trunk:
+            value_head_out = self.value_head(out)
+            policy_out = self.policy_heads(out)
+            if self.use_plys_to_end and self.use_wdl:
+                value_out, wdl_out, plys_to_end_out = value_head_out
+                auxiliary_out = torch.cat((wdl_out, plys_to_end_out), dim=1)
+                return (
+                    value_out,
+                    policy_out,
+                    auxiliary_out,
+                    wdl_out,
+                    plys_to_end_out,
+                )
+            return value_head_out, policy_out
 
         return process_value_policy_head(out, self.value_head, self.policy_heads, self.use_plys_to_end, self.use_wdl)
 
@@ -216,6 +264,7 @@ def get_rise_v33_model(args):
                    dropout_rate=0, select_policy_from_plane=args.select_policy_from_plane,
                    kernels=kernels, se_types=se_types, use_avg_features=False, n_labels=args.n_labels,
                    use_wdl=args.use_wdl, use_plys_to_end=args.use_plys_to_end, use_mlp_wdl_ply=args.use_mlp_wdl_ply,
+                   shared_policy_trunk=getattr(args, "shared_policy_trunk", False),
                    )
     return model
 

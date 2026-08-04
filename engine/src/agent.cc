@@ -123,7 +123,8 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
     }
     
     // Check for overwhelmingly winning Q-value (only if enough nodes searched)
-    if (nodesSearched >= SearchParams::MIN_NODES_FOR_Q_EXIT && 
+    if (SearchParams::ENABLE_Q_EARLY_EXIT &&
+        nodesSearched >= SearchParams::MIN_NODES_FOR_Q_EXIT &&
         bestQ >= SearchParams::WINNING_Q_THRESHOLD) {
         if (verbose) {
             cout << "info string Early exit: position is completely winning (Q=" 
@@ -142,6 +143,7 @@ Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
     // Create the transposition table for MCGS (if enabled)
     if (SearchParams::ENABLE_MCGS) {
         transpositionTable = std::make_unique<TranspositionTable>();
+        transpositionTable->setMaxCapacity(SearchParams::TT_MAX_SIZE);
         transpositionTable->reserve(SearchParams::TT_INITIAL_CAPACITY);
     }
     
@@ -164,16 +166,41 @@ Agent::~Agent() {
     searchThreads.clear();
 }
 
+void Agent::reset_search_state() {
+    std::unique_lock searchLock(searchMutex_);
+    auto oldRoot = std::move(rootNode);
+    ownNextRoot_.reset();
+    opponentsNextRoot_.reset();
+    lastSearchHash_ = 0;
+    if (transpositionTable) {
+        transpositionTable->clear();
+    }
+    if (oldRoot) {
+        gcThread_.enqueue(std::move(oldRoot));
+    }
+}
+
 /**
- * @brief Unified search function for both UCI and self-play modes.
+ * @brief Runs a UCI search.
  */
 JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engines, 
                                         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
                                         const SearchOptions& options) {
+    std::unique_lock searchLock(searchMutex_);
     JointActionCandidate result;
+    lastRuntimeConfig_ = options.search;
+    if (engines.empty()) {
+        cerr << "Cannot search without an inference engine" << endl;
+        return result;
+    }
     
-    // Check for no legal moves
-    if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty() || 
+    const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
+    const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
+    const bool canWait = is_double_sit_legal(
+        teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
+
+    // A team with no real board move may still have the legal wait action.
+    if ((board.legal_moves(teamSide, teamHasTimeAdvantage).empty() && !canWait) ||
         board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
         if (options.verbose) {
             cout << "bestmove (none)" << endl;
@@ -191,13 +218,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Try to reuse tree from previous search (if enabled)
     std::shared_ptr<Node> reusedRoot = nullptr;
     if (SearchParams::ENABLE_TREE_REUSE) {
-        reusedRoot = try_reuse_tree(positionHash);
+        reusedRoot = try_reuse_tree(positionHash, teamSide);
     }
     
     if (reusedRoot) {
         // Reuse the existing subtree
         rootNode = reusedRoot;
         rootNode->set_hash(positionHash);
+        rootNode->set_depth(0);
         
         if (options.verbose) {
             cout << "info string Tree reuse: " << rootNode->get_visits() 
@@ -211,43 +239,34 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTimeMs);
     
     // MCGS: Clear and set up transposition table for new search (if enabled)
-    if (SearchParams::ENABLE_MCGS && transpositionTable) {
+    if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
         transpositionTable->clear();
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
     }
 
-    // Set up all search threads with shared root node, search info, and transposition table
-    for (auto* st : searchThreads) {
+    const size_t workerCount = std::max(static_cast<size_t>(numThreads), engines.size());
+    while (searchThreads.size() < workerCount) {
+        searchThreads.push_back(new SearchThread());
+    }
+
+    // Set up active search threads with shared root node, search info, and transposition table
+    for (size_t i = 0; i < workerCount; ++i) {
+        SearchThread* st = searchThreads[i];
         st->set_root_node(rootNode.get());
         st->set_search_info(&searchInfo);
-        if (SearchParams::ENABLE_MCGS) {
-            st->set_transposition_table(transpositionTable.get());
-        }
+        st->set_runtime_config(options.search);
+        st->set_transposition_table(
+            options.search.enableMCGS && options.search.enableTranspositions
+                ? transpositionTable.get()
+                : nullptr);
     }
     
     running = true;
 
-    // If Dirichlet noise is enabled, run one iteration first to expand root,
-    // then apply noise before main search
-    bool applyDirichlet = (options.dirichletEpsilon > 0.0f);
-    if (applyDirichlet) {
-        Engine* engine = engines[0];
-        SearchThread* st = searchThreads[0];
-        Board localBoard(board);
-        st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
-        
-        if (rootNode && rootNode->is_expanded()) {
-            size_t numChildren = rootNode->get_num_children();
-            if (numChildren > 0) {
-                auto noise = generate_dirichlet_noise(numChildren, options.dirichletAlpha);
-                rootNode->apply_dirichlet_noise(noise, options.dirichletEpsilon);
-            }
-        }
-    }
-
     // Launch worker threads
     vector<thread> workers;
-    for (int i = 0; i < numThreads; i++) {
+    workers.reserve(workerCount);
+    for (size_t i = 0; i < workerCount; ++i) {
         Engine* engine = engines[i % engines.size()];
         SearchThread* st = searchThreads[i];
         
@@ -278,6 +297,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         constexpr float C = 180.0f;
         constexpr float k = 1.56f;
         int lastReportedDepth = 0;
+        double lastInfoElapsedMs = 0.0;
         float lastCheckEval = 0.0f;
         bool evalInitialized = false;
         
@@ -296,8 +316,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             double elapsedMs = searchInfo.elapsed();
             int nodes = searchInfo.get_nodes_searched();
             int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-            size_t tbhits = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getHits() : 0;
-            int hashfull = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+            size_t tbhits = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getHits() : 0;
+            int hashfull = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
             
             if (rootNode && rootNode->is_expanded()) {
                 auto childVisits = rootNode->get_child_visits();
@@ -326,7 +346,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     // Initialize eval tracking
                     if (!evalInitialized) {
                         lastCheckEval = bestQ;
-                        searchInfo.set_last_eval(bestQ);
                         evalInitialized = true;
                     }
                     
@@ -343,7 +362,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                                static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
                         
                         // Stop if second-best can't catch up AND best move has better Q
-                        if (projectedVisits < firstMax * SearchParams::EARLY_STOP_FACTOR &&
+                        if (SearchParams::has_insurmountable_visit_lead(
+                            static_cast<float>(firstMax), projectedVisits) &&
                             bestQ >= secondQ) {
                             double savedMs = std::max(0.0, static_cast<double>(searchInfo.get_move_time()) - elapsedMs);
                             cout << "info string Early stopping: saved " 
@@ -366,12 +386,15 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         lastCheckEval = bestQ;
                     }
                     
-                    // Only output when depth increases
-                    if (depth > lastReportedDepth) {
+                    // Report new depths immediately and continue reporting once per second
+                    // when maximum depth stalls, so score convergence remains visible.
+                    if (depth > lastReportedDepth || elapsedMs - lastInfoElapsedMs >= 1000.0) {
                         lastReportedDepth = depth;
+                        lastInfoElapsedMs = elapsedMs;
                         
                         // Use solver-aware selection for the best child to display
-                        int solverBestIdx = rootNode->get_best_move_idx_with_q_weight();
+                        int solverBestIdx = rootNode->get_best_move_idx_with_q_weight(
+                            options.search.qVetoDelta, options.search.qValueWeight);
                         size_t displayIdx = (solverBestIdx >= 0) 
                             ? static_cast<size_t>(solverBestIdx) : static_cast<size_t>(firstIdx);
                         
@@ -459,7 +482,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         float projectedVisits = static_cast<float>(secondMax) + 
                                                static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
                         
-                        if (projectedVisits < firstMax * SearchParams::EARLY_STOP_FACTOR &&
+                        if (SearchParams::has_insurmountable_visit_lead(
+                            static_cast<float>(firstMax), projectedVisits) &&
                             bestQ >= secondQ) {
                             running = false;
                             break;
@@ -506,7 +530,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             size_t numChildren = min(visits.size(), children.size());
             
             // Use Q-value weighted selection (with veto and weighting)
-            int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+            int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+                options.search.qVetoDelta, options.search.qValueWeight);
             
             // Fallback to most-visited if Q-value selection failed
             if (bestIdx < 0) {
@@ -541,8 +566,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         int nodes = searchInfo.get_nodes_searched();
         int depth = searchInfo.get_max_depth();
         int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-        size_t tbhits = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getHits() : 0;
-        int hashfull = (SearchParams::ENABLE_MCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+        size_t tbhits = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getHits() : 0;
+        int hashfull = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
         
         // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
         constexpr float C = 180.0f;
@@ -563,7 +588,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             
             // When root is proven WIN/LOSS, prioritize the solver's best move as PV 1
             if (rootNode->get_node_type() != NodeType::UNSOLVED) {
-                int solverIdx = rootNode->get_best_move_idx_with_q_weight();
+                int solverIdx = rootNode->get_best_move_idx_with_q_weight(
+                    options.search.qVetoDelta, options.search.qValueWeight);
                 if (solverIdx >= 0) {
                     auto it = std::find(sortedIndices.begin(), sortedIndices.end(), static_cast<size_t>(solverIdx));
                     if (it != sortedIndices.end() && it != sortedIndices.begin()) {
@@ -617,6 +643,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             cout << endl;
         }
 
+        cout << "info string rejected selection attempts "
+               << searchInfo.get_collisions()
+               << " (same batch " << searchInfo.get_same_batch_collisions()
+               << ", reserved by other worker " << searchInfo.get_reservation_collisions()
+               << ")" << endl;
         string bestMoveStr = extract_best_move(board);
         cout << "bestmove " << bestMoveStr << endl;
     }
@@ -635,9 +666,41 @@ string Agent::extract_best_move(Board& board) {
     }
 
     // Use solver-aware move selection (handles proven wins/losses)
-    int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
     if (bestIdx < 0) {
         return "(none)";
+    }
+
+    auto actionDraws = [&board, this](int childIdx) {
+        JointActionCandidate candidate = rootNode->get_joint_action(childIdx);
+        board.make_moves(candidate.moveA, candidate.moveB);
+        bool draws = board.is_draw();
+        board.unmake_moves(candidate.moveA, candidate.moveB);
+        return draws;
+    };
+
+    if (actionDraws(bestIdx)) {
+        const auto visits = rootNode->get_child_visits();
+        const auto qValues = rootNode->get_q_values();
+        const float drawQ = rootNode->get_child_q(bestIdx);
+        int bestNonDrawIdx = -1;
+        int bestNonDrawVisits = -1;
+
+        const size_t candidateCount = std::min(visits.size(), qValues.size());
+        for (size_t i = 0; i < candidateCount; ++i) {
+            if (static_cast<int>(i) == bestIdx || visits[i] <= 1 || qValues[i] <= drawQ) {
+                continue;
+            }
+            if (visits[i] > bestNonDrawVisits && !actionDraws(static_cast<int>(i))) {
+                bestNonDrawIdx = static_cast<int>(i);
+                bestNonDrawVisits = visits[i];
+            }
+        }
+
+        if (bestNonDrawIdx >= 0) {
+            bestIdx = bestNonDrawIdx;
+        }
     }
 
     JointActionCandidate action = rootNode->get_joint_action(bestIdx);
@@ -787,7 +850,8 @@ string Agent::extract_pv_from_child(Board& board, int childIdx, int maxDepth) {
         }
         
         // Find best child: prefer solver-proven path, fallback to most visits
-        int bestIdx = currentNode->get_best_move_idx_with_q_weight();
+        int bestIdx = currentNode->get_best_move_idx_with_q_weight(
+            lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
         
         // Fallback to most-visited (handles unsolved nodes and edge cases)
         if (bestIdx < 0) {
@@ -857,9 +921,10 @@ void Agent::setHashSize(size_t sizeMB) {
  * matches either our expected move (ownNextRoot_) or opponent's expected
  * response (opponentsNextRoot_).
  */
-std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash) {
+std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash, Stockfish::Color teamSide) {
     // Check if ownNextRoot_ matches (we made our expected move)
-    if (ownNextRoot_ && ownNextRoot_->get_hash() == positionHash) {
+    if (ownNextRoot_ && ownNextRoot_->get_hash() == positionHash
+        && ownNextRoot_->get_team_to_play() == teamSide) {
         auto reused = ownNextRoot_;
         
         // Queue old root for garbage collection (if different from reused)
@@ -875,7 +940,8 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash) {
     }
     
     // Check if opponentsNextRoot_ matches (opponent made expected response)
-    if (opponentsNextRoot_ && opponentsNextRoot_->get_hash() == positionHash) {
+    if (opponentsNextRoot_ && opponentsNextRoot_->get_hash() == positionHash
+        && opponentsNextRoot_->get_team_to_play() == teamSide) {
         auto reused = opponentsNextRoot_;
         
         // Queue old root for garbage collection
@@ -910,9 +976,10 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash) {
  * - opponentsNextRoot_: Best grandchild (opponent's expected response)
  */
 void Agent::store_next_root_candidates() {
+    ownNextRoot_.reset();
+    opponentsNextRoot_.reset();
+
     if (!rootNode || !rootNode->is_expanded()) {
-        ownNextRoot_.reset();
-        opponentsNextRoot_.reset();
         return;
     }
     
@@ -920,13 +987,12 @@ void Agent::store_next_root_candidates() {
     auto visits = rootNode->get_child_visits();
     
     if (children.empty() || visits.empty()) {
-        ownNextRoot_.reset();
-        opponentsNextRoot_.reset();
         return;
     }
     
     // Find best child (most visited, with Q-value consideration)
-    int bestIdx = rootNode->get_best_move_idx_with_q_weight();
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
     if (bestIdx < 0) {
         // Fallback to most-visited
         int maxVisits = 0;
