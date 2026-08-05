@@ -341,9 +341,15 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             
             if (boardAOnTurn) {
                 actionsA = leafBoard.legal_moves(BOARD_A);
+                std::erase_if(actionsA, [&leafBoard](Stockfish::Move move) {
+                    return !is_policy_move_representable(leafBoard, BOARD_A, move);
+                });
             }
             if (boardBOnTurn) {
                 actionsB = leafBoard.legal_moves(BOARD_B);
+                std::erase_if(actionsB, [&leafBoard](Stockfish::Move move) {
+                    return !is_policy_move_representable(leafBoard, BOARD_B, move);
+                });
             }
             
             vector<float> priorsA;

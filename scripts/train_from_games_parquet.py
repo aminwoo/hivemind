@@ -5,7 +5,7 @@ This script performs:
 1) Generate training plane shards from games.parquet
 2) Build a validation shard (evaluation_shard.parquet) if needed
 3) Launch supervised training
-4) Produce ONNX checkpoints in src/training/weights
+4) Produce checkpoints in src/training/weights/supervised
 
 Example:
     python scripts/train_from_games_parquet.py --games data/games.parquet
@@ -186,7 +186,7 @@ def _run_supervised_training(
     train_eval_shard: Path | None = None,
 ) -> None:
     train_dir = project_root / "src" / "training"
-    _ensure_dir(train_dir / "weights")
+    _ensure_dir(train_dir / "weights" / "supervised")
     _ensure_dir(train_dir / "logs")
 
     cmd = [sys.executable, "train_loop.py", "--mode", "sl"]
@@ -447,13 +447,14 @@ def main() -> None:
         train_eval_shard=train_eval_shard_path,
     )
 
-    onnx_files = sorted((PROJECT_ROOT / "src" / "training" / "weights").glob("*.onnx"))
+    supervised_weights = PROJECT_ROOT / "src" / "training" / "weights" / "supervised"
+    onnx_files = sorted(supervised_weights.glob("*.onnx"))
     if onnx_files:
         print("ONNX checkpoints:")
         for onnx_path in onnx_files[-10:]:
             print(f"  - {onnx_path}")
     else:
-        print("No ONNX files found yet in src/training/weights")
+        print(f"No ONNX files found yet in {supervised_weights}")
 
 
 if __name__ == "__main__":

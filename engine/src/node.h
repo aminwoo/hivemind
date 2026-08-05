@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
+#include <random>
 #include <shared_mutex>
 #include <vector>
 
@@ -243,7 +244,7 @@ public:
                              bool teamHasTimeAdvantage,
                              bool boardAOnTurn,
                              bool boardBOnTurn,
-                             const SearchParams::RuntimeConfig&) {
+                             const SearchParams::RuntimeConfig& config) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
@@ -251,8 +252,38 @@ public:
             return false;
         }
         
-        // Initialize generator
-        candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB,
+        std::vector<float> rootPriorsA = priorsA;
+        std::vector<float> rootPriorsB = priorsB;
+        if (m_depth.load(std::memory_order_relaxed) == 0
+            && config.rootDirichletAlpha > 0.0f
+            && config.rootDirichletEpsilon > 0.0f) {
+            auto applyNoise = [&](std::vector<float>& priors, uint64_t salt) {
+                if (priors.size() <= 1) {
+                    return;
+                }
+                std::mt19937_64 randomEngine(
+                    config.rootNoiseSeed ^ positionHash.load(std::memory_order_relaxed) ^ salt);
+                std::gamma_distribution<float> gamma(config.rootDirichletAlpha, 1.0f);
+                std::vector<float> noise(priors.size());
+                float total = 0.0f;
+                for (float& sample : noise) {
+                    sample = gamma(randomEngine);
+                    total += sample;
+                }
+                if (total <= 0.0f) {
+                    return;
+                }
+                const float epsilon = std::clamp(config.rootDirichletEpsilon, 0.0f, 1.0f);
+                for (size_t index = 0; index < priors.size(); ++index) {
+                    priors[index] = (1.0f - epsilon) * priors[index]
+                        + epsilon * noise[index] / total;
+                }
+            };
+            applyNoise(rootPriorsA, 0x9e3779b97f4a7c15ULL);
+            applyNoise(rootPriorsB, 0xbf58476d1ce4e5b9ULL);
+        }
+
+        candidateGenerator.initialize(actionsA, actionsB, rootPriorsA, rootPriorsB,
                           teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
         expandedCount = 0;
         

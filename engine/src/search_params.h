@@ -283,6 +283,9 @@ struct RuntimeConfig {
     float qVetoDelta = Q_VETO_DELTA;
     float waitPassPriorFloor = WAIT_PASS_PRIOR_FLOOR;
     float coordinationPassPriorFloor = COORDINATION_PASS_PRIOR_FLOOR;
+    float rootDirichletAlpha = 0.0f;
+    float rootDirichletEpsilon = 0.0f;
+    uint64_t rootNoiseSeed = 0;
 };
 
 // =============================================================================

@@ -10,6 +10,8 @@
 #include "globals.h"
 #include "joint_action.h"
 
+class SearchThread;
+
 /**
  * @brief Search options to configure Agent::run_search behavior.
  */
@@ -33,6 +35,11 @@ struct SearchOptions {
         return opts;
     }
     
+};
+
+struct RootEdgeStats {
+    JointActionCandidate action;
+    int visits = 0;
 };
 
 /**
@@ -85,6 +92,9 @@ public:
     JointActionCandidate run_search(Board& board, const std::vector<Engine*>& engines, 
                                     Stockfish::Color side, bool teamHasTimeAdvantage,
                                     const SearchOptions& options);
+
+    /** Returns an immutable snapshot of the expanded root edges after search. */
+    std::vector<RootEdgeStats> root_edge_stats() const;
     
     /**
      * @brief Extracts PV line starting from a specific child index.

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -21,17 +22,24 @@ UCI::~UCI() {
     stop();
 }
 
-void UCI::initializeEngines(const std::vector<int>& deviceIds) {
+bool UCI::initializeEngines(
+    const std::vector<int>& deviceIds,
+    const std::string& networkPath) {
     stop();
 
     // Clear any existing engines.
     engines.clear();
 
-    // Automatically find the latest ONNX file in the networks directory.
-    const std::string onnxFile = findLatestOnnxFile("./networks");
+    const std::string onnxFile = networkPath.empty()
+        ? findLatestOnnxFile("./networks")
+        : networkPath;
     if (onnxFile.empty()) {
-        std::cerr << "Error: No ONNX file found in ./networks directory." << std::endl;
-        return;
+        std::cerr << "Error: No ONNX model found; pass --network <onnx>." << std::endl;
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(onnxFile)) {
+        std::cerr << "Error: ONNX model not found: " << onnxFile << std::endl;
+        return false;
     }
     // For each device ID, create a new Engine, load the network, and store it.
     for (int deviceId : deviceIds) {
@@ -50,6 +58,7 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
 
     // Create the single-threaded Agent
     agent = std::make_unique<Agent>();
+    return !engines.empty();
 }
 
 

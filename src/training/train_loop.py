@@ -14,6 +14,10 @@ from torch.utils.data import TensorDataset, DataLoader
 from configs.train_config import TrainConfig, TrainObjects, rl_train_config
 from configs.main_config import main_config
 from src.training.data_loaders import load_parquet_shard, load_rl_data_from_directory, load_rl_parquet_shard, RLDataset, StreamingRLDataset, CombinedRLDataset
+from src.preprocessing.convert_selfplay_data import (
+    DEFAULT_RL_VALIDATION_FRACTION,
+    convert_to_split_parquet,
+)
 
 from src.training.lr_schedules.lr_schedules import *
 from src.architectures.rise_mobile_v3 import get_rise_v33_model
@@ -21,6 +25,11 @@ from src.training.trainer_agent import TrainerAgentPytorch, save_torch_state,\
     load_torch_state, export_to_onnx, get_context, get_data_loader, evaluate_metrics
 from src.training.train_util import get_metrics, value_to_wdl_label, prepare_plys_label
 from src.constants import NUM_BUGHOUSE_CHANNELS
+
+
+TRAINING_OUTPUT_DIR = project_root / "src" / "training"
+SUPERVISED_WEIGHTS_DIR = TRAINING_OUTPUT_DIR / "weights" / "supervised"
+RL_WEIGHTS_DIR = TRAINING_OUTPUT_DIR / "weights" / "rl"
 
 
 def _resolve_validation_shard() -> str:
@@ -83,12 +92,22 @@ def _checkpoint_k_steps(checkpoint_path: Path) -> int:
     return int(match.group(1))
 
 
+def save_final_rl_checkpoint(model, optimizer, weights_dir: Path) -> Path:
+    """Save the final trainable RL state for the next self-play iteration."""
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = weights_dir / "model-rl-final.tar"
+    save_torch_state(model, optimizer, checkpoint_path)
+    return checkpoint_path
+
+
 def train_supervised(
     checkpoint_path: str = None,
     train_eval_shard: str = None,
 ):
     """Run supervised learning training on human game data."""
     tc = TrainConfig()
+    tc.export_dir = f"{TRAINING_OUTPUT_DIR}/"
+    tc.weights_dir = str(SUPERVISED_WEIGHTS_DIR)
     tc.use_wdl = True
     tc.use_plys_to_end = True
     tc.policy_loss_factor = 0.978
@@ -174,8 +193,9 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, a
     to.metrics = get_metrics(tc)
     
     # Set export directory and ensure it exists
-    tc.export_dir = str(project_root / "src/training/")
-    weights_dir = Path(tc.export_dir) / "weights"
+    tc.export_dir = f"{TRAINING_OUTPUT_DIR}/"
+    tc.weights_dir = str(RL_WEIGHTS_DIR)
+    weights_dir = RL_WEIGHTS_DIR
     weights_dir.mkdir(parents=True, exist_ok=True)
     logs_dir = Path(tc.export_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -200,9 +220,9 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, a
     
     val_samples = []
     for vf in val_parquet_files:
-        x, y_val, pol_a, pol_b = load_rl_parquet_shard(vf)
+        x, y_val, pol_a, pol_b, wdl, moves_left = load_rl_parquet_shard(vf)
         for i in range(len(x)):
-            val_samples.append((x[i], y_val[i], pol_a[i], pol_b[i]))
+            val_samples.append((x[i], y_val[i], pol_a[i], pol_b[i], wdl[i], moves_left[i]))
     
     if not val_samples:
         raise ValueError(f"No validation samples found in {val_data_dir}")
@@ -212,33 +232,43 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, a
     y_val = torch.stack([s[1] for s in val_samples])
     pol_a_val = torch.stack([s[2] for s in val_samples])
     pol_b_val = torch.stack([s[3] for s in val_samples])
+    wdl_val = torch.stack([s[4] for s in val_samples])
+    moves_left_val = torch.stack([s[5] for s in val_samples])
     
-    val_dataset = RLDataset(x_val, y_val, pol_a_val, pol_b_val, augment_flip=augment_flip)
+    val_dataset = RLDataset(
+        x_val,
+        y_val,
+        pol_a_val,
+        pol_b_val,
+        wdl_val,
+        moves_left_val,
+        augment_flip=augment_flip,
+    )
     val_loader = DataLoader(val_dataset, batch_size=tc.batch_size, shuffle=False)
     print(f"Loaded {len(val_dataset)} validation samples")
     
-    # Estimate training samples
-    estimated_samples_per_shard = 16384  # Typical shard size
-    estimated_training_samples = len(parquet_files) * estimated_samples_per_shard
+    # Count rows from Parquet metadata so partial shards are handled exactly.
+    training_samples = int(
+        pl.scan_parquet(parquet_files).select(pl.len()).collect().item()
+    )
     if augment_flip:
-        estimated_training_samples *= 2  # Double with augmentation
-    n_train = estimated_training_samples
+        training_samples *= 2
+    n_train = training_samples
     
     print(f"Board flip augmentation: {'ENABLED' if augment_flip else 'DISABLED'}")
     if augment_flip:
         print(f"Training data will be doubled through board flip augmentation")
-    print(f"Estimated training samples: ~{n_train}")
+    print(f"Training samples: {n_train}")
     
     # Create streaming training dataset from all training files
     train_dataset = StreamingRLDataset(parquet_files, shuffle_files=True, shuffle_buffer_size=10000, augment_flip=augment_flip)
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, num_workers=0)
     
-    # Calculate iterations (approximate)
-    nb_it_per_epoch = max(1, n_train // tc.batch_size)
+    nb_it_per_epoch = max(1, (n_train + tc.batch_size - 1) // tc.batch_size)
     tc.total_it = int(nb_it_per_epoch * tc.nb_training_epochs)
     tc.nb_parts = len(parquet_files)
     
-    print(f"Iterations per epoch: ~{nb_it_per_epoch}, Total iterations: ~{tc.total_it}")
+    print(f"Iterations per epoch: {nb_it_per_epoch}, Total iterations: {tc.total_it}")
     
     # LR schedule: Cosine Annealing with 25% warm-up (as per CrazyAra RL paper)
     # The warm-up helps with context drift in the training data
@@ -261,25 +291,41 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None, a
                                   is_rl=True, rl_train_loader=train_loader)
     trainer.train()
     
-    # Export final model to ONNX
-    print("\nExporting final model to ONNX...")
+    # Save a trainable checkpoint before ONNX conversion mutates export state.
+    final_checkpoint = save_final_rl_checkpoint(model, trainer.optimizer, weights_dir)
+    print(f"\nFinal RL checkpoint saved to {final_checkpoint}")
+
+    print("Exporting final model to ONNX...")
     ctx = get_context(tc.context, tc.device_id)
     dummy_input = torch.zeros(1, NUM_BUGHOUSE_CHANNELS, 8, 8).to(ctx)
     model_prefix = f"model-rl-final"
-    export_to_onnx(model, 1, dummy_input, weights_dir, model_prefix, False, True)
-    print(f"ONNX model exported to {weights_dir}/{model_prefix}.onnx")
+    export_to_onnx(model, 1, dummy_input, weights_dir, model_prefix, True, True)
+    print(f"Final RL ONNX exported under {weights_dir}")
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Hivemind neural network')
     parser.add_argument('--mode', type=str, default='sl', choices=['sl', 'rl'],
                         help='Training mode: sl (supervised learning) or rl (reinforcement learning)')
-    parser.add_argument('--rl-data-dir', type=str, default='../../engine/selfplay_games/training_data_parquet',
-                        help='Directory containing RL training parquet files')
-    parser.add_argument('--val-data-dir', type=str, default='/home/ben/hivemind/engine/selfplay_games/val_data_parquet',
-                        help='Directory containing RL validation parquet files')
+    parser.add_argument('--rl-data-dir', type=str, default=None,
+                        help='Preconverted RL training Parquet directory (requires --val-data-dir)')
+    parser.add_argument('--val-data-dir', type=str, default=None,
+                        help='Preconverted RL validation Parquet directory (requires --rl-data-dir)')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to checkpoint to resume training from')
+    parser.add_argument('--selfplay-dir', type=str,
+                        default=str(project_root / 'engine/selfplay_games'),
+                        help='Self-play output directory, or its training_data directory, containing HVM3 chunks')
+    parser.add_argument('--rl-output-dir', type=str, default=None,
+                        help='Generated train/validation Parquet directory (default: <selfplay-dir>/rl_data)')
+    parser.add_argument(
+        '--validation-fraction',
+        type=float,
+        default=DEFAULT_RL_VALIDATION_FRACTION,
+        help='Fraction of complete games reserved for validation (default: 0.02)',
+    )
+    parser.add_argument('--split-seed', type=int, default=42,
+                        help='Deterministic game-level split seed (default: 42)')
     parser.add_argument('--train-eval-shard', type=str, default=None,
                         help='Fixed representative training shard used only for metrics')
     
@@ -291,4 +337,28 @@ if __name__ == '__main__':
             train_eval_shard=args.train_eval_shard,
         )
     else:
-        train_rl(args.rl_data_dir, args.val_data_dir, checkpoint_path=args.checkpoint)
+        if args.rl_data_dir or args.val_data_dir:
+            if not args.rl_data_dir or not args.val_data_dir:
+                parser.error('--rl-data-dir and --val-data-dir must be provided together')
+            train_rl(args.rl_data_dir, args.val_data_dir, checkpoint_path=args.checkpoint)
+        else:
+            selfplay_path = Path(args.selfplay_dir).expanduser().resolve()
+            has_training_data_dir = (selfplay_path / "training_data").is_dir()
+            hvm_path = selfplay_path / "training_data" if has_training_data_dir else selfplay_path
+            default_output_root = (
+                selfplay_path
+                if has_training_data_dir or selfplay_path.name != "training_data"
+                else selfplay_path.parent
+            )
+            output_path = (
+                Path(args.rl_output_dir).expanduser().resolve()
+                if args.rl_output_dir
+                else default_output_root / "rl_data"
+            )
+            train_path, val_path, _, _ = convert_to_split_parquet(
+                hvm_path,
+                output_path,
+                validation_fraction=args.validation_fraction,
+                split_seed=args.split_seed,
+            )
+            train_rl(str(train_path), str(val_path), checkpoint_path=args.checkpoint)
