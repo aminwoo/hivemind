@@ -48,6 +48,9 @@ class TrainConfig:
                            " files"
     export_dir: str = "./"
 
+    info_weights_dir: str = "weights_dir overrides the model checkpoint directory when set"
+    weights_dir: str = ""
+
     info_export_weights: str = "export_weights is a boolean to decide if the neural network weights should be exported" \
                                "during training."
     export_weights: bool = True
@@ -183,6 +186,9 @@ class TrainConfig:
 def rl_train_config():
     tc = TrainConfig()
 
+    tc.use_wdl = True
+    tc.use_plys_to_end = True
+
     tc.export_grad_histograms = True
     tc.div_factor = 2
     tc.batch_steps = 100 * tc.div_factor
@@ -193,8 +199,8 @@ def rl_train_config():
 
     tc.val_loss_factor = 0.5
     tc.policy_loss_factor = 0.5
-    tc.plys_to_end_loss_factor = 0.002
-    tc.wdl_loss_factor = 0.499 if tc.use_plys_to_end else 0.5
+    tc.plys_to_end_loss_factor = 0.01
+    tc.wdl_loss_factor = 0.1
 
     tc.nb_training_epochs = 1
     tc.q_value_ratio = 0  # previously 0.15

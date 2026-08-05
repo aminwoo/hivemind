@@ -149,7 +149,10 @@ def main():
     Main inference function
     """
     # Path to your trained model
-    model_path = "/home/ben/hivemind/src/training/weights/model-0.89792-0.714-0082.tar"
+    model_path = str(
+        Path(__file__).resolve().parent
+        / "training/weights/supervised/model-0.89016-0.702-0136.tar"
+    )
 
     # Check if model file exists
     if not Path(model_path).exists():

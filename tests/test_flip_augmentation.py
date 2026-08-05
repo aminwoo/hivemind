@@ -79,25 +79,33 @@ def test_dataset_augmentation():
     y_value = torch.randn(100)
     policy_a = torch.softmax(torch.randn(100, 4672), dim=1)
     policy_b = torch.softmax(torch.randn(100, 4672), dim=1)
+    wdl = torch.randint(0, 3, (100,))
+    moves_left = torch.rand(100)
     
     # Without augmentation
-    dataset_no_aug = RLDataset(x, y_value, policy_a, policy_b, augment_flip=False)
+    dataset_no_aug = RLDataset(
+        x, y_value, policy_a, policy_b, wdl, moves_left, augment_flip=False
+    )
     assert len(dataset_no_aug) == 100
     
     # With augmentation
-    dataset_with_aug = RLDataset(x, y_value, policy_a, policy_b, augment_flip=True)
+    dataset_with_aug = RLDataset(
+        x, y_value, policy_a, policy_b, wdl, moves_left, augment_flip=True
+    )
     assert len(dataset_with_aug) == 200  # Doubled
     
     # Check that first 100 samples are original
     for i in range(100):
-        x_i, y_i, pa_i, pb_i = dataset_with_aug[i]
+        x_i, y_i, pa_i, pb_i, wdl_i, moves_left_i = dataset_with_aug[i]
         assert torch.allclose(x_i, x[i])
         assert torch.allclose(pa_i, policy_a[i])
         assert torch.allclose(pb_i, policy_b[i])
+        assert wdl_i == wdl[i]
+        assert moves_left_i == moves_left[i]
     
     # Check that samples 100-199 are flipped versions
     for i in range(100):
-        x_i, y_i, pa_i, pb_i = dataset_with_aug[100 + i]
+        x_i, y_i, pa_i, pb_i, wdl_i, moves_left_i = dataset_with_aug[100 + i]
         # Boards should be swapped
         offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
         assert torch.allclose(x_i[:offset], x[i][offset:NUM_BUGHOUSE_CHANNELS])
@@ -105,6 +113,8 @@ def test_dataset_augmentation():
         # Policies should be swapped (not mirrored)
         assert torch.allclose(pa_i, policy_b[i])
         assert torch.allclose(pb_i, policy_a[i])
+        assert wdl_i == wdl[i]
+        assert moves_left_i == moves_left[i]
     
     print("  ✓ Dataset without augmentation: 100 samples")
     print("  ✓ Dataset with augmentation: 200 samples")
@@ -124,17 +134,21 @@ def test_with_real_data():
         return
     
     # Load one shard
-    x, y_value, policy_a, policy_b = load_rl_parquet_shard(parquet_files[0])
+    x, y_value, policy_a, policy_b, wdl, moves_left = load_rl_parquet_shard(parquet_files[0])
     n_samples = len(x)
     print(f"  Loaded {n_samples} samples from {Path(parquet_files[0]).name}")
     
     # Test dataset without augmentation
-    dataset_no_aug = RLDataset(x, y_value, policy_a, policy_b, augment_flip=False)
+    dataset_no_aug = RLDataset(
+        x, y_value, policy_a, policy_b, wdl, moves_left, augment_flip=False
+    )
     print(f"  Dataset size without augmentation: {len(dataset_no_aug)}")
     assert len(dataset_no_aug) == n_samples
     
     # Test dataset with augmentation
-    dataset_with_aug = RLDataset(x, y_value, policy_a, policy_b, augment_flip=True)
+    dataset_with_aug = RLDataset(
+        x, y_value, policy_a, policy_b, wdl, moves_left, augment_flip=True
+    )
     print(f"  Dataset size with augmentation: {len(dataset_with_aug)}")
     assert len(dataset_with_aug) == 2 * n_samples
     
@@ -142,10 +156,10 @@ def test_with_real_data():
     print("  Verifying augmented samples...")
     for i in range(min(100, n_samples)):
         # Original sample
-        x_orig, _, pa_orig, pb_orig = dataset_with_aug[i]
+        x_orig, _, pa_orig, pb_orig, _, _ = dataset_with_aug[i]
         
         # Flipped sample
-        x_flip, _, pa_flip, pb_flip = dataset_with_aug[n_samples + i]
+        x_flip, _, pa_flip, pb_flip, _, _ = dataset_with_aug[n_samples + i]
         
         # Boards should be swapped
         offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD

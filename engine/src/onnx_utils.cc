@@ -10,6 +10,10 @@ std::string findLatestOnnxFile(const std::string& directory) {
     std::string latestFile;
     std::optional<fs::file_time_type> latestTime;
 
+    if (!fs::is_directory(directory)) {
+        return latestFile;
+    }
+
     for (const auto& entry : fs::directory_iterator(directory)) {
         if (entry.is_regular_file() && entry.path().extension() == ".onnx") {
             auto ftime = fs::last_write_time(entry);

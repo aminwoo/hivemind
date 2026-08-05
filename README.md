@@ -84,10 +84,14 @@ uv sync
 ### Running the Engine
 
 ```bash
-./engine/build/hivemind
+./engine/build-ninja/hivemind \
+  --network "$(realpath src/training/weights/rl/model-rl-final-v3.0.onnx)"
 ```
 
 The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
+Passing an explicit network path makes startup independent of the current working
+directory. Without `--network`, the engine retains the legacy behavior of loading
+the most recently modified ONNX model from `./networks`.
 
 ### Engine Commands
 
@@ -99,30 +103,54 @@ The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
 ./hivemind perft 5
 
 # Run self-play for training data generation
-./hivemind selfplay 1000
-
-# Evaluate two models against each other
-./hivemind eval --new model_a.onnx --old model_b.onnx --games 100
+./engine/build-ninja/hivemind selfplay \
+  --network src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --games 1000 --nodes 400 --output engine/selfplay_games
 ```
+
+Self-play diversifies each opening with raw-policy initialization. Its length is
+sampled from an exponential distribution with a mean of 8 macro plies and a
+maximum of 30; these positions are recorded in PGN but excluded from HVM3.
+Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
+every two macro plies. Search budgets are randomized by ±5% per position.
+
+### Network Tournament
+
+```bash
+./engine/build-ninja/hivemind tournament \
+  --contender src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --baseline src/training/weights/supervised/model-0.89016-0.702-0136-v3.0.onnx \
+  --games 100 --nodes 800 --output engine/tournament_results --seed 1
+```
+
+Tournament games are paired, so `--games` must be even. Each network controls
+the White team in one game and the Black team in the other, with the starting
+team alternated between pairs. Both games in a pair use the same seeded root
+noise schedule, and moves are selected by maximum root visits. The command
+writes complete games to `games.pgn` and incremental W/D/L, score, and Elo
+results to `summary.json`. Set `--dirichlet-epsilon 0` for deterministic games.
 
 ### Training
 
 ```bash
 # Supervised learning on human games
-uv run python src/training/train_loop.py --mode supervised
+uv run python src/training/train_loop.py --mode sl
 
-# RL training on self-play data
+# RL training directly from native HVM3 self-play data
 uv run python src/training/train_loop.py --mode rl \
-  --rl-data-dir engine/selfplay_games/training_data_parquet
+  --checkpoint src/training/weights/supervised/model-0.89016-0.702-0136.tar
 ```
 
-### Convert Self-Play Data
-
-```bash
-uv run python src/preprocessing/convert_selfplay_data.py \
-  engine/selfplay_games/training_data \
-  engine/selfplay_games/training_data_parquet
-```
+RL training reads `engine/selfplay_games/training_data` by default, creates a
+deterministic game-level 98/2 train/validation split under
+`engine/selfplay_games/rl_data`, and then starts training. Original HVM3 chunks
+are preserved. Use `--selfplay-dir` for a different self-play directory, or
+provide both `--rl-data-dir` and `--val-data-dir` to train from existing Parquet
+data. Supervised artifacts are written under `src/training/weights/supervised`;
+RL artifacts, including resumable `model-rl-final.tar` and deployable
+`model-rl-final-v3.0.onnx`, are written under `src/training/weights/rl`.
+For later RL iterations, pass
+`--checkpoint src/training/weights/rl/model-rl-final.tar`.
 
 ## Neural Network Architecture
 
@@ -134,23 +162,26 @@ Hivemind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimi
 
 ### Input Representation
 
-The network uses a **64-channel input** (64×8×8) encoding both Bughouse boards:
+The network uses a **74-channel input** (74×8×8), with 37 channels per board:
 
-| Channels     | Description                        |
-| ------------ | ---------------------------------- |
-| 0-11, 32-43  | Piece positions (own and opponent) |
-| 12-21, 44-53 | Pocket pieces available for drops  |
-| 22-23, 54-55 | Promoted piece masks               |
-| 24, 56       | En passant squares                 |
-| 25, 57       | Side to move                       |
-| 26, 58       | Constant plane (all 1s)            |
-| 27-30, 59-62 | Castling rights                    |
-| 31, 63       | Time advantage indicator           |
+| Per-board channels | Description                             |
+| ------------------ | --------------------------------------- |
+| 0-11               | Piece positions (own and opponent)      |
+| 12-21              | Pocket piece counts                     |
+| 22-23              | Promoted pieces and en passant          |
+| 24-26              | Perspective, side to move, and constant |
+| 27-30              | Castling rights                         |
+| 31                 | Time advantage                          |
+| 32-33              | Last move source and destination        |
+| 34                 | Halfmove clock                          |
+| 35-36              | Twofold and threefold repetition        |
 
 ### Output
 
-- **Policy head**: 4672 move probabilities per board (73 planes × 8 × 8)
-- **Value head**: Win/Draw/Loss prediction for the position
+- **Policy heads**: 4672 move probabilities for each board
+- **Value head**: Scalar outcome prediction
+- **WDL head**: Win/draw/loss classification
+- **Moves-left head**: Remaining team-decision estimate
 
 ## License
 

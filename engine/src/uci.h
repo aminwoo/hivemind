@@ -1,8 +1,9 @@
 #pragma once
 
 #include <atomic>
-#include <thread>
+#include <string>
 #include <sstream>
+#include <thread>
 #include <vector>
 #include <memory>
 
@@ -30,7 +31,9 @@ public:
 
     // Initialize engines on the specified GPU devices.
     // For each device ID in deviceIds, a new Engine is constructed.
-    void initializeEngines(const std::vector<int>& deviceIds);
+    bool initializeEngines(
+        const std::vector<int>& deviceIds,
+        const std::string& networkPath = {});
 
     void send_uci_response();
     void go(std::istringstream& is);
