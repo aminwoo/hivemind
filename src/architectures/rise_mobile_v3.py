@@ -363,8 +363,7 @@ if __name__ == "__main__":
             self.context = "gpu"
 
             # Input shape of the model, represented as (channels, height, width)
-            # Example: 64 channels, 8 rows (height), and 8 columns (width) for an 8x8 board
-            self.input_shape = (64, 8, 8)
+            self.input_shape = (74, 8, 8)
 
             # Number of labels for the policy head (output layer for move predictions)
             # Example: 9600 possible moves or actions in the policy output
@@ -418,7 +417,7 @@ if __name__ == "__main__":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device).eval()
 
-        # Generate dummy data (64 planes, 8x8 board)
+        # Generate dummy Bughouse input data
         dummy_input = torch.randn(batch_size, *input_shape).to(device)
 
         # --- WARM-UP ---
@@ -451,4 +450,4 @@ if __name__ == "__main__":
 
 
     # Run it
-    benchmark_inference(model, input_shape=(64, 8, 8))
+    benchmark_inference(model, input_shape=(74, 8, 8))

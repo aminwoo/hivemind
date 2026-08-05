@@ -157,7 +157,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="/home/ben/hivemind/src/training/weights/model-0.97878-0.683-0224-v3.0.onnx",
+        default=str(Path(__file__).resolve().parents[1] / "src/training/weights/supervised/model-0.89016-0.702-0136-v3.0.onnx"),
         help="Path to ONNX model file"
     )
     parser.add_argument(

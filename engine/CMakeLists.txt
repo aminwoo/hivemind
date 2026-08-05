@@ -39,6 +39,8 @@ set(LIB_SOURCES
     src/agent.cc
     src/onnx_utils.cc
     src/benchmark.cc
+    src/selfplay.cc
+    src/tournament.cc
     src/zobrist.cc
     src/globals.cc
 )

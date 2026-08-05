@@ -655,6 +655,21 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     return result;
 }
 
+vector<RootEdgeStats> Agent::root_edge_stats() const {
+    vector<RootEdgeStats> stats;
+    if (!rootNode || !rootNode->is_expanded()) {
+        return stats;
+    }
+
+    const auto visits = rootNode->get_child_visits();
+    const size_t edgeCount = min(visits.size(), rootNode->get_num_generated());
+    stats.reserve(edgeCount);
+    for (size_t index = 0; index < edgeCount; ++index) {
+        stats.push_back({rootNode->get_joint_action(static_cast<int>(index)), visits[index]});
+    }
+    return stats;
+}
+
 /**
  * @brief Extracts the best move from the root node using solver-aware selection.
  * When root is proven WIN/LOSS, selects the proven-best move.

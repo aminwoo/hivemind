@@ -353,6 +353,8 @@ TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
 
 TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
     SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 1.0f;
+    config.rootPwCoefficient = 4.0f;
 
     EXPECT_EQ(SearchParams::get_allowed_children(
                   1000, config.pwCoefficient, config.pwExponent), 8);
@@ -365,6 +367,8 @@ TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
 }
 
 TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
+    SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 1.0f;
     Node node(Stockfish::WHITE);
     node.set_depth(1);
     std::vector<Stockfish::Move> actionsA = {
@@ -375,28 +379,30 @@ TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
 
     ASSERT_TRUE(node.try_init_and_expand(
         actionsA, actionsB, priorsA, priorsB, false, true, false,
-        SearchParams::RuntimeConfig{}));
+        config));
     ASSERT_EQ(node.get_children().size(), 1U);
     EXPECT_FLOAT_EQ(node.get_child_q(0), SearchParams::Q_INIT);
     EXPECT_FLOAT_EQ(node.get_children().front()->Q(), 0.0f);
     ASSERT_TRUE(node.has_unexpanded_joint_actions());
-    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_FALSE(node.should_expand_new_child(config));
 
     node.update(0, 1.0f);
-    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_FALSE(node.should_expand_new_child(config));
     node.update(0, 1.0f);
-    EXPECT_TRUE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_TRUE(node.should_expand_new_child(config));
 
     JointActionCandidate action;
     ASSERT_NE(node.expand_next_joint_child(
-        nullptr, 0, action, SearchParams::RuntimeConfig{}), nullptr);
+        nullptr, 0, action, config), nullptr);
 
     EXPECT_TRUE(node.has_unexpanded_joint_actions());
-    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_FALSE(node.should_expand_new_child(config));
 }
 
 TEST(NodeTest, RootProgressiveWideningExploresMoreCandidates) {
     SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 1.0f;
+    config.rootPwCoefficient = 4.0f;
     EXPECT_GT(SearchParams::get_allowed_children(
                   10000, config.rootPwCoefficient, config.pwExponent),
               SearchParams::get_allowed_children(
@@ -940,6 +946,20 @@ TEST_F(EngineTest, Promotion) {
     EXPECT_TRUE(found_rook_promo) << "Rook promotion should be legal";
     EXPECT_TRUE(found_bishop_promo) << "Bishop promotion should be legal";
     EXPECT_TRUE(found_knight_promo) << "Knight promotion should be legal";
+}
+
+TEST_F(EngineTest, PolicySupportsQueenAndKnightPromotionsOnly) {
+    Board board;
+    board.set_fen(BOARD_A, "8/P7/8/8/8/8/8/4K2k w - - 0 1");
+
+    for (const Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        const std::string uci = board.uci_move(BOARD_A, move);
+        if (uci == "a7a8q" || uci == "a7a8n") {
+            EXPECT_TRUE(is_policy_move_representable(board, BOARD_A, move)) << uci;
+        } else if (uci == "a7a8r" || uci == "a7a8b") {
+            EXPECT_FALSE(is_policy_move_representable(board, BOARD_A, move)) << uci;
+        }
+    }
 }
 
 TEST_F(EngineTest, MoveUnmakeSymmetry) {
