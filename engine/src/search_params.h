@@ -276,6 +276,7 @@ struct RuntimeConfig {
     float cpuctBase = CPUCT_BASE;
     bool enableMCGS = ENABLE_MCGS;
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
+    bool enableQEarlyExit = ENABLE_Q_EARLY_EXIT;
     float drawContempt = DRAW_CONTEMPT;
     float pwCoefficient = PW_COEFFICIENT;
     float rootPwCoefficient = ROOT_PW_COEFFICIENT;
