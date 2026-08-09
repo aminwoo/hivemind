@@ -24,9 +24,20 @@ std::pair<std::shared_ptr<Node>, int> Node::select_child_and_apply_virtual_loss(
     std::shared_ptr<Node> bestChild = nullptr;
     int selectedIdx = -1;
 
+    const size_t limit = std::min(numExpanded, children.size());
+    const bool hasNonLosingAlternative = nodeType == NodeType::UNSOLVED
+        && std::any_of(children.begin(), children.begin() + limit,
+            [](const std::shared_ptr<Node>& child) {
+                return child && child->get_node_type() != NodeType::WIN;
+            });
+
     // 4. Iterate only over expanded children
-    size_t limit = std::min(numExpanded, children.size());
     for (size_t i = 0; i < limit; i++) {
+        if (hasNonLosingAlternative && children[i]
+            && children[i]->get_node_type() == NodeType::WIN) {
+            continue;
+        }
+
         uint32_t n_i = static_cast<uint32_t>(childVisits[i]);
         int vl_i = virtualLoss[i];  // Virtual loss counter for this child
         
