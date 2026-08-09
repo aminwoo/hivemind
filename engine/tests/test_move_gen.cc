@@ -44,6 +44,12 @@ float plane_value(const std::vector<float>& planes, int channel, int square = 0)
     return planes[channel * BOARD_HEIGHT * BOARD_WIDTH + square];
 }
 
+uint64_t recomputed_position_key(Board& board, int boardNum) {
+    Board reconstructed;
+    reconstructed.set_fen(boardNum, board.fen(boardNum));
+    return reconstructed.pos[boardNum]->key();
+}
+
 }
 
 TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
@@ -83,6 +89,24 @@ TEST_F(EngineTest, NewInputRepresentationEncodesOrientedMoveAndHalfmoveClock) {
     board_to_planes(board, planes.data(), Stockfish::BLACK, false);
     EXPECT_FLOAT_EQ(plane_value(planes, 32, Stockfish::SQ_G8), 1.0f);
     EXPECT_FLOAT_EQ(plane_value(planes, 33, Stockfish::SQ_F6), 1.0f);
+}
+
+TEST_F(EngineTest, SettingCurrentFenClearsSearchHistory) {
+    Board board;
+    Stockfish::Move move = find_move(board, BOARD_A, "g1f3");
+    ASSERT_NE(move, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_A, move);
+
+    const std::string fenA = board.fen(BOARD_A);
+    const std::string fenB = board.fen(BOARD_B);
+    ASSERT_NE(board.last_move(BOARD_A), Stockfish::MOVE_NONE);
+    ASSERT_GT(board.positionHistory[BOARD_A].size(), 1U);
+
+    board.set(fenA + "|" + fenB);
+
+    EXPECT_EQ(board.last_move(BOARD_A), Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.positionHistory[BOARD_A].size(), 1U);
+    EXPECT_EQ(board.positionHistory[BOARD_B].size(), 1U);
 }
 
 TEST_F(EngineTest, NewInputRepresentationEncodesRepetitionContext) {
@@ -187,6 +211,100 @@ TEST_F(EngineTest, DoubleSitLeavesBoardPositionUnchanged) {
     EXPECT_EQ(board.hash_key(true), hash);
 }
 
+TEST_F(EngineTest, SearchMakeMovesUpdatesAndRestoresHistoryPlanes) {
+    Board board;
+    const Stockfish::Move move = find_move(board, BOARD_A, "g1f3");
+    ASSERT_NE(move, Stockfish::MOVE_NONE);
+
+    board.make_moves(move, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.last_move(BOARD_A), move);
+
+    std::vector<float> planes(NB_INPUT_VALUES());
+    board_to_planes(board, planes.data(), Stockfish::BLACK, false);
+    EXPECT_FLOAT_EQ(plane_value(planes, 32, Stockfish::SQ_G8), 1.0f);
+    EXPECT_FLOAT_EQ(plane_value(planes, 33, Stockfish::SQ_F6), 1.0f);
+
+    board.unmake_moves(move, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.last_move(BOARD_A), Stockfish::MOVE_NONE);
+    board_to_planes(board, planes.data(), Stockfish::WHITE, false);
+    for (int square = 0; square < 64; ++square) {
+        EXPECT_FLOAT_EQ(plane_value(planes, 32, square), 0.0f);
+        EXPECT_FLOAT_EQ(plane_value(planes, 33, square), 0.0f);
+    }
+}
+
+TEST_F(EngineTest, JointCaptureDropRoundTripPreservesPocketKeys) {
+    Board board;
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/p7/R3K3 w - - 0 1");
+    board.set_fen(BOARD_B, "4k3/8/8/8/8/8/8/4K3[p] b - - 0 1");
+
+    const Stockfish::Move capture = find_move(board, BOARD_A, "a1a2");
+    const Stockfish::Move drop = find_move(board, BOARD_B, "P@a7");
+    ASSERT_NE(capture, Stockfish::MOVE_NONE);
+    ASSERT_NE(drop, Stockfish::MOVE_NONE);
+
+    const std::string initialFenA = board.fen(BOARD_A);
+    const std::string initialFenB = board.fen(BOARD_B);
+    EXPECT_EQ(board.pos[BOARD_A]->key(), recomputed_position_key(board, BOARD_A));
+    EXPECT_EQ(board.pos[BOARD_B]->key(), recomputed_position_key(board, BOARD_B));
+
+    board.make_moves(capture, drop);
+    EXPECT_EQ(board.pos[BOARD_A]->key(), recomputed_position_key(board, BOARD_A));
+    EXPECT_EQ(board.pos[BOARD_B]->key(), recomputed_position_key(board, BOARD_B));
+
+    board.unmake_moves(capture, drop);
+    EXPECT_EQ(board.fen(BOARD_A), initialFenA);
+    EXPECT_EQ(board.fen(BOARD_B), initialFenB);
+    EXPECT_EQ(board.pos[BOARD_A]->key(), recomputed_position_key(board, BOARD_A));
+    EXPECT_EQ(board.pos[BOARD_B]->key(), recomputed_position_key(board, BOARD_B));
+}
+
+TEST_F(EngineTest, RejectsDropFromEmptyPocketBeforeMutation) {
+    Board board;
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3[P] w - - 0 1");
+    const Stockfish::Move drop = find_move(board, BOARD_A, "P@a3");
+    ASSERT_NE(drop, Stockfish::MOVE_NONE);
+
+    board.remove_from_hand(
+        BOARD_A, Stockfish::make_piece(Stockfish::WHITE, Stockfish::PAWN));
+    const std::string fenA = board.fen(BOARD_A);
+    const std::string fenB = board.fen(BOARD_B);
+
+    EXPECT_THROW(
+        board.make_moves(drop, Stockfish::MOVE_NONE),
+        std::logic_error);
+    EXPECT_EQ(board.fen(BOARD_A), fenA);
+    EXPECT_EQ(board.fen(BOARD_B), fenB);
+    EXPECT_EQ(board.count_in_hand(BOARD_A, Stockfish::WHITE, Stockfish::PAWN), 0);
+}
+
+TEST_F(EngineTest, InterleavedGameReplayPreservesPocketKeys) {
+    Board board;
+    const std::vector<std::string> moves = {
+        "1g1h3", "1f7f6", "2a2a4", "1e2e4", "2b8c6", "1e7e6",
+        "2a4a5", "1d2d4", "2e7e5", "1b8c6", "2e2e3", "1b1c3",
+        "2g8f6", "1f8b4", "2a5a6", "1h3f4", "2d7d5", "1g8e7",
+        "2a6b7", "1f4h5", "2c8b7", "1e8g8", "2g1f3", "1P@h6",
+        "2f8d6", "1g7h6", "2b1c3", "1c1h6", "2e5e4", "1e7g6",
+        "2f3g5", "2e8g8", "2P@f4", "2h7h6", "2g5h3", "2P@g4",
+        "2h3g1", "2d5d4", "2c3b5", "2d4e3", "2d2e3", "1P@g7",
+        "2d6b4", "1f8f7", "1f1d3", "1P@a3", "1e1g1", "1a3b2",
+        "2c1d2", "1e4e5", "2b4d2", "1b2a1q",
+    };
+
+    for (const std::string& token : moves) {
+        const int boardNum = token[0] - '1';
+        const std::string uci = token.substr(1);
+        const Stockfish::Move move = find_move(board, boardNum, uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << token;
+        board.push_move(boardNum, move);
+        EXPECT_EQ(board.pos[BOARD_A]->key(), recomputed_position_key(board, BOARD_A))
+            << token << " changed board A key incorrectly";
+        EXPECT_EQ(board.pos[BOARD_B]->key(), recomputed_position_key(board, BOARD_B))
+            << token << " changed board B key incorrectly";
+    }
+}
+
 TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
     Node parent(Stockfish::BLACK);
     std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
@@ -209,6 +327,49 @@ TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
     EXPECT_FLOAT_EQ(parent.get_child_q(0), -0.5f);
 }
 
+TEST_F(EngineTest, CommonBackupPropagatesProvenLeafState) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    auto child = parent.get_children().front();
+    child->mark_as_loss(3);
+    parent.apply_virtual_loss(0);
+
+    std::vector<TrajectoryEntry> trajectory = {
+        TrajectoryEntry(&parent, JointActionCandidate(), 0),
+        TrajectoryEntry(child.get(), JointActionCandidate(), -1),
+    };
+    Board board;
+    SearchThread searchThread;
+    searchThread.set_root_node(&parent);
+    searchThread.backup(trajectory, board, 0.25f);
+
+    EXPECT_EQ(parent.get_node_type(), NodeType::WIN);
+    EXPECT_EQ(parent.get_end_in_ply(), 4);
+    EXPECT_FLOAT_EQ(parent.get_child_q(0), 1.0f);
+}
+
+TEST_F(EngineTest, SelectionStopsAtSolvedExpandedNode) {
+    Node root(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+    ASSERT_TRUE(root.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+    root.mark_as_win(4);
+
+    Board board;
+    SearchThread searchThread;
+    searchThread.set_root_node(&root);
+
+    EXPECT_EQ(searchThread.select_and_expand(board, true), &root);
+    EXPECT_EQ(root.get_child_visits().front(), 0);
+}
+
 TEST_F(EngineTest, CheckmatePrecedesFiftyMoveDraw) {
     Board board;
     board.set_fen(
@@ -221,6 +382,101 @@ TEST_F(EngineTest, CheckmatePrecedesFiftyMoveDraw) {
     EXPECT_EQ(classify_terminal_position(
                   board, Stockfish::BLACK, Stockfish::BLACK, false, 0),
               TerminalOutcome::LOSS);
+}
+
+TEST_F(EngineTest, ClassifiesUnavoidableWaitingBoardMateAsLoss) {
+    Board board;
+    board.set(
+        "3q1r1k/1p4b1/p1r2p1p/3p1b1n/1npP1pB1/N1N1Q2P/PPP2PP1/1R3KR1[BPp] w - - 0 1|"
+        "5r1k/1p2q1b1/p1r2p1p/3p1b1n/1npP1pB1/N1N4P/PPPQ1PP1/1R3KR1[BPp] w - - 0 1");
+
+    for (const auto& [boardNum, moveUci] :
+         std::vector<std::pair<int, std::string>>{{BOARD_B, "g4h5"}, {BOARD_A, "g4h5"}}) {
+        std::string uci = moveUci;
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << moveUci;
+        board.push_move(boardNum, move);
+    }
+
+    const std::string fenA = board.fen(BOARD_A);
+    const std::string fenB = board.fen(BOARD_B);
+    const uint64_t hash = board.hash_key(false);
+    int endInPly = 0;
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 2, &endInPly),
+              TerminalOutcome::LOSS);
+    EXPECT_EQ(endInPly, 3);
+    EXPECT_EQ(board.fen(BOARD_A), fenA);
+    EXPECT_EQ(board.fen(BOARD_B), fenB);
+    EXPECT_EQ(board.hash_key(false), hash);
+
+    endInPly = 0;
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, true, 2, &endInPly),
+              TerminalOutcome::LOSS);
+    EXPECT_EQ(endInPly, 3);
+
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 0),
+              TerminalOutcome::NONE);
+}
+
+TEST_F(EngineTest, BlockedWaitingBoardMateIsNotClassifiedAsLoss) {
+    Board board;
+    board.set(
+        "3q1r1k/1p4b1/p1r2p1p/3p1b1n/1npP1pB1/N1N1Q2P/PPP2PP1/1R3KR1[BPp] w - - 0 1|"
+        "5r1k/1p2q1b1/p1r2p1p/3p1b1n/1npP1pB1/N1N4P/PPPQ1PP1/1R3KR1[BPp] w - - 0 1");
+
+    for (const auto& [boardNum, moveUci] :
+         std::vector<std::pair<int, std::string>>{{BOARD_B, "B@h2"}, {BOARD_A, "g4h5"}}) {
+        std::string uci = moveUci;
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << moveUci;
+        board.push_move(boardNum, move);
+    }
+
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 2),
+              TerminalOutcome::NONE);
+}
+
+TEST_F(EngineTest, WaitingBoardMateRequiresSplitTurns) {
+    Board board;
+    board.set(
+        "3q1r1k/1p4b1/p1r2p1p/3p1b1n/1npP1pB1/N1N1Q2P/PPP2PP1/1R3KR1[BPp] w - - 0 1|"
+        "5r1k/1p2q1b1/p1r2p1p/3p1b1n/1npP1pB1/N1N4P/PPPQ1PP1/1R3KR1[BPp] w - - 0 1");
+
+    std::string uci = "g4h5";
+    Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[BOARD_A], uci);
+    ASSERT_NE(move, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_A, move);
+
+    ASSERT_EQ(board.side_to_move(BOARD_A), Stockfish::BLACK);
+    ASSERT_EQ(board.side_to_move(BOARD_B), Stockfish::WHITE);
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 1),
+              TerminalOutcome::NONE);
+}
+
+TEST_F(EngineTest, CurrentDrawPrecedesFutureWaitingBoardMate) {
+    Board board;
+    board.set(
+        "3q1r1k/1p4b1/p1r2p1p/3p1b1n/1npP1pB1/N1N1Q2P/PPP2PP1/1R3KR1[BPp] w - - 0 1|"
+        "5r1k/1p2q1b1/p1r2p1p/3p1b1n/1npP1pB1/N1N4P/PPPQ1PP1/1R3KR1[BPp] w - - 0 1");
+
+    for (const auto& [boardNum, moveUci] :
+         std::vector<std::pair<int, std::string>>{{BOARD_B, "g4h5"}, {BOARD_A, "g4h5"}}) {
+        std::string uci = moveUci;
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << moveUci;
+        board.push_move(boardNum, move);
+    }
+
+    board.record_position(BOARD_A);
+    ASSERT_TRUE(board.is_draw(2));
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 2),
+              TerminalOutcome::DRAW);
 }
 
 TEST_F(EngineTest, CancellingCollisionDoesNotCreateAVisit) {
@@ -276,6 +532,9 @@ TEST(PolicyTest, PassFloorPreservesNonPassRatios) {
 
 TEST(PolicyTest, SelectsPassFloorByBughouseContext) {
     SearchParams::RuntimeConfig config;
+    EXPECT_FLOAT_EQ(get_pass_prior_floor(true, true, false, config), 0.0f);
+    EXPECT_FLOAT_EQ(get_pass_prior_floor(false, true, true, config), 0.0f);
+
     config.waitPassPriorFloor = 0.12f;
     config.coordinationPassPriorFloor = 0.04f;
 
@@ -348,6 +607,7 @@ TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
     EXPECT_TRUE(SearchParams::ENABLE_MATE_EARLY_EXIT);
     EXPECT_FALSE(SearchParams::ENABLE_Q_EARLY_EXIT);
     EXPECT_FALSE(SearchParams::ENABLE_TIME_EXTENSION);
+    EXPECT_FALSE(SearchParams::ENABLE_TREE_REUSE);
     EXPECT_EQ(SearchParams::TT_MAX_SIZE, TranspositionTable::kDefaultMaxCapacity);
 }
 
@@ -544,6 +804,30 @@ TEST(NodeTest, EvaluationReservationIsExclusiveUntilReleased) {
     node.release_evaluation_reservation();
 }
 
+TEST(NodeTest, QAveragesOnlyRealVisits) {
+    Node node(Stockfish::WHITE);
+
+    node.update_terminal(0.8f);
+    EXPECT_FLOAT_EQ(node.Q(), 0.8f);
+
+    node.update_terminal(0.2f);
+    EXPECT_FLOAT_EQ(node.Q(), 0.5f);
+}
+
+TEST(NodeTest, SolvedQIsExactBeforeBackup) {
+    Node winning(Stockfish::WHITE);
+    Node losing(Stockfish::WHITE);
+    Node drawn(Stockfish::WHITE);
+
+    winning.mark_as_win(1);
+    losing.mark_as_loss(1);
+    drawn.mark_as_draw(1);
+
+    EXPECT_FLOAT_EQ(winning.Q(), 1.0f);
+    EXPECT_FLOAT_EQ(losing.Q(), -1.0f);
+    EXPECT_FLOAT_EQ(drawn.Q(), 0.0f);
+}
+
 TEST(MctsSolverTest, PropagatesMateAtArbitraryDepth) {
     Node parent(Stockfish::WHITE);
     std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
@@ -560,6 +844,77 @@ TEST(MctsSolverTest, PropagatesMateAtArbitraryDepth) {
     EXPECT_TRUE(parent.update_child_node_type(0, child->get_node_type()));
     EXPECT_EQ(parent.get_node_type(), NodeType::WIN);
     EXPECT_EQ(parent.get_end_in_ply(), 8);
+}
+
+TEST(MctsSolverTest, PropagatesDrawAfterAllMovesAreSolved) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    std::vector<float> priors = {1.0f};
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    auto child = parent.get_children().front();
+    child->mark_as_draw(1);
+    parent.init_child_node_types();
+
+    EXPECT_TRUE(parent.update_child_node_type(0, child->get_node_type()));
+    EXPECT_EQ(parent.get_node_type(), NodeType::DRAW);
+}
+
+TEST(MctsSolverTest, AvoidsProvenLosingChildWhileDefenseRemains) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    std::vector<float> priorsA = {0.9f, 0.1f};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, priorsA, {1.0f},
+        false, true, false, config));
+    for (int visit = 0; visit < 10; ++visit) {
+        parent.update(0, 0.5f);
+    }
+
+    JointActionCandidate action;
+    int defenseIdx = -1;
+    ASSERT_NE(parent.expand_next_joint_child(
+        nullptr, 0, action, config, &defenseIdx), nullptr);
+    ASSERT_EQ(defenseIdx, 1);
+    parent.update(defenseIdx, -0.5f);
+
+    auto children = parent.get_children();
+    children[0]->mark_as_win(3);
+    parent.init_child_node_types();
+    EXPECT_FALSE(parent.update_child_node_type(0, children[0]->get_node_type()));
+    ASSERT_EQ(parent.get_node_type(), NodeType::UNSOLVED);
+
+    EXPECT_EQ(parent.get_best_move_idx_with_q_weight(), defenseIdx);
+    auto [selectedChild, selectedIdx] = parent.select_child_and_apply_virtual_loss(config);
+    ASSERT_NE(selectedChild, nullptr);
+    EXPECT_EQ(selectedIdx, defenseIdx);
+    parent.remove_virtual_loss(selectedIdx);
+}
+
+TEST(MctsSolverTest, WidensImmediatelyWhenAllExpandedChildrenLose) {
+    Node parent(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    ASSERT_TRUE(parent.has_unexpanded_joint_actions());
+
+    auto firstChild = parent.get_children().front();
+    firstChild->mark_as_win(3);
+    parent.init_child_node_types();
+    EXPECT_FALSE(parent.update_child_node_type(0, firstChild->get_node_type()));
+    ASSERT_EQ(parent.get_node_type(), NodeType::UNSOLVED);
+
+    EXPECT_TRUE(parent.should_expand_new_child(config));
 }
 
 TEST(TranspositionTableTest, InsertOrGetReturnsCanonicalNode) {
@@ -818,6 +1173,22 @@ TEST_F(EngineTest, CombinedHashIncludesRepetitionContext) {
     EXPECT_EQ(historical.board_only_key(BOARD_A), fresh.board_only_key(BOARD_A));
     EXPECT_EQ(historical.rule50_count(BOARD_A), fresh.rule50_count(BOARD_A));
     EXPECT_NE(historical.hash_key(false), fresh.hash_key(false));
+}
+
+TEST_F(EngineTest, RepetitionPrefixHashRoundTripsWithSearchMoves) {
+    Board board;
+    const uint64_t initialHash = board.hash_key(false);
+    const size_t initialPrefixCount = board.positionHistoryPrefixes[BOARD_A].size();
+    Stockfish::Move move = find_move(board, BOARD_A, "g1f3");
+    ASSERT_NE(move, Stockfish::MOVE_NONE);
+
+    board.make_moves(move, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.positionHistoryPrefixes[BOARD_A].size(), initialPrefixCount + 1);
+    EXPECT_NE(board.hash_key(false), initialHash);
+
+    board.unmake_moves(move, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.positionHistoryPrefixes[BOARD_A].size(), initialPrefixCount);
+    EXPECT_EQ(board.hash_key(false), initialHash);
 }
 
 TEST_F(EngineTest, CombinedHashIncludesTransferredPocketPieces) {

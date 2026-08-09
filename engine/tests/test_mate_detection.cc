@@ -100,6 +100,68 @@ TEST_F(MateDetectionTest, ReportedKingMoveAllowsQueenDropMate) {
     EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, true));
 }
 
+TEST_F(MateDetectionTest, ReportedKnightDropIsImmediateMate) {
+    Board board;
+    board.set(
+        "3q1r1k/1p4b1/p1r2p1p/3p1b1n/1npP1pB1/N1N1Q2P/PPP2PP1/1R3KR1[BPp] w - - 0 1|"
+        "5r1k/1p2q1b1/p1r2p1p/3p1b1n/1npP1pB1/N1N4P/PPPQ1PP1/1R3KR1[BPp] w - - 0 1");
+
+    const std::vector<std::pair<int, std::string>> moves = {
+        {BOARD_B, "g4f5"},
+        {BOARD_A, "g4h5"},
+        {BOARD_A, "f4e3"},
+        {BOARD_A, "f2e3"},
+        {BOARD_B, "N@h2"},
+    };
+
+    for (const auto& [boardNum, moveUci] : moves) {
+        std::string uci = moveUci;
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << moveUci;
+        board.push_move(boardNum, move);
+    }
+
+    EXPECT_TRUE(board.is_in_check(BOARD_B));
+    EXPECT_TRUE(board.legal_moves(BOARD_B).empty());
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, true));
+}
+
+TEST_F(MateDetectionTest, ReportedG4H5LeavesUnavoidableKnightDropMate) {
+    Board board;
+    board.set(
+        "3q1r1k/1p4b1/p1r2p1p/3p1b1n/1npP1pB1/N1N1Q2P/PPP2PP1/1R3KR1[BPp] w - - 0 1|"
+        "5r1k/1p2q1b1/p1r2p1p/3p1b1n/1npP1pB1/N1N4P/PPPQ1PP1/1R3KR1[BPp] w - - 0 1");
+
+    const std::vector<std::pair<int, std::string>> setupMoves = {
+        {BOARD_B, "g4h5"},
+        {BOARD_A, "g4h5"},
+    };
+
+    for (const auto& [boardNum, moveUci] : setupMoves) {
+        std::string uci = moveUci;
+        Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[boardNum], uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << moveUci;
+        board.push_move(boardNum, move);
+    }
+
+    const auto blackReplies = board.legal_moves(BOARD_A);
+    ASSERT_FALSE(blackReplies.empty());
+    for (Stockfish::Move reply : blackReplies) {
+        Board future(board);
+        future.push_move(BOARD_A, reply);
+
+        std::string dropUci = "N@h2";
+        Stockfish::Move drop = Stockfish::UCI::to_move(*future.pos[BOARD_B], dropUci);
+        ASSERT_NE(drop, Stockfish::MOVE_NONE)
+            << "N@h2 disappeared after " << board.uci_move(BOARD_A, reply);
+        future.push_move(BOARD_B, drop);
+
+        EXPECT_TRUE(future.is_checkmate(Stockfish::BLACK, false))
+            << "N@h2 is not mate after " << board.uci_move(BOARD_A, reply);
+    }
+}
+
 // =============================================================================
 // NOT Checkmate - Partner Can Provide Blocking Piece
 // =============================================================================
@@ -317,6 +379,20 @@ TEST_F(MateDetectionTest, StalemateIsNotCheckmate) {
     // is_checkmate should return false for stalemate (not in check)
     EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, false))
         << "Stalemate should not be detected as checkmate";
+}
+
+TEST_F(MateDetectionTest, TwoActiveStalematesLoseDespiteTimeAdvantage) {
+    Board board;
+    board.set_fen(BOARD_A, "k7/8/1Q6/8/8/8/8/1K6 b - - 0 1");
+    board.set_fen(BOARD_B, "8/8/8/8/8/1q6/2k5/K7 w - - 0 1");
+
+    ASSERT_FALSE(board.is_in_check(BOARD_A));
+    ASSERT_FALSE(board.is_in_check(BOARD_B));
+    ASSERT_TRUE(board.legal_moves(BOARD_A).empty());
+    ASSERT_TRUE(board.legal_moves(BOARD_B).empty());
+
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, true));
 }
 
 // Test: In check but has legal moves - not mate
