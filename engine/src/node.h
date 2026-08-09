@@ -143,6 +143,14 @@ public:
 
     bool should_expand_new_child(const SearchParams::RuntimeConfig& config) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        const bool allExpandedChildrenLose = !children.empty()
+            && std::all_of(children.begin(), children.end(),
+                [](const std::shared_ptr<Node>& child) {
+                    return child && child->get_node_type() == NodeType::WIN;
+                });
+        if (candidateGenerator.hasNext() && allExpandedChildrenLose) {
+            return true;
+        }
         for (size_t index = 0; index < childVisits.size(); index++) {
             const int virtualVisits = virtualLoss[index];
             if (childVisits[index] + virtualVisits == 0) {
@@ -392,7 +400,17 @@ public:
 
     float Q() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
-        return valueSum / (1.0f + m_visits.load(std::memory_order_relaxed));
+        if (nodeType == NodeType::WIN) {
+            return 1.0f;
+        }
+        if (nodeType == NodeType::LOSS) {
+            return -1.0f;
+        }
+        if (nodeType == NodeType::DRAW) {
+            return 0.0f;
+        }
+        const int visits = m_visits.load(std::memory_order_relaxed);
+        return visits > 0 ? valueSum / static_cast<float>(visits) : valueSum;
     }
     
     /**
@@ -448,6 +466,15 @@ public:
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         nodeType = NodeType::LOSS;
         valueSum = -1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly = ply;
+    }
+
+    /**
+     * @brief Mark this node as a proven draw.
+     */
+    void mark_as_draw(int ply = 0) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType = NodeType::DRAW;
         endInPly = ply;
     }
     
@@ -628,12 +655,29 @@ public:
             }
             return bestIdx;
         }
+
+        const bool hasNonLosingAlternative = std::any_of(
+            children.begin(), children.end(),
+            [](const std::shared_ptr<Node>& child) {
+                return child && child->get_node_type() != NodeType::WIN;
+            });
+        auto isEligible = [&](size_t index) {
+            return !hasNonLosingAlternative || !children[index]
+                || children[index]->get_node_type() != NodeType::WIN;
+        };
+
+        size_t firstEligibleIdx = 0;
+        while (firstEligibleIdx < childVisits.size() && !isEligible(firstEligibleIdx)) {
+            ++firstEligibleIdx;
+        }
+        if (firstEligibleIdx == childVisits.size()) return -1;
         
         // Find most-visited child
-        int bestVisitIdx = 0;
-        int maxVisits = childVisits[0];
+        int bestVisitIdx = static_cast<int>(firstEligibleIdx);
+        int maxVisits = childVisits[firstEligibleIdx];
         int secondVisitIdx = -1;
-        for (size_t i = 1; i < childVisits.size(); i++) {
+        for (size_t i = firstEligibleIdx + 1; i < childVisits.size(); i++) {
+            if (!isEligible(i)) continue;
             if (childVisits[i] > maxVisits) {
                 secondVisitIdx = bestVisitIdx;
                 maxVisits = childVisits[i];
@@ -644,9 +688,10 @@ public:
         }
         
         // Find best Q-value child
-        int bestQIdx = 0;
-        float bestQ = qValues[0];
-        for (size_t i = 1; i < qValues.size(); i++) {
+        int bestQIdx = static_cast<int>(firstEligibleIdx);
+        float bestQ = qValues[firstEligibleIdx];
+        for (size_t i = firstEligibleIdx + 1; i < qValues.size(); i++) {
+            if (!isEligible(i)) continue;
             if (qValues[i] > bestQ) {
                 bestQ = qValues[i];
                 bestQIdx = static_cast<int>(i);
