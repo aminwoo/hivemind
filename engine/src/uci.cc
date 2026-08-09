@@ -247,6 +247,11 @@ void UCI::setoption(std::istringstream& is) {
         int permille = std::clamp(std::stoi(value), 1, 1000);
         searchConfig.pwExponent = static_cast<float>(permille) / 1000.0f;
         std::cout << "info string PWExponentPermille set to " << permille << std::endl;
+    } else if (name == "QEarlyExit") {
+        if (value == "true" || value == "false") {
+            searchConfig.enableQEarlyExit = value == "true";
+            std::cout << "info string QEarlyExit set to " << value << std::endl;
+        }
     } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
@@ -273,6 +278,8 @@ void UCI::send_uci_response() {
     cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
     cout << "option name PWExponentPermille type spin default 300 min 1 max 1000" << endl;
+    cout << "option name QEarlyExit type check default "
+         << (SearchParams::ENABLE_Q_EARLY_EXIT ? "true" : "false") << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "uciok" << endl;

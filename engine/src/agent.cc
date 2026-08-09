@@ -91,7 +91,8 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
  * @return True if search should exit early
  */
 static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int bestChildIdx, 
-                                       float bestQ, int nodesSearched, bool verbose) {
+                                       float bestQ, int nodesSearched, bool enableQEarlyExit,
+                                       bool verbose) {
     if (!SearchParams::ENABLE_MATE_EARLY_EXIT) {
         return false;
     }
@@ -127,7 +128,7 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
     }
     
     // Check for overwhelmingly winning Q-value (only if enough nodes searched)
-    if (SearchParams::ENABLE_Q_EARLY_EXIT &&
+    if (enableQEarlyExit &&
         nodesSearched >= SearchParams::MIN_NODES_FOR_Q_EXIT &&
         bestQ >= SearchParams::WINNING_Q_THRESHOLD) {
         if (verbose) {
@@ -384,7 +385,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     }
                     
                     // Early exit for solved/winning positions
-                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes, true)) {
+                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes,
+                                                  lastRuntimeConfig_.enableQEarlyExit, true)) {
                         running = false;
                         break;
                     }
@@ -506,7 +508,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     int nodes = searchInfo.get_nodes_searched();
                     
                     // Early exit for solved/winning positions
-                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes, false)) {
+                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes,
+                                                  lastRuntimeConfig_.enableQEarlyExit, false)) {
                         running = false;
                         break;
                     }
