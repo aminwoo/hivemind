@@ -25,7 +25,7 @@ namespace SearchParams {
 /// CrazyAra default: 8
 constexpr int BATCH_SIZE = 16;
 
-/// Number of search threads to run in parallel
+/// Number of search threads to run in parallel per inference engine
 /// CrazyAra default: 2
 constexpr int NUM_SEARCH_THREADS = 2;
 
@@ -267,7 +267,7 @@ constexpr bool ENABLE_MCTS_SOLVER = true;
 // =============================================================================
 
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
-constexpr float PW_COEFFICIENT = 4.0f;
+constexpr float PW_COEFFICIENT = 1.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.3f;
 

@@ -355,7 +355,7 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
         }
         
         // Capture the kernel sequence
-        if (!checkCuda(cudaStreamBeginCapture(m_cudaStream, cudaStreamCaptureModeGlobal), "cudaStreamBeginCapture") ||
+        if (!checkCuda(cudaStreamBeginCapture(m_cudaStream, cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture") ||
             !m_context->enqueueV3(m_cudaStream) ||
             !checkCuda(cudaStreamEndCapture(m_cudaStream, &m_graph), "cudaStreamEndCapture")) {
             return false;
