@@ -25,7 +25,7 @@ namespace SearchParams {
 /// CrazyAra default: 8
 constexpr int BATCH_SIZE = 16;
 
-/// Number of search threads to run in parallel
+/// Number of search threads to run in parallel per inference engine
 /// CrazyAra default: 2
 constexpr int NUM_SEARCH_THREADS = 2;
 

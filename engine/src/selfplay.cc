@@ -534,9 +534,12 @@ void append_pgn_move(
 
 } // namespace
 
-int run_selfplay(Engine& engine, const SelfPlayConfig& config) {
+int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& config) {
     if (config.games == 0 || config.nodes == 0 || config.maxMacroPlies == 0) {
         throw std::invalid_argument("games, nodes, and max-macro-plies must be positive");
+    }
+    if (engines.empty()) {
+        throw std::invalid_argument("Self-play requires at least one inference engine");
     }
     if (config.rawPolicyMeanMacroPlies < 0.0
         || config.rawPolicyHighTemperatureProbability < 0.0
@@ -560,8 +563,9 @@ int run_selfplay(Engine& engine, const SelfPlayConfig& config) {
     std::filesystem::create_directories(config.outputDirectory);
     ChunkWriter chunkWriter(trainingDirectory, config.chunkSamples, runId);
     const std::filesystem::path pgnPath = config.outputDirectory / "games.pgn";
-    std::vector<Engine*> engines = {&engine};
-    RawPolicyEvaluator rawPolicyEvaluator(static_cast<size_t>(engine.getBatchSize()));
+    Engine& rawPolicyEngine = *engines.front();
+    RawPolicyEvaluator rawPolicyEvaluator(
+        static_cast<size_t>(rawPolicyEngine.getBatchSize()));
 
     for (size_t gameIndex = 0; gameIndex < config.games; ++gameIndex) {
         Board board;
@@ -592,7 +596,7 @@ int run_selfplay(Engine& engine, const SelfPlayConfig& config) {
 
             if (rawInitializationActive && macroPly < initializationLength) {
                 const JointActionCandidate rawAction = sample_raw_policy_action(
-                    engine, rawPolicyEvaluator, board, team, hasTimeAdvantage,
+                    rawPolicyEngine, rawPolicyEvaluator, board, team, hasTimeAdvantage,
                     sample_raw_policy_temperature(config, randomEngine), randomEngine);
                 if (!action_leads_to_terminal(
                         board, rawAction, team, hasTimeAdvantage)) {

@@ -292,6 +292,9 @@ void UCI::send_uci_response() {
             << (SearchParams::ENABLE_Q_EARLY_EXIT ? "true" : "false") << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
+    cout << "info string CUDA engines " << engines.size()
+         << " search workers " << engines.size() * SearchParams::NUM_SEARCH_THREADS
+         << " (" << SearchParams::NUM_SEARCH_THREADS << " per engine)" << endl;
     cout << "uciok" << endl;
 }
 
