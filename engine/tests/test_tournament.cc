@@ -4,6 +4,30 @@
 
 #include "tournament.h"
 
+TEST(TournamentConfigTest, SelectsPassPriorFloorsByNetwork) {
+    TournamentConfig config;
+    config.contenderPassPriorFloors = {0.0f, 0.0f};
+    config.baselinePassPriorFloors = {0.10f, 0.05f};
+
+    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(true).wait, 0.0f);
+    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(true).coordination, 0.0f);
+    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(false).wait, 0.10f);
+    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(false).coordination, 0.05f);
+}
+
+TEST(TournamentConfigTest, SelectsPwCoefficientByNetwork) {
+    TournamentConfig config;
+    config.contenderPwCoefficient = 1.5f;
+    config.baselinePwCoefficient = 0.75f;
+
+    EXPECT_FLOAT_EQ(config.pwCoefficientFor(true), 1.5f);
+    EXPECT_FLOAT_EQ(config.pwCoefficientFor(false), 0.75f);
+    EXPECT_FLOAT_EQ(config.searchConfigFor(true).pwCoefficient, 1.5f);
+    EXPECT_FLOAT_EQ(config.searchConfigFor(true).rootPwCoefficient, 1.5f);
+    EXPECT_FLOAT_EQ(config.searchConfigFor(false).pwCoefficient, 0.75f);
+    EXPECT_FLOAT_EQ(config.searchConfigFor(false).rootPwCoefficient, 0.75f);
+}
+
 TEST(TournamentResultTest, ComputesScoreAndElo) {
     TournamentResult result;
     result.contenderWins = 6;

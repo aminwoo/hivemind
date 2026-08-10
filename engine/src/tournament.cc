@@ -131,6 +131,18 @@ void write_summary(
            << "  \"games\": " << result.games() << ",\n"
            << "  \"nodes_per_move\": " << config.nodes << ",\n"
            << "  \"seed\": " << config.seed << ",\n"
+           << "  \"contender_pw_coefficient\": "
+           << config.contenderPwCoefficient << ",\n"
+           << "  \"baseline_pw_coefficient\": "
+           << config.baselinePwCoefficient << ",\n"
+           << "  \"contender_wait_pass_prior_floor\": "
+           << config.contenderPassPriorFloors.wait << ",\n"
+           << "  \"contender_coordination_pass_prior_floor\": "
+           << config.contenderPassPriorFloors.coordination << ",\n"
+           << "  \"baseline_wait_pass_prior_floor\": "
+           << config.baselinePassPriorFloors.wait << ",\n"
+           << "  \"baseline_coordination_pass_prior_floor\": "
+           << config.baselinePassPriorFloors.coordination << ",\n"
            << "  \"contender_wins\": " << result.contenderWins << ",\n"
            << "  \"baseline_wins\": " << result.baselineWins << ",\n"
            << "  \"draws\": " << result.draws << ",\n"
@@ -317,6 +329,20 @@ int run_tournament(
         || config.dirichletEpsilon > 1.0f) {
         throw std::invalid_argument("Invalid tournament Dirichlet configuration");
     }
+    const auto validPassPriorFloors = [](const PassPriorFloors& floors) {
+        return floors.wait >= 0.0f && floors.wait <= 1.0f
+            && floors.coordination >= 0.0f && floors.coordination <= 1.0f;
+    };
+    if (!validPassPriorFloors(config.contenderPassPriorFloors)
+        || !validPassPriorFloors(config.baselinePassPriorFloors)) {
+        throw std::invalid_argument("Invalid tournament pass-prior configuration");
+    }
+    if (!std::isfinite(config.contenderPwCoefficient)
+        || !std::isfinite(config.baselinePwCoefficient)
+        || config.contenderPwCoefficient <= 0.0f
+        || config.baselinePwCoefficient <= 0.0f) {
+        throw std::invalid_argument("Tournament PW coefficients must be positive and finite");
+    }
 
     std::filesystem::create_directories(config.outputDirectory);
     const std::filesystem::path pgnPath = config.outputDirectory / "games.pgn";
@@ -352,13 +378,19 @@ int run_tournament(
                 break;
             }
 
-            Engine& actingEngine = team == contenderTeam ? contender : baseline;
+            const bool contenderActing = team == contenderTeam;
+            Engine& actingEngine = contenderActing ? contender : baseline;
             std::vector<Engine*> engines = {&actingEngine};
             agent.reset_search_state();
             SearchOptions options;
             options.targetNodes = config.nodes;
+            options.search = config.searchConfigFor(contenderActing);
             options.search.rootDirichletAlpha = config.dirichletAlpha;
             options.search.rootDirichletEpsilon = config.dirichletEpsilon;
+            const PassPriorFloors& passPriorFloors =
+                config.passPriorFloorsFor(contenderActing);
+            options.search.waitPassPriorFloor = passPriorFloors.wait;
+            options.search.coordinationPassPriorFloor = passPriorFloors.coordination;
             options.search.rootNoiseSeed = tournament_seed(
                 config.seed,
                 pairIndex * config.maxMacroPlies + macroPly);

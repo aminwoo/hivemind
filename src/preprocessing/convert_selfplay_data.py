@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import random
 import re
 import shutil
 import struct
@@ -24,6 +25,8 @@ HEADER = struct.Struct('<4sIHHQ')
 SAMPLE_METADATA = struct.Struct('<QIHHBBbB')
 POLICY_ENTRY = struct.Struct('<Hf')
 DEFAULT_RL_VALIDATION_FRACTION = 0.02
+DEFAULT_REPLAY_FILES = 5
+DEFAULT_REPLAY_SELECTION_FRACTION = 0.05
 
 
 def read_exact(stream, size: int) -> bytes:
@@ -136,12 +139,42 @@ def is_validation_game(
     return unit_value < validation_fraction
 
 
+def select_replay_files(
+    replay_input_dir: str | Path,
+    replay_files: int,
+    replay_selection_fraction: float,
+    seed: int,
+) -> list[Path]:
+    """Select archived chunks from the newest replay-memory window."""
+    if replay_files <= 0:
+        raise ValueError("replay_files must be positive")
+    if not 0.0 < replay_selection_fraction <= 1.0:
+        raise ValueError("replay_selection_fraction must be in (0, 1]")
+
+    available = sorted(Path(replay_input_dir).glob("*.hvm"), reverse=True)
+    if len(available) < replay_files:
+        raise ValueError(
+            f"Replay memory has {len(available)} HVM3 chunks, "
+            f"but {replay_files} were requested"
+        )
+
+    window_size = max(
+        int(len(available) * replay_selection_fraction + 0.5),
+        replay_files,
+    )
+    candidates = available[:window_size]
+    return sorted(random.Random(seed).sample(candidates, replay_files))
+
+
 def convert_to_split_parquet(
     input_dir: str | Path,
     output_dir: str | Path,
     validation_fraction: float = DEFAULT_RL_VALIDATION_FRACTION,
     split_seed: int = 42,
     samples_per_shard: int = 16384,
+    replay_input_dir: str | Path | None = None,
+    replay_files: int = DEFAULT_REPLAY_FILES,
+    replay_selection_fraction: float = DEFAULT_REPLAY_SELECTION_FRACTION,
 ) -> tuple[Path, Path, int, int]:
     """Convert HVM3 chunks directly into game-disjoint train/validation shards."""
     if not 0.0 < validation_fraction < 1.0:
@@ -153,8 +186,23 @@ def convert_to_split_parquet(
     binary_files = sorted(input_path.glob("*.hvm"))
     if not binary_files:
         raise FileNotFoundError(f"No HVM3 chunks found in {input_path}")
+    selected_replay_files = (
+        select_replay_files(
+            replay_input_dir,
+            replay_files,
+            replay_selection_fraction,
+            split_seed,
+        )
+        if replay_input_dir is not None
+        else []
+    )
 
     output_path = Path(output_dir)
+    if selected_replay_files:
+        print(
+            f"Selected {len(selected_replay_files)} replay chunks from "
+            f"{replay_input_dir}"
+        )
     resolved_input = input_path.resolve()
     resolved_output = output_path.resolve()
     if resolved_output == resolved_input or resolved_output in resolved_input.parents:
@@ -193,6 +241,13 @@ def convert_to_split_parquet(
             counts[split] += 1
             if len(buffers[split]) >= samples_per_shard:
                 flush(split)
+
+    for binary_file in tqdm(selected_replay_files, desc="Adding replay chunks"):
+        for sample in read_binary_shard(binary_file):
+            buffers["train"].append(sample)
+            counts["train"] += 1
+            if len(buffers["train"]) >= samples_per_shard:
+                flush("train")
 
     flush("train")
     flush("val")

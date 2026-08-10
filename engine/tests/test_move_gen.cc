@@ -608,6 +608,7 @@ TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
     EXPECT_FALSE(SearchParams::ENABLE_Q_EARLY_EXIT);
     EXPECT_FALSE(SearchParams::ENABLE_TIME_EXTENSION);
     EXPECT_FALSE(SearchParams::ENABLE_TREE_REUSE);
+    EXPECT_FALSE(config.enableTranspositions);
     EXPECT_EQ(SearchParams::TT_MAX_SIZE, TranspositionTable::kDefaultMaxCapacity);
 }
 

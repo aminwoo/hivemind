@@ -187,7 +187,17 @@ void UCI::go(std::istringstream& is) {
     
     // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
-        agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+        try {
+            agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+        } catch (const std::exception& error) {
+            std::cerr << "Search failed: " << error.what() << std::endl;
+            std::cout << "info string search failed: " << error.what() << std::endl;
+            std::cout << "bestmove (none)" << std::endl;
+        } catch (...) {
+            std::cerr << "Search failed with an unknown exception" << std::endl;
+            std::cout << "info string search failed: unknown exception" << std::endl;
+            std::cout << "bestmove (none)" << std::endl;
+        }
         ongoingSearch.store(false, std::memory_order_release);
     });
 
@@ -278,8 +288,8 @@ void UCI::send_uci_response() {
     cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
     cout << "option name PWExponentPermille type spin default 300 min 1 max 1000" << endl;
-    cout << "option name QEarlyExit type check default "
-         << (SearchParams::ENABLE_Q_EARLY_EXIT ? "true" : "false") << endl;
+        cout << "option name QEarlyExit type check default "
+            << (SearchParams::ENABLE_Q_EARLY_EXIT ? "true" : "false") << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "uciok" << endl;
@@ -391,14 +401,24 @@ void UCI::loop() {
         token.clear(); // Avoid a stale if getline() returns empty or blank line
         is >> skipws >> token;
 
-        if (token == "uci")             send_uci_response();
-        else if (token == "isready")    cout << "readyok" << endl;
-        else if (token == "go")         go(is);
-        else if (token == "setoption")  setoption(is);
-        else if (token == "position")   position(is);
-        else if (token == "ucinewgame") new_game();
-        else if (token == "stop")       stop();
-        else if (token == "policy")     policy();
+        try {
+            if (token == "uci")             send_uci_response();
+            else if (token == "isready")    cout << "readyok" << endl;
+            else if (token == "go")         go(is);
+            else if (token == "setoption")  setoption(is);
+            else if (token == "position")   position(is);
+            else if (token == "ucinewgame") new_game();
+            else if (token == "stop")       stop();
+            else if (token == "policy")     policy();
+        } catch (const std::exception& error) {
+            stop();
+            cerr << "UCI command '" << token << "' failed: " << error.what() << endl;
+            cout << "info string " << token << " failed: " << error.what() << endl;
+        } catch (...) {
+            stop();
+            cerr << "UCI command '" << token << "' failed with an unknown exception" << endl;
+            cout << "info string " << token << " failed: unknown exception" << endl;
+        }
 
     } while (token != "quit"); // Command line args are one-shot
 }

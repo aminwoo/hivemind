@@ -19,6 +19,8 @@ struct SelfPlayConfig {
     double nodeRandomFactor = 0.05;
     float dirichletAlpha = 0.3f;
     float dirichletEpsilon = 0.25f;
+    float waitPassPriorFloor = 0.0f;
+    float coordinationPassPriorFloor = 0.0f;
     float initialClockSeconds = 180.0f;
     uint64_t seed = 0;
     std::filesystem::path outputDirectory = "selfplay_games";
