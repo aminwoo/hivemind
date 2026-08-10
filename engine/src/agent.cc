@@ -257,7 +257,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
     }
 
-    const size_t workerCount = std::max(static_cast<size_t>(numThreads), engines.size());
+    const size_t workerCount = static_cast<size_t>(numThreads) * engines.size();
     while (searchThreads.size() < workerCount) {
         searchThreads.push_back(new SearchThread());
     }

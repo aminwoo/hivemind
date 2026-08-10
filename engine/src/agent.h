@@ -57,7 +57,7 @@ private:
     std::mutex searchMutex_;
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
-    int numThreads;                                          // Number of search threads
+    int numThreads;                                          // Search threads per engine
     SearchParams::RuntimeConfig lastRuntimeConfig_;
     
     // Tree reuse support (CrazyAra-style)
@@ -71,7 +71,7 @@ private:
 public:
     /**
      * @brief Constructs a multi-threaded Agent with MCGS support.
-     * @param numThreads Number of search threads (0 = use SearchParams::NUM_SEARCH_THREADS)
+    * @param numThreads Search threads per engine (0 = use SearchParams::NUM_SEARCH_THREADS)
      */
     Agent(int numThreads = 0);
 

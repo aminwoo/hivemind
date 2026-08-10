@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 
 class Engine;
 
@@ -26,4 +27,4 @@ struct SelfPlayConfig {
     std::filesystem::path outputDirectory = "selfplay_games";
 };
 
-int run_selfplay(Engine& engine, const SelfPlayConfig& config);
+int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& config);
