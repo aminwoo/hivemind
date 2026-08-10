@@ -73,6 +73,53 @@ def test_split_conversion_is_deterministic_and_game_disjoint(tmp_path):
     assert not stale_file.exists()
 
 
+def test_split_conversion_includes_deterministic_replay_files_in_training_only(tmp_path):
+    input_dir = tmp_path / "iteration-3" / "training_data"
+    replay_dir = tmp_path / "iteration-2" / "training_data"
+    input_dir.mkdir(parents=True)
+    replay_dir.mkdir(parents=True)
+
+    _write_chunk(input_dir / "chunk_current_000000.hvm", range(20))
+    for index in range(10):
+        _write_chunk(
+            replay_dir / f"chunk_replay_{index:06d}.hvm",
+            [100 + index],
+        )
+
+    output_dir = tmp_path / "rl_data"
+    train_dir, val_dir, _, _ = convert_to_split_parquet(
+        input_dir,
+        output_dir,
+        validation_fraction=0.5,
+        split_seed=7,
+        samples_per_shard=64,
+        replay_input_dir=replay_dir,
+        replay_files=2,
+        replay_selection_fraction=0.5,
+    )
+
+    train_game_ids = set(pl.read_parquet(train_dir / "*.parquet")["game_id"])
+    val_game_ids = set(pl.read_parquet(val_dir / "*.parquet")["game_id"])
+    replay_game_ids = train_game_ids & set(range(100, 110))
+    assert len(replay_game_ids) == 2
+    assert not (val_game_ids & set(range(100, 110)))
+
+    convert_to_split_parquet(
+        input_dir,
+        output_dir,
+        validation_fraction=0.5,
+        split_seed=7,
+        samples_per_shard=64,
+        replay_input_dir=replay_dir,
+        replay_files=2,
+        replay_selection_fraction=0.5,
+    )
+    repeated_train_ids = set(
+        pl.read_parquet(train_dir / "*.parquet")["game_id"]
+    )
+    assert repeated_train_ids == train_game_ids
+
+
 def test_checkpoint_cleanup_preserves_unrelated_weights(tmp_path):
     seed_checkpoint = tmp_path / "seed.tar"
     generated_checkpoint = tmp_path / "generated.tar"
