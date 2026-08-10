@@ -198,6 +198,16 @@ inline float get_pass_prior_floor(bool teamHasTimeAdvantage,
     return 0.0f;
 }
 
+inline bool is_policy_move_representable(Board& board,
+                                         int boardNum,
+                                         Stockfish::Move move) {
+    if (move == Stockfish::MOVE_NONE) {
+        return true;
+    }
+    const std::string uci = board.uci_move(boardNum, move);
+    return uci.size() != 5 || (uci.back() != 'r' && uci.back() != 'b');
+}
+
 inline std::vector<float> get_normalized_probability(float* policyOutput,
 const std::vector<Stockfish::Move>& actions,
 int board_num, Board& board, float passPriorFloor = 0.0f) {
@@ -209,6 +219,10 @@ int board_num, Board& board, float passPriorFloor = 0.0f) {
         Stockfish::Move action = actions[i];
         if (action == Stockfish::MOVE_NONE) {
             passIdx = i;
+        }
+        if (!is_policy_move_representable(board, board_num, action)) {
+            logits[i] = -std::numeric_limits<float>::infinity();
+            continue;
         }
         std::string uci = board.uci_move(board_num, action);
         
@@ -225,11 +239,6 @@ int board_num, Board& board, float passPriorFloor = 0.0f) {
         logits[i] = policyIt != POLICY_INDEX.end()
             ? policyOutput[policyIt->second]
             : -std::numeric_limits<float>::infinity();
-        
-        // Rook or bishop underpromotions should be ignored
-        if (uci.back() == 'r' || uci.back() == 'b') {
-            logits[i] = -std::numeric_limits<float>::infinity();
-        }
     }
 
     std::vector<float> probabilities = normalize_logits(logits);

@@ -1,5 +1,7 @@
 #include "board.h"
 
+#include <stdexcept>
+
 // String containing whitespace characters.
 const std::string WHITESPACE = " \n\r\t\f\v";
 
@@ -28,30 +30,22 @@ void Board::set(std::string fen) {
     getline(ss, line, '|');
     line = trim(line); 
 
-    // Update first board if its FEN differs.
-    if (line != pos[0]->fen()) {
-        states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-        states[0]->emplace_back();
-        pos[0]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[0]->back(), Stockfish::Threads.main());
-        // Reset position history for this board
-        clear_position_history(0);
-        record_position(0);
-        moveHistory[0].clear();
-    }
+    states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
+    states[0]->emplace_back();
+    pos[0]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[0]->back(), Stockfish::Threads.main());
+    clear_position_history(0);
+    record_position(0);
+    moveHistory[0].clear();
     
     getline(ss, line, '|');
     line = trim(line);
     
-    // Update second board if its FEN differs.
-    if (line != pos[1]->fen()) {
-        states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-        states[1]->emplace_back();
-        pos[1]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[1]->back(), Stockfish::Threads.main());
-        // Reset position history for this board
-        clear_position_history(1);
-        record_position(1);
-        moveHistory[1].clear();
-    }
+    states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
+    states[1]->emplace_back();
+    pos[1]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[1]->back(), Stockfish::Threads.main());
+    clear_position_history(1);
+    record_position(1);
+    moveHistory[1].clear();
 }
 
 // Default constructor: initializes the board positions and sets them to the starting FEN.
@@ -93,6 +87,8 @@ Board::Board(const Board& board) {
     // Copy position history
     positionHistory[0] = board.positionHistory[0];
     positionHistory[1] = board.positionHistory[1];
+    positionHistoryPrefixes[0] = board.positionHistoryPrefixes[0];
+    positionHistoryPrefixes[1] = board.positionHistoryPrefixes[1];
     moveHistory[0] = board.moveHistory[0];
     moveHistory[1] = board.moveHistory[1];
 }
@@ -109,6 +105,11 @@ void Board::push_move(int board_num, Stockfish::Move move) {
     // Record position for repetition detection
     record_position(board_num);
     moveHistory[board_num].push_back(move);
+}
+
+bool Board::is_legal_move(int board_num, Stockfish::Move move) const {
+    return move == Stockfish::MOVE_NONE
+        || Stockfish::MoveList<Stockfish::LEGAL>(*pos[board_num]).contains(move);
 }
 
 // Reverts the last move on the board and updates the state.
@@ -188,36 +189,17 @@ bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
         }
     }
 
-    // Bughouse special case: if team has no legal moves at all (e.g., stalemate on their
-    // board(s)) AND they don't have time advantage, they cannot pass/sit - this is a loss.
-    // This handles positions like stalemate where the team cannot move but isn't in check.
-    // Note: We check moves directly here to avoid infinite recursion with legal_moves().
-    if (!teamHasTimeAdvantage) {
-        bool hasMovesOnA = false;
-        bool hasMovesOnB = false;
-        bool isOnTurnOnA = (pos[BOARD_A]->side_to_move() == side);
-        bool isOnTurnOnB = (pos[BOARD_B]->side_to_move() == ~side);
-        
-        // If neither board has the team on turn, they can't be checkmated this way
-        // (opponent(s) are on turn, so it's not the team's problem yet)
-        if (!isOnTurnOnA && !isOnTurnOnB) {
-            return false;
-        }
-        
-        // Check Board A (where 'side' plays)
-        if (isOnTurnOnA) {
-            Stockfish::MoveList<Stockfish::LEGAL> movesA(*pos[BOARD_A]);
-            hasMovesOnA = (movesA.size() > 0);
-        }
-        
-        // Check Board B (where partner of 'side' plays, so ~side)
-        if (isOnTurnOnB) {
-            Stockfish::MoveList<Stockfish::LEGAL> movesB(*pos[BOARD_B]);
-            hasMovesOnB = (movesB.size() > 0);
-        }
-        
-        // If on turn on at least one board but no moves on any, it's a loss
-        if (!hasMovesOnA && !hasMovesOnB) {
+    // If the team has no legal move, it loses unless time advantage makes
+    // double-sit legal. Double-sit is still forbidden when both boards are on turn.
+    const bool isOnTurnOnA = pos[BOARD_A]->side_to_move() == side;
+    const bool isOnTurnOnB = pos[BOARD_B]->side_to_move() == ~side;
+    if (isOnTurnOnA || isOnTurnOnB) {
+        const bool hasMovesOnA = isOnTurnOnA
+            && Stockfish::MoveList<Stockfish::LEGAL>(*pos[BOARD_A]).size() > 0;
+        const bool hasMovesOnB = isOnTurnOnB
+            && Stockfish::MoveList<Stockfish::LEGAL>(*pos[BOARD_B]).size() > 0;
+        if (!hasMovesOnA && !hasMovesOnB
+            && (!teamHasTimeAdvantage || (isOnTurnOnA && isOnTurnOnB))) {
             return true;
         }
     }
@@ -332,51 +314,46 @@ bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Co
 }
 
 void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
-    Stockfish::Piece p;
-    
-    if (moveA != Stockfish::MOVE_NONE) {
-        states[BOARD_A]->emplace_back();
-        pos[BOARD_A]->do_move(moveA, states[BOARD_A]->back());
-        p = states[BOARD_A]->back().pieceToHand; 
-        if (p) {
-            pos[BOARD_B]->add_to_hand_with_key(p);
-        }
-        // Record position for repetition detection
-        record_position(BOARD_A);
+    if (!is_legal_move(BOARD_A, moveA) || !is_legal_move(BOARD_B, moveB)) {
+        throw std::logic_error(
+            "Search tree supplied an illegal joint action (A="
+            + std::to_string(static_cast<uint32_t>(moveA))
+            + ", B=" + std::to_string(static_cast<uint32_t>(moveB)) + ")");
     }
-    
-    if (moveB != Stockfish::MOVE_NONE) {
-        states[BOARD_B]->emplace_back();
-        pos[BOARD_B]->do_move(moveB, states[BOARD_B]->back());
-        p = states[BOARD_B]->back().pieceToHand; 
-        if (p) {
-            pos[BOARD_A]->add_to_hand_with_key(p);
+
+    auto apply_move = [&](int boardNum, Stockfish::Move move) {
+        if (move == Stockfish::MOVE_NONE) {
+            return;
         }
-        // Record position for repetition detection
-        record_position(BOARD_B);
-    }
+        states[boardNum]->emplace_back();
+        pos[boardNum]->do_move(move, states[boardNum]->back());
+        Stockfish::Piece p = states[boardNum]->back().pieceToHand;
+        if (p) {
+            pos[1 - boardNum]->add_to_hand_with_key(p);
+        }
+        record_position(boardNum);
+        moveHistory[boardNum].push_back(move);
+    };
+
+    apply_move(BOARD_A, moveA);
+    apply_move(BOARD_B, moveB);
 }
 
 void Board::unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
-    if (moveB != Stockfish::MOVE_NONE) {
-        Stockfish::Piece pB = states[BOARD_B]->back().pieceToHand;
-        if (pB) {
-            pos[BOARD_A]->remove_from_hand_with_key(pB);
+    auto undo_move = [&](int boardNum, Stockfish::Move move) {
+        if (move == Stockfish::MOVE_NONE) {
+            return;
         }
-        pos[BOARD_B]->undo_move(moveB);
-        states[BOARD_B]->pop_back();
-        // Remove position from history
-        unrecord_position(BOARD_B);
-    }
+        Stockfish::Piece p = states[boardNum]->back().pieceToHand;
+        if (p) {
+            pos[1 - boardNum]->remove_from_hand_with_key(p);
+        }
+        pos[boardNum]->undo_move(move);
+        states[boardNum]->pop_back();
+        unrecord_position(boardNum);
+        moveHistory[boardNum].pop_back();
+    };
 
-    if (moveA != Stockfish::MOVE_NONE) {
-        Stockfish::Piece pA = states[BOARD_A]->back().pieceToHand;
-        if (pA) {
-            pos[BOARD_B]->remove_from_hand_with_key(pA);
-        }
-        pos[BOARD_A]->undo_move(moveA);
-        states[BOARD_A]->pop_back();
-        // Remove position from history
-        unrecord_position(BOARD_A);
-    }
+    undo_move(BOARD_B, moveB);
+    undo_move(BOARD_A, moveA);
 }

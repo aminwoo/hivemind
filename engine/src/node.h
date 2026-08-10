@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
+#include <random>
 #include <shared_mutex>
 #include <vector>
 
@@ -142,6 +143,14 @@ public:
 
     bool should_expand_new_child(const SearchParams::RuntimeConfig& config) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        const bool allExpandedChildrenLose = !children.empty()
+            && std::all_of(children.begin(), children.end(),
+                [](const std::shared_ptr<Node>& child) {
+                    return child && child->get_node_type() == NodeType::WIN;
+                });
+        if (candidateGenerator.hasNext() && allExpandedChildrenLose) {
+            return true;
+        }
         for (size_t index = 0; index < childVisits.size(); index++) {
             const int virtualVisits = virtualLoss[index];
             if (childVisits[index] + virtualVisits == 0) {
@@ -243,7 +252,7 @@ public:
                              bool teamHasTimeAdvantage,
                              bool boardAOnTurn,
                              bool boardBOnTurn,
-                             const SearchParams::RuntimeConfig&) {
+                             const SearchParams::RuntimeConfig& config) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
@@ -251,8 +260,38 @@ public:
             return false;
         }
         
-        // Initialize generator
-        candidateGenerator.initialize(actionsA, actionsB, priorsA, priorsB,
+        std::vector<float> rootPriorsA = priorsA;
+        std::vector<float> rootPriorsB = priorsB;
+        if (m_depth.load(std::memory_order_relaxed) == 0
+            && config.rootDirichletAlpha > 0.0f
+            && config.rootDirichletEpsilon > 0.0f) {
+            auto applyNoise = [&](std::vector<float>& priors, uint64_t salt) {
+                if (priors.size() <= 1) {
+                    return;
+                }
+                std::mt19937_64 randomEngine(
+                    config.rootNoiseSeed ^ positionHash.load(std::memory_order_relaxed) ^ salt);
+                std::gamma_distribution<float> gamma(config.rootDirichletAlpha, 1.0f);
+                std::vector<float> noise(priors.size());
+                float total = 0.0f;
+                for (float& sample : noise) {
+                    sample = gamma(randomEngine);
+                    total += sample;
+                }
+                if (total <= 0.0f) {
+                    return;
+                }
+                const float epsilon = std::clamp(config.rootDirichletEpsilon, 0.0f, 1.0f);
+                for (size_t index = 0; index < priors.size(); ++index) {
+                    priors[index] = (1.0f - epsilon) * priors[index]
+                        + epsilon * noise[index] / total;
+                }
+            };
+            applyNoise(rootPriorsA, 0x9e3779b97f4a7c15ULL);
+            applyNoise(rootPriorsB, 0xbf58476d1ce4e5b9ULL);
+        }
+
+        candidateGenerator.initialize(actionsA, actionsB, rootPriorsA, rootPriorsB,
                           teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
         expandedCount = 0;
         
@@ -361,7 +400,17 @@ public:
 
     float Q() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
-        return valueSum / (1.0f + m_visits.load(std::memory_order_relaxed));
+        if (nodeType == NodeType::WIN) {
+            return 1.0f;
+        }
+        if (nodeType == NodeType::LOSS) {
+            return -1.0f;
+        }
+        if (nodeType == NodeType::DRAW) {
+            return 0.0f;
+        }
+        const int visits = m_visits.load(std::memory_order_relaxed);
+        return visits > 0 ? valueSum / static_cast<float>(visits) : valueSum;
     }
     
     /**
@@ -417,6 +466,15 @@ public:
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         nodeType = NodeType::LOSS;
         valueSum = -1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly = ply;
+    }
+
+    /**
+     * @brief Mark this node as a proven draw.
+     */
+    void mark_as_draw(int ply = 0) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType = NodeType::DRAW;
         endInPly = ply;
     }
     
@@ -597,12 +655,29 @@ public:
             }
             return bestIdx;
         }
+
+        const bool hasNonLosingAlternative = std::any_of(
+            children.begin(), children.end(),
+            [](const std::shared_ptr<Node>& child) {
+                return child && child->get_node_type() != NodeType::WIN;
+            });
+        auto isEligible = [&](size_t index) {
+            return !hasNonLosingAlternative || !children[index]
+                || children[index]->get_node_type() != NodeType::WIN;
+        };
+
+        size_t firstEligibleIdx = 0;
+        while (firstEligibleIdx < childVisits.size() && !isEligible(firstEligibleIdx)) {
+            ++firstEligibleIdx;
+        }
+        if (firstEligibleIdx == childVisits.size()) return -1;
         
         // Find most-visited child
-        int bestVisitIdx = 0;
-        int maxVisits = childVisits[0];
+        int bestVisitIdx = static_cast<int>(firstEligibleIdx);
+        int maxVisits = childVisits[firstEligibleIdx];
         int secondVisitIdx = -1;
-        for (size_t i = 1; i < childVisits.size(); i++) {
+        for (size_t i = firstEligibleIdx + 1; i < childVisits.size(); i++) {
+            if (!isEligible(i)) continue;
             if (childVisits[i] > maxVisits) {
                 secondVisitIdx = bestVisitIdx;
                 maxVisits = childVisits[i];
@@ -613,9 +688,10 @@ public:
         }
         
         // Find best Q-value child
-        int bestQIdx = 0;
-        float bestQ = qValues[0];
-        for (size_t i = 1; i < qValues.size(); i++) {
+        int bestQIdx = static_cast<int>(firstEligibleIdx);
+        float bestQ = qValues[firstEligibleIdx];
+        for (size_t i = firstEligibleIdx + 1; i < qValues.size(); i++) {
+            if (!isEligible(i)) continue;
             if (qValues[i] > bestQ) {
                 bestQ = qValues[i];
                 bestQIdx = static_cast<int>(i);

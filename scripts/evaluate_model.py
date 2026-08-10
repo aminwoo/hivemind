@@ -78,10 +78,18 @@ def evaluate_model_on_data(session, data_dir, batch_size=64, max_samples=None, a
     
     # Process each parquet file
     for pf in tqdm(parquet_files, desc="Processing parquet files"):
-        x, y_value, policy_a, policy_b = load_rl_parquet_shard(pf)
+        x, y_value, policy_a, policy_b, wdl, moves_left = load_rl_parquet_shard(pf)
         
         # Create dataset with optional augmentation
-        dataset = RLDataset(x, y_value, policy_a, policy_b, augment_flip=augment_flip)
+        dataset = RLDataset(
+            x,
+            y_value,
+            policy_a,
+            policy_b,
+            wdl,
+            moves_left,
+            augment_flip=augment_flip,
+        )
         
         # Process in batches
         for i in range(0, len(dataset), batch_size):
@@ -179,7 +187,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="/home/ben/hivemind/src/training/weights/model-0.97878-0.683-0224-v3.0.onnx",
+        default=str(Path(__file__).resolve().parents[1] / "src/training/weights/supervised/model-0.89016-0.702-0136-v3.0.onnx"),
         help="Path to ONNX model file"
     )
     parser.add_argument(
