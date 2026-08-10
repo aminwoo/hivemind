@@ -6,7 +6,11 @@ import chess
 import chess.engine
 
 # Import your model architecture
-from src.architectures.rise_mobile_v3 import get_rise_v33_model
+from src.architectures.rise_mobile_v3 import (
+    get_cross_board_rise_v33_model,
+    get_dual_stream_memory_rise_v33_model,
+    get_rise_v33_model,
+)
 from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
 from src.constants import NUM_BUGHOUSE_CHANNELS
@@ -24,6 +28,12 @@ def load_model_from_checkpoint(model_path: str, device='cuda'):
     state_dict = checkpoint['model_state_dict']
     has_moves_left = any('value_head.body_plys' in key for key in state_dict)
     has_shared_policy = any('policy_heads.shared_body' in key for key in state_dict)
+    has_cross_board_attention = any(
+        key.startswith('cross_board_blocks.') for key in state_dict
+    )
+    has_dual_stream_memory = any(
+        key.startswith('memory_exchanges.') for key in state_dict
+    )
 
     class Args:
         def __init__(self):
@@ -69,12 +79,31 @@ def load_model_from_checkpoint(model_path: str, device='cuda'):
             # If True, an MLP will be used to process these outputs instead of a simpler method
             self.use_mlp_wdl_ply = False
             self.shared_policy_trunk = has_shared_policy
+            self.attention_dim = (
+                state_dict['position_embedding'].shape[-1]
+                if has_cross_board_attention or has_dual_stream_memory else 192
+            )
+            self.memory_tokens = (
+                state_dict['initial_memory'].shape[1]
+                if has_dual_stream_memory else 8
+            )
+            self.attention_layers = (
+                len({key.split('.')[1] for key in state_dict
+                     if key.startswith('cross_board_blocks.')})
+                if has_cross_board_attention else 2
+            )
 
 
     args = Args()
 
     # Initialize the model architecture
-    model = get_rise_v33_model(args)
+    if has_dual_stream_memory:
+        model_factory = get_dual_stream_memory_rise_v33_model
+    elif has_cross_board_attention:
+        model_factory = get_cross_board_rise_v33_model
+    else:
+        model_factory = get_rise_v33_model
+    model = model_factory(args)
     
     # Load the model state
     model.load_state_dict(state_dict)
@@ -149,7 +178,10 @@ def main():
     Main inference function
     """
     # Path to your trained model
-    model_path = "/home/ben/hivemind/src/training/weights/model-0.89792-0.714-0082.tar"
+    model_path = str(
+        Path(__file__).resolve().parent
+        / "training/weights/supervised/model-0.89016-0.702-0136.tar"
+    )
 
     # Check if model file exists
     if not Path(model_path).exists():

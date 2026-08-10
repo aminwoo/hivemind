@@ -91,7 +91,8 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
  * @return True if search should exit early
  */
 static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int bestChildIdx, 
-                                       float bestQ, int nodesSearched, bool verbose) {
+                                       float bestQ, int nodesSearched, bool enableQEarlyExit,
+                                       bool verbose) {
     if (!SearchParams::ENABLE_MATE_EARLY_EXIT) {
         return false;
     }
@@ -100,10 +101,14 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
         return false;
     }
     
-    // Check if root is proven WIN (we have forced mate)
-    if (rootNode->get_node_type() == NodeType::WIN) {
+    // Any solved root is game-theoretically final. Move selection still
+    // chooses the fastest win, longest loss, or available draw afterward.
+    const NodeType rootType = rootNode->get_node_type();
+    if (rootType != NodeType::UNSOLVED) {
         if (verbose) {
-            cout << "info string Early exit: root position is proven WIN (forced mate)" << endl;
+            const char* outcome = rootType == NodeType::WIN ? "WIN"
+                : rootType == NodeType::LOSS ? "LOSS" : "DRAW";
+            cout << "info string Early exit: root position is proven " << outcome << endl;
         }
         return true;
     }
@@ -123,7 +128,7 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
     }
     
     // Check for overwhelmingly winning Q-value (only if enough nodes searched)
-    if (SearchParams::ENABLE_Q_EARLY_EXIT &&
+    if (enableQEarlyExit &&
         nodesSearched >= SearchParams::MIN_NODES_FOR_Q_EXIT &&
         bestQ >= SearchParams::WINNING_Q_THRESHOLD) {
         if (verbose) {
@@ -199,9 +204,17 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     const bool canWait = is_double_sit_legal(
         teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
 
+    if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)
+        || board.is_checkmate(teamSide, teamHasTimeAdvantage)
+        || board.is_draw()) {
+        if (options.verbose) {
+            cout << "bestmove (none)" << endl;
+        }
+        return result;
+    }
+
     // A team with no real board move may still have the legal wait action.
-    if ((board.legal_moves(teamSide, teamHasTimeAdvantage).empty() && !canWait) ||
-        board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
+    if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty() && !canWait) {
         if (options.verbose) {
             cout << "bestmove (none)" << endl;
         }
@@ -266,24 +279,46 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Launch worker threads
     vector<thread> workers;
     workers.reserve(workerCount);
+    std::exception_ptr workerException;
+    std::mutex workerExceptionMutex;
     for (size_t i = 0; i < workerCount; ++i) {
         Engine* engine = engines[i % engines.size()];
         SearchThread* st = searchThreads[i];
+
+        auto recordWorkerException = [this, &workerException, &workerExceptionMutex]() {
+            {
+                std::lock_guard lock(workerExceptionMutex);
+                if (!workerException) {
+                    workerException = std::current_exception();
+                }
+            }
+            running = false;
+        };
         
         // Use time-based stopping if moveTimeMs > 0, otherwise use node-based
         // Workers check running flag and effective move time for time extension support
         if (moveTimeMs > 0) {
-            workers.emplace_back([this, &board, engine, st, teamHasTimeAdvantage, &searchInfo]() {
-                Board localBoard(board);
-                while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
-                    st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+            workers.emplace_back([this, &board, engine, st, teamHasTimeAdvantage,
+                                  &searchInfo, recordWorkerException]() {
+                try {
+                    Board localBoard(board);
+                    while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
+                        st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+                    }
+                } catch (...) {
+                    recordWorkerException();
                 }
             });
         } else {
-            workers.emplace_back([this, &board, engine, st, targetNodes, teamHasTimeAdvantage, &searchInfo]() {
-                Board localBoard(board);
-                while (running && static_cast<size_t>(searchInfo.get_nodes_searched()) < targetNodes) {
-                    st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+            workers.emplace_back([this, &board, engine, st, targetNodes, teamHasTimeAdvantage,
+                                  &searchInfo, recordWorkerException]() {
+                try {
+                    Board localBoard(board);
+                    while (running && static_cast<size_t>(searchInfo.get_nodes_searched()) < targetNodes) {
+                        st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
+                    }
+                } catch (...) {
+                    recordWorkerException();
                 }
             });
         }
@@ -292,6 +327,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension
     constexpr int MIN_INFO_INTERVAL_MS = 100;
+    bool nodeSearchStalled = false;
+    int stalledCompletedNodes = 0;
     if (options.verbose && moveTimeMs > 0) {
         searchInfo.set_in_game(true);
         constexpr float C = 180.0f;
@@ -350,7 +387,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     }
                     
                     // Early exit for solved/winning positions
-                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes, true)) {
+                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes,
+                                                  lastRuntimeConfig_.enableQEarlyExit, true)) {
                         running = false;
                         break;
                     }
@@ -395,7 +433,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         // Use solver-aware selection for the best child to display
                         int solverBestIdx = rootNode->get_best_move_idx_with_q_weight(
                             options.search.qVetoDelta, options.search.qValueWeight);
-                        size_t displayIdx = (solverBestIdx >= 0) 
+                        size_t displayIdx = (solverBestIdx >= 0
+                                             && static_cast<size_t>(solverBestIdx) < numChildren)
                             ? static_cast<size_t>(solverBestIdx) : static_cast<size_t>(firstIdx);
                         
                         // Output best line during search
@@ -471,7 +510,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     int nodes = searchInfo.get_nodes_searched();
                     
                     // Early exit for solved/winning positions
-                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes, false)) {
+                    if (should_exit_early_winning(rootNode, firstIdx, bestQ, nodes,
+                                                  lastRuntimeConfig_.enableQEarlyExit, false)) {
                         running = false;
                         break;
                     }
@@ -504,11 +544,25 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
     } else {
         // Node-based search: wait for workers to reach target nodes
-        // Workers will stop themselves when they've done enough iterations
-        // Just need to wait and periodically check if all workers are done
+        // Workers will stop themselves when they've done enough iterations.
+        // Fail instead of waiting forever if iterations stop completing.
+        constexpr auto NODE_PROGRESS_TIMEOUT = std::chrono::seconds(60);
+        int lastCompletedNodes = searchInfo.get_nodes_searched();
+        auto lastNodeProgress = std::chrono::steady_clock::now();
         while (running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (static_cast<size_t>(searchInfo.get_nodes_searched()) >= targetNodes) {
+            const int completedNodes = searchInfo.get_nodes_searched();
+            if (static_cast<size_t>(completedNodes) >= targetNodes) {
+                break;
+            }
+            if (completedNodes != lastCompletedNodes) {
+                lastCompletedNodes = completedNodes;
+                lastNodeProgress = std::chrono::steady_clock::now();
+            } else if (std::chrono::steady_clock::now() - lastNodeProgress
+                       >= NODE_PROGRESS_TIMEOUT) {
+                running = false;
+                nodeSearchStalled = true;
+                stalledCompletedNodes = completedNodes;
                 break;
             }
         }
@@ -520,6 +574,16 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Wait for all threads to complete
     for (auto& worker : workers) {
         worker.join();
+    }
+
+    if (workerException) {
+        std::rethrow_exception(workerException);
+    }
+    if (nodeSearchStalled) {
+        throw std::runtime_error(
+            "Node-limited search stalled at "
+            + std::to_string(stalledCompletedNodes) + "/"
+            + std::to_string(targetNodes) + " completed nodes");
     }
 
     // Extract best joint action by selecting the most visited child
@@ -586,16 +650,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 return childVisits[a] > childVisits[b];
             });
             
-            // When root is proven WIN/LOSS, prioritize the solver's best move as PV 1
-            if (rootNode->get_node_type() != NodeType::UNSOLVED) {
-                int solverIdx = rootNode->get_best_move_idx_with_q_weight(
-                    options.search.qVetoDelta, options.search.qValueWeight);
-                if (solverIdx >= 0) {
-                    auto it = std::find(sortedIndices.begin(), sortedIndices.end(), static_cast<size_t>(solverIdx));
-                    if (it != sortedIndices.end() && it != sortedIndices.begin()) {
-                        sortedIndices.erase(it);
-                        sortedIndices.insert(sortedIndices.begin(), static_cast<size_t>(solverIdx));
-                    }
+            // Keep PV 1 aligned with the solver-aware move used for bestmove.
+            int solverIdx = rootNode->get_best_move_idx_with_q_weight(
+                options.search.qVetoDelta, options.search.qValueWeight);
+            if (solverIdx >= 0) {
+                auto it = std::find(sortedIndices.begin(), sortedIndices.end(), static_cast<size_t>(solverIdx));
+                if (it != sortedIndices.end() && it != sortedIndices.begin()) {
+                    sortedIndices.erase(it);
+                    sortedIndices.insert(sortedIndices.begin(), static_cast<size_t>(solverIdx));
                 }
             }
             
@@ -655,6 +717,21 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     return result;
 }
 
+vector<RootEdgeStats> Agent::root_edge_stats() const {
+    vector<RootEdgeStats> stats;
+    if (!rootNode || !rootNode->is_expanded()) {
+        return stats;
+    }
+
+    const auto visits = rootNode->get_child_visits();
+    const size_t edgeCount = min(visits.size(), rootNode->get_num_generated());
+    stats.reserve(edgeCount);
+    for (size_t index = 0; index < edgeCount; ++index) {
+        stats.push_back({rootNode->get_joint_action(static_cast<int>(index)), visits[index]});
+    }
+    return stats;
+}
+
 /**
  * @brief Extracts the best move from the root node using solver-aware selection.
  * When root is proven WIN/LOSS, selects the proven-best move.
@@ -670,37 +747,6 @@ string Agent::extract_best_move(Board& board) {
         lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
     if (bestIdx < 0) {
         return "(none)";
-    }
-
-    auto actionDraws = [&board, this](int childIdx) {
-        JointActionCandidate candidate = rootNode->get_joint_action(childIdx);
-        board.make_moves(candidate.moveA, candidate.moveB);
-        bool draws = board.is_draw();
-        board.unmake_moves(candidate.moveA, candidate.moveB);
-        return draws;
-    };
-
-    if (actionDraws(bestIdx)) {
-        const auto visits = rootNode->get_child_visits();
-        const auto qValues = rootNode->get_q_values();
-        const float drawQ = rootNode->get_child_q(bestIdx);
-        int bestNonDrawIdx = -1;
-        int bestNonDrawVisits = -1;
-
-        const size_t candidateCount = std::min(visits.size(), qValues.size());
-        for (size_t i = 0; i < candidateCount; ++i) {
-            if (static_cast<int>(i) == bestIdx || visits[i] <= 1 || qValues[i] <= drawQ) {
-                continue;
-            }
-            if (visits[i] > bestNonDrawVisits && !actionDraws(static_cast<int>(i))) {
-                bestNonDrawIdx = static_cast<int>(i);
-                bestNonDrawVisits = visits[i];
-            }
-        }
-
-        if (bestNonDrawIdx >= 0) {
-            bestIdx = bestNonDrawIdx;
-        }
     }
 
     JointActionCandidate action = rootNode->get_joint_action(bestIdx);

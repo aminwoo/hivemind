@@ -8,10 +8,13 @@ Main Config definition file used for the project.
 Adjust the paths accordingly.
 """
 
+from pathlib import Path
+
 
 # define the default dir where the training data in plane representation is located
 # e.g. for supervised learning default_dir = "/data/planes/"
-default_dir = "../../data/"
+project_root = Path(__file__).resolve().parent.parent
+default_dir = str(project_root / "data")
 #default_dir = "C:/workspace/Python/CrazyAra/data/kingbase2019_lite_pgn_months/"
 #default_dir = "C:/workspace/Python/CrazyAra/data/chess960_pgns/"
 phase = None  # current phase to use, set to None to treat everything as a single phase

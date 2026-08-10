@@ -27,6 +27,12 @@ class TrainConfig:
                             " processed. It defines how often a new checkpoint will be saved and the metrics evaluated"
     batch_steps: int = 1000 * div_factor
 
+    info_eval_batches: str = "eval_batches caps intermediate evaluation passes. None evaluates the complete loader."
+    eval_batches: int | None = None
+
+    info_full_eval_each_epoch: str = "full_eval_each_epoch runs uncapped evaluation after each supervised epoch."
+    full_eval_each_epoch: bool = False
+
     info_context: str = "context defines the computation device to use for training. Set the context to to 'gpu' if" \
                         " there is one available, otherwise you may train on 'cpu' instead."
     context: str = "gpu"
@@ -36,6 +42,9 @@ class TrainConfig:
 
     info_device_id: str = "device_id sets the GPU device to use for training."
     device_id: int = 0
+
+    info_mixed_precision: str = "mixed_precision selects fp32 or bf16 model execution during training."
+    mixed_precision: str = "fp32"
 
     info_discount: str = "discount describes the discounting value to use for discounting the value target " \
                          "until reaching the final terminal value."
@@ -47,6 +56,9 @@ class TrainConfig:
     info_export_dir: str = "export_dir sets the directory to write and read weights, log, onnx and other export logging" \
                            " files"
     export_dir: str = "./"
+
+    info_weights_dir: str = "weights_dir overrides the model checkpoint directory when set"
+    weights_dir: str = ""
 
     info_export_weights: str = "export_weights is a boolean to decide if the neural network weights should be exported" \
                                "during training."
@@ -183,6 +195,9 @@ class TrainConfig:
 def rl_train_config():
     tc = TrainConfig()
 
+    tc.use_wdl = True
+    tc.use_plys_to_end = True
+
     tc.export_grad_histograms = True
     tc.div_factor = 2
     tc.batch_steps = 100 * tc.div_factor
@@ -193,8 +208,8 @@ def rl_train_config():
 
     tc.val_loss_factor = 0.5
     tc.policy_loss_factor = 0.5
-    tc.plys_to_end_loss_factor = 0.002
-    tc.wdl_loss_factor = 0.499 if tc.use_plys_to_end else 0.5
+    tc.plys_to_end_loss_factor = 0.01
+    tc.wdl_loss_factor = 0.1
 
     tc.nb_training_epochs = 1
     tc.q_value_ratio = 0  # previously 0.15

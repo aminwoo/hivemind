@@ -74,7 +74,7 @@ constexpr bool ENABLE_MCGS = true;
 
 /// Enable transposition table for graph-based search (only used if ENABLE_MCGS is true)
 /// When true, positions reached through different paths share the same node
-constexpr bool ENABLE_TRANSPOSITIONS = true;
+constexpr bool ENABLE_TRANSPOSITIONS = false;
 
 /// Initial capacity for transposition table (number of positions)
 /// Higher values reduce rehashing overhead but use more memory
@@ -110,10 +110,10 @@ constexpr float Q_INIT = -1.0f;
 // =============================================================================
 
 /// Minimum pass probability when the team can legally wait for its partner.
-constexpr float WAIT_PASS_PRIOR_FLOOR = 0.10f;
+constexpr float WAIT_PASS_PRIOR_FLOOR = 0.0f;
 
 /// Minimum pass probability per board when both teammates can move.
-constexpr float COORDINATION_PASS_PRIOR_FLOOR = 0.05f;
+constexpr float COORDINATION_PASS_PRIOR_FLOOR = 0.0f;
 
 // =============================================================================
 // Draw Contempt Parameters
@@ -175,9 +175,10 @@ constexpr float Q_VALUE_WEIGHT = 1.0f;
  * - opponentsNextRoot: Opponent's most-visited response
  * 
  * On the next search, if the position matches, the subtree is reused.
- * CrazyAra default: true
+ * Disabled until retained DAG edges are guaranteed to remain legal after a
+ * UCI position reconstruction. Invalid reused drops can underflow pockets.
  */
-constexpr bool ENABLE_TREE_REUSE = true;
+constexpr bool ENABLE_TREE_REUSE = false;
 
 // =============================================================================
 // Early Stopping and Time Management Parameters
@@ -212,8 +213,8 @@ constexpr float EARLY_STOP_FACTOR = 2.0f;
 constexpr bool ENABLE_MATE_EARLY_EXIT = true;
 
 /// Permit heuristic Q-based exits in addition to solver-proven mate exits.
-/// Disabled by default because Bughouse evaluations can reverse sharply while
-/// progressive widening is still exposing joint actions.
+/// The minimum-node guard below limits exits while progressive widening is
+/// still exposing joint actions.
 constexpr bool ENABLE_Q_EARLY_EXIT = false;
 
 /// Q-value threshold for early exit (positions above this are "completely winning")
@@ -221,7 +222,7 @@ constexpr float WINNING_Q_THRESHOLD = 0.99f;
 
 /// Minimum nodes searched before allowing Q-based early exit
 /// (ensures we've explored enough to trust the evaluation)
-constexpr int MIN_NODES_FOR_Q_EXIT = 5000;
+constexpr int MIN_NODES_FOR_Q_EXIT = 800;
 
 /**
  * Enable dynamic time extension: Extend search when evaluation is falling.
@@ -275,6 +276,7 @@ struct RuntimeConfig {
     float cpuctBase = CPUCT_BASE;
     bool enableMCGS = ENABLE_MCGS;
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
+    bool enableQEarlyExit = ENABLE_Q_EARLY_EXIT;
     float drawContempt = DRAW_CONTEMPT;
     float pwCoefficient = PW_COEFFICIENT;
     float rootPwCoefficient = ROOT_PW_COEFFICIENT;
@@ -283,6 +285,9 @@ struct RuntimeConfig {
     float qVetoDelta = Q_VETO_DELTA;
     float waitPassPriorFloor = WAIT_PASS_PRIOR_FLOOR;
     float coordinationPassPriorFloor = COORDINATION_PASS_PRIOR_FLOOR;
+    float rootDirichletAlpha = 0.0f;
+    float rootDirichletEpsilon = 0.0f;
+    uint64_t rootNoiseSeed = 0;
 };
 
 // =============================================================================

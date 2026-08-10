@@ -121,12 +121,24 @@ bool Engine::loadEngineFromFile(const std::string& engineFile) {
     file.close();
 
     auto runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(m_logger));
+    if (!runtime) {
+        std::cerr << "Failed to create TensorRT runtime" << std::endl;
+        return false;
+    }
     m_engine.reset(runtime->deserializeCudaEngine(engineData.data(), engineData.size()));
+    if (!m_engine) {
+        std::cerr << "Failed to deserialize TensorRT engine: " << engineFile << std::endl;
+        return false;
+    }
     
     return initializeResources();
 }
 
 bool Engine::saveEngineToFile(const std::string& engineFile) {
+    if (!m_engine) {
+        std::cerr << "Cannot save an empty TensorRT engine" << std::endl;
+        return false;
+    }
     auto serializedEngine = std::unique_ptr<nvinfer1::IHostMemory>(m_engine->serialize());
     if (!serializedEngine) return false;
 
@@ -141,19 +153,40 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     std::cout << "Building TensorRT engine from ONNX: " << onnxFile << std::endl;
     preloadTensorRTBuilderResources();
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(m_logger));
+    if (!builder) {
+        std::cerr << "Failed to create TensorRT builder. Run the generated hivemind launcher "
+                  << "so TensorRT resource libraries are on LD_LIBRARY_PATH." << std::endl;
+        return false;
+    }
     auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0U));
+    if (!network) {
+        std::cerr << "Failed to create TensorRT network definition" << std::endl;
+        return false;
+    }
     auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, m_logger));
+    if (!parser) {
+        std::cerr << "Failed to create TensorRT ONNX parser" << std::endl;
+        return false;
+    }
 
     if (!parser->parseFromFile(onnxFile.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
         return false;
     }
 
     auto config = std::unique_ptr<nvinfer1::IBuilderConfig>(builder->createBuilderConfig());
+    if (!config) {
+        std::cerr << "Failed to create TensorRT builder configuration" << std::endl;
+        return false;
+    }
     
     config->setBuilderOptimizationLevel(5);
     config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1ULL << 30); // 1GB
     
     auto profile = builder->createOptimizationProfile();
+    if (!profile) {
+        std::cerr << "Failed to create TensorRT optimization profile" << std::endl;
+        return false;
+    }
     const char* inputName = network->getInput(0)->getName();
     nvinfer1::Dims dims{};
     dims.nbDims = 4;
@@ -171,7 +204,15 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     if (!serializedEngine) return false;
     
     auto runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(m_logger));
+    if (!runtime) {
+        std::cerr << "Failed to create TensorRT runtime" << std::endl;
+        return false;
+    }
     m_engine.reset(runtime->deserializeCudaEngine(serializedEngine->data(), serializedEngine->size()));
+    if (!m_engine) {
+        std::cerr << "Failed to deserialize newly built TensorRT engine" << std::endl;
+        return false;
+    }
     return initializeResources();
 }
 

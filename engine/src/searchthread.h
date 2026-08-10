@@ -23,7 +23,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
-                                             int searchPly);
+                                             int searchPly,
+                                             int* endInPly = nullptr);
 
 /**
  * @brief Entry in an MCTS selection trajectory.
