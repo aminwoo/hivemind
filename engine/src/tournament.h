@@ -8,7 +8,14 @@
 #include <utility>
 #include <vector>
 
+#include "search_params.h"
+
 class Engine;
+
+struct PassPriorFloors {
+    float wait = 0.0f;
+    float coordination = 0.0f;
+};
 
 struct TournamentConfig {
     size_t games = 20;
@@ -16,8 +23,27 @@ struct TournamentConfig {
     size_t maxMacroPlies = 400;
     float dirichletAlpha = 0.3f;
     float dirichletEpsilon = 0.10f;
+    float contenderPwCoefficient = SearchParams::PW_COEFFICIENT;
+    float baselinePwCoefficient = SearchParams::PW_COEFFICIENT;
+    PassPriorFloors contenderPassPriorFloors;
+    PassPriorFloors baselinePassPriorFloors;
     uint64_t seed = 1;
     std::filesystem::path outputDirectory = "tournament_results";
+
+    const PassPriorFloors& passPriorFloorsFor(bool isContender) const {
+        return isContender ? contenderPassPriorFloors : baselinePassPriorFloors;
+    }
+
+    float pwCoefficientFor(bool isContender) const {
+        return isContender ? contenderPwCoefficient : baselinePwCoefficient;
+    }
+
+    SearchParams::RuntimeConfig searchConfigFor(bool isContender) const {
+        SearchParams::RuntimeConfig searchConfig;
+        searchConfig.pwCoefficient = pwCoefficientFor(isContender);
+        searchConfig.rootPwCoefficient = pwCoefficientFor(isContender);
+        return searchConfig;
+    }
 };
 
 struct TournamentBreakdown {

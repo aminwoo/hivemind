@@ -182,6 +182,11 @@ def _generate_validation_shard(
 
 def _run_supervised_training(
     project_root: Path,
+    train_planes_dir: Path,
+    validation_shard: Path,
+    architecture: str,
+    batch_size: int | None = None,
+    precision: str | None = None,
     checkpoint_path: Path | None = None,
     train_eval_shard: Path | None = None,
 ) -> None:
@@ -189,7 +194,22 @@ def _run_supervised_training(
     _ensure_dir(train_dir / "weights" / "supervised")
     _ensure_dir(train_dir / "logs")
 
-    cmd = [sys.executable, "train_loop.py", "--mode", "sl"]
+    cmd = [
+        sys.executable,
+        "train_loop.py",
+        "--mode",
+        "sl",
+        "--architecture",
+        architecture,
+        "--sl-train-data-dir",
+        str(train_planes_dir),
+        "--sl-validation-shard",
+        str(validation_shard),
+    ]
+    if batch_size is not None:
+        cmd.extend(["--batch-size", str(batch_size)])
+    if precision is not None:
+        cmd.extend(["--precision", precision])
     if checkpoint_path is not None:
         cmd.extend(["--checkpoint", str(checkpoint_path)])
     if train_eval_shard is not None:
@@ -272,6 +292,28 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to a .tar checkpoint from which to resume supervised training",
+    )
+    parser.add_argument(
+        "--architecture",
+        choices=(
+            "risev33",
+            "crossboard-risev33",
+            "dualstream-memory-risev33",
+        ),
+        default="risev33",
+        help="Network architecture passed to supervised training",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Optional training batch-size override",
+    )
+    parser.add_argument(
+        "--precision",
+        choices=("fp32", "bf16"),
+        default=None,
+        help="Optional model execution precision override",
     )
     parser.add_argument(
         "--rebuild-val",
@@ -443,6 +485,11 @@ def main() -> None:
     print("Starting supervised training...")
     _run_supervised_training(
         PROJECT_ROOT,
+        train_planes_dir=train_planes_dir,
+        validation_shard=val_shard_path,
+        architecture=args.architecture,
+        batch_size=args.batch_size,
+        precision=args.precision,
         checkpoint_path=checkpoint_path,
         train_eval_shard=train_eval_shard_path,
     )

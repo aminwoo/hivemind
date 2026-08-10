@@ -33,10 +33,16 @@ void printUsage(const char* progName) {
     cout << "    --mcts-temperature <x> --mcts-temperature-decay <x>" << endl;
     cout << "    --node-random-factor <x>" << endl;
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
+    cout << "    --wait-pass-prior-floor <x> --coordination-pass-prior-floor <x>" << endl;
     cout << "  tournament [options] Run a paired network-vs-network tournament" << endl;
     cout << "    --contender <onnx> --baseline <onnx> --games <even-n> --nodes <n>" << endl;
     cout << "    --output <dir> --seed <n> --max-macro-plies <n>" << endl;
     cout << "    --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
+    cout << "    --contender-pw-coefficient <x> --baseline-pw-coefficient <x>" << endl;
+    cout << "    --contender-wait-pass-prior-floor <x>" << endl;
+    cout << "    --contender-coordination-pass-prior-floor <x>" << endl;
+    cout << "    --baseline-wait-pass-prior-floor <x>" << endl;
+    cout << "    --baseline-coordination-pass-prior-floor <x>" << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -127,6 +133,8 @@ int main(int argc, char* argv[]) {
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
+                else if (option == "--wait-pass-prior-floor") config.waitPassPriorFloor = stof(value);
+                else if (option == "--coordination-pass-prior-floor") config.coordinationPassPriorFloor = stof(value);
                 else throw invalid_argument("Unknown selfplay option: " + option);
             }
         } catch (const exception& error) {
@@ -182,6 +190,12 @@ int main(int argc, char* argv[]) {
                 else if (option == "--max-macro-plies") config.maxMacroPlies = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
+                else if (option == "--contender-pw-coefficient") config.contenderPwCoefficient = stof(value);
+                else if (option == "--baseline-pw-coefficient") config.baselinePwCoefficient = stof(value);
+                else if (option == "--contender-wait-pass-prior-floor") config.contenderPassPriorFloors.wait = stof(value);
+                else if (option == "--contender-coordination-pass-prior-floor") config.contenderPassPriorFloors.coordination = stof(value);
+                else if (option == "--baseline-wait-pass-prior-floor") config.baselinePassPriorFloors.wait = stof(value);
+                else if (option == "--baseline-coordination-pass-prior-floor") config.baselinePassPriorFloors.coordination = stof(value);
                 else throw invalid_argument("Unknown tournament option: " + option);
             }
         } catch (const exception& error) {

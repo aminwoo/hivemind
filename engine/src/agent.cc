@@ -327,6 +327,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension
     constexpr int MIN_INFO_INTERVAL_MS = 100;
+    bool nodeSearchStalled = false;
+    int stalledCompletedNodes = 0;
     if (options.verbose && moveTimeMs > 0) {
         searchInfo.set_in_game(true);
         constexpr float C = 180.0f;
@@ -542,11 +544,25 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
     } else {
         // Node-based search: wait for workers to reach target nodes
-        // Workers will stop themselves when they've done enough iterations
-        // Just need to wait and periodically check if all workers are done
+        // Workers will stop themselves when they've done enough iterations.
+        // Fail instead of waiting forever if iterations stop completing.
+        constexpr auto NODE_PROGRESS_TIMEOUT = std::chrono::seconds(60);
+        int lastCompletedNodes = searchInfo.get_nodes_searched();
+        auto lastNodeProgress = std::chrono::steady_clock::now();
         while (running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (static_cast<size_t>(searchInfo.get_nodes_searched()) >= targetNodes) {
+            const int completedNodes = searchInfo.get_nodes_searched();
+            if (static_cast<size_t>(completedNodes) >= targetNodes) {
+                break;
+            }
+            if (completedNodes != lastCompletedNodes) {
+                lastCompletedNodes = completedNodes;
+                lastNodeProgress = std::chrono::steady_clock::now();
+            } else if (std::chrono::steady_clock::now() - lastNodeProgress
+                       >= NODE_PROGRESS_TIMEOUT) {
+                running = false;
+                nodeSearchStalled = true;
+                stalledCompletedNodes = completedNodes;
                 break;
             }
         }
@@ -562,6 +578,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     if (workerException) {
         std::rethrow_exception(workerException);
+    }
+    if (nodeSearchStalled) {
+        throw std::runtime_error(
+            "Node-limited search stalled at "
+            + std::to_string(stalledCompletedNodes) + "/"
+            + std::to_string(targetNodes) + " completed nodes");
     }
 
     // Extract best joint action by selecting the most visited child

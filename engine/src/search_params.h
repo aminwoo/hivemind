@@ -74,7 +74,7 @@ constexpr bool ENABLE_MCGS = true;
 
 /// Enable transposition table for graph-based search (only used if ENABLE_MCGS is true)
 /// When true, positions reached through different paths share the same node
-constexpr bool ENABLE_TRANSPOSITIONS = true;
+constexpr bool ENABLE_TRANSPOSITIONS = false;
 
 /// Initial capacity for transposition table (number of positions)
 /// Higher values reduce rehashing overhead but use more memory
