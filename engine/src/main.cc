@@ -15,7 +15,9 @@
 #include <cuda_runtime.h>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
+#include <vector>
 
 using namespace std; 
 
@@ -142,7 +144,6 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
 
-        Engine engine(0);
         if (networkPath.empty()) {
             const filesystem::path networkDirectory = filesystem::exists("./networks")
                 ? filesystem::path("./networks")
@@ -156,14 +157,26 @@ int main(int argc, char* argv[]) {
             cerr << "No ONNX model found; pass --network <onnx>" << endl;
             return EXIT_FAILURE;
         }
-        const string engineFile = getEnginePath(
-            onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v1");
-        if (!engine.loadNetwork(onnxFile, engineFile)) {
-            cerr << "Failed to load engine" << endl;
+        vector<unique_ptr<Engine>> ownedEngines;
+        vector<Engine*> engines;
+        for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
+            auto engine = make_unique<Engine>(deviceId);
+            const string engineFile = getEnginePath(
+                onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v1");
+            if (!engine->loadNetwork(onnxFile, engineFile)) {
+                cerr << "Failed to load engine on device " << deviceId << endl;
+                continue;
+            }
+            engines.push_back(engine.get());
+            ownedEngines.push_back(std::move(engine));
+        }
+        if (engines.empty()) {
+            cerr << "Failed to load an engine on any CUDA device" << endl;
             return EXIT_FAILURE;
         }
+        cout << "Self-play using " << engines.size() << " GPU engine(s)" << endl;
         try {
-            return run_selfplay(engine, config);
+            return run_selfplay(engines, config);
         } catch (const exception& error) {
             cerr << "Self-play failed: " << error.what() << endl;
             return EXIT_FAILURE;
