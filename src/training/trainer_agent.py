@@ -10,9 +10,9 @@ https://gitlab.com/jweil/PommerLearn/-/blob/master/pommerlearn/training/train_cn
 """
 
 import random
-import os
 import logging
 import glob
+from contextlib import nullcontext
 from pathlib import Path
 import numpy as np
 import torch
@@ -33,6 +33,28 @@ from configs.train_config import TrainConfig, TrainObjects
 from src.training.data_loaders import load_parquet_shard
 from src.training.train_util import return_metrics_and_stop_training,\
     value_to_wdl_label, prepare_plys_label
+
+
+def evaluation_batch_limit(train_config: TrainConfig, full_evaluation: bool):
+    return None if full_evaluation else train_config.eval_batches
+
+
+def requires_full_evaluation(
+    train_config: TrainConfig,
+    training_complete: bool,
+    epoch_complete: bool,
+):
+    return training_complete or (
+        train_config.full_eval_each_epoch and epoch_complete
+    )
+
+
+def autocast_context(ctx, precision):
+    if precision == "fp32" or ctx.type != "cuda":
+        return nullcontext()
+    if precision != "bf16":
+        raise ValueError(f"Unsupported mixed precision: {precision}")
+    return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
 
 class TrainerAgentPytorch:
@@ -65,6 +87,12 @@ class TrainerAgentPytorch:
         self.additional_loaders = additional_loaders
         self.tc = train_config
         self.to = train_objects
+        self.weights_dir = (
+            Path(self.tc.weights_dir)
+            if self.tc.weights_dir
+            else Path(self.tc.export_dir) / "weights"
+        )
+        self.weights_dir.mkdir(parents=True, exist_ok=True)
         self.is_rl = is_rl
         self.rl_train_loader = rl_train_loader
         self._train_eval_loader = train_eval_loader
@@ -103,12 +131,22 @@ class TrainerAgentPytorch:
             self.old_label = self.value_out = self.t_s = None
         self.patience_cnt = self.batch_proc_tmp = None
         # calculate how many log states will be processed
-        self.k_steps_end = round(self.tc.total_it / self.tc.batch_steps)
+        if self.tc.full_eval_each_epoch:
+            epoch_count = max(1, self.tc.nb_training_epochs)
+            interval_capacity = epoch_count * self.tc.batch_steps
+            evaluations_per_epoch = max(
+                1,
+                (self.tc.total_it + interval_capacity - 1) // interval_capacity,
+            )
+            self.k_steps_end = evaluations_per_epoch * epoch_count
+        else:
+            self.k_steps_end = round(self.tc.total_it / self.tc.batch_steps)
         if self.k_steps_end == 0:
             self.k_steps_end = 1
         self.k_steps = self.cur_it = self.nb_spikes = self.old_val_loss = self.continue_training = self.t_s_steps = None
         self._train_iter = self.graph_exported = self.val_metric_values = self.val_loss = self.val_p_acc = None
         self.val_metric_values_best = None
+        self._generated_weight_files = []
 
         self.use_rtpt = use_rtpt
 
@@ -153,10 +191,10 @@ class TrainerAgentPytorch:
                             return self._finish_training(val_metric_values)
             else:
                 # SL mode: iterate over shard files
-                for shard_file_path in tqdm(self.ordering):
+                for shard_index, shard_file_path in enumerate(tqdm(self.ordering)):
                     train_loader = self._get_train_loader(shard_file_path)
 
-                    for _, batch in enumerate(train_loader):
+                    for batch_index, batch in enumerate(train_loader):
                         data = self.train_update(batch)
 
                         # add the graph representation of the network to the tensorboard log file
@@ -164,8 +202,22 @@ class TrainerAgentPytorch:
                             self.sum_writer.add_graph(self._model, data)
                             self.graph_exported = True
 
-                        if self.batch_proc_tmp >= self.tc.batch_steps or self.cur_it >= self.tc.total_it:  # show metrics every thousands steps
-                            train_metric_values, val_metric_values, additional_metric_values = self.evaluate(train_loader)
+                        epoch_complete = (
+                            shard_index + 1 == len(self.ordering)
+                            and batch_index + 1 == len(train_loader)
+                        )
+                        training_complete = self.cur_it >= self.tc.total_it
+                        interval_complete = self.batch_proc_tmp >= self.tc.batch_steps
+                        full_evaluation = requires_full_evaluation(
+                            self.tc,
+                            training_complete,
+                            epoch_complete,
+                        )
+                        if interval_complete or full_evaluation:
+                            train_metric_values, val_metric_values, additional_metric_values = self.evaluate(
+                                train_loader,
+                                full_evaluation=full_evaluation,
+                            )
                         else:
                             continue
 
@@ -200,11 +252,11 @@ class TrainerAgentPytorch:
                                                                         self.val_metric_values_best)
 
                             logging.debug("Recover to latest checkpoint")
-                            model_path = self.tc.export_dir + "weights/model-%.5f-%.3f-%04d.tar" % (
+                            model_path = self.weights_dir / ("model-%.5f-%.3f-%04d.tar" % (
                                 self.val_loss_best,
                                 self.val_p_acc_best,
                                 self.k_steps_best,
-                            )  # Load the best model once again
+                            ))  # Load the best model once again
                             logging.debug("load current best model:%s", model_path)
                             load_torch_state(self._model, self.optimizer, model_path, self.tc.device_id)
                             self.k_steps = self.k_steps_best
@@ -243,11 +295,18 @@ class TrainerAgentPytorch:
                                 if self.tc.export_weights:
                                     model_prefix = "model-%.5f-%.3f-%04d"\
                                                    % (self.val_loss_best, self.val_p_acc_best, self.k_steps_best)
-                                    filepath = Path(self.tc.export_dir + f"weights/{model_prefix}.tar")
+                                    filepath = self.weights_dir / f"{model_prefix}.tar"
                                     self.delete_previous_weights()
 
                                     # the export function saves both the architecture and the weights
-                                    save_torch_state(self._model, self.optimizer, filepath)
+                                    save_torch_state(
+                                        self._model,
+                                        self.optimizer,
+                                        filepath,
+                                        training_iteration=self.cur_it,
+                                        evaluation_step=self.k_steps,
+                                        batch_steps=self.tc.batch_steps,
+                                    )
                                     print()
                                     logging.info("Saved checkpoint to %s", filepath)
                                     with torch.no_grad():
@@ -256,9 +315,12 @@ class TrainerAgentPytorch:
                                             ctx)
                                         export_to_onnx(self._model, 1,
                                                        dummy_input,
-                                                       Path(self.tc.export_dir) / Path("weights"), model_prefix,
+                                                       self.weights_dir, model_prefix,
                                                        self.tc.use_wdl and self.tc.use_plys_to_end,
                                                        True)
+                                    self._generated_weight_files.extend(
+                                        self.weights_dir.glob(f"{model_prefix}*")
+                                    )
 
                                 self.patience_cnt = 0  # reset the patience counter
                             # print the elapsed time
@@ -301,14 +363,10 @@ class TrainerAgentPytorch:
                                                                         self.val_metric_values_best)
 
     def delete_previous_weights(self):
-        """
-        Delete previous weights in the "weights" folder to save space.
-        """
-        # delete previous weights to save space
-        files = glob.glob(self.tc.export_dir + 'weights/*')
-        for f in files:
-            if os.path.isfile(f):
-                os.remove(f)
+        """Delete only checkpoints generated by this trainer instance."""
+        for path in self._generated_weight_files:
+            path.unlink(missing_ok=True)
+        self._generated_weight_files.clear()
 
     def _get_train_loader(self, shard_file_path):
         tensors = load_parquet_shard(
@@ -322,11 +380,14 @@ class TrainerAgentPytorch:
 
         return train_loader
 
-    def evaluate(self, train_loader):
+    def evaluate(self, train_loader, full_evaluation=False):
         # log the current learning rate
-        # update batch_proc_tmp counter by subtracting the batch_steps
-        self.batch_proc_tmp -= self.tc.batch_steps
-        ms_step = ((time() - self.t_s_steps) / self.tc.batch_steps) * 1000  # measure elapsed time
+        processed_batches = max(1, self.batch_proc_tmp)
+        if full_evaluation:
+            self.batch_proc_tmp = 0
+        else:
+            self.batch_proc_tmp -= self.tc.batch_steps
+        ms_step = ((time() - self.t_s_steps) / processed_batches) * 1000  # measure elapsed time
         # update the counters
         self.k_steps += 1
         self.patience_cnt += 1
@@ -335,7 +396,9 @@ class TrainerAgentPytorch:
         logging.debug("Iteration %d/%d", self.cur_it, self.tc.total_it)
         logging.debug("lr: %.7f - momentum: %.7f", self.to.lr_schedule(self.cur_it),
                       self.to.momentum_schedule(self.cur_it))
-        print("starting train eval")
+        eval_batch_limit = evaluation_batch_limit(self.tc, full_evaluation)
+        evaluation_label = "full" if full_evaluation else "intermediate"
+        print(f"starting {evaluation_label} train eval")
         evaluation_loader = (
             self._train_eval_loader
             if self._train_eval_loader is not None
@@ -345,27 +408,33 @@ class TrainerAgentPytorch:
             self.to.metrics,
             evaluation_loader,
             self._model,
-            nb_batches=None if self._train_eval_loader is not None else 25,
+            nb_batches=(
+                eval_batch_limit
+                if self._train_eval_loader is not None
+                else 25
+            ),
             ctx=self._ctx,
             phase_weights=self.to.phase_weights,
             sparse_policy_label=self.tc.sparse_policy_label,
             apply_select_policy_from_plane=self.tc.select_policy_from_plane and not self.tc.is_policy_from_plane_data,
             use_wdl=self.tc.use_wdl,
             use_plys_to_end=self.tc.use_plys_to_end,
+            precision=self.tc.mixed_precision,
         )
 
-        print("starting val eval")
+        print(f"starting {evaluation_label} val eval")
         val_metric_values = evaluate_metrics(
             self.to.metrics,
             self._val_loader,
             self._model,
-            nb_batches=None,
+            nb_batches=eval_batch_limit,
             ctx=self._ctx,
             phase_weights=self.to.phase_weights,
             sparse_policy_label=self.tc.sparse_policy_label,
             apply_select_policy_from_plane=self.tc.select_policy_from_plane and not self.tc.is_policy_from_plane_data,
             use_wdl=self.tc.use_wdl,
             use_plys_to_end=self.tc.use_plys_to_end,
+            precision=self.tc.mixed_precision,
         )
 
         # do additional evaluations based on self.additional_loaders
@@ -377,13 +446,14 @@ class TrainerAgentPytorch:
                     self.to.metrics,
                     dataloader,
                     self._model,
-                    nb_batches=None,
+                    nb_batches=eval_batch_limit,
                     ctx=self._ctx,
                     phase_weights={k: 1.0 for k, v in self.to.phase_weights.items()},  # use no weighting
                     sparse_policy_label=self.tc.sparse_policy_label,
                     apply_select_policy_from_plane=self.tc.select_policy_from_plane and not self.tc.is_policy_from_plane_data,
                     use_wdl=self.tc.use_wdl,
                     use_plys_to_end=self.tc.use_plys_to_end,
+                    precision=self.tc.mixed_precision,
                 )
                 additional_metric_values[dataset_name] = metric_values
 
@@ -402,8 +472,7 @@ class TrainerAgentPytorch:
         data = data.to(self._ctx)
         value_label = value_label.to(self._ctx)
         policy_label = policy_label.to(self._ctx)
-        sample_weights = torch.Tensor([1. for _ in value_label])
-        sample_weights = sample_weights.to(self._ctx)
+        sample_weights = torch.ones(len(value_label), device=self._ctx)
         if self.tc.sparse_policy_label:
             policy_label = policy_label.long()
         # update a dummy metric to see a proper progress bar
@@ -412,23 +481,31 @@ class TrainerAgentPytorch:
         #     self.to.metrics["value_loss"].update(self.old_label, value_out)
         self.old_label = value_label
 
+        with autocast_context(self._ctx, self.tc.mixed_precision):
+            model_out = self._model(data)
         if self.tc.use_wdl and self.tc.use_plys_to_end:
-            value_out, policy_out, _, wdl_out, plys_out = self._model(data)
-            wdl_loss = self.wdl_loss(wdl_out, wdl_label, sample_weights)
+            value_out, policy_out, _, wdl_out, plys_out = model_out
+            wdl_loss = self.wdl_loss(wdl_out.float(), wdl_label, sample_weights)
             ply_loss = self.ply_loss(
-                torch.flatten(plys_out), plys_label, sample_weights
+                torch.flatten(plys_out.float()), plys_label, sample_weights
             )
         else:
-            value_out, policy_out = self._model(data)
+            value_out, policy_out = model_out
         # policy_out = policy_out.softmax(dim=1)
-        value_loss = self.value_loss(torch.flatten(value_out), value_label, sample_weights)
+        value_loss = self.value_loss(
+            torch.flatten(value_out.float()), value_label, sample_weights
+        )
 
         policy_out_1, policy_out_2 = policy_out
         policy_label_1 = policy_label[:, 0]
         policy_label_2 = policy_label[:, 1]
 
-        policy_loss_1 = self.policy_loss(policy_out_1, policy_label_1, sample_weights)
-        policy_loss_2 = self.policy_loss(policy_out_2, policy_label_2, sample_weights)
+        policy_loss_1 = self.policy_loss(
+            policy_out_1.float(), policy_label_1, sample_weights
+        )
+        policy_loss_2 = self.policy_loss(
+            policy_out_2.float(), policy_label_2, sample_weights
+        )
 
         policy_loss = 0.5 * (policy_loss_1 + policy_loss_2)
 
@@ -455,32 +532,47 @@ class TrainerAgentPytorch:
     def train_update_rl(self, batch):
         """
         Training update for RL mode with separate policy_a and policy_b targets.
-        Batch format: (data, value_label, policy_a, policy_b)
+        Batch format: (data, value_label, policy_a, policy_b, wdl, moves_left)
         """
         self.optimizer.zero_grad()
 
-        data, value_label, policy_a, policy_b = batch
+        data, value_label, policy_a, policy_b, wdl_label, moves_left_label = batch
         data = data.to(self._ctx)
         value_label = value_label.to(self._ctx)
         policy_a = policy_a.to(self._ctx)
         policy_b = policy_b.to(self._ctx)
+        wdl_label = wdl_label.to(self._ctx)
+        moves_left_label = moves_left_label.to(self._ctx)
         sample_weights = torch.ones(len(value_label), device=self._ctx)
 
         self.old_label = value_label
 
-        value_out, policy_out = self._model(data)
-        value_loss = self.value_loss(torch.flatten(value_out), value_label, sample_weights)
+        with autocast_context(self._ctx, self.tc.mixed_precision):
+            value_out, policy_out, _, wdl_out, moves_left_out = self._model(data)
+        value_loss = self.value_loss(
+            torch.flatten(value_out.float()), value_label, sample_weights
+        )
 
         policy_out_1, policy_out_2 = policy_out
 
         # For RL, we use soft cross-entropy with full policy distributions
-        policy_loss_1 = self.policy_loss(policy_out_1, policy_a, sample_weights)
-        policy_loss_2 = self.policy_loss(policy_out_2, policy_b, sample_weights)
+        policy_loss_1 = self.policy_loss(
+            policy_out_1.float(), policy_a, sample_weights
+        )
+        policy_loss_2 = self.policy_loss(
+            policy_out_2.float(), policy_b, sample_weights
+        )
 
         policy_loss = 0.5 * (policy_loss_1 + policy_loss_2)
+        wdl_loss = self.wdl_loss(wdl_out.float(), wdl_label, sample_weights)
+        moves_left_loss = self.ply_loss(
+            torch.flatten(moves_left_out.float()), moves_left_label, sample_weights
+        )
 
         combined_loss = (
             self.tc.val_loss_factor * value_loss + self.tc.policy_loss_factor * policy_loss
+            + self.tc.wdl_loss_factor * wdl_loss
+            + self.tc.plys_to_end_loss_factor * moves_left_loss
         )
         combined_loss.backward()
         for param_group in self.optimizer.param_groups:
@@ -522,14 +614,21 @@ class TrainerAgentPytorch:
 
         with torch.no_grad():
             for i, batch in enumerate(data_loader):
-                data, value_label, policy_a, policy_b = batch
+                data, value_label, policy_a, policy_b, wdl_label, moves_left_label = batch
                 data = data.to(self._ctx)
                 value_label = value_label.to(self._ctx)
                 policy_a = policy_a.to(self._ctx)
                 policy_b = policy_b.to(self._ctx)
+                wdl_label = wdl_label.to(self._ctx)
+                moves_left_label = moves_left_label.to(self._ctx)
                 sample_weights = torch.ones(len(value_label), device=self._ctx)
 
-                value_out, policy_out = self._model(data)
+                with autocast_context(self._ctx, self.tc.mixed_precision):
+                    value_out, policy_out, _, wdl_out, moves_left_out = self._model(data)
+                value_out = value_out.float()
+                policy_out = tuple(output.float() for output in policy_out)
+                wdl_out = wdl_out.float()
+                moves_left_out = moves_left_out.float()
 
                 # Update value metrics
                 self.to.metrics["value_loss"].update(
@@ -537,6 +636,19 @@ class TrainerAgentPytorch:
                 )
                 self.to.metrics["value_acc_sign"].update(
                     preds=torch.flatten(value_out), labels=value_label, sample_weights=sample_weights
+                )
+                self.to.metrics["wdl_loss"].update(
+                    preds=wdl_out, labels=wdl_label, sample_weights=sample_weights
+                )
+                self.to.metrics["wdl_acc"].update(
+                    preds=wdl_out.argmax(dim=1),
+                    labels=wdl_label,
+                    sample_weights=sample_weights,
+                )
+                self.to.metrics["plys_to_end_loss"].update(
+                    preds=torch.flatten(moves_left_out),
+                    labels=moves_left_label,
+                    sample_weights=sample_weights,
                 )
 
                 # Update policy metrics
@@ -586,8 +698,8 @@ class TrainerAgentPytorch:
                 return
             # Recovery logic
             if self.val_loss_best is not None:
-                model_path = self.tc.export_dir + "weights/model-%.5f-%.3f-%04d.tar" % (
-                    self.val_loss_best, self.val_p_acc_best, self.k_steps_best)
+                model_path = self.weights_dir / ("model-%.5f-%.3f-%04d.tar" % (
+                    self.val_loss_best, self.val_p_acc_best, self.k_steps_best))
                 logging.debug("Recovering from checkpoint: %s", model_path)
                 load_torch_state(self._model, self.optimizer, model_path, self.tc.device_id)
                 self.k_steps = self.k_steps_best
@@ -605,19 +717,25 @@ class TrainerAgentPytorch:
                 if self.tc.export_weights:
                     model_prefix = "model-%.5f-%.3f-%04d" % (
                         self.val_loss_best, self.val_p_acc_best, self.k_steps_best)
-                    weights_dir = Path(self.tc.export_dir) / "weights"
-                    weights_dir.mkdir(parents=True, exist_ok=True)
-                    filepath = weights_dir / f"{model_prefix}.tar"
+                    filepath = self.weights_dir / f"{model_prefix}.tar"
                     self.delete_previous_weights()
-                    save_torch_state(self._model, self.optimizer, filepath)
+                    save_torch_state(
+                        self._model,
+                        self.optimizer,
+                        filepath,
+                        training_iteration=self.cur_it,
+                        evaluation_step=self.k_steps,
+                        batch_steps=self.tc.batch_steps,
+                    )
                     print()
                     logging.info("Saved checkpoint to %s", filepath)
                     with torch.no_grad():
                         ctx = get_context(self.tc.context, self.tc.device_id)
                         dummy_input = torch.zeros(1, data.shape[1], data.shape[2], data.shape[3]).to(ctx)
                         export_to_onnx(self._model, 1, dummy_input,
-                                      Path(self.tc.export_dir) / Path("weights"), model_prefix,
+                                      self.weights_dir, model_prefix,
                                       self.tc.use_wdl and self.tc.use_plys_to_end, True)
+                    self._generated_weight_files.extend(self.weights_dir.glob(f"{model_prefix}*"))
 
                 self.patience_cnt = 0
 
@@ -736,15 +854,35 @@ def get_context(context: str, device_id: int):
 
 def load_torch_state(model: nn.Module, optimizer: Optimizer, path: Path, device_id: int):
     checkpoint = torch.load(path, map_location=f"cuda:{device_id}")
+    restore_torch_state(model, optimizer, checkpoint)
+    return checkpoint
+
+
+def restore_torch_state(model: nn.Module, optimizer: Optimizer, checkpoint):
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
 
-def save_torch_state(model: nn.Module, optimizer: Optimizer, path: Path):
-    torch.save({
+def save_torch_state(
+    model: nn.Module,
+    optimizer: Optimizer,
+    path: Path,
+    *,
+    training_iteration: int = None,
+    evaluation_step: int = None,
+    batch_steps: int = None,
+):
+    checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-    }, path)
+    }
+    if training_iteration is not None:
+        checkpoint['training_iteration'] = training_iteration
+    if evaluation_step is not None:
+        checkpoint['evaluation_step'] = evaluation_step
+    if batch_steps is not None:
+        checkpoint['batch_steps'] = batch_steps
+    torch.save(checkpoint, path)
 
 
 def export_model(model, batch_sizes, input_shape, dir=Path('.'), torch_cpu=True, torch_cuda=True, onnx=True,
@@ -935,7 +1073,8 @@ def reset_metrics(metrics):
 
 
 def evaluate_metrics(metrics, data_iterator, model, nb_batches, ctx, phase_weights, sparse_policy_label=False,
-                     apply_select_policy_from_plane=True, use_wdl=False, use_plys_to_end=False):
+                     apply_select_policy_from_plane=True, use_wdl=False, use_plys_to_end=False,
+                     precision="fp32"):
     """
     Runs inference of the network on a data_iterator object and evaluates the given metrics.
     The metric results are returned as a dictionary object.
@@ -967,17 +1106,23 @@ def evaluate_metrics(metrics, data_iterator, model, nb_batches, ctx, phase_weigh
             data = data.to(ctx)
             value_label = value_label.to(ctx)
             policy_label = policy_label.to(ctx)
-            sample_weights = torch.Tensor([1. for _ in value_label])
-            sample_weights = sample_weights.to(ctx)
+            sample_weights = torch.ones(len(value_label), device=ctx)
 
+            with autocast_context(ctx, precision):
+                model_out = model(data)
             if use_wdl and use_plys_to_end:
-                value_out, policy_out, _, wdl_out, plys_out = model(data)
+                value_out, policy_out, _, wdl_out, plys_out = model_out
+                wdl_out = wdl_out.float()
+                plys_out = plys_out.float()
                 metrics["wdl_loss"].update(preds=wdl_out, labels=wdl_label, sample_weights=sample_weights)
                 metrics["wdl_acc"].update(preds=wdl_out.argmax(axis=1), labels=wdl_label, sample_weights=sample_weights)
                 metrics["plys_to_end_loss"].update(preds=torch.flatten(plys_out), labels=plys_label,
                                                    sample_weights=sample_weights)
             else:
-                value_out, policy_out = model(data)
+                value_out, policy_out = model_out
+
+            value_out = value_out.float()
+            policy_out = tuple(output.float() for output in policy_out)
 
             # update the metrics
             metrics["value_loss"].update(preds=torch.flatten(value_out), labels=value_label,

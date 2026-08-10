@@ -38,11 +38,7 @@ class ShardWriter:
 
     @staticmethod
     def _encode_planes(x: np.ndarray) -> bytes:
-        offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
-        encoded_x = x.copy()
-        encoded_x[12:22] *= 16.0
-        encoded_x[offset + 12:offset + 22] *= 16.0
-        return np.rint(encoded_x).astype(np.uint8).tobytes()
+        return np.rint(np.clip(x, 0.0, 1.0) * 255.0).astype(np.uint8).tobytes()
 
     def _append_encoded_sample(self, encoded_x, policy_idx, value, plys_to_end):
         if self.is_full:

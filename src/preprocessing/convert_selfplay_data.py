@@ -1,30 +1,11 @@
 #!/usr/bin/env python3
-"""
-Convert binary training data from C++ selfplay to parquet format.
-
-Binary format v2 (written by training_data_writer.cc):
-  Header (16 bytes):
-    - Magic bytes: "HVM2" (4 bytes)
-    - Version: uint32 (4 bytes) = 2
-    - Number of samples: uint64 (8 bytes)
-  
-  Per sample:
-    - Planes: 4096 bytes (64 channels * 8 * 8)
-    - Policy A num entries: uint16 (2 bytes)
-    - Policy A entries: [uint16 index, float32 prob] * num_entries
-    - Policy B num entries: uint16 (2 bytes)
-    - Policy B entries: [uint16 index, float32 prob] * num_entries
-    - Value: float32 (4 bytes)
-
-Output parquet format (AlphaZero-style):
-    - x: bytes (planes as uint8)
-    - policy_a: bytes (sparse policy as dense float32 array)
-    - policy_b: bytes (sparse policy as dense float32 array)
-    - y_value: float (game outcome)
-"""
+"""Convert native HVM3 self-play chunks to Parquet training shards."""
 
 import argparse
-import os
+import hashlib
+import random
+import re
+import shutil
 import struct
 import uuid
 from pathlib import Path
@@ -33,71 +14,254 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_MOVE_CHANNELS
+
 # Constants matching C++ code
-NB_INPUT_CHANNELS = 64
+NB_INPUT_CHANNELS = NUM_BUGHOUSE_CHANNELS
 BOARD_SIZE = 8
-NB_INPUT_VALUES = NB_INPUT_CHANNELS * BOARD_SIZE * BOARD_SIZE  # 4096
-NB_POLICY_CHANNELS = 73
-NB_POLICY_VALUES = NB_POLICY_CHANNELS * BOARD_SIZE * BOARD_SIZE  # 4672
+NB_INPUT_VALUES = NB_INPUT_CHANNELS * BOARD_SIZE * BOARD_SIZE
+NB_POLICY_VALUES = NUM_MOVE_CHANNELS * BOARD_SIZE * BOARD_SIZE
+HEADER = struct.Struct('<4sIHHQ')
+SAMPLE_METADATA = struct.Struct('<QIHHBBbB')
+POLICY_ENTRY = struct.Struct('<Hf')
+DEFAULT_RL_VALIDATION_FRACTION = 0.02
+DEFAULT_REPLAY_FILES = 5
+DEFAULT_REPLAY_SELECTION_FRACTION = 0.05
+
+
+def read_exact(stream, size: int) -> bytes:
+    payload = stream.read(size)
+    if len(payload) != size:
+        raise ValueError(
+            f"Truncated HVM3 chunk: expected {size} bytes, found {len(payload)}"
+        )
+    return payload
 
 
 def read_sparse_policy(f) -> np.ndarray:
     """Read sparse policy entries and convert to dense array."""
-    num_entries = struct.unpack('<H', f.read(2))[0]
+    num_entries = struct.unpack('<H', read_exact(f, 2))[0]
     
     # Create dense policy array
     policy = np.zeros(NB_POLICY_VALUES, dtype=np.float32)
     
     for _ in range(num_entries):
-        index = struct.unpack('<H', f.read(2))[0]
-        prob = struct.unpack('<f', f.read(4))[0]
-        if index < NB_POLICY_VALUES:
-            policy[index] = prob
+        index, probability = POLICY_ENTRY.unpack(
+            read_exact(f, POLICY_ENTRY.size)
+        )
+        if index >= NB_POLICY_VALUES:
+            raise ValueError(
+                f"Policy index {index} exceeds {NB_POLICY_VALUES}"
+            )
+        policy[index] = probability
+
+    if not np.isclose(policy.sum(), 1.0, atol=1e-4):
+        raise ValueError(
+            f"Sparse policy sums to {policy.sum()}, expected 1"
+        )
     
     return policy
 
 
-def read_binary_shard(filepath: str) -> list[dict]:
-    """Read a binary shard file and return list of sample dicts."""
+def read_binary_shard(filepath: str | Path) -> list[dict]:
+    """Read one HVM3 chunk and return its samples."""
     samples = []
     
     with open(filepath, 'rb') as f:
-        # Read header
-        magic = f.read(4)
-        if magic == b'HVMD':
-            # Legacy format v1 - not supported anymore
-            raise ValueError(f"Legacy format v1 in {filepath} - please regenerate data")
-        elif magic != b'HVM2':
-            raise ValueError(f"Invalid magic bytes in {filepath}: {magic}")
-        
-        version = struct.unpack('<I', f.read(4))[0]
-        if version != 2:
-            raise ValueError(f"Unsupported version {version} in {filepath}")
-        
-        num_samples = struct.unpack('<Q', f.read(8))[0]
+        magic, version, channels, policy_values, num_samples = HEADER.unpack(
+            read_exact(f, HEADER.size)
+        )
+        if magic != b'HVM3' or version != 3:
+            raise ValueError(
+                f"Unsupported self-play chunk {filepath}: {magic!r} v{version}"
+            )
+        if channels != NB_INPUT_CHANNELS:
+            raise ValueError(
+                f"Expected {NB_INPUT_CHANNELS} channels, found {channels}"
+            )
+        if policy_values != NB_POLICY_VALUES:
+            raise ValueError(
+                f"Expected {NB_POLICY_VALUES} policy values, found {policy_values}"
+            )
         
         # Read samples
         for _ in range(num_samples):
-            # Read planes
-            planes = np.frombuffer(f.read(NB_INPUT_VALUES), dtype=np.uint8)
-            
-            # Read policy A (sparse -> dense)
+            (
+                game_id,
+                nodes,
+                macro_ply,
+                moves_left,
+                team,
+                has_time_advantage,
+                outcome,
+                wdl,
+            ) = SAMPLE_METADATA.unpack(read_exact(f, SAMPLE_METADATA.size))
+            planes = read_exact(f, NB_INPUT_VALUES)
             policy_a = read_sparse_policy(f)
-            
-            # Read policy B (sparse -> dense)
             policy_b = read_sparse_policy(f)
-            
-            # Read value
-            value = struct.unpack('<f', f.read(4))[0]
-            
+
             samples.append({
-                'x': planes.tobytes(),
+                'x': planes,
                 'policy_a': policy_a.tobytes(),
                 'policy_b': policy_b.tobytes(),
-                'y_value': float(value)
+                'y_value': float(outcome),
+                'y_wdl': int(wdl),
+                'y_moves_left': int(moves_left),
+                'game_id': int(game_id),
+                'macro_ply': int(macro_ply),
+                'team': int(team),
+                'has_time_advantage': bool(has_time_advantage),
+                'search_nodes': int(nodes),
             })
+        if f.read(1):
+            raise ValueError(f"Trailing bytes in HVM3 chunk {filepath}")
     
     return samples
+
+
+def _selfplay_run_id(path: Path) -> str:
+    match = re.fullmatch(r"chunk_(.+)_\d+", path.stem)
+    return match.group(1) if match else path.stem
+
+
+def is_validation_game(
+    run_id: str,
+    game_id: int,
+    validation_fraction: float,
+    split_seed: int,
+) -> bool:
+    """Assign an entire self-play game to a deterministic split."""
+    digest = hashlib.blake2b(
+        f"{split_seed}:{run_id}:{game_id}".encode("ascii"),
+        digest_size=8,
+    ).digest()
+    unit_value = int.from_bytes(digest, "little") / 2**64
+    return unit_value < validation_fraction
+
+
+def select_replay_files(
+    replay_input_dir: str | Path,
+    replay_files: int,
+    replay_selection_fraction: float,
+    seed: int,
+) -> list[Path]:
+    """Select archived chunks from the newest replay-memory window."""
+    if replay_files <= 0:
+        raise ValueError("replay_files must be positive")
+    if not 0.0 < replay_selection_fraction <= 1.0:
+        raise ValueError("replay_selection_fraction must be in (0, 1]")
+
+    available = sorted(Path(replay_input_dir).glob("*.hvm"), reverse=True)
+    if len(available) < replay_files:
+        raise ValueError(
+            f"Replay memory has {len(available)} HVM3 chunks, "
+            f"but {replay_files} were requested"
+        )
+
+    window_size = max(
+        int(len(available) * replay_selection_fraction + 0.5),
+        replay_files,
+    )
+    candidates = available[:window_size]
+    return sorted(random.Random(seed).sample(candidates, replay_files))
+
+
+def convert_to_split_parquet(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    validation_fraction: float = DEFAULT_RL_VALIDATION_FRACTION,
+    split_seed: int = 42,
+    samples_per_shard: int = 16384,
+    replay_input_dir: str | Path | None = None,
+    replay_files: int = DEFAULT_REPLAY_FILES,
+    replay_selection_fraction: float = DEFAULT_REPLAY_SELECTION_FRACTION,
+) -> tuple[Path, Path, int, int]:
+    """Convert HVM3 chunks directly into game-disjoint train/validation shards."""
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be between 0 and 1")
+    if samples_per_shard <= 0:
+        raise ValueError("samples_per_shard must be positive")
+
+    input_path = Path(input_dir)
+    binary_files = sorted(input_path.glob("*.hvm"))
+    if not binary_files:
+        raise FileNotFoundError(f"No HVM3 chunks found in {input_path}")
+    selected_replay_files = (
+        select_replay_files(
+            replay_input_dir,
+            replay_files,
+            replay_selection_fraction,
+            split_seed,
+        )
+        if replay_input_dir is not None
+        else []
+    )
+
+    output_path = Path(output_dir)
+    if selected_replay_files:
+        print(
+            f"Selected {len(selected_replay_files)} replay chunks from "
+            f"{replay_input_dir}"
+        )
+    resolved_input = input_path.resolve()
+    resolved_output = output_path.resolve()
+    if resolved_output == resolved_input or resolved_output in resolved_input.parents:
+        raise ValueError("output_dir must not contain the HVM3 input directory")
+    train_path = output_path / "train"
+    validation_path = output_path / "val"
+    shutil.rmtree(output_path, ignore_errors=True)
+    train_path.mkdir(parents=True)
+    validation_path.mkdir(parents=True)
+
+    buffers = {"train": [], "val": []}
+    counts = {"train": 0, "val": 0}
+    shard_indices = {"train": 0, "val": 0}
+
+    def flush(split: str) -> None:
+        if not buffers[split]:
+            return
+        directory = validation_path if split == "val" else train_path
+        destination = directory / f"shard_{shard_indices[split]:04d}.parquet"
+        temporary = destination.with_suffix(".parquet.tmp")
+        pl.DataFrame(buffers[split]).write_parquet(temporary, compression="zstd")
+        temporary.replace(destination)
+        shard_indices[split] += 1
+        buffers[split].clear()
+
+    for binary_file in tqdm(binary_files, desc="Converting HVM3 chunks"):
+        run_id = _selfplay_run_id(binary_file)
+        for sample in read_binary_shard(binary_file):
+            split = "val" if is_validation_game(
+                run_id,
+                sample["game_id"],
+                validation_fraction,
+                split_seed,
+            ) else "train"
+            buffers[split].append(sample)
+            counts[split] += 1
+            if len(buffers[split]) >= samples_per_shard:
+                flush(split)
+
+    for binary_file in tqdm(selected_replay_files, desc="Adding replay chunks"):
+        for sample in read_binary_shard(binary_file):
+            buffers["train"].append(sample)
+            counts["train"] += 1
+            if len(buffers["train"]) >= samples_per_shard:
+                flush("train")
+
+    flush("train")
+    flush("val")
+    if counts["train"] == 0 or counts["val"] == 0:
+        raise ValueError(
+            "The game-level split produced an empty train or validation set; "
+            "adjust validation_fraction or generate more games"
+        )
+
+    print(
+        f"Prepared RL data: {counts['train']} train samples, "
+        f"{counts['val']} validation samples"
+    )
+    return train_path, validation_path, counts["train"], counts["val"]
 
 
 def convert_to_parquet(input_dir: str, output_dir: str, samples_per_shard: int = 65536):
@@ -109,12 +273,10 @@ def convert_to_parquet(input_dir: str, output_dir: str, samples_per_shard: int =
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     
-    # Find all binary shard files
-    bin_files = sorted(input_path.glob('shard_*.bin'))
+    bin_files = sorted(input_path.glob('*.hvm'))
     
     if not bin_files:
-        print(f"No binary shard files found in {input_dir}")
-        return
+        raise FileNotFoundError(f"No HVM3 chunks found in {input_dir}")
     
     print(f"Found {len(bin_files)} binary shard files")
     
@@ -129,8 +291,9 @@ def convert_to_parquet(input_dir: str, output_dir: str, samples_per_shard: int =
         shard_id = uuid.uuid4().hex[:8]
         output_file = output_path / f"shard_{shard_id}.parquet"
         
-        df = pl.DataFrame(samples)
-        df.write_parquet(str(output_file), compression='zstd')
+        temporary_file = output_file.with_suffix('.parquet.tmp')
+        pl.DataFrame(samples).write_parquet(temporary_file, compression='zstd')
+        temporary_file.replace(output_file)
         num_output_shards += 1
         
         if num_output_shards % 10 == 0:
@@ -157,7 +320,7 @@ def convert_to_parquet(input_dir: str, output_dir: str, samples_per_shard: int =
     if current_shard_samples:
         write_shard(current_shard_samples)
     
-    print(f"\nConversion complete!")
+    print("\nConversion complete!")
     print(f"  Input: {len(bin_files)} binary shards")
     print(f"  Output: {num_output_shards} parquet shards")
     print(f"  Total samples: {total_samples}")
@@ -169,7 +332,7 @@ def main():
     )
     parser.add_argument(
         'input_dir',
-        help='Directory containing binary shard files (shard_*.bin)'
+        help='Directory containing HVM3 chunks (*.hvm)'
     )
     parser.add_argument(
         'output_dir',
@@ -193,7 +356,7 @@ def main():
     
     if args.delete_binary:
         input_path = Path(args.input_dir)
-        bin_files = list(input_path.glob('shard_*.bin'))
+        bin_files = list(input_path.glob('*.hvm'))
         for bin_file in bin_files:
             bin_file.unlink()
         print(f"Deleted {len(bin_files)} binary files")

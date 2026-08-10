@@ -218,7 +218,7 @@ def test_original_samples(data_dir: str, num_samples: int = 3, early_game: bool 
     print(f"\nLoading from: {Path(parquet_files[0]).name}")
     
     # Load data using data_loaders.py
-    x, y_value, policy_a, policy_b = load_rl_parquet_shard(parquet_files[0])
+    x, y_value, policy_a, policy_b, _, _ = load_rl_parquet_shard(parquet_files[0])
     
     print(f"Loaded {len(x)} samples")
     print(f"Sample shape: x={x.shape}, y_value={y_value.shape}, policy_a={policy_a.shape}")
@@ -258,7 +258,7 @@ def test_flip_augmentation(data_dir: str, num_samples: int = 2, early_game: bool
     print(f"\nLoading from: {Path(parquet_files[0]).name}")
     
     # Load data
-    x, y_value, policy_a, policy_b = load_rl_parquet_shard(parquet_files[0])
+    x, y_value, policy_a, policy_b, _, _ = load_rl_parquet_shard(parquet_files[0])
     
     labels = make_map()
     
@@ -343,7 +343,7 @@ def test_dataset_with_augmentation(data_dir: str, num_samples: int = 2, early_ga
     print(f"\nLoading from: {Path(parquet_files[0]).name}")
     
     # Load data
-    x, y_value, policy_a, policy_b = load_rl_parquet_shard(parquet_files[0])
+    x, y_value, policy_a, policy_b, wdl, moves_left = load_rl_parquet_shard(parquet_files[0])
     
     # Filter for early game if requested
     if early_game:
@@ -356,15 +356,21 @@ def test_dataset_with_augmentation(data_dir: str, num_samples: int = 2, early_ga
         y_value = y_value[early_indices]
         policy_a = policy_a[early_indices]
         policy_b = policy_b[early_indices]
+        wdl = wdl[early_indices]
+        moves_left = moves_left[early_indices]
     else:
         # Use first 100 samples
         x = x[:100]
         y_value = y_value[:100]
         policy_a = policy_a[:100]
         policy_b = policy_b[:100]
+        wdl = wdl[:100]
+        moves_left = moves_left[:100]
     
     # Create dataset with augmentation
-    dataset = RLDataset(x, y_value, policy_a, policy_b, augment_flip=True)
+    dataset = RLDataset(
+        x, y_value, policy_a, policy_b, wdl, moves_left, augment_flip=True
+    )
     
     orig_size = len(x)
     print(f"Dataset size: {len(dataset)} ({orig_size} original + {orig_size} flipped)")
@@ -373,14 +379,14 @@ def test_dataset_with_augmentation(data_dir: str, num_samples: int = 2, early_ga
     
     # Show original samples (first half)
     for i in range(min(num_samples, orig_size)):
-        x_i, y_i, pa_i, pb_i = dataset[i]
+        x_i, y_i, pa_i, pb_i, _, _ = dataset[i]
         print_sample(i, x_i, y_i, pa_i, pb_i, labels, 
                     title="Dataset ORIGINAL Sample")
     
     # Show flipped samples (second half)
     for i in range(min(num_samples, orig_size)):
         idx = orig_size + i  # Flipped samples start after original samples
-        x_i, y_i, pa_i, pb_i = dataset[idx]
+        x_i, y_i, pa_i, pb_i, _, _ = dataset[idx]
         print_sample(i, x_i, y_i, pa_i, pb_i, labels, 
                     title="Dataset FLIPPED Sample")
 

@@ -383,14 +383,17 @@ class _PolicyHeadFlat(Module):
 
 
 def process_value_policy_head(x, value_head: _ValueHead, policy_heads: nn.ModuleList,
-                              use_plys_to_end: bool, use_wdl: bool ):
+                              use_plys_to_end: bool, use_wdl: bool,
+                              policy_inputs=None):
     """
     Use the output to create value/policy predictions
     """
     value_head_out = value_head(x)
 
-    policy_out_1 = policy_heads[0](x)
-    policy_out_2 = policy_heads[1](x)
+    if policy_inputs is None:
+        policy_inputs = (x, x)
+    policy_out_1 = policy_heads[0](policy_inputs[0])
+    policy_out_2 = policy_heads[1](policy_inputs[1])
 
     policy_out = (policy_out_1, policy_out_2)
 

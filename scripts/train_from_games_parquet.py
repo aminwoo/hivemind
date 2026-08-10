@@ -5,7 +5,7 @@ This script performs:
 1) Generate training plane shards from games.parquet
 2) Build a validation shard (evaluation_shard.parquet) if needed
 3) Launch supervised training
-4) Produce ONNX checkpoints in src/training/weights
+4) Produce checkpoints in src/training/weights/supervised
 
 Example:
     python scripts/train_from_games_parquet.py --games data/games.parquet
@@ -182,14 +182,34 @@ def _generate_validation_shard(
 
 def _run_supervised_training(
     project_root: Path,
+    train_planes_dir: Path,
+    validation_shard: Path,
+    architecture: str,
+    batch_size: int | None = None,
+    precision: str | None = None,
     checkpoint_path: Path | None = None,
     train_eval_shard: Path | None = None,
 ) -> None:
     train_dir = project_root / "src" / "training"
-    _ensure_dir(train_dir / "weights")
+    _ensure_dir(train_dir / "weights" / "supervised")
     _ensure_dir(train_dir / "logs")
 
-    cmd = [sys.executable, "train_loop.py", "--mode", "sl"]
+    cmd = [
+        sys.executable,
+        "train_loop.py",
+        "--mode",
+        "sl",
+        "--architecture",
+        architecture,
+        "--sl-train-data-dir",
+        str(train_planes_dir),
+        "--sl-validation-shard",
+        str(validation_shard),
+    ]
+    if batch_size is not None:
+        cmd.extend(["--batch-size", str(batch_size)])
+    if precision is not None:
+        cmd.extend(["--precision", precision])
     if checkpoint_path is not None:
         cmd.extend(["--checkpoint", str(checkpoint_path)])
     if train_eval_shard is not None:
@@ -272,6 +292,28 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to a .tar checkpoint from which to resume supervised training",
+    )
+    parser.add_argument(
+        "--architecture",
+        choices=(
+            "risev33",
+            "crossboard-risev33",
+            "dualstream-memory-risev33",
+        ),
+        default="risev33",
+        help="Network architecture passed to supervised training",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Optional training batch-size override",
+    )
+    parser.add_argument(
+        "--precision",
+        choices=("fp32", "bf16"),
+        default=None,
+        help="Optional model execution precision override",
     )
     parser.add_argument(
         "--rebuild-val",
@@ -443,17 +485,23 @@ def main() -> None:
     print("Starting supervised training...")
     _run_supervised_training(
         PROJECT_ROOT,
+        train_planes_dir=train_planes_dir,
+        validation_shard=val_shard_path,
+        architecture=args.architecture,
+        batch_size=args.batch_size,
+        precision=args.precision,
         checkpoint_path=checkpoint_path,
         train_eval_shard=train_eval_shard_path,
     )
 
-    onnx_files = sorted((PROJECT_ROOT / "src" / "training" / "weights").glob("*.onnx"))
+    supervised_weights = PROJECT_ROOT / "src" / "training" / "weights" / "supervised"
+    onnx_files = sorted(supervised_weights.glob("*.onnx"))
     if onnx_files:
         print("ONNX checkpoints:")
         for onnx_path in onnx_files[-10:]:
             print(f"  - {onnx_path}")
     else:
-        print("No ONNX files found yet in src/training/weights")
+        print(f"No ONNX files found yet in {supervised_weights}")
 
 
 if __name__ == "__main__":

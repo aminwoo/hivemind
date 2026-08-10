@@ -15,12 +15,6 @@ BOARD_SIZE = 8
 NB_INPUT_VALUES = NB_INPUT_CHANNELS * BOARD_SIZE * BOARD_SIZE
 NB_POLICY_CHANNELS = 73
 NB_POLICY_VALUES = NB_POLICY_CHANNELS * BOARD_SIZE * BOARD_SIZE  # 4672
-POCKET_CHANNELS = (
-    slice(12, 22),
-    slice(NB_BUGHOUSE_BOARD_CHANNELS + 12, NB_BUGHOUSE_BOARD_CHANNELS + 22),
-)
-
-
 def _decode_plane_bytes(encoded_planes) -> np.ndarray:
     planes = np.frombuffer(encoded_planes, dtype=np.uint8)
     if planes.size != NB_INPUT_VALUES:
@@ -46,9 +40,7 @@ def _decode_fixed_width_binary_column(values, dtype, width) -> np.ndarray:
 
 
 def _normalize_input_planes(x_tensor: torch.Tensor) -> torch.Tensor:
-    for channels in POCKET_CHANNELS:
-        x_tensor[:, channels, :, :] /= 16.0
-    return x_tensor
+    return x_tensor / 255.0
 
 
 def flip_bughouse_sample(x, policy_a, policy_b):
@@ -93,7 +85,7 @@ def flip_bughouse_sample(x, policy_a, policy_b):
 def load_parquet_shard(file_path, include_auxiliary=False):
     """
     Loads a single supervised learning parquet shard and converts it to PyTorch tensors.
-    x: board planes (64, 8, 8)
+    x: uniformly quantized board planes (74, 8, 8)
     y_value: game outcome
     y_policy_idx: tuple containing (move_index, ...)
     """
@@ -141,14 +133,19 @@ def load_rl_parquet_shard(file_path):
     - policy_a: bytes (4672 float32 dense policy distribution for board A)
     - policy_b: bytes (4672 float32 dense policy distribution for board B)
     - y_value: float (game outcome)
+    - y_wdl: int in {0, 1, 2}
+    - y_moves_left: remaining team decisions
     
     Returns:
-        x_tensor: (N, 64, 8, 8) float32 input planes
+        x_tensor: (N, 74, 8, 8) float32 input planes
         y_val_tensor: (N,) float32 value targets
         policy_a_tensor: (N, 4672) float32 policy distribution for board A
         policy_b_tensor: (N, 4672) float32 policy distribution for board B
     """
-    df = pl.read_parquet(file_path, columns=['x', 'policy_a', 'policy_b', 'y_value'])
+    df = pl.read_parquet(
+        file_path,
+        columns=['x', 'policy_a', 'policy_b', 'y_value', 'y_wdl', 'y_moves_left'],
+    )
 
     x_array = _decode_fixed_width_binary_column(
         df['x'].to_list(),
@@ -175,18 +172,29 @@ def load_rl_parquet_shard(file_path):
     )
     policy_a_tensor = torch.tensor(policy_a_array.copy(), dtype=torch.float32)
     policy_b_tensor = torch.tensor(policy_b_array.copy(), dtype=torch.float32)
-    
-    return x_tensor, y_val_tensor, policy_a_tensor, policy_b_tensor
+    wdl_tensor = torch.tensor(df['y_wdl'].to_list(), dtype=torch.long)
+    moves_left_tensor = torch.tensor(
+        df['y_moves_left'].to_list(), dtype=torch.float32
+    ).clamp_(0, 100) / 100.0
+
+    return (
+        x_tensor,
+        y_val_tensor,
+        policy_a_tensor,
+        policy_b_tensor,
+        wdl_tensor,
+        moves_left_tensor,
+    )
 
 
 class RLDataset(torch.utils.data.Dataset):
     """
     Dataset for RL/self-play data with dual policy targets.
     """
-    def __init__(self, x, y_value, policy_a, policy_b, augment_flip=False):
+    def __init__(self, x, y_value, policy_a, policy_b, wdl, moves_left, augment_flip=False):
         """
         Args:
-            x: Input planes (N, 64, 8, 8)
+            x: Input planes (N, 74, 8, 8)
             y_value: Value targets (N,)
             policy_a: Policy distribution for Board A (N, 4672)
             policy_b: Policy distribution for Board B (N, 4672)
@@ -196,6 +204,8 @@ class RLDataset(torch.utils.data.Dataset):
         self.y_value = y_value
         self.policy_a = policy_a
         self.policy_b = policy_b
+        self.wdl = wdl
+        self.moves_left = moves_left
         self.augment_flip = augment_flip
         
     def __len__(self):
@@ -212,10 +222,23 @@ class RLDataset(torch.utils.data.Dataset):
                 self.policy_a[original_idx], 
                 self.policy_b[original_idx]
             )
-            return x, self.y_value[original_idx], policy_a, policy_b
+            return (
+                x,
+                self.y_value[original_idx],
+                policy_a,
+                policy_b,
+                self.wdl[original_idx],
+                self.moves_left[original_idx],
+            )
         else:
-            # This is an original sample
-            return self.x[idx], self.y_value[idx], self.policy_a[idx], self.policy_b[idx]
+            return (
+                self.x[idx],
+                self.y_value[idx],
+                self.policy_a[idx],
+                self.policy_b[idx],
+                self.wdl[idx],
+                self.moves_left[idx],
+            )
 
 
 class StreamingRLDataset(torch.utils.data.IterableDataset):
@@ -247,19 +270,26 @@ class StreamingRLDataset(torch.utils.data.IterableDataset):
         buffer = []
         
         for pf in files:
-            x, y_val, pol_a, pol_b = load_rl_parquet_shard(pf)
+            x, y_val, pol_a, pol_b, wdl, moves_left = load_rl_parquet_shard(pf)
             
             # Add samples to buffer (both original and flipped if augmentation is enabled)
             for i in range(len(x)):
                 # Add original sample
-                buffer.append((x[i], y_val[i], pol_a[i], pol_b[i]))
+                buffer.append((x[i], y_val[i], pol_a[i], pol_b[i], wdl[i], moves_left[i]))
                 
                 # Add flipped sample if augmentation is enabled
                 if self.augment_flip:
                     flipped_x, flipped_pol_a, flipped_pol_b = flip_bughouse_sample(
                         x[i], pol_a[i], pol_b[i]
                     )
-                    buffer.append((flipped_x, y_val[i], flipped_pol_a, flipped_pol_b))
+                    buffer.append((
+                        flipped_x,
+                        y_val[i],
+                        flipped_pol_a,
+                        flipped_pol_b,
+                        wdl[i],
+                        moves_left[i],
+                    ))
                 
                 # When buffer is full, shuffle and yield half
                 if len(buffer) >= self.shuffle_buffer_size:
@@ -313,7 +343,7 @@ def load_rl_data_from_directory(data_dir, max_samples=None):
         max_samples: Optional limit on total samples to load
         
     Returns:
-        Tuple of (x, y_value, policy_a, policy_b) tensors
+        Tuple of (x, y_value, policy_a, policy_b, wdl, moves_left) tensors
     """
     import glob
     from pathlib import Path
@@ -327,14 +357,18 @@ def load_rl_data_from_directory(data_dir, max_samples=None):
     all_y_value = []
     all_policy_a = []
     all_policy_b = []
+    all_wdl = []
+    all_moves_left = []
     
     total_loaded = 0
     for pf in parquet_files:
-        x, y_val, pol_a, pol_b = load_rl_parquet_shard(pf)
+        x, y_val, pol_a, pol_b, wdl, moves_left = load_rl_parquet_shard(pf)
         all_x.append(x)
         all_y_value.append(y_val)
         all_policy_a.append(pol_a)
         all_policy_b.append(pol_b)
+        all_wdl.append(wdl)
+        all_moves_left.append(moves_left)
         
         total_loaded += len(x)
         if max_samples and total_loaded >= max_samples:
@@ -344,11 +378,22 @@ def load_rl_data_from_directory(data_dir, max_samples=None):
     y_val_tensor = torch.cat(all_y_value, dim=0)
     policy_a_tensor = torch.cat(all_policy_a, dim=0)
     policy_b_tensor = torch.cat(all_policy_b, dim=0)
+    wdl_tensor = torch.cat(all_wdl, dim=0)
+    moves_left_tensor = torch.cat(all_moves_left, dim=0)
     
     if max_samples:
         x_tensor = x_tensor[:max_samples]
         y_val_tensor = y_val_tensor[:max_samples]
         policy_a_tensor = policy_a_tensor[:max_samples]
         policy_b_tensor = policy_b_tensor[:max_samples]
+        wdl_tensor = wdl_tensor[:max_samples]
+        moves_left_tensor = moves_left_tensor[:max_samples]
     
-    return x_tensor, y_val_tensor, policy_a_tensor, policy_b_tensor
+    return (
+        x_tensor,
+        y_val_tensor,
+        policy_a_tensor,
+        policy_b_tensor,
+        wdl_tensor,
+        moves_left_tensor,
+    )

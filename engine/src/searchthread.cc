@@ -14,23 +14,125 @@
 
 using namespace std;
 
+namespace {
+
+std::vector<Stockfish::Move> immediate_mates_on_board(
+    Board& board,
+    int boardNum,
+    Stockfish::Color victimTeam,
+    bool victimTeamHasTimeAdvantage) {
+    std::vector<Stockfish::Move> mates;
+    for (Stockfish::Move move : board.legal_moves(boardNum)) {
+        if (!board.gives_check(boardNum, move)) {
+            continue;
+        }
+        board.push_move(boardNum, move);
+        const bool isMate = board.is_checkmate(
+            victimTeam, victimTeamHasTimeAdvantage);
+        board.pop_move(boardNum);
+        if (isMate) {
+            mates.push_back(move);
+        }
+    }
+    return mates;
+}
+
+bool has_unavoidable_waiting_board_mate(Board& board,
+                                        Stockfish::Color teamToPlay,
+                                        bool teamToPlayHasTimeAdvantage,
+                                        int searchPly) {
+    const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamToPlay;
+    const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamToPlay;
+    if (boardAOnTurn == boardBOnTurn) {
+        return false;
+    }
+
+    const int activeBoard = boardAOnTurn ? BOARD_A : BOARD_B;
+    const int waitingBoard = 1 - activeBoard;
+    const std::vector<Stockfish::Move> matingMoves = immediate_mates_on_board(
+        board, waitingBoard, teamToPlay, teamToPlayHasTimeAdvantage);
+    if (matingMoves.empty()) {
+        return false;
+    }
+
+    std::vector<Stockfish::Move> replies = board.legal_moves(activeBoard);
+    if (teamToPlayHasTimeAdvantage) {
+        replies.push_back(Stockfish::MOVE_NONE);
+    }
+    if (replies.empty()) {
+        return false;
+    }
+
+    for (Stockfish::Move reply : replies) {
+        if (reply != Stockfish::MOVE_NONE) {
+            board.push_move(activeBoard, reply);
+        }
+
+        bool matePersists = false;
+        if (!board.is_checkmate(~teamToPlay, !teamToPlayHasTimeAdvantage)
+            && !board.is_draw(searchPly + 1)) {
+            for (Stockfish::Move matingMove : matingMoves) {
+                if (!board.is_legal_move(waitingBoard, matingMove)) {
+                    continue;
+                }
+                board.push_move(waitingBoard, matingMove);
+                matePersists = board.is_checkmate(
+                    teamToPlay, teamToPlayHasTimeAdvantage);
+                board.pop_move(waitingBoard);
+                if (matePersists) {
+                    break;
+                }
+            }
+        }
+
+        if (reply != Stockfish::MOVE_NONE) {
+            board.pop_move(activeBoard);
+        }
+        if (!matePersists) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
 TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
-                                             int searchPly) {
+                                             int searchPly,
+                                             int* endInPly) {
+    if (endInPly) {
+        *endInPly = 0;
+    }
     const bool teamToPlayHasTimeAdvantage = teamToPlay == rootTeam
         ? rootTeamHasTimeAdvantage
         : !rootTeamHasTimeAdvantage;
 
     if (board.is_checkmate(~teamToPlay, !teamToPlayHasTimeAdvantage)) {
+        if (endInPly) {
+            *endInPly = 1;
+        }
         return TerminalOutcome::WIN;
     }
     if (board.is_checkmate(teamToPlay, teamToPlayHasTimeAdvantage)) {
+        if (endInPly) {
+            *endInPly = 1;
+        }
         return TerminalOutcome::LOSS;
     }
     if (board.is_draw(searchPly)) {
         return TerminalOutcome::DRAW;
+    }
+    if (searchPly > 0 && has_unavoidable_waiting_board_mate(
+            board, teamToPlay, teamToPlayHasTimeAdvantage, searchPly)) {
+        if (endInPly) {
+            // One forced reply, then the opponent's mating move. Terminal
+            // nodes use distance 1, so this position is three solver plies out.
+            *endInPly = 3;
+        }
+        return TerminalOutcome::LOSS;
     }
     return TerminalOutcome::NONE;
 }
@@ -99,7 +201,20 @@ void SearchThread::set_runtime_config(const SearchParams::RuntimeConfig& config)
 void SearchThread::backup(vector<TrajectoryEntry>& trajectory, 
                           Board& board, float valueToBackup) {
     // Process nodes in reverse order (from leaf to root)
-    NodeType childType = NodeType::UNSOLVED;
+    NodeType childType = trajectory.empty()
+        ? NodeType::UNSOLVED
+        : trajectory.back().node->get_node_type();
+    if (childType == NodeType::WIN) {
+        valueToBackup = 1.0f;
+    } else if (childType == NodeType::LOSS) {
+        valueToBackup = -1.0f;
+    } else if (childType == NodeType::DRAW) {
+        const Stockfish::Color leafTeam = trajectory.back().node->get_team_to_play();
+        const Stockfish::Color rootTeam = trajectory.front().node->get_team_to_play();
+        valueToBackup = leafTeam == rootTeam
+            ? -runtimeConfig.drawContempt
+            : runtimeConfig.drawContempt;
+    }
     
     for (auto it = trajectory.rbegin(); it != trajectory.rend(); ++it) {
         Node* node = it->node;
@@ -197,25 +312,54 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         // treated as a draw on every iteration, preventing the root from ever expanding.
         int searchPly = static_cast<int>(trajectoryBuffer.size()) - 1;
         searchInfo->set_max_depth(searchPly);
+        const NodeType solvedType = SearchParams::ENABLE_MCTS_SOLVER
+            ? ctx.leaf->get_node_type()
+            : NodeType::UNSOLVED;
+        if (solvedType != NodeType::UNSOLVED) {
+            ctx.isTerminal = true;
+            if (solvedType == NodeType::WIN) {
+                ctx.terminalValue = 1.0f;
+            } else if (solvedType == NodeType::LOSS) {
+                ctx.terminalValue = -1.0f;
+            } else {
+                ctx.terminalValue = ctx.teamToPlay == root->get_team_to_play()
+                    ? -runtimeConfig.drawContempt
+                    : runtimeConfig.drawContempt;
+            }
+
+            batchContexts.push_back(std::move(ctx));
+            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+                const JointActionCandidate& action = it->action;
+                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
+                    board.unmake_moves(action.moveA, action.moveB);
+                }
+            }
+            continue;
+        }
+
+        int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
             board, ctx.teamToPlay, root->get_team_to_play(),
-            teamHasTimeAdvantage, searchPly);
+            teamHasTimeAdvantage, searchPly, &terminalEndInPly);
         if (terminalOutcome != TerminalOutcome::NONE) {
             ctx.isTerminal = true;
             if (terminalOutcome == TerminalOutcome::WIN) {
                 ctx.terminalValue = 1.0f;
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
-                    ctx.leaf->mark_as_win(1);
+                    ctx.leaf->mark_as_win(terminalEndInPly);
                 }
             } else if (terminalOutcome == TerminalOutcome::LOSS) {
                 ctx.terminalValue = -1.0f;
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
-                    ctx.leaf->mark_as_loss(1);
+                    ctx.leaf->mark_as_loss(terminalEndInPly);
                 }
             } else {
                 ctx.terminalValue = ctx.teamToPlay == root->get_team_to_play()
                     ? -runtimeConfig.drawContempt
                     : runtimeConfig.drawContempt;
+                if (SearchParams::ENABLE_MCTS_SOLVER) {
+                    ctx.leaf->mark_as_draw(1);
+                }
             }
 
             batchContexts.push_back(std::move(ctx));
@@ -265,19 +409,33 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     
     // Phase 2: Run batched neural network inference (only if we have non-terminal leaves)
     if (validInferenceCount > 0) {
+        // TensorRT is built for a fixed batch. Duplicate the last valid row so
+        // underfilled batches never upload stale or uninitialized host memory.
+        const float* paddingSource = obs
+            + static_cast<size_t>(validInferenceCount - 1) * NB_INPUT_VALUES();
+        for (int batchIndex = validInferenceCount; batchIndex < batchSize; ++batchIndex) {
+            std::copy_n(
+                paddingSource, NB_INPUT_VALUES(),
+                obs + static_cast<size_t>(batchIndex) * NB_INPUT_VALUES());
+        }
         if (!engine->runInference(obs, value, piA, piB, wdl, movesLeft)) {
             cerr << "Batch inference failed" << endl;
-            // Backup all as 0.0 and remove virtual loss
+            int completedTerminals = 0;
             for (auto& ctx : batchContexts) {
                 if (ctx.hasEvaluationReservation) {
                     ctx.leaf->release_evaluation_reservation();
                 }
-                backup(ctx.trajectory, board, 0.0f);
+                if (ctx.isTerminal) {
+                    backup(ctx.trajectory, board, ctx.terminalValue);
+                    completedTerminals++;
+                } else {
+                    cancel_virtual_losses(ctx.trajectory);
+                }
             }
-            searchInfo->increment_nodes(static_cast<int>(batchContexts.size()));
+            searchInfo->increment_nodes(completedTerminals);
             searchInfo->increment_same_batch_collisions(sameBatchCollisions);
             searchInfo->increment_reservation_collisions(reservationCollisions);
-            return;
+            throw std::runtime_error("Batch inference failed");
         }
     }
     
@@ -285,31 +443,16 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     int inferenceIdx = 0;
     for (auto& ctx : batchContexts) {
         if (ctx.isTerminal) {
-            // Terminal node - backup the terminal value and remove virtual loss
-            // Also propagate solver state up the tree
-            float val = ctx.terminalValue;
-            NodeType childType = ctx.leaf->get_node_type();
-            
-            for (auto it = ctx.trajectory.rbegin(); it != ctx.trajectory.rend(); ++it) {
-                Node* node = it->node;
-                int childIdx = it->selectedChildIdx;
-                if (childIdx >= 0) {
-                    node->update_and_remove_virtual_loss(childIdx, val);
-                    
-                    // MCTS Solver: propagate terminal state
-                    if (SearchParams::ENABLE_MCTS_SOLVER && childType != NodeType::UNSOLVED) {
-                        node->init_child_node_types();
-                        node->update_child_node_type(childIdx, childType);
-                        childType = node->get_node_type();
-                    } else {
-                        childType = NodeType::UNSOLVED;
-                    }
-                } else {
-                    node->update_terminal(val);
-                }
-                val = -val;
-            }
+            backup(ctx.trajectory, board, ctx.terminalValue);
         } else {
+            if (SearchParams::ENABLE_MCTS_SOLVER
+                && ctx.leaf->get_node_type() != NodeType::UNSOLVED) {
+                ctx.leaf->release_evaluation_reservation();
+                backup(ctx.trajectory, board, 0.0f);
+                inferenceIdx++;
+                continue;
+            }
+
             for (const TrajectoryEntry& entry : ctx.trajectory) {
                 const JointActionCandidate& action = entry.action;
                 if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
@@ -341,9 +484,15 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             
             if (boardAOnTurn) {
                 actionsA = leafBoard.legal_moves(BOARD_A);
+                std::erase_if(actionsA, [&leafBoard](Stockfish::Move move) {
+                    return !is_policy_move_representable(leafBoard, BOARD_A, move);
+                });
             }
             if (boardBOnTurn) {
                 actionsB = leafBoard.legal_moves(BOARD_B);
+                std::erase_if(actionsB, [&leafBoard](Stockfish::Move move) {
+                    return !is_policy_move_representable(leafBoard, BOARD_B, move);
+                });
             }
             
             vector<float> priorsA;
@@ -424,6 +573,11 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
     trajectoryBuffer.emplace_back(currentNode, JointActionCandidate(), -1);
 
     while (true) {
+        if (SearchParams::ENABLE_MCTS_SOLVER
+            && currentNode->get_node_type() != NodeType::UNSOLVED) {
+            break;
+        }
+
         // If not expanded, this is a leaf node
         if (!currentNode->is_expanded()) {
             break;

@@ -84,10 +84,14 @@ uv sync
 ### Running the Engine
 
 ```bash
-./engine/build/hivemind
+./engine/build-ninja/hivemind \
+  --network "$(realpath src/training/weights/rl/model-rl-final-v3.0.onnx)"
 ```
 
 The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
+Passing an explicit network path makes startup independent of the current working
+directory. Without `--network`, the engine retains the legacy behavior of loading
+the most recently modified ONNX model from `./networks`.
 
 ### Engine Commands
 
@@ -99,30 +103,95 @@ The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
 ./hivemind perft 5
 
 # Run self-play for training data generation
-./hivemind selfplay 1000
-
-# Evaluate two models against each other
-./hivemind eval --new model_a.onnx --old model_b.onnx --games 100
+./engine/build-ninja/hivemind selfplay \
+  --network src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --games 1000 --nodes 400 --output engine/selfplay_games \
+  --wait-pass-prior-floor 0 --coordination-pass-prior-floor 0
 ```
+
+Self-play diversifies each opening with raw-policy initialization. Its length is
+sampled from an exponential distribution with a mean of 8 macro plies and a
+maximum of 30; these positions are recorded in PGN but excluded from HVM3.
+Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
+every two macro plies. Search budgets are randomized by ±5% per position.
+
+### Network Tournament
+
+```bash
+./engine/build-ninja/hivemind tournament \
+  --contender src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --baseline engine/networks/model-0.97574-0.677-0055-v3.0.onnx \
+  --games 100 --nodes 800 --output engine/tournament_results --seed 1
+```
+
+Tournament games are paired, so `--games` must be even. Each network controls
+the White team in one game and the Black team in the other, with the starting
+team alternated between pairs. Both games in a pair use the same seeded root
+noise schedule, and moves are selected by maximum root visits. The command
+writes complete games to `games.pgn` and incremental W/D/L, score, and Elo
+results to `summary.json`. Set `--dirichlet-epsilon 0` for deterministic games.
 
 ### Training
 
 ```bash
 # Supervised learning on human games
-uv run python src/training/train_loop.py --mode supervised
+uv run python src/training/train_loop.py --mode sl
 
-# RL training on self-play data
-uv run python src/training/train_loop.py --mode rl \
-  --rl-data-dir engine/selfplay_games/training_data_parquet
+# Train the explicit cross-board coordination architecture from scratch
+uv run python src/training/train_loop.py --mode sl \
+  --architecture crossboard-risev33
+
+# Train the staged dual-stream architecture with persistent latent memory
+uv run python src/training/train_loop.py --mode sl \
+  --architecture dualstream-memory-risev33
+
+# Generate an isolated >=2250 corpus and train cross-board RISEv3 on it
+uv run python scripts/train_from_games_parquet.py \
+  --games data/games.parquet \
+  --min-rating 2250 \
+  --train-planes-dir data/planes/sl_2250/train \
+  --val-shard data/planes/sl_2250/val/evaluation_shard.parquet \
+  --train-eval-shard data/planes/sl_2250/train_eval/evaluation_shard.parquet \
+  --architecture crossboard-risev33 \
+  --batch-size 256
+
+# RL training directly from native HVM3 self-play data
+uv run python src/training/train_loop.py --mode rl --checkpoint /home/ben/hivemind/src/training/weights/rl/model-rl-final.tar --selfplay-dir /home/ben/hivemind/engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
 ```
 
-### Convert Self-Play Data
+RL training reads `engine/selfplay_games/training_data` by default, creates a
+deterministic game-level 98/2 train/validation split under
+`engine/selfplay_games/rl_data`, and then starts training. Original HVM3 chunks
+are preserved. Use `--selfplay-dir` for a different self-play directory, or
+provide both `--rl-data-dir` and `--val-data-dir` to train from existing Parquet
+data. Supervised artifacts are written under `src/training/weights/supervised`;
+RL artifacts, including resumable `model-rl-final.tar` and deployable
+`model-rl-final-v3.0.onnx`, are written under `src/training/weights/rl`.
+For later RL iterations, pass
+`--checkpoint src/training/weights/rl/model-rl-final.tar`.
+Cross-board and dual-stream checkpoints must be continued with their original
+`--architecture`; legacy RISEv3 checkpoints are not shape compatible with the
+new attention and policy heads.
 
 ```bash
-uv run python src/preprocessing/convert_selfplay_data.py \
-  engine/selfplay_games/training_data \
-  engine/selfplay_games/training_data_parquet
+# Train on iteration 3 with CrazyAra-style replay from iteration 2
+uv run python src/training/train_loop.py --mode rl \
+  --checkpoint src/training/weights/rl/model-rl-final.tar \
+  --selfplay-dir engine/selfplay_games/iteration-3 \
+  --replay-dir engine/selfplay_games/iteration-2 \
+  --architecture crossboard-risev33
 ```
+
+With `--replay-dir`, RL preparation adds five archived HVM3 chunks selected
+deterministically from the newest 5% of that directory, matching CrazyAra's
+replay-memory defaults. Replay games are training-only; validation is made only
+from the current iteration. Adjust this with `--replay-files`,
+`--replay-selection-fraction`, and `--split-seed`.
+
+The end-to-end supervised script filters all four players, performs a
+deterministic whole-game 98/2 train/validation split, doubles samples by board
+swap, builds a fixed training-metrics shard, and then launches training. Using
+the `sl_2250` paths above preserves the existing default corpus.
 
 ## Neural Network Architecture
 
@@ -132,25 +201,61 @@ Hivemind uses **RISEv3** (Residual Inverted Squeeze-Excitation), a mobile-optimi
 - Squeeze-and-excitation blocks
 - Pre-activation residual connections
 
+The optional `crossboard-risev33` architecture retains the RISEv3 convolutional
+tower and adds explicit post-tower coordination:
+
+- 64 spatial tokens for board A and 64 for board B
+- Four pocket tokens covering both teams on both boards
+- Two board-local side-to-move tokens and one shared time-advantage token
+- Two bidirectional cross-attention layers
+- Independent spatial policy heads for boards A and B
+
+The coordinated board maps are fused only for the value, WDL, and moves-left
+heads. The deployable ONNX interface remains `value`, `pi_a`, `pi_b`, `wdl_out`,
+and `moves_left`.
+
+The optional `dualstream-memory-risev33` architecture instead runs each board
+through the same stem and three shared-weight five-block stages. Two
+intermediate communication stages update a persistent eight-token latent
+workspace, apply one latent self-attention block, and symmetrically feed the
+result back to both boards. A final direct square-to-square attention layer
+preserves exact tactical communication. State-dependent residual gates control
+the latent and direct pathways independently, and only the value-side heads
+fuse the final board maps.
+
+Cross-board and dual-stream training both default to batch size 256. The
+dual-stream model still processes two sets of trunk activations, so reduce this
+value explicitly if GPU memory is insufficient.
+Use `--batch-size` to tune this for another GPU; the legacy RISEv3 default
+remains unchanged. Dual-stream training uses BF16 model execution by default on
+CUDA while retaining FP32 parameters, losses, optimizer state, and checkpoints.
+Use `--precision fp32` for an exact full-precision fallback. During supervised training,
+intermediate checks process at most 64 batches from each metrics loader and run
+every 2,048,000 training samples. Complete train/validation evaluation runs at
+each epoch boundary and at the end of training.
+
 ### Input Representation
 
-The network uses a **64-channel input** (64×8×8) encoding both Bughouse boards:
+The network uses a **74-channel input** (74×8×8), with 37 channels per board:
 
-| Channels     | Description                        |
-| ------------ | ---------------------------------- |
-| 0-11, 32-43  | Piece positions (own and opponent) |
-| 12-21, 44-53 | Pocket pieces available for drops  |
-| 22-23, 54-55 | Promoted piece masks               |
-| 24, 56       | En passant squares                 |
-| 25, 57       | Side to move                       |
-| 26, 58       | Constant plane (all 1s)            |
-| 27-30, 59-62 | Castling rights                    |
-| 31, 63       | Time advantage indicator           |
+| Per-board channels | Description                             |
+| ------------------ | --------------------------------------- |
+| 0-11               | Piece positions (own and opponent)      |
+| 12-21              | Pocket piece counts                     |
+| 22-23              | Promoted pieces and en passant          |
+| 24-26              | Perspective, side to move, and constant |
+| 27-30              | Castling rights                         |
+| 31                 | Time advantage                          |
+| 32-33              | Last move source and destination        |
+| 34                 | Halfmove clock                          |
+| 35-36              | Twofold and threefold repetition        |
 
 ### Output
 
-- **Policy head**: 4672 move probabilities per board (73 planes × 8 × 8)
-- **Value head**: Win/Draw/Loss prediction for the position
+- **Policy heads**: 4672 move probabilities for each board
+- **Value head**: Scalar outcome prediction
+- **WDL head**: Win/draw/loss classification
+- **Moves-left head**: Remaining team-decision estimate
 
 ## License
 

@@ -27,7 +27,9 @@ from src.training.data_loaders import flip_bughouse_sample, load_rl_parquet_shar
 def decode_board(planes: torch.Tensor, board_offset: int = 0) -> str:
     """Decode a single board from planes."""
     planes_np = planes.numpy()
-    board_planes = planes_np[board_offset:board_offset+32]
+    board_planes = planes_np[
+        board_offset:board_offset + NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    ]
     
     piece_chars = ['P', 'N', 'B', 'R', 'Q', 'K']
     board_lines = []
@@ -113,7 +115,7 @@ def main():
     print(f"Loading from: {Path(parquet_files[0]).name}\n")
     
     # Load data
-    x, y_value, policy_a, policy_b = load_rl_parquet_shard(parquet_files[0])
+    x, y_value, policy_a, policy_b, _, _ = load_rl_parquet_shard(parquet_files[0])
     
     labels = make_map()
     
@@ -123,7 +125,7 @@ def main():
         # Check if it's early game (many pieces, few captures)
         planes_np = x[i].numpy()
         total_pocket = 0
-        for board_offset in [0, 32]:
+        for board_offset in [0, NUM_BUGHOUSE_CHANNELS_PER_BOARD]:
             for j in range(5):
                 total_pocket += int(planes_np[board_offset + 12 + j, 0, 0] * 16 + 0.5)
                 total_pocket += int(planes_np[board_offset + 17 + j, 0, 0] * 16 + 0.5)
@@ -146,7 +148,7 @@ def main():
     
     # Decode boards
     board_a_orig = decode_board(x_orig, 0)
-    board_b_orig = decode_board(x_orig, 32)
+    board_b_orig = decode_board(x_orig, NUM_BUGHOUSE_CHANNELS_PER_BOARD)
     
     print("ORIGINAL CONFIGURATION:")
     print("\nBoard A (channels 0-31):")
@@ -159,7 +161,7 @@ def main():
         validity = check_move_validity(board_a_orig, move)
         print(f"  {move:10s} ({prob:.4f}) - {validity}")
     
-    print("\nBoard B (channels 32-63):")
+    print("\nBoard B (channels 37-73):")
     print(board_b_orig)
     print("\nBoard B top moves:")
     top_indices_b = torch.topk(policy_b_orig, k=5).indices
@@ -178,10 +180,10 @@ def main():
     
     # Decode flipped boards
     board_a_flipped = decode_board(x_flipped, 0)
-    board_b_flipped = decode_board(x_flipped, 32)
+    board_b_flipped = decode_board(x_flipped, NUM_BUGHOUSE_CHANNELS_PER_BOARD)
     
     print("\nAFTER FLIP AUGMENTATION:")
-    print("\nBoard A (was Board B, channels 32-63 → 0-31):")
+    print("\nBoard A (was Board B, channels 37-73 -> 0-36):")
     print(board_a_flipped)
     print("\nBoard A top moves (policy_b_flipped with mirroring):")
     top_indices_a_flip = torch.topk(policy_a_flipped, k=5).indices
@@ -191,7 +193,7 @@ def main():
         validity = check_move_validity(board_a_flipped, move)
         print(f"  {move:10s} ({prob:.4f}) - {validity}")
     
-    print("\nBoard B (was Board A, channels 0-31 → 32-63):")
+    print("\nBoard B (was Board A, channels 0-36 -> 37-73):")
     print(board_b_flipped)
     print("\nBoard B top moves (policy_a_flipped with mirroring):")
     top_indices_b_flip = torch.topk(policy_b_flipped, k=5).indices

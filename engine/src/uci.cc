@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -21,17 +22,24 @@ UCI::~UCI() {
     stop();
 }
 
-void UCI::initializeEngines(const std::vector<int>& deviceIds) {
+bool UCI::initializeEngines(
+    const std::vector<int>& deviceIds,
+    const std::string& networkPath) {
     stop();
 
     // Clear any existing engines.
     engines.clear();
 
-    // Automatically find the latest ONNX file in the networks directory.
-    const std::string onnxFile = findLatestOnnxFile("./networks");
+    const std::string onnxFile = networkPath.empty()
+        ? findLatestOnnxFile("./networks")
+        : networkPath;
     if (onnxFile.empty()) {
-        std::cerr << "Error: No ONNX file found in ./networks directory." << std::endl;
-        return;
+        std::cerr << "Error: No ONNX model found; pass --network <onnx>." << std::endl;
+        return false;
+    }
+    if (!std::filesystem::is_regular_file(onnxFile)) {
+        std::cerr << "Error: ONNX model not found: " << onnxFile << std::endl;
+        return false;
     }
     // For each device ID, create a new Engine, load the network, and store it.
     for (int deviceId : deviceIds) {
@@ -50,6 +58,7 @@ void UCI::initializeEngines(const std::vector<int>& deviceIds) {
 
     // Create the single-threaded Agent
     agent = std::make_unique<Agent>();
+    return !engines.empty();
 }
 
 
@@ -178,7 +187,17 @@ void UCI::go(std::istringstream& is) {
     
     // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
-        agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+        try {
+            agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+        } catch (const std::exception& error) {
+            std::cerr << "Search failed: " << error.what() << std::endl;
+            std::cout << "info string search failed: " << error.what() << std::endl;
+            std::cout << "bestmove (none)" << std::endl;
+        } catch (...) {
+            std::cerr << "Search failed with an unknown exception" << std::endl;
+            std::cout << "info string search failed: unknown exception" << std::endl;
+            std::cout << "bestmove (none)" << std::endl;
+        }
         ongoingSearch.store(false, std::memory_order_release);
     });
 
@@ -238,6 +257,11 @@ void UCI::setoption(std::istringstream& is) {
         int permille = std::clamp(std::stoi(value), 1, 1000);
         searchConfig.pwExponent = static_cast<float>(permille) / 1000.0f;
         std::cout << "info string PWExponentPermille set to " << permille << std::endl;
+    } else if (name == "QEarlyExit") {
+        if (value == "true" || value == "false") {
+            searchConfig.enableQEarlyExit = value == "true";
+            std::cout << "info string QEarlyExit set to " << value << std::endl;
+        }
     } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
@@ -264,6 +288,8 @@ void UCI::send_uci_response() {
     cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
     cout << "option name PWExponentPermille type spin default 300 min 1 max 1000" << endl;
+        cout << "option name QEarlyExit type check default "
+            << (SearchParams::ENABLE_Q_EARLY_EXIT ? "true" : "false") << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "uciok" << endl;
@@ -375,14 +401,24 @@ void UCI::loop() {
         token.clear(); // Avoid a stale if getline() returns empty or blank line
         is >> skipws >> token;
 
-        if (token == "uci")             send_uci_response();
-        else if (token == "isready")    cout << "readyok" << endl;
-        else if (token == "go")         go(is);
-        else if (token == "setoption")  setoption(is);
-        else if (token == "position")   position(is);
-        else if (token == "ucinewgame") new_game();
-        else if (token == "stop")       stop();
-        else if (token == "policy")     policy();
+        try {
+            if (token == "uci")             send_uci_response();
+            else if (token == "isready")    cout << "readyok" << endl;
+            else if (token == "go")         go(is);
+            else if (token == "setoption")  setoption(is);
+            else if (token == "position")   position(is);
+            else if (token == "ucinewgame") new_game();
+            else if (token == "stop")       stop();
+            else if (token == "policy")     policy();
+        } catch (const std::exception& error) {
+            stop();
+            cerr << "UCI command '" << token << "' failed: " << error.what() << endl;
+            cout << "info string " << token << " failed: " << error.what() << endl;
+        } catch (...) {
+            stop();
+            cerr << "UCI command '" << token << "' failed with an unknown exception" << endl;
+            cout << "info string " << token << " failed: unknown exception" << endl;
+        }
 
     } while (token != "quit"); // Command line args are one-shot
 }

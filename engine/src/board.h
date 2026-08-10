@@ -31,6 +31,7 @@ class Board {
         
         /// History of repetition keys for on-board positions.
         std::vector<uint64_t> positionHistory[2];
+        std::vector<uint64_t> positionHistoryPrefixes[2];
         std::vector<Stockfish::Move> moveHistory[2];
 
         Board();
@@ -42,27 +43,12 @@ class Board {
         * @return long unsigned int Combined hash of the positions.
         */
         unsigned long hash_key(bool teamHasTimeAdvantage = false) {
-            auto mix_counter = [](uint64_t key, uint64_t counter) {
-                counter += 0x9e3779b97f4a7c15ULL;
-                counter = (counter ^ (counter >> 30)) * 0xbf58476d1ce4e5b9ULL;
-                counter = (counter ^ (counter >> 27)) * 0x94d049bb133111ebULL;
-                return key ^ (counter ^ (counter >> 31));
-            };
-
-            auto history_key = [&mix_counter](const std::vector<uint64_t>& history) {
-                uint64_t key = 0xcbf29ce484222325ULL;
-                for (uint64_t positionKey : history) {
-                    key = mix_counter(key, positionKey);
-                }
-                return mix_counter(key, history.size());
-            };
-
-            auto k0 = mix_counter(pos[0]->key(), static_cast<uint64_t>(rule50_count(0)));
-            auto k1 = mix_counter(pos[1]->key(), static_cast<uint64_t>(rule50_count(1)));
+            auto k0 = mix_hash(pos[0]->key(), static_cast<uint64_t>(rule50_count(0)));
+            auto k1 = mix_hash(pos[1]->key(), static_cast<uint64_t>(rule50_count(1)));
             // Combines the two keys using a hash_combine technique.
             auto combined = k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
-            auto repetitionContext = history_key(positionHistory[0]);
-            repetitionContext ^= history_key(positionHistory[1])
+            auto repetitionContext = history_key(0);
+            repetitionContext ^= history_key(1)
                 + 0x9e3779b97f4a7c15ULL
                 + (repetitionContext << 6)
                 + (repetitionContext >> 2);
@@ -108,7 +94,12 @@ class Board {
          * @param board_num The board index.
          */
         void record_position(int board_num) {
-            positionHistory[board_num].push_back(board_only_key(board_num));
+            const uint64_t positionKey = board_only_key(board_num);
+            positionHistory[board_num].push_back(positionKey);
+            const uint64_t prefix = positionHistoryPrefixes[board_num].empty()
+                ? HISTORY_HASH_SEED
+                : positionHistoryPrefixes[board_num].back();
+            positionHistoryPrefixes[board_num].push_back(mix_hash(prefix, positionKey));
         }
 
         /**
@@ -118,6 +109,7 @@ class Board {
         void unrecord_position(int board_num) {
             if (!positionHistory[board_num].empty()) {
                 positionHistory[board_num].pop_back();
+                positionHistoryPrefixes[board_num].pop_back();
             }
         }
 
@@ -127,6 +119,23 @@ class Board {
          */
         void clear_position_history(int board_num) {
             positionHistory[board_num].clear();
+            positionHistoryPrefixes[board_num].clear();
+        }
+
+        static constexpr uint64_t HISTORY_HASH_SEED = 0xcbf29ce484222325ULL;
+
+        static uint64_t mix_hash(uint64_t key, uint64_t value) {
+            value += 0x9e3779b97f4a7c15ULL;
+            value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+            return key ^ (value ^ (value >> 31));
+        }
+
+        uint64_t history_key(int board_num) const {
+            const uint64_t prefix = positionHistoryPrefixes[board_num].empty()
+                ? HISTORY_HASH_SEED
+                : positionHistoryPrefixes[board_num].back();
+            return mix_hash(prefix, positionHistory[board_num].size());
         }
 
         void set(std::string fen); 
@@ -134,6 +143,7 @@ class Board {
         void make_moves(Stockfish::Move moveA, Stockfish::Move moveB);
         void unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB);
         void pop_move(int board_num);
+        bool is_legal_move(int board_num, Stockfish::Move move) const;
         std::vector<Stockfish::Move> legal_moves(int board_num);
         std::vector<std::pair<int, Stockfish::Move>> legal_moves(Stockfish::Color side, bool teamHasTimeAdvantage = false);
 

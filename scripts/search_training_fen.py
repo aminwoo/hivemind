@@ -2,7 +2,7 @@
 """
 Search for a specific FEN position in training data and display MCTS visits.
 
-Supports both binary (.bin) and parquet (.parquet) training data formats.
+Supports both HVM3 (.hvm) and parquet training data formats.
 
 Usage:
     python search_training_fen.py --fen "FEN_A|FEN_B"
@@ -14,7 +14,6 @@ Example:
 import argparse
 import os
 import glob
-import struct
 import sys
 import numpy as np
 import chess
@@ -25,10 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.domain.board import BughouseBoard
 from src.domain.board2planes import board2planes
 from src.domain.move2planes import make_map
+from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
+from src.preprocessing.convert_selfplay_data import read_binary_shard
 
 # Constants matching training data format
-NB_INPUT_CHANNELS = 64
-NB_INPUT_VALUES = NB_INPUT_CHANNELS * 8 * 8  # 4096
+NB_INPUT_CHANNELS = NUM_BUGHOUSE_CHANNELS
+NB_INPUT_VALUES = NB_INPUT_CHANNELS * 8 * 8
 NB_POLICY_VALUES = 73 * 8 * 8  # 4672
 
 
@@ -41,7 +42,7 @@ def fen_to_planes(fen: str, team_side: chess.Color = chess.WHITE) -> np.ndarray:
         team_side: Perspective for the planes (WHITE or BLACK)
     
     Returns:
-        np.ndarray of shape (64, 8, 8)
+        np.ndarray of shape (74, 8, 8)
     """
     board = BughouseBoard()
     # Handle both | and " | " separators
@@ -70,18 +71,6 @@ def compare_planes(planes1: np.ndarray, planes2: np.ndarray, tolerance: float = 
     return np.allclose(planes1, planes2, atol=tolerance)
 
 
-def read_sparse_policy(f) -> np.ndarray:
-    """Read sparse policy entries and convert to dense array (from binary format)."""
-    num_entries = struct.unpack('<H', f.read(2))[0]
-    policy = np.zeros(NB_POLICY_VALUES, dtype=np.float32)
-    for _ in range(num_entries):
-        index = struct.unpack('<H', f.read(2))[0]
-        prob = struct.unpack('<f', f.read(4))[0]
-        if index < NB_POLICY_VALUES:
-            policy[index] = prob
-    return policy
-
-
 def search_in_binary_file(file_path: str, target_planes: np.ndarray, move_map: list, verbose: bool = False) -> list:
     """
     Search for matching planes in a binary shard file.
@@ -91,52 +80,23 @@ def search_in_binary_file(file_path: str, target_planes: np.ndarray, move_map: l
     matches = []
     
     try:
-        with open(file_path, 'rb') as f:
-            # Read header
-            magic = f.read(4)
-            if magic != b'HVM2':
-                if verbose:
-                    print(f"  Skipping {os.path.basename(file_path)} - invalid magic bytes")
-                return matches
-            
-            version = struct.unpack('<I', f.read(4))[0]
-            if version != 2:
-                if verbose:
-                    print(f"  Skipping {os.path.basename(file_path)} - unsupported version {version}")
-                return matches
-            
-            num_samples = struct.unpack('<Q', f.read(8))[0]
-            
-            if verbose:
-                print(f"  Searching {num_samples} samples in {os.path.basename(file_path)}...", end="", flush=True)
-            
-            for i in range(num_samples):
-                # Read planes
-                planes_bytes = f.read(NB_INPUT_VALUES)
-                sample_planes = np.frombuffer(planes_bytes, dtype=np.uint8).reshape(NB_INPUT_CHANNELS, 8, 8).astype(float)
-                
-                # Read policies
-                policy_a = read_sparse_policy(f)
-                policy_b = read_sparse_policy(f)
-                
-                # Read value
-                value = struct.unpack('<f', f.read(4))[0]
-                
-                # Compare piece position channels (0-11 and 32-43)
-                # The target uses float 0.0-1.0, sample uses uint8 0-1 for binary channels
-                piece_channels = list(range(12)) + list(range(32, 44))
-                
-                target_pieces = target_planes[piece_channels]
-                sample_pieces = sample_planes[piece_channels]  # Already 0 or 1 for piece channels
-                
-                if np.allclose(target_pieces, sample_pieces, atol=0.5):
-                    sample = {
-                        'x': planes_bytes,
-                        'policy_a': policy_a,
-                        'policy_b': policy_b,
-                        'y_value': value
-                    }
-                    matches.append((i, sample))
+        samples = read_binary_shard(file_path)
+        if verbose:
+            print(f"  Searching {len(samples)} samples in {os.path.basename(file_path)}...", end="", flush=True)
+        piece_channels = list(range(12)) + list(range(
+            NUM_BUGHOUSE_CHANNELS_PER_BOARD,
+            NUM_BUGHOUSE_CHANNELS_PER_BOARD + 12,
+        ))
+        for i, sample in enumerate(samples):
+            sample_planes = np.frombuffer(sample['x'], dtype=np.uint8).reshape(
+                NB_INPUT_CHANNELS, 8, 8
+            ).astype(np.float32) / 255.0
+            if np.allclose(
+                target_planes[piece_channels], sample_planes[piece_channels], atol=0.01
+            ):
+                sample['policy_a'] = np.frombuffer(sample['policy_a'], dtype=np.float32)
+                sample['policy_b'] = np.frombuffer(sample['policy_b'], dtype=np.float32)
+                matches.append((i, sample))
             
             if verbose:
                 print(f" found {len(matches)} matches")
@@ -166,14 +126,18 @@ def search_in_parquet_file(file_path: str, target_planes: np.ndarray, move_map: 
     for i in range(total):
         row = df.row(i, named=True)
         x_bytes = row['x']
-        sample_planes = np.frombuffer(x_bytes, dtype=np.uint8).reshape(NB_INPUT_CHANNELS, 8, 8).astype(float)
+        sample_planes = np.frombuffer(x_bytes, dtype=np.uint8).reshape(
+            NB_INPUT_CHANNELS, 8, 8
+        ).astype(np.float32) / 255.0
         
-        # Compare piece position channels (0-11 and 32-43)
-        piece_channels = list(range(12)) + list(range(32, 44))
+        piece_channels = list(range(12)) + list(range(
+            NUM_BUGHOUSE_CHANNELS_PER_BOARD,
+            NUM_BUGHOUSE_CHANNELS_PER_BOARD + 12,
+        ))
         target_pieces = target_planes[piece_channels]
         sample_pieces = sample_planes[piece_channels]
         
-        if np.allclose(target_pieces, sample_pieces, atol=0.5):
+        if np.allclose(target_pieces, sample_pieces, atol=0.01):
             sample = {
                 'x': x_bytes,
                 'policy_a': np.frombuffer(row['policy_a'], dtype=np.float32),
@@ -282,8 +246,8 @@ def main():
     # Load move map
     move_map = make_map()
     
-    # Find training data files (prefer binary, fallback to parquet)
-    bin_files = sorted(glob.glob(os.path.join(args.data_dir, 'shard_*.bin')))
+    # Find training data files (prefer compact HVM3, fallback to parquet)
+    bin_files = sorted(glob.glob(os.path.join(args.data_dir, '*.hvm')))
     parquet_files = sorted(glob.glob(os.path.join(args.data_dir, '*.parquet')))
     
     if bin_files:
@@ -294,7 +258,7 @@ def main():
         file_type = 'parquet'
     else:
         print(f"No training data files found in {args.data_dir}")
-        print(f"  Looked for: shard_*.bin or *.parquet")
+        print("  Looked for: *.hvm or *.parquet")
         return 1
     
     if args.max_files:
