@@ -4,34 +4,40 @@
 #include <cstdlib>
 #include <iostream>
 
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
+
 #include "board.h"
 #include "constants.h"
 
 using namespace std;
 
 void benchmark_inference(Engine& engine, int iterations) {
-    // Allocate buffers
-    float* obs = new float[SearchParams::BATCH_SIZE * NB_INPUT_VALUES()];
-    float* value = new float[SearchParams::BATCH_SIZE];
-    float* piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-    float* piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-    float* wdl = new float[SearchParams::BATCH_SIZE * 3];
-    float* movesLeft = new float[SearchParams::BATCH_SIZE];
+    const int batchSize = engine.getBatchSize();
+    const size_t inputElements = batchSize * NB_INPUT_VALUES();
+    __half* obs = nullptr;
+    if (cudaMallocHost(
+            reinterpret_cast<void**>(&obs), inputElements * sizeof(__half))
+        != cudaSuccess) {
+        cerr << "Failed to allocate pinned inference benchmark input" << endl;
+        return;
+    }
+    Engine::HalfInferenceOutputs outputs;
     
     // Initialize with random data
-    for (size_t i = 0; i < SearchParams::BATCH_SIZE * NB_INPUT_VALUES(); i++) {
-        obs[i] = static_cast<float>(rand()) / RAND_MAX;
+    for (size_t i = 0; i < inputElements; i++) {
+        obs[i] = __float2half_rn(static_cast<float>(rand()) / RAND_MAX);
     }
     
     // Warmup
     for (int i = 0; i < 10; i++) {
-        engine.runInference(obs, value, piA, piB, wdl, movesLeft);
+        engine.runInferenceHalf(obs, outputs);
     }
     
     // Benchmark
     auto start = chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; i++) {
-        engine.runInference(obs, value, piA, piB, wdl, movesLeft);
+        engine.runInferenceHalf(obs, outputs);
     }
     auto end = chrono::high_resolution_clock::now();
     
@@ -44,14 +50,10 @@ void benchmark_inference(Engine& engine, int iterations) {
     cout << "Total time: " << total_ms << " ms" << endl;
     cout << "Average time per inference: " << avg_ms << " ms" << endl;
     cout << "Inferences per second: " << inferences_per_sec << endl;
+    cout << "Positions per second: " << inferences_per_sec * batchSize << endl;
     cout << "===========================" << endl;
     
-    delete[] obs;
-    delete[] value;
-    delete[] piA;
-    delete[] piB;
-    delete[] wdl;
-    delete[] movesLeft;
+    cudaFreeHost(obs);
 }
 
 static long long perft(Board& board, int depth) {

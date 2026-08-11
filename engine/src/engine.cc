@@ -1,13 +1,73 @@
 #include "engine.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
+#include <cuda_fp16.h>
 #include <dlfcn.h>
 #include <iostream>
 #include <fstream>
+#include <mutex>
+#include <sstream>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
 
+#include "onnx_utils.h"
+
 namespace {
+
+constexpr int BUILDER_OPTIMIZATION_LEVEL = 5;
+constexpr std::string_view ENGINE_CACHE_SCHEMA = "hivemind-trt-cache-v4";
+constexpr std::string_view FP16_CONVERTER_SCHEMA = "onnxruntime-fp16-v1";
+
+std::string engineBuildDescriptor(int deviceId, int batchSize) {
+    cudaDeviceProp deviceProperties{};
+    const cudaError_t propertiesResult =
+        cudaGetDeviceProperties(&deviceProperties, deviceId);
+
+    std::ostringstream descriptor;
+    descriptor << ENGINE_CACHE_SCHEMA
+               << "|tensorrt=" << NV_TENSORRT_VERSION
+               << "|cudart=" << CUDART_VERSION
+               << "|device=" << deviceId
+               << "|batch=" << batchSize
+               << "|profiles=" << SearchParams::NUM_SEARCH_THREADS
+               << "|optimization=" << BUILDER_OPTIMIZATION_LEVEL
+               << "|workspace=default"
+               << "|converter=" << FP16_CONVERTER_SCHEMA;
+    if (propertiesResult == cudaSuccess) {
+        descriptor << "|gpu=" << deviceProperties.name
+                   << "|compute=" << deviceProperties.major
+                   << '.' << deviceProperties.minor;
+    }
+    return descriptor.str();
+}
+
+std::filesystem::path cacheMetadataPath(const std::string& engineFile) {
+    return std::filesystem::path(engineFile).concat(".meta");
+}
+
+bool cacheSignatureMatches(const std::string& engineFile,
+                           const std::string& expectedSignature) {
+    std::ifstream metadata(cacheMetadataPath(engineFile));
+    std::string storedSignature;
+    return metadata && std::getline(metadata, storedSignature)
+        && storedSignature == expectedSignature;
+}
+
+bool writeCacheMetadata(const std::string& engineFile,
+                        const std::string& signature,
+                        const std::string& descriptor) {
+    std::ofstream metadata(
+        cacheMetadataPath(engineFile), std::ios::trunc);
+    if (!metadata) {
+        return false;
+    }
+    metadata << signature << '\n' << descriptor << '\n';
+    return metadata.good();
+}
 
 void preloadTensorRTBuilderResources() {
     static std::once_flag preloadOnce;
@@ -65,48 +125,126 @@ size_t elementsPerBatch(const nvinfer1::Dims& dims) {
     return elements;
 }
 
+bool runFp16Converter(const std::string& python,
+                      const std::filesystem::path& input,
+                      const std::filesystem::path& output) {
+    const pid_t child = fork();
+    if (child < 0) {
+        return false;
+    }
+    if (child == 0) {
+        execlp(python.c_str(), python.c_str(), HIVEMIND_FP16_CONVERTER_SCRIPT,
+               input.c_str(), output.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    int status = 0;
+    return waitpid(child, &status, 0) == child &&
+           WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+bool convertOnnxToFp16(const std::filesystem::path& input,
+                       const std::filesystem::path& output) {
+    std::vector<std::string> pythonCandidates;
+    if (const char* configuredPython = std::getenv("HIVEMIND_PYTHON")) {
+        pythonCandidates.emplace_back(configuredPython);
+    }
+    const std::filesystem::path workspacePython =
+        std::filesystem::path(HIVEMIND_WORKSPACE_ROOT) / ".venv/bin/python";
+    if (std::filesystem::is_regular_file(workspacePython)) {
+        pythonCandidates.push_back(workspacePython.string());
+    }
+    pythonCandidates.emplace_back("python3");
+
+    for (const std::string& python : pythonCandidates) {
+        if (runFp16Converter(python, input, output)) {
+            return true;
+        }
+    }
+    std::cerr << "Failed to convert ONNX model to FP16. Set HIVEMIND_PYTHON to a "
+                 "Python environment containing onnx and onnxruntime."
+              << std::endl;
+    return false;
+}
+
+void floatsToHalves(const float* source, void* destination, size_t count) {
+    auto* halves = static_cast<__half*>(destination);
+    for (size_t i = 0; i < count; ++i) {
+        halves[i] = __float2half_rn(source[i]);
+    }
+}
+
+void halvesToFloats(const void* source, float* destination, size_t count) {
+    const auto* halves = static_cast<const __half*>(source);
+    for (size_t i = 0; i < count; ++i) {
+        destination[i] = __half2float(halves[i]);
+    }
+}
+
 }  // namespace
 
 Engine::Engine(int deviceId, int batchSize)
     : m_deviceId(deviceId), m_batchSize(std::max(1, batchSize)) {
-    if (!checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice") ||
-        !checkCuda(cudaStreamCreate(&m_cudaStream), "cudaStreamCreate")) {
-        m_cudaStream = nullptr;
-    }
+    checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice");
+}
+
+Engine::ExecutionState::~ExecutionState() {
+    if (stream) cudaStreamSynchronize(stream);
+    if (graphInstance) cudaGraphExecDestroy(graphInstance);
+    if (graph) cudaGraphDestroy(graph);
+    context.reset();
+    if (deviceObsBuffer) cudaFree(deviceObsBuffer);
+    if (deviceValueBuffer) cudaFree(deviceValueBuffer);
+    if (devicePolicyABuffer) cudaFree(devicePolicyABuffer);
+    if (devicePolicyBBuffer) cudaFree(devicePolicyBBuffer);
+    if (deviceWdlBuffer) cudaFree(deviceWdlBuffer);
+    if (deviceMovesLeftBuffer) cudaFree(deviceMovesLeftBuffer);
+    if (hostObsHalf) cudaFreeHost(hostObsHalf);
+    if (hostValueHalf) cudaFreeHost(hostValueHalf);
+    if (hostPolicyAHalf) cudaFreeHost(hostPolicyAHalf);
+    if (hostPolicyBHalf) cudaFreeHost(hostPolicyBHalf);
+    if (hostWdlHalf) cudaFreeHost(hostWdlHalf);
+    if (hostMovesLeftHalf) cudaFreeHost(hostMovesLeftHalf);
+    if (stream) cudaStreamDestroy(stream);
 }
 
 Engine::~Engine() {
     cudaSetDevice(m_deviceId);
-    if (m_cudaStream) cudaStreamDestroy(m_cudaStream);
-    
-    // Clean up Device Memory
-    if (m_deviceObsBuffer) cudaFree(m_deviceObsBuffer);
-    if (m_deviceValueBuffer) cudaFree(m_deviceValueBuffer);
-    if (m_devicePolicyABuffer) cudaFree(m_devicePolicyABuffer);
-    if (m_devicePolicyBBuffer) cudaFree(m_devicePolicyBBuffer);
-    if (m_deviceWdlBuffer) cudaFree(m_deviceWdlBuffer);
-    if (m_deviceMovesLeftBuffer) cudaFree(m_deviceMovesLeftBuffer);
-
-    // Clean up Graph
-    if (m_graphCreated) {
-        cudaGraphExecDestroy(m_instance);
-        cudaGraphDestroy(m_graph);
-    }
-    
-    m_context.reset();
+    m_executionStates.clear();
     m_engine.reset();
 }
 
 bool Engine::loadNetwork(const std::string& onnxFile, const std::string& engineFile) {
+    const std::string buildDescriptor = engineBuildDescriptor(m_deviceId, m_batchSize);
+    const std::string cacheSignature =
+        computeFileSignature(onnxFile, buildDescriptor);
+    if (cacheSignature.empty()) {
+        std::cerr << "Failed to fingerprint ONNX model: " << onnxFile << std::endl;
+        return false;
+    }
+
     std::ifstream checkFile(engineFile, std::ios::binary);
     if (checkFile.good()) {
         checkFile.close();
-        if (loadEngineFromFile(engineFile)) {
+        if (cacheSignatureMatches(engineFile, cacheSignature) &&
+            loadEngineFromFile(engineFile)) {
+            std::cout << "Loaded TensorRT engine: " << engineFile << std::endl;
             return true;
         }
-        std::cerr << "Cached TensorRT engine is invalid or stale; rebuilding from ONNX" << std::endl;
+        std::cout << "TensorRT cache is missing, stale, or incompatible; "
+                     "rebuilding from ONNX"
+                  << std::endl;
     }
-    return buildEngineFromONNX(onnxFile) && saveEngineToFile(engineFile);
+    if (!buildEngineFromONNX(onnxFile) || !saveEngineToFile(engineFile)) {
+        return false;
+    }
+    if (!writeCacheMetadata(
+            engineFile, cacheSignature, buildDescriptor)) {
+        std::cerr << "Failed to write TensorRT cache metadata for "
+                  << engineFile << std::endl;
+    }
+    std::cout << "Built and loaded TensorRT engine: " << engineFile << std::endl;
+    return true;
 }
 
 bool Engine::loadEngineFromFile(const std::string& engineFile) {
@@ -151,6 +289,22 @@ bool Engine::saveEngineToFile(const std::string& engineFile) {
 
 bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     std::cout << "Building TensorRT engine from ONNX: " << onnxFile << std::endl;
+    static std::atomic_uint64_t conversionId{0};
+    const std::filesystem::path convertedOnnx =
+        std::filesystem::temp_directory_path() /
+        ("hivemind-fp16-" + std::to_string(getpid()) + "-" +
+         std::to_string(conversionId.fetch_add(1)) + ".onnx");
+    struct ConvertedOnnxCleanup {
+        std::filesystem::path path;
+        ~ConvertedOnnxCleanup() {
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        }
+    } cleanup{convertedOnnx};
+    if (!convertOnnxToFp16(onnxFile, convertedOnnx)) {
+        return false;
+    }
+
     preloadTensorRTBuilderResources();
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(m_logger));
     if (!builder) {
@@ -158,7 +312,8 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
                   << "so TensorRT resource libraries are on LD_LIBRARY_PATH." << std::endl;
         return false;
     }
-    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0U));
+    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(
+        builder->createNetworkV2(0U));
     if (!network) {
         std::cerr << "Failed to create TensorRT network definition" << std::endl;
         return false;
@@ -169,7 +324,32 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
         return false;
     }
 
-    if (!parser->parseFromFile(onnxFile.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
+    if (!parser->parseFromFile(convertedOnnx.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
+        return false;
+    }
+
+    size_t fp16TensorCount = 0;
+    for (int layerIndex = 0; layerIndex < network->getNbLayers(); ++layerIndex) {
+        nvinfer1::ILayer* layer = network->getLayer(layerIndex);
+        for (int outputIndex = 0; outputIndex < layer->getNbOutputs(); ++outputIndex) {
+            nvinfer1::ITensor* output = layer->getOutput(outputIndex);
+            if (!output) {
+                continue;
+            }
+            if (output->getType() == nvinfer1::DataType::kHALF) {
+                fp16TensorCount++;
+            } else if (output->getType() == nvinfer1::DataType::kFLOAT) {
+                std::cerr << "Refusing to build a non-FP16 TensorRT plan: internal tensor "
+                          << output->getName() << " from layer " << layer->getName()
+                          << " is FP32 after automatic conversion."
+                          << std::endl;
+                return false;
+            }
+        }
+    }
+    if (fp16TensorCount == 0) {
+        std::cerr << "Refusing to build a TensorRT plan without FP16 internal tensors"
+                  << std::endl;
         return false;
     }
 
@@ -179,14 +359,8 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
         return false;
     }
     
-    config->setBuilderOptimizationLevel(5);
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1ULL << 30); // 1GB
+    config->setBuilderOptimizationLevel(BUILDER_OPTIMIZATION_LEVEL);
     
-    auto profile = builder->createOptimizationProfile();
-    if (!profile) {
-        std::cerr << "Failed to create TensorRT optimization profile" << std::endl;
-        return false;
-    }
     const char* inputName = network->getInput(0)->getName();
     nvinfer1::Dims dims{};
     dims.nbDims = 4;
@@ -194,10 +368,20 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     dims.d[1] = NB_INPUT_CHANNELS;
     dims.d[2] = BOARD_HEIGHT;
     dims.d[3] = BOARD_WIDTH;
-    profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, dims);
-    profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, dims);
-    profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, dims);
-    config->addOptimizationProfile(profile);
+    for (int workerIndex = 0; workerIndex < SearchParams::NUM_SEARCH_THREADS; ++workerIndex) {
+        auto profile = builder->createOptimizationProfile();
+        if (!profile) {
+            std::cerr << "Failed to create TensorRT optimization profile" << std::endl;
+            return false;
+        }
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, dims);
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, dims);
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, dims);
+        if (config->addOptimizationProfile(profile) < 0) {
+            std::cerr << "Failed to add TensorRT optimization profile" << std::endl;
+            return false;
+        }
+    }
 
     // TensorRT 10: use buildSerializedNetwork instead of buildEngineWithConfig
     auto serializedEngine = std::unique_ptr<nvinfer1::IHostMemory>(builder->buildSerializedNetwork(*network, *config));
@@ -217,9 +401,19 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
 }
 
 bool Engine::initializeResources() {
-    if (!m_engine || !m_cudaStream) return false;
-    m_context.reset(m_engine->createExecutionContext());
-    if (!m_context) return false;
+    if (!m_engine ||
+        m_engine->getNbOptimizationProfiles() < SearchParams::NUM_SEARCH_THREADS) {
+        std::cerr << "TensorRT engine does not contain enough worker profiles" << std::endl;
+        return false;
+    }
+
+    m_executionStates.clear();
+    m_inputName.clear();
+    m_valueName.clear();
+    m_policyAName.clear();
+    m_policyBName.clear();
+    m_wdlName.clear();
+    m_movesLeftName.clear();
 
     auto normalizedName = [](std::string name) {
         std::transform(name.begin(), name.end(), name.begin(), [](unsigned char character) {
@@ -232,8 +426,8 @@ bool Engine::initializeResources() {
         const char* tensorName = m_engine->getIOTensorName(i);
         if (!tensorName) return false;
 
-        if (m_engine->getTensorDataType(tensorName) != nvinfer1::DataType::kFLOAT) {
-            std::cerr << "TensorRT I/O tensor must use FP32: " << tensorName << std::endl;
+        if (m_engine->getTensorDataType(tensorName) != nvinfer1::DataType::kHALF) {
+            std::cerr << "TensorRT I/O tensor must use FP16: " << tensorName << std::endl;
             return false;
         }
 
@@ -290,105 +484,162 @@ bool Engine::initializeResources() {
     dims.d[1] = NB_INPUT_CHANNELS;
     dims.d[2] = BOARD_HEIGHT;
     dims.d[3] = BOARD_WIDTH;
-    if (!m_context->setInputShape(m_inputName.c_str(), dims)) {
-        std::cerr << "Failed to set TensorRT input shape" << std::endl;
-        return false;
-    }
+    size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(__half);
+    size_t valSize = m_batchSize * sizeof(__half);
+    size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(__half);
+    size_t wdlSize = m_batchSize * 3 * sizeof(__half);
+    size_t movesLeftSize = m_batchSize * sizeof(__half);
 
-    size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
-    size_t valSize = m_batchSize * sizeof(float);
-    size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
-    size_t wdlSize = m_batchSize * 3 * sizeof(float);
-    size_t movesLeftSize = m_batchSize * sizeof(float);
-
-    // Allocate GPU Device Memory
-    if (!checkCuda(cudaMalloc(&m_deviceObsBuffer, inputSize), "cudaMalloc(input)") ||
-        !checkCuda(cudaMalloc(&m_deviceValueBuffer, valSize), "cudaMalloc(value)") ||
-        !checkCuda(cudaMalloc(&m_devicePolicyABuffer, polSize), "cudaMalloc(policy A)") ||
-        !checkCuda(cudaMalloc(&m_devicePolicyBBuffer, polSize), "cudaMalloc(policy B)") ||
-        !checkCuda(cudaMalloc(&m_deviceWdlBuffer, wdlSize), "cudaMalloc(WDL)") ||
-        !checkCuda(cudaMalloc(&m_deviceMovesLeftBuffer, movesLeftSize), "cudaMalloc(moves left)")) {
-        return false;
-    }
-
-    // Bind Tensor Addresses
-    if (!m_context->setTensorAddress(m_inputName.c_str(), m_deviceObsBuffer) ||
-        !m_context->setTensorAddress(m_valueName.c_str(), m_deviceValueBuffer) ||
-        !m_context->setTensorAddress(m_policyAName.c_str(), m_devicePolicyABuffer) ||
-        !m_context->setTensorAddress(m_policyBName.c_str(), m_devicePolicyBBuffer) ||
-        !m_context->setTensorAddress(m_wdlName.c_str(), m_deviceWdlBuffer) ||
-        !m_context->setTensorAddress(m_movesLeftName.c_str(), m_deviceMovesLeftBuffer)) {
-        std::cerr << "Failed to bind TensorRT tensor addresses" << std::endl;
-        return false;
+    m_executionStates.reserve(SearchParams::NUM_SEARCH_THREADS);
+    for (int workerIndex = 0; workerIndex < SearchParams::NUM_SEARCH_THREADS; ++workerIndex) {
+        auto state = std::make_unique<ExecutionState>();
+        if (!checkCuda(cudaStreamCreate(&state->stream), "cudaStreamCreate")) {
+            return false;
+        }
+        state->context.reset(m_engine->createExecutionContext());
+        if (!state->context ||
+            !state->context->setOptimizationProfileAsync(workerIndex, state->stream) ||
+            !state->context->setInputShape(m_inputName.c_str(), dims)) {
+            std::cerr << "Failed to initialize TensorRT worker context "
+                      << workerIndex << std::endl;
+            return false;
+        }
+        if (!checkCuda(cudaMalloc(&state->deviceObsBuffer, inputSize), "cudaMalloc(input)") ||
+            !checkCuda(cudaMalloc(&state->deviceValueBuffer, valSize), "cudaMalloc(value)") ||
+            !checkCuda(cudaMalloc(&state->devicePolicyABuffer, polSize), "cudaMalloc(policy A)") ||
+            !checkCuda(cudaMalloc(&state->devicePolicyBBuffer, polSize), "cudaMalloc(policy B)") ||
+            !checkCuda(cudaMalloc(&state->deviceWdlBuffer, wdlSize), "cudaMalloc(WDL)") ||
+            !checkCuda(cudaMalloc(&state->deviceMovesLeftBuffer, movesLeftSize), "cudaMalloc(moves left)") ||
+            !checkCuda(cudaMallocHost(&state->hostObsHalf, inputSize), "cudaMallocHost(input half)") ||
+            !checkCuda(cudaMallocHost(&state->hostValueHalf, valSize), "cudaMallocHost(value half)") ||
+            !checkCuda(cudaMallocHost(&state->hostPolicyAHalf, polSize), "cudaMallocHost(policy A half)") ||
+            !checkCuda(cudaMallocHost(&state->hostPolicyBHalf, polSize), "cudaMallocHost(policy B half)") ||
+            !checkCuda(cudaMallocHost(&state->hostWdlHalf, wdlSize), "cudaMallocHost(WDL half)") ||
+            !checkCuda(cudaMallocHost(&state->hostMovesLeftHalf, movesLeftSize), "cudaMallocHost(moves left half)")) {
+            return false;
+        }
+        if (!state->context->setTensorAddress(m_inputName.c_str(), state->deviceObsBuffer) ||
+            !state->context->setTensorAddress(m_valueName.c_str(), state->deviceValueBuffer) ||
+            !state->context->setTensorAddress(m_policyAName.c_str(), state->devicePolicyABuffer) ||
+            !state->context->setTensorAddress(m_policyBName.c_str(), state->devicePolicyBBuffer) ||
+            !state->context->setTensorAddress(m_wdlName.c_str(), state->deviceWdlBuffer) ||
+            !state->context->setTensorAddress(m_movesLeftName.c_str(), state->deviceMovesLeftBuffer) ||
+            !checkCuda(cudaStreamSynchronize(state->stream), "TensorRT profile setup")) {
+            std::cerr << "Failed to bind TensorRT worker context " << workerIndex << std::endl;
+            return false;
+        }
+        m_executionStates.push_back(std::move(state));
     }
 
     return true;
 }
 
 bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
-                          float* wdl, float* movesLeft) {
-    std::lock_guard<std::mutex> lock(m_inferenceMutex);
+                          float* wdl, float* movesLeft, size_t workerIndex) {
     if (!obs || !value || !piA || !piB || !wdl || !movesLeft ||
-        !m_context || !m_cudaStream ||
+        workerIndex >= m_executionStates.size()) {
+        return false;
+    }
+    ExecutionState& state = *m_executionStates[workerIndex];
+
+    const size_t inputElements = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH;
+    const size_t valueElements = m_batchSize;
+    const size_t policyElements = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH;
+    const size_t wdlElements = m_batchSize * 3;
+    const size_t movesLeftElements = m_batchSize;
+    floatsToHalves(obs, state.hostObsHalf, inputElements);
+
+    HalfInferenceOutputs outputs;
+    if (!runInferenceHalfImpl(
+            static_cast<const __half*>(state.hostObsHalf), outputs,
+            workerIndex, true)) {
+        return false;
+    }
+
+    halvesToFloats(outputs.value, value, valueElements);
+    halvesToFloats(outputs.policyA, piA, policyElements);
+    halvesToFloats(outputs.policyB, piB, policyElements);
+    halvesToFloats(state.hostWdlHalf, wdl, wdlElements);
+    halvesToFloats(state.hostMovesLeftHalf, movesLeft, movesLeftElements);
+
+    return true;
+}
+
+bool Engine::runInferenceHalf(const __half* obs, HalfInferenceOutputs& outputs,
+                              size_t workerIndex) {
+    return runInferenceHalfImpl(obs, outputs, workerIndex, false);
+}
+
+bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outputs,
+                                  size_t workerIndex, bool copyAuxiliaryOutputs) {
+    outputs = {};
+    if (!obs || workerIndex >= m_executionStates.size() ||
         !checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice")) {
         return false;
     }
+    ExecutionState& state = *m_executionStates[workerIndex];
 
-    size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
-    size_t valSize = m_batchSize * sizeof(float);
-    size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(float);
-    size_t wdlSize = m_batchSize * 3 * sizeof(float);
-    size_t movesLeftSize = m_batchSize * sizeof(float);
+    const size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT
+        * BOARD_WIDTH * sizeof(__half);
+    const size_t valSize = m_batchSize * sizeof(__half);
+    const size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT
+        * BOARD_WIDTH * sizeof(__half);
+    const size_t wdlSize = m_batchSize * 3 * sizeof(__half);
+    const size_t movesLeftSize = m_batchSize * sizeof(__half);
 
-    // Step 1: Upload Input (Async)
-    if (!checkCuda(cudaMemcpyAsync(m_deviceObsBuffer, obs, inputSize, cudaMemcpyHostToDevice, m_cudaStream),
-                   "cudaMemcpyAsync(input)")) {
+    if (!checkCuda(cudaMemcpyAsync(
+            state.deviceObsBuffer, obs, inputSize, cudaMemcpyHostToDevice,
+            state.stream), "cudaMemcpyAsync(input)")) {
         return false;
     }
 
-    // Step 2: GPU Compute via CUDA Graph
-    if (!m_graphCreated) {
+    if (!state.graphCreated) {
         // Warmup execution to initialize internal TRT states
-        if (!m_context->enqueueV3(m_cudaStream) ||
-            !checkCuda(cudaStreamSynchronize(m_cudaStream), "TensorRT warmup")) {
+        if (!state.context->enqueueV3(state.stream) ||
+            !checkCuda(cudaStreamSynchronize(state.stream), "TensorRT warmup")) {
             return false;
         }
         
         // Capture the kernel sequence
-        if (!checkCuda(cudaStreamBeginCapture(m_cudaStream, cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture") ||
-            !m_context->enqueueV3(m_cudaStream) ||
-            !checkCuda(cudaStreamEndCapture(m_cudaStream, &m_graph), "cudaStreamEndCapture")) {
+        if (!checkCuda(cudaStreamBeginCapture(state.stream, cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture") ||
+            !state.context->enqueueV3(state.stream) ||
+            !checkCuda(cudaStreamEndCapture(state.stream, &state.graph), "cudaStreamEndCapture")) {
             return false;
         }
         
         // Instantiate the executable graph
-        if (!checkCuda(cudaGraphInstantiate(&m_instance, m_graph, 0), "cudaGraphInstantiate")) {
+        if (!checkCuda(cudaGraphInstantiate(&state.graphInstance, state.graph, 0), "cudaGraphInstantiate")) {
             return false;
         }
-        m_graphCreated = true;
+        state.graphCreated = true;
     }
-    if (!checkCuda(cudaGraphLaunch(m_instance, m_cudaStream), "cudaGraphLaunch")) {
+    if (!checkCuda(cudaGraphLaunch(state.graphInstance, state.stream), "cudaGraphLaunch")) {
         return false;
     }
 
-    // Step 3: Download Outputs (Async)
-    if (!checkCuda(cudaMemcpyAsync(value, m_deviceValueBuffer, valSize, cudaMemcpyDeviceToHost, m_cudaStream),
+    if (!checkCuda(cudaMemcpyAsync(state.hostValueHalf, state.deviceValueBuffer, valSize, cudaMemcpyDeviceToHost, state.stream),
                    "cudaMemcpyAsync(value)") ||
-        !checkCuda(cudaMemcpyAsync(piA, m_devicePolicyABuffer, polSize, cudaMemcpyDeviceToHost, m_cudaStream),
+        !checkCuda(cudaMemcpyAsync(state.hostPolicyAHalf, state.devicePolicyABuffer, polSize, cudaMemcpyDeviceToHost, state.stream),
                    "cudaMemcpyAsync(policy A)") ||
-        !checkCuda(cudaMemcpyAsync(piB, m_devicePolicyBBuffer, polSize, cudaMemcpyDeviceToHost, m_cudaStream),
-                   "cudaMemcpyAsync(policy B)") ||
-        !checkCuda(cudaMemcpyAsync(wdl, m_deviceWdlBuffer, wdlSize, cudaMemcpyDeviceToHost, m_cudaStream),
-                   "cudaMemcpyAsync(WDL)") ||
-        !checkCuda(cudaMemcpyAsync(movesLeft, m_deviceMovesLeftBuffer, movesLeftSize, cudaMemcpyDeviceToHost, m_cudaStream),
-                   "cudaMemcpyAsync(moves left)")) {
+        !checkCuda(cudaMemcpyAsync(state.hostPolicyBHalf, state.devicePolicyBBuffer, polSize, cudaMemcpyDeviceToHost, state.stream),
+                   "cudaMemcpyAsync(policy B)")) {
+        return false;
+    }
+    if (copyAuxiliaryOutputs &&
+        (!checkCuda(cudaMemcpyAsync(state.hostWdlHalf, state.deviceWdlBuffer, wdlSize, cudaMemcpyDeviceToHost, state.stream),
+                    "cudaMemcpyAsync(WDL)") ||
+         !checkCuda(cudaMemcpyAsync(state.hostMovesLeftHalf, state.deviceMovesLeftBuffer, movesLeftSize, cudaMemcpyDeviceToHost, state.stream),
+                    "cudaMemcpyAsync(moves left)"))) {
         return false;
     }
 
-    // Step 4: Final Synchronize
-    if (!checkCuda(cudaStreamSynchronize(m_cudaStream), "cudaStreamSynchronize")) {
+    if (!checkCuda(cudaStreamSynchronize(state.stream), "cudaStreamSynchronize")) {
         return false;
     }
+
+    outputs.value = static_cast<const __half*>(state.hostValueHalf);
+    outputs.policyA = static_cast<const __half*>(state.hostPolicyAHalf);
+    outputs.policyB = static_cast<const __half*>(state.hostPolicyBHalf);
 
     return true;
 }

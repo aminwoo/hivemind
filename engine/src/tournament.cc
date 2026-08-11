@@ -130,19 +130,14 @@ void write_summary(
            << "  \"baseline\": \"" << baselineName << "\",\n"
            << "  \"games\": " << result.games() << ",\n"
            << "  \"nodes_per_move\": " << config.nodes << ",\n"
+           << "  \"move_time_ms\": " << config.moveTimeMs << ",\n"
+           << "  \"contender_batch_size\": " << config.contenderBatchSize << ",\n"
+           << "  \"baseline_batch_size\": " << config.baselineBatchSize << ",\n"
            << "  \"seed\": " << config.seed << ",\n"
            << "  \"contender_pw_coefficient\": "
            << config.contenderPwCoefficient << ",\n"
            << "  \"baseline_pw_coefficient\": "
            << config.baselinePwCoefficient << ",\n"
-           << "  \"contender_wait_pass_prior_floor\": "
-           << config.contenderPassPriorFloors.wait << ",\n"
-           << "  \"contender_coordination_pass_prior_floor\": "
-           << config.contenderPassPriorFloors.coordination << ",\n"
-           << "  \"baseline_wait_pass_prior_floor\": "
-           << config.baselinePassPriorFloors.wait << ",\n"
-           << "  \"baseline_coordination_pass_prior_floor\": "
-           << config.baselinePassPriorFloors.coordination << ",\n"
            << "  \"contender_wins\": " << result.contenderWins << ",\n"
            << "  \"baseline_wins\": " << result.baselineWins << ",\n"
            << "  \"draws\": " << result.draws << ",\n"
@@ -198,7 +193,14 @@ void print_final_summary(
               << "Contender: " << contenderName << '\n'
               << "Baseline:  " << baselineName << '\n'
               << "Games: " << result.games() << " (" << result.games() / 2
-              << " paired openings), nodes/move: " << config.nodes << '\n'
+              << " paired openings), ";
+    if (config.moveTimeMs > 0) {
+        std::cout << "movetime: " << config.moveTimeMs << " ms";
+    } else {
+        std::cout << "nodes/move: " << config.nodes;
+    }
+    std::cout << ", batches: " << config.contenderBatchSize
+              << " vs " << config.baselineBatchSize << '\n'
               << "Result: " << result.contenderWins << '-' << result.baselineWins
               << '-' << result.draws << " (W-L-D)\n"
               << "Score: " << 100.0 * result.contenderScore() << "%\n";
@@ -321,21 +323,18 @@ int run_tournament(
     if (config.games == 0 || config.games % 2 != 0) {
         throw std::invalid_argument("Tournament games must be a positive even number");
     }
-    if (config.nodes == 0 || config.maxMacroPlies == 0) {
-        throw std::invalid_argument("Tournament nodes and max-macro-plies must be positive");
+    if ((config.nodes == 0) == (config.moveTimeMs <= 0) ||
+        config.maxMacroPlies == 0) {
+        throw std::invalid_argument(
+            "Tournament requires exactly one positive nodes or movetime limit");
+    }
+    if (config.contenderBatchSize <= 0 || config.baselineBatchSize <= 0) {
+        throw std::invalid_argument("Tournament batch sizes must be positive");
     }
     if (config.dirichletAlpha < 0.0f
         || config.dirichletEpsilon < 0.0f
         || config.dirichletEpsilon > 1.0f) {
         throw std::invalid_argument("Invalid tournament Dirichlet configuration");
-    }
-    const auto validPassPriorFloors = [](const PassPriorFloors& floors) {
-        return floors.wait >= 0.0f && floors.wait <= 1.0f
-            && floors.coordination >= 0.0f && floors.coordination <= 1.0f;
-    };
-    if (!validPassPriorFloors(config.contenderPassPriorFloors)
-        || !validPassPriorFloors(config.baselinePassPriorFloors)) {
-        throw std::invalid_argument("Invalid tournament pass-prior configuration");
     }
     if (!std::isfinite(config.contenderPwCoefficient)
         || !std::isfinite(config.baselinePwCoefficient)
@@ -384,13 +383,10 @@ int run_tournament(
             agent.reset_search_state();
             SearchOptions options;
             options.targetNodes = config.nodes;
+            options.moveTimeMs = config.moveTimeMs;
             options.search = config.searchConfigFor(contenderActing);
             options.search.rootDirichletAlpha = config.dirichletAlpha;
             options.search.rootDirichletEpsilon = config.dirichletEpsilon;
-            const PassPriorFloors& passPriorFloors =
-                config.passPriorFloorsFor(contenderActing);
-            options.search.waitPassPriorFloor = passPriorFloors.wait;
-            options.search.coordinationPassPriorFloor = passPriorFloors.coordination;
             options.search.rootNoiseSeed = tournament_seed(
                 config.seed,
                 pairIndex * config.maxMacroPlies + macroPly);

@@ -23,7 +23,7 @@ namespace SearchParams {
 
 /// Number of leaves to collect before batched neural network inference
 /// CrazyAra default: 8
-constexpr int BATCH_SIZE = 16;
+constexpr int BATCH_SIZE = 8;
 
 /// Number of search threads to run in parallel per inference engine
 /// CrazyAra default: 2
@@ -104,16 +104,6 @@ constexpr float CPUCT_BASE = 19652.0f;
 
 /// Initial Q-value for an unvisited edge when network values use [-1, +1].
 constexpr float Q_INIT = -1.0f;
-
-// =============================================================================
-// Pass Prior Calibration
-// =============================================================================
-
-/// Minimum pass probability when the team can legally wait for its partner.
-constexpr float WAIT_PASS_PRIOR_FLOOR = 0.0f;
-
-/// Minimum pass probability per board when both teammates can move.
-constexpr float COORDINATION_PASS_PRIOR_FLOOR = 0.0f;
 
 // =============================================================================
 // Draw Contempt Parameters
@@ -283,8 +273,6 @@ struct RuntimeConfig {
     float pwExponent = PW_EXPONENT;
     float qValueWeight = Q_VALUE_WEIGHT;
     float qVetoDelta = Q_VETO_DELTA;
-    float waitPassPriorFloor = WAIT_PASS_PRIOR_FLOOR;
-    float coordinationPassPriorFloor = COORDINATION_PASS_PRIOR_FLOOR;
     float rootDirichletAlpha = 0.0f;
     float rootDirichletEpsilon = 0.0f;
     uint64_t rootNoiseSeed = 0;

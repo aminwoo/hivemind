@@ -1019,12 +1019,33 @@ def export_to_onnx(model, batch_size: int, dummy_input: torch.Tensor, dir: Path,
     # https://github.com/daquexian/onnx-simplifier
     import onnx
     from onnxsim import simplify
+    from onnxruntime.transformers.float16 import convert_float_to_float16
 
     model = onnx.load(model_filepath)
     model_simp, check = simplify(model)
-    onnx.save(model_simp, model_filepath)
     if not check:
         raise Exception("Simplified ONNX model could not be validated")
+    model_fp16 = convert_float_to_float16(model_simp, keep_io_types=True)
+    available_values = {
+        value.name for value in [*model_fp16.graph.input, *model_fp16.graph.initializer]
+    }
+    pending_nodes = list(model_fp16.graph.node)
+    sorted_nodes = []
+    while pending_nodes:
+        ready_nodes = [
+            node for node in pending_nodes
+            if all(not name or name in available_values for name in node.input)
+        ]
+        if not ready_nodes:
+            raise RuntimeError("FP16 ONNX conversion produced an unsortable graph")
+        for node in ready_nodes:
+            sorted_nodes.append(node)
+            available_values.update(name for name in node.output if name)
+            pending_nodes.remove(node)
+    del model_fp16.graph.node[:]
+    model_fp16.graph.node.extend(sorted_nodes)
+    onnx.checker.check_model(model_fp16)
+    onnx.save(model_fp16, model_filepath)
 
     if has_auxiliary_output:
         # Remove unneeded outputs

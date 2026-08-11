@@ -43,7 +43,7 @@ bool UCI::initializeEngines(
     }
     // For each device ID, create a new Engine, load the network, and store it.
     for (int deviceId : deviceIds) {
-        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v1");
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v3");
         
         // Create a new engine instance on the given GPU.
         auto enginePtr = std::make_unique<Engine>(deviceId);
@@ -233,14 +233,6 @@ void UCI::setoption(std::istringstream& is) {
             multiPV = mpv;
             std::cout << "info string MultiPV set to " << multiPV << std::endl;
         }
-    } else if (name == "WaitPassPriorPermille") {
-        int permille = std::clamp(std::stoi(value), 0, 1000);
-        searchConfig.waitPassPriorFloor = static_cast<float>(permille) / 1000.0f;
-        std::cout << "info string WaitPassPriorPermille set to " << permille << std::endl;
-    } else if (name == "CoordinationPassPriorPermille") {
-        int permille = std::clamp(std::stoi(value), 0, 1000);
-        searchConfig.coordinationPassPriorFloor = static_cast<float>(permille) / 1000.0f;
-        std::cout << "info string CoordinationPassPriorPermille set to " << permille << std::endl;
     } else if (name == "DrawContemptPermille") {
         int permille = std::clamp(std::stoi(value), 0, 1000);
         searchConfig.drawContempt = static_cast<float>(permille) / 1000.0f;
@@ -282,8 +274,6 @@ void UCI::send_uci_response() {
     cout << "id author aminwoo\n" << endl;
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
-    cout << "option name WaitPassPriorPermille type spin default 100 min 0 max 1000" << endl;
-    cout << "option name CoordinationPassPriorPermille type spin default 50 min 0 max 1000" << endl;
     cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
     cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
@@ -299,6 +289,7 @@ void UCI::send_uci_response() {
 }
 
 void UCI::policy() {
+    stop();
     if (engines.empty()) {
         cerr << "Error: No engines have been initialized!" << endl;
         return;
@@ -339,18 +330,13 @@ void UCI::policy() {
         cout << "Predicted plies to end: " << movesLeft[0] * 100.0f << endl;
     cout << endl;
 
-    const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
-    const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
-    const float passPriorFloor = get_pass_prior_floor(
-        teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, searchConfig);
-
     // Board A policy
     cout << "Board A (" << board.fen(BOARD_A) << "):" << endl;
     if (board.side_to_move(BOARD_A) == teamSide) {
         vector<Stockfish::Move> actionsA = board.legal_moves(BOARD_A);
         actionsA.push_back(Stockfish::MOVE_NONE);  // Add sit option
         vector<float> priorsA = get_normalized_probability(
-            piA, actionsA, BOARD_A, board, passPriorFloor);
+            piA, actionsA, BOARD_A, board);
         
         // Sort by probability (descending)
         vector<size_t> indices = argsort(priorsA);
@@ -370,7 +356,7 @@ void UCI::policy() {
         vector<Stockfish::Move> actionsB = board.legal_moves(BOARD_B);
         actionsB.push_back(Stockfish::MOVE_NONE);  // Add sit option
         vector<float> priorsB = get_normalized_probability(
-            piB, actionsB, BOARD_B, board, passPriorFloor);
+            piB, actionsB, BOARD_B, board);
         
         // Sort by probability (descending)
         vector<size_t> indices = argsort(priorsB);
