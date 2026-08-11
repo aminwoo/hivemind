@@ -69,6 +69,26 @@ TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
     }
 }
 
+TEST_F(EngineTest, HalfInputRepresentationMatchesFloatConversion) {
+    Board board;
+    for (const std::string& uci : {"g1f3", "g8f6", "f3g1"}) {
+        Stockfish::Move move = find_move(board, BOARD_A, uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+        board.push_move(BOARD_A, move);
+    }
+
+    std::vector<float> floatPlanes(NB_INPUT_VALUES());
+    std::vector<__half> halfPlanes(NB_INPUT_VALUES());
+    board_to_planes(board, floatPlanes.data(), Stockfish::BLACK, true);
+    board_to_planes(board, halfPlanes.data(), Stockfish::BLACK, true);
+
+    for (size_t index = 0; index < floatPlanes.size(); ++index) {
+        EXPECT_FLOAT_EQ(
+            __half2float(halfPlanes[index]),
+            __half2float(__float2half_rn(floatPlanes[index]))) << index;
+    }
+}
+
 TEST_F(EngineTest, NewInputRepresentationEncodesOrientedMoveAndHalfmoveClock) {
     Board board;
     Stockfish::Move move = find_move(board, BOARD_A, "g1f3");
@@ -366,7 +386,7 @@ TEST_F(EngineTest, SelectionStopsAtSolvedExpandedNode) {
     SearchThread searchThread;
     searchThread.set_root_node(&root);
 
-    EXPECT_EQ(searchThread.select_and_expand(board, true), &root);
+    EXPECT_EQ(searchThread.select_and_expand(board, true).leaf, &root);
     EXPECT_EQ(root.get_child_visits().front(), 0);
 }
 
@@ -519,44 +539,40 @@ TEST(PolicyTest, NormalizesExtremeAndNonFiniteLogits) {
     EXPECT_FLOAT_EQ(fallback[1], 0.5f);
 }
 
-TEST(PolicyTest, PassFloorPreservesNonPassRatios) {
-    std::vector<float> probabilities = {0.01f, 0.09f, 0.90f};
-
-    apply_probability_floor(probabilities, 0, 0.10f);
-
-    EXPECT_FLOAT_EQ(probabilities[0], 0.10f);
-    EXPECT_NEAR(probabilities[1] / probabilities[2], 0.1f, 1e-6f);
-    EXPECT_NEAR(std::accumulate(probabilities.begin(), probabilities.end(), 0.0f),
-                1.0f, 1e-6f);
-}
-
-TEST(PolicyTest, SelectsPassFloorByBughouseContext) {
-    SearchParams::RuntimeConfig config;
-    EXPECT_FLOAT_EQ(get_pass_prior_floor(true, true, false, config), 0.0f);
-    EXPECT_FLOAT_EQ(get_pass_prior_floor(false, true, true, config), 0.0f);
-
-    config.waitPassPriorFloor = 0.12f;
-    config.coordinationPassPriorFloor = 0.04f;
-
-    EXPECT_FLOAT_EQ(get_pass_prior_floor(true, true, false, config), 0.12f);
-    EXPECT_FLOAT_EQ(get_pass_prior_floor(false, true, true, config), 0.04f);
-    EXPECT_FLOAT_EQ(get_pass_prior_floor(false, true, false, config), 0.0f);
-}
-
-TEST_F(EngineTest, AppliesPassFloorToNetworkPolicy) {
+TEST_F(EngineTest, PassProbabilityUsesNetworkLogitWithoutFloor) {
     Board board;
     auto actions = board.legal_moves(BOARD_A);
     actions.push_back(Stockfish::MOVE_NONE);
     std::vector<float> policyOutput(NB_POLICY_VALUES(), 0.0f);
     policyOutput[POLICY_INDEX.at("pass")] = -20.0f;
 
-    auto probabilities = get_normalized_probability(
-        policyOutput.data(), actions, BOARD_A, board, 0.10f);
+    const auto probabilities = get_normalized_probability(
+        policyOutput.data(), actions, BOARD_A, board);
 
     ASSERT_EQ(probabilities.size(), actions.size());
-    EXPECT_FLOAT_EQ(probabilities.back(), 0.10f);
-    EXPECT_NEAR(std::accumulate(probabilities.begin(), probabilities.end(), 0.0f),
-                1.0f, 1e-6f);
+    EXPECT_LT(probabilities.back(), 1e-6f);
+}
+
+TEST_F(EngineTest, HalfPolicyNormalizationMatchesFloatPolicy) {
+    Board board;
+    auto actions = board.legal_moves(BOARD_A);
+    actions.push_back(Stockfish::MOVE_NONE);
+    std::vector<float> floatPolicy(NB_POLICY_VALUES());
+    std::vector<__half> halfPolicy(NB_POLICY_VALUES());
+    for (size_t index = 0; index < floatPolicy.size(); ++index) {
+        floatPolicy[index] = static_cast<float>(static_cast<int>(index % 17) - 8) * 0.25f;
+        halfPolicy[index] = __float2half_rn(floatPolicy[index]);
+    }
+
+    const auto floatProbabilities = get_normalized_probability(
+        floatPolicy.data(), actions, BOARD_A, board);
+    const auto halfProbabilities = get_normalized_probability(
+        halfPolicy.data(), actions, BOARD_A, board);
+
+    ASSERT_EQ(halfProbabilities.size(), floatProbabilities.size());
+    for (size_t index = 0; index < floatProbabilities.size(); ++index) {
+        EXPECT_FLOAT_EQ(halfProbabilities[index], floatProbabilities[index]);
+    }
 }
 
 TEST_F(EngineTest, LowPriorCheckingMoveDoesNotBypassPolicyOrdering) {
@@ -718,15 +734,72 @@ TEST(NodeTest, AtomicVirtualLossDivertsNextSelection) {
     JointActionCandidate action;
     ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
 
-    auto [firstChild, firstIdx] = node.select_child_and_apply_virtual_loss(config);
-    auto [secondChild, secondIdx] = node.select_child_and_apply_virtual_loss(config);
+    Node::ChildSelection firstSelection =
+        node.select_child_and_apply_virtual_loss(config);
+    Node::ChildSelection secondSelection =
+        node.select_child_and_apply_virtual_loss(config);
+    auto& [firstChild, firstIdx, firstReserved, firstPending] = firstSelection;
+    auto& [secondChild, secondIdx, secondReserved, secondPending] = secondSelection;
     ASSERT_NE(firstChild, nullptr);
     ASSERT_NE(secondChild, nullptr);
     EXPECT_EQ(firstIdx, 0);
     EXPECT_EQ(secondIdx, 1);
+    EXPECT_TRUE(firstReserved);
+    EXPECT_TRUE(secondReserved);
+    EXPECT_EQ(firstPending, nullptr);
+    EXPECT_EQ(secondPending, nullptr);
 
     node.remove_virtual_loss(firstIdx);
     node.remove_virtual_loss(secondIdx);
+    firstChild->release_evaluation_reservation();
+    secondChild->release_evaluation_reservation();
+}
+
+TEST(NodeTest, PendingEvaluationDivertsSelectionToAvailableSibling) {
+    Node node(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    auto children = node.get_children();
+    ASSERT_TRUE(children[0]->try_reserve_evaluation());
+
+    auto [selectedChild, selectedIdx, evaluationReserved, pendingEvaluation] =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(selectedChild, children[1]);
+    EXPECT_EQ(selectedIdx, 1);
+    EXPECT_TRUE(evaluationReserved);
+    EXPECT_EQ(pendingEvaluation, nullptr);
+
+    node.remove_virtual_loss(selectedIdx);
+    selectedChild->release_evaluation_reservation();
+    children[0]->release_evaluation_reservation();
+}
+
+TEST(NodeTest, SelectionWaitsWhenEveryChildEvaluationIsPending) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1)}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        false, true, false, config));
+    auto children = node.get_children();
+    ASSERT_TRUE(children[0]->try_reserve_evaluation());
+
+    auto [selectedChild, selectedIdx, evaluationReserved, pendingEvaluation] =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(selectedChild, nullptr);
+    EXPECT_EQ(selectedIdx, -1);
+    EXPECT_FALSE(evaluationReserved);
+    EXPECT_EQ(pendingEvaluation, children[0].get());
+
+    children[0]->release_evaluation_reservation();
 }
 
 TEST(NodeTest, ConcurrentExpansionReturnsMatchingActionIndex) {
@@ -892,10 +965,14 @@ TEST(MctsSolverTest, AvoidsProvenLosingChildWhileDefenseRemains) {
     ASSERT_EQ(parent.get_node_type(), NodeType::UNSOLVED);
 
     EXPECT_EQ(parent.get_best_move_idx_with_q_weight(), defenseIdx);
-    auto [selectedChild, selectedIdx] = parent.select_child_and_apply_virtual_loss(config);
+    auto [selectedChild, selectedIdx, evaluationReserved, pendingEvaluation] =
+        parent.select_child_and_apply_virtual_loss(config);
     ASSERT_NE(selectedChild, nullptr);
     EXPECT_EQ(selectedIdx, defenseIdx);
+    EXPECT_TRUE(evaluationReserved);
+    EXPECT_EQ(pendingEvaluation, nullptr);
     parent.remove_virtual_loss(selectedIdx);
+    selectedChild->release_evaluation_reservation();
 }
 
 TEST(MctsSolverTest, WidensImmediatelyWhenAllExpandedChildrenLose) {

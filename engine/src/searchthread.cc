@@ -143,28 +143,17 @@ SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) 
 
 SearchThread::~SearchThread() {
     if (obs) cudaFreeHost(obs);
-    if (value) cudaFreeHost(value);
-    if (piA) cudaFreeHost(piA);
-    if (piB) cudaFreeHost(piB);
-    if (wdl) cudaFreeHost(wdl);
-    if (movesLeft) cudaFreeHost(movesLeft);
 }
 
 void SearchThread::ensureBufferSize(int batchSize) {
     if (batchSize == currentBatchSize) return;
 
-    // Free old buffers
     if (obs) cudaFreeHost(obs);
-    if (value) cudaFreeHost(value);
-    if (piA) cudaFreeHost(piA);
-    if (piB) cudaFreeHost(piB);
-    if (wdl) cudaFreeHost(wdl);
-    if (movesLeft) cudaFreeHost(movesLeft);
-    obs = value = piA = piB = wdl = movesLeft = nullptr;
+    obs = nullptr;
 
-    auto allocatePinned = [](float** buffer, size_t count) {
+    auto allocatePinned = [](__half** buffer, size_t count) {
         cudaError_t result = cudaMallocHost(
-            reinterpret_cast<void**>(buffer), count * sizeof(float));
+            reinterpret_cast<void**>(buffer), count * sizeof(__half));
         if (result != cudaSuccess) {
             throw std::runtime_error(
                 std::string("cudaMallocHost failed: ") + cudaGetErrorString(result));
@@ -172,11 +161,6 @@ void SearchThread::ensureBufferSize(int batchSize) {
     };
 
     allocatePinned(&obs, batchSize * NB_INPUT_VALUES());
-    allocatePinned(&value, batchSize);
-    allocatePinned(&piA, batchSize * NB_POLICY_VALUES());
-    allocatePinned(&piB, batchSize * NB_POLICY_VALUES());
-    allocatePinned(&wdl, batchSize * 3);
-    allocatePinned(&movesLeft, batchSize);
     
     batchContexts.reserve(batchSize);
     currentBatchSize = batchSize;
@@ -188,6 +172,10 @@ void SearchThread::set_search_info(SearchInfo* info) {
 
 void SearchThread::set_root_node(Node* node) {
     root = node;
+}
+
+void SearchThread::set_inference_worker_index(size_t workerIndex) {
+    inferenceWorkerIndex = workerIndex;
 }
 
 void SearchThread::set_transposition_table(TranspositionTable* table) {
@@ -277,7 +265,24 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         trajectoryBuffer.clear();
         
         // Select and expand to get a leaf node (MCGS: with transposition lookup)
-        Node* leaf = select_and_expand(board, teamHasTimeAdvantage);
+        LeafSelection selection = select_and_expand(board, teamHasTimeAdvantage);
+        if (!selection.leaf) {
+            reservationCollisions++;
+            cancel_virtual_losses(trajectoryBuffer);
+            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
+                const JointActionCandidate& action = it->action;
+                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
+                    board.unmake_moves(action.moveA, action.moveB);
+                }
+            }
+            if (batchContexts.empty()
+                && selectionAttempts == maxSelectionAttempts
+                && selection.pendingEvaluation) {
+                selection.pendingEvaluation->wait_for_evaluation_completion();
+            }
+            continue;
+        }
+        Node* leaf = selection.leaf;
         
         // A repeated leaf is not an independent simulation. Revert its
         // temporary selection state and leave the first trajectory responsible
@@ -287,6 +292,9 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             [leaf](const LeafContext& previous) { return previous.leaf == leaf; });
         if (isCollision) {
             sameBatchCollisions++;
+            if (selection.hasEvaluationReservation) {
+                leaf->release_evaluation_reservation();
+            }
             cancel_virtual_losses(trajectoryBuffer);
             for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
                 const JointActionCandidate& action = it->action;
@@ -300,6 +308,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         // Store trajectory
         ctx.trajectory = trajectoryBuffer;
         ctx.leaf = leaf;
+        ctx.hasEvaluationReservation = selection.hasEvaluationReservation;
         ctx.teamToPlay = leaf->get_team_to_play();
         ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
         
@@ -374,7 +383,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         
         // This leaf needs neural network inference
         ctx.isTerminal = false;
-        if (!ctx.leaf->try_reserve_evaluation()) {
+        if (!ctx.hasEvaluationReservation) {
             reservationCollisions++;
             cancel_virtual_losses(trajectoryBuffer);
             for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
@@ -385,7 +394,6 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             }
             continue;
         }
-        ctx.hasEvaluationReservation = true;
         bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == root->get_team_to_play())
             ? teamHasTimeAdvantage
             : !teamHasTimeAdvantage;
@@ -408,17 +416,19 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     }
     
     // Phase 2: Run batched neural network inference (only if we have non-terminal leaves)
+    Engine::HalfInferenceOutputs inferenceOutputs;
     if (validInferenceCount > 0) {
         // TensorRT is built for a fixed batch. Duplicate the last valid row so
         // underfilled batches never upload stale or uninitialized host memory.
-        const float* paddingSource = obs
+        const __half* paddingSource = obs
             + static_cast<size_t>(validInferenceCount - 1) * NB_INPUT_VALUES();
         for (int batchIndex = validInferenceCount; batchIndex < batchSize; ++batchIndex) {
             std::copy_n(
                 paddingSource, NB_INPUT_VALUES(),
                 obs + static_cast<size_t>(batchIndex) * NB_INPUT_VALUES());
         }
-        if (!engine->runInference(obs, value, piA, piB, wdl, movesLeft)) {
+        if (!engine->runInferenceHalf(
+            obs, inferenceOutputs, inferenceWorkerIndex)) {
             cerr << "Batch inference failed" << endl;
             int completedTerminals = 0;
             for (auto& ctx : batchContexts) {
@@ -443,6 +453,9 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     int inferenceIdx = 0;
     for (auto& ctx : batchContexts) {
         if (ctx.isTerminal) {
+            if (ctx.hasEvaluationReservation) {
+                ctx.leaf->release_evaluation_reservation();
+            }
             backup(ctx.trajectory, board, ctx.terminalValue);
         } else {
             if (SearchParams::ENABLE_MCTS_SOLVER
@@ -461,9 +474,11 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             }
 
             // Non-terminal node - process NN output and expand
-            float* batchValue = value + inferenceIdx;
-            float* batchPiA = piA + inferenceIdx * NB_POLICY_VALUES();
-            float* batchPiB = piB + inferenceIdx * NB_POLICY_VALUES();
+            const __half* batchValue = inferenceOutputs.value + inferenceIdx;
+            const __half* batchPiA = inferenceOutputs.policyA
+                + inferenceIdx * NB_POLICY_VALUES();
+            const __half* batchPiB = inferenceOutputs.policyB
+                + inferenceIdx * NB_POLICY_VALUES();
 
             Board& leafBoard = board;
             
@@ -479,8 +494,6 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             // Track which boards are on turn for the team
             bool boardAOnTurn = (leafBoard.side_to_move(BOARD_A) == ctx.teamToPlay);
             bool boardBOnTurn = (leafBoard.side_to_move(BOARD_B) == ~ctx.teamToPlay);
-            const float passPriorFloor = get_pass_prior_floor(
-                leafTeamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, runtimeConfig);
             
             if (boardAOnTurn) {
                 actionsA = leafBoard.legal_moves(BOARD_A);
@@ -510,7 +523,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 // On turn with legal moves - can also pass (MOVE_NONE)
                 actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA = get_normalized_probability(
-                    batchPiA, actionsA, BOARD_A, leafBoard, passPriorFloor);
+                    batchPiA, actionsA, BOARD_A, leafBoard);
             }
             
             if (actionsB.empty()) {
@@ -521,7 +534,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 // On turn with legal moves - can also pass (MOVE_NONE)
                 actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB = get_normalized_probability(
-                    batchPiB, actionsB, BOARD_B, leafBoard, passPriorFloor);
+                    batchPiB, actionsB, BOARD_B, leafBoard);
             }
 
             // Expand leaf node and register in transposition table (MCGS)
@@ -533,8 +546,9 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             ctx.leaf->release_evaluation_reservation();
                 
             // Backup value
-            float neuralValue = std::isfinite(*batchValue)
-                ? std::clamp(*batchValue, -1.0f, 1.0f)
+            const float batchValueFloat = __half2float(*batchValue);
+            float neuralValue = std::isfinite(batchValueFloat)
+                ? std::clamp(batchValueFloat, -1.0f, 1.0f)
                 : 0.0f;
             backup(ctx.trajectory, leafBoard, neuralValue);
 
@@ -564,10 +578,11 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
  * @param board The current board state (will be modified during selection)
  * @param teamHasTimeAdvantage Whether the searching team has time advantage
  */
-Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
+LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
     Node* currentNode = root;
     shared_ptr<Node> nextNode;
     int childIdx;
+    bool hasEvaluationReservation = false;
 
     // Root node has no incoming action, -1 means no child selected yet
     trajectoryBuffer.emplace_back(currentNode, JointActionCandidate(), -1);
@@ -580,6 +595,17 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
 
         // If not expanded, this is a leaf node
         if (!currentNode->is_expanded()) {
+            if (!hasEvaluationReservation) {
+                if (!currentNode->try_reserve_evaluation()) {
+                    return {nullptr, false, currentNode};
+                }
+                if (currentNode->is_expanded()
+                    || currentNode->get_node_type() != NodeType::UNSOLVED) {
+                    currentNode->release_evaluation_reservation();
+                    continue;
+                }
+                hasEvaluationReservation = true;
+            }
             break;
         }
 
@@ -587,8 +613,10 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
         if (currentNode->should_expand_new_child(runtimeConfig)) {
             // Expand first to atomically get the action
             JointActionCandidate expandedAction;
+            bool expandedChildReserved = false;
             nextNode = currentNode->expand_next_joint_child(
-                nullptr, 0, expandedAction, runtimeConfig, &childIdx, true);
+                nullptr, 0, expandedAction, runtimeConfig, &childIdx, true,
+                &expandedChildReserved);
             
             if (nextNode) {
                 // Make moves with the actual expanded action
@@ -611,9 +639,26 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
                             return entry.node == canonicalNode.get();
                         });
                     if (canonicalNode != nextNode && !isAncestor) {
+                        if (expandedChildReserved) {
+                            nextNode->release_evaluation_reservation();
+                            expandedChildReserved = false;
+                        }
                         currentNode->replace_child(childIdx, canonicalNode);
                         nextNode = canonicalNode;
                         continueFromTransposition = canonicalNode->is_expanded();
+                        if (!continueFromTransposition
+                            && canonicalNode->get_node_type() == NodeType::UNSOLVED) {
+                            if (!canonicalNode->try_reserve_evaluation()) {
+                                return {nullptr, false, canonicalNode.get()};
+                            }
+                            if (canonicalNode->is_expanded()
+                                || canonicalNode->get_node_type() != NodeType::UNSOLVED) {
+                                canonicalNode->release_evaluation_reservation();
+                                continueFromTransposition = canonicalNode->is_expanded();
+                            } else {
+                                expandedChildReserved = true;
+                            }
+                        }
                     }
                 }
                 
@@ -624,22 +669,24 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
 
                 if (continueFromTransposition) {
                     currentNode = nextNode.get();
+                    hasEvaluationReservation = false;
                     continue;
                 }
                 
                 // Return the newly expanded leaf
-                return nextNode.get();
+                return {nextNode.get(), expandedChildReserved};
             }
         }
 
         // Standard PUCT selection among expanded children
-        auto [selectedChild, selectedIdx] =
+        Node::ChildSelection selection =
             currentNode->select_child_and_apply_virtual_loss(runtimeConfig);
-        if (!selectedChild || selectedIdx < 0) {
-            break;  // No children available
+        if (!selection.child || selection.childIdx < 0) {
+            return {nullptr, false, selection.pendingEvaluation};
         }
-        nextNode = selectedChild;
-        childIdx = selectedIdx;
+        nextNode = selection.child;
+        childIdx = selection.childIdx;
+        hasEvaluationReservation = selection.hasEvaluationReservation;
         
         // Update the parent trajectory entry with the selected child index
         trajectoryBuffer.back().selectedChildIdx = childIdx;
@@ -651,7 +698,7 @@ Node* SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
         currentNode = nextNode.get();
     }
 
-    return currentNode;
+    return {currentNode, hasEvaluationReservation};
 }
 
 /**
