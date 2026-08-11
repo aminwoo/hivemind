@@ -55,7 +55,7 @@ private:
     std::atomic<int> m_depth{0};
     std::atomic<int> m_visits{0};  // Atomic for lock-free read/write
     std::atomic<bool> evaluationPending{false};
-    bool m_is_expanded = false;
+    std::atomic<bool> m_is_expanded{false};
 
     Stockfish::Color teamToPlay;
     
@@ -68,6 +68,13 @@ private:
     int endInPly = 0;                        // Distance to terminal (for mate distance)
 
 public:
+    struct ChildSelection {
+        std::shared_ptr<Node> child;
+        int childIdx = -1;
+        bool hasEvaluationReservation = false;
+        Node* pendingEvaluation = nullptr;
+    };
+
     Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) {}
     Node(Stockfish::Color teamToPlay, uint64_t hash) 
         : teamToPlay(teamToPlay), positionHash(hash) {}
@@ -194,8 +201,12 @@ public:
                                                    JointActionCandidate& outAction,
                                                    const SearchParams::RuntimeConfig&,
                                                    int* outChildIdx = nullptr,
-                                                   bool reserveForSelection = false) {
+                                                   bool reserveForSelection = false,
+                                                   bool* outEvaluationReserved = nullptr) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (outEvaluationReserved) {
+            *outEvaluationReserved = false;
+        }
         if (!candidateGenerator.hasNext()) {
             return nullptr;
         }
@@ -218,6 +229,16 @@ public:
             child = std::make_shared<Node>(~teamToPlay, positionHash);
             child->set_depth(m_depth + 1);
             childQ = SearchParams::Q_INIT;
+        }
+
+        if (reserveForSelection) {
+            const bool reserved = child->try_reserve_evaluation();
+            if (!reserved) {
+                return nullptr;
+            }
+            if (outEvaluationReserved) {
+                *outEvaluationReserved = true;
+            }
         }
         
         childValueSum.push_back(childQ);
@@ -256,7 +277,7 @@ public:
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
-        if (m_is_expanded) {
+        if (m_is_expanded.load(std::memory_order_relaxed)) {
             return false;
         }
         
@@ -310,7 +331,7 @@ public:
             qValues.push_back(SearchParams::Q_INIT);
             
             expandedCount++;
-            m_is_expanded = true;
+            m_is_expanded.store(true, std::memory_order_release);
             return true;
         }
         
@@ -338,7 +359,7 @@ public:
      * Thread-safe: Returns the child index atomically with the selection.
      * @return pair of (child pointer, child index), or (nullptr, -1) if no children
      */
-    std::pair<std::shared_ptr<Node>, int> select_child_and_apply_virtual_loss(
+    ChildSelection select_child_and_apply_virtual_loss(
         const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{});
 
     std::vector<std::shared_ptr<Node>> get_children() const {
@@ -353,9 +374,8 @@ public:
         }
     }
 
-    bool is_expanded() {
-        std::shared_lock<std::shared_mutex> guard(nodeMutex);
-        return m_is_expanded;
+    bool is_expanded() const {
+        return m_is_expanded.load(std::memory_order_acquire);
     }
 
     bool try_reserve_evaluation() {
@@ -364,8 +384,17 @@ public:
             expected, true, std::memory_order_acq_rel);
     }
 
+    bool is_evaluation_pending() const {
+        return evaluationPending.load(std::memory_order_acquire);
+    }
+
     void release_evaluation_reservation() {
         evaluationPending.store(false, std::memory_order_release);
+        evaluationPending.notify_all();
+    }
+
+    void wait_for_evaluation_completion() const {
+        evaluationPending.wait(true, std::memory_order_acquire);
     }
 
     void set_value(float value) {
@@ -549,7 +578,8 @@ public:
         // CRITICAL: Must also verify the node is actually expanded (generator initialized).
         // An unexpanded node has an empty generator which would incorrectly pass hasNext() check.
         if (unsolvedChildCount.load(std::memory_order_relaxed) == 0 && 
-            m_is_expanded && !candidateGenerator.hasNext()) {
+            m_is_expanded.load(std::memory_order_relaxed)
+            && !candidateGenerator.hasNext()) {
             bool allWins = true;
             bool hasDrawn = false;
             int longestPly = 0;

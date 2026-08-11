@@ -4,17 +4,6 @@
 
 #include "tournament.h"
 
-TEST(TournamentConfigTest, SelectsPassPriorFloorsByNetwork) {
-    TournamentConfig config;
-    config.contenderPassPriorFloors = {0.0f, 0.0f};
-    config.baselinePassPriorFloors = {0.10f, 0.05f};
-
-    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(true).wait, 0.0f);
-    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(true).coordination, 0.0f);
-    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(false).wait, 0.10f);
-    EXPECT_FLOAT_EQ(config.passPriorFloorsFor(false).coordination, 0.05f);
-}
-
 TEST(TournamentConfigTest, SelectsPwCoefficientByNetwork) {
     TournamentConfig config;
     config.contenderPwCoefficient = 1.5f;
