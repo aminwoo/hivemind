@@ -155,20 +155,134 @@ Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
     // Start garbage collection thread for async tree cleanup
     gcThread_.start();
     
-    // Create multiple search threads
-    for (int i = 0; i < numThreads; i++) {
-        searchThreads.push_back(new SearchThread());
-    }
+    ensure_worker_pool(static_cast<size_t>(numThreads));
 }
 
 Agent::~Agent() {
-    // Stop GC thread first
+    running = false;
+    {
+        std::lock_guard lock(workerMutex_);
+        shutdownWorkers_ = true;
+        workerGeneration_++;
+    }
+    workerCv_.notify_all();
+    for (auto& worker : workerPool_) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
     gcThread_.stop();
     
     for (auto* st : searchThreads) {
         delete st;
     }
     searchThreads.clear();
+}
+
+void Agent::ensure_worker_pool(size_t workerCount) {
+    while (searchThreads.size() < workerCount) {
+        searchThreads.push_back(new SearchThread());
+    }
+    while (workerPool_.size() < workerCount) {
+        const size_t workerIndex = workerPool_.size();
+        workerPool_.emplace_back(
+            &Agent::worker_loop, this, workerIndex, workerGeneration_);
+    }
+}
+
+void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
+    while (true) {
+        const Board* board = nullptr;
+        Engine* engine = nullptr;
+        SearchInfo* searchInfo = nullptr;
+        bool teamHasTimeAdvantage = false;
+        size_t targetNodes = 0;
+        int moveTimeMs = 0;
+
+        {
+            std::unique_lock lock(workerMutex_);
+            workerCv_.wait(lock, [this, observedGeneration] {
+                return shutdownWorkers_ || workerGeneration_ != observedGeneration;
+            });
+            if (shutdownWorkers_) {
+                return;
+            }
+            observedGeneration = workerGeneration_;
+            if (workerIndex >= activeWorkerCount_) {
+                continue;
+            }
+            board = workerBoard_;
+            engine = workerEngines_[workerIndex % workerEngines_.size()];
+            searchInfo = workerSearchInfo_;
+            teamHasTimeAdvantage = workerTeamHasTimeAdvantage_;
+            targetNodes = workerTargetNodes_;
+            moveTimeMs = workerMoveTimeMs_;
+        }
+
+        try {
+            Board localBoard(*board);
+            SearchThread* searchThread = searchThreads[workerIndex];
+            if (moveTimeMs > 0) {
+                while (running &&
+                       searchInfo->elapsed() < searchInfo->get_effective_move_time()) {
+                    searchThread->run_iteration(
+                        localBoard, engine, teamHasTimeAdvantage);
+                }
+            } else {
+                while (running &&
+                       static_cast<size_t>(searchInfo->get_nodes_searched()) < targetNodes) {
+                    searchThread->run_iteration(
+                        localBoard, engine, teamHasTimeAdvantage);
+                }
+            }
+        } catch (...) {
+            std::lock_guard lock(workerMutex_);
+            if (!workerException_) {
+                workerException_ = std::current_exception();
+            }
+            running = false;
+        }
+
+        {
+            std::lock_guard lock(workerMutex_);
+            completedWorkerCount_++;
+            if (completedWorkerCount_ == activeWorkerCount_) {
+                workersDoneCv_.notify_one();
+            }
+        }
+    }
+}
+
+void Agent::dispatch_workers(const Board& board,
+                             const vector<Engine*>& engines,
+                             SearchInfo& searchInfo,
+                             bool teamHasTimeAdvantage,
+                             size_t targetNodes,
+                             int moveTimeMs,
+                             size_t workerCount) {
+    {
+        std::lock_guard lock(workerMutex_);
+        workerBoard_ = &board;
+        workerEngines_ = engines;
+        workerSearchInfo_ = &searchInfo;
+        workerTeamHasTimeAdvantage_ = teamHasTimeAdvantage;
+        workerTargetNodes_ = targetNodes;
+        workerMoveTimeMs_ = moveTimeMs;
+        activeWorkerCount_ = workerCount;
+        completedWorkerCount_ = 0;
+        workerException_ = nullptr;
+        running = true;
+        workerGeneration_++;
+    }
+    workerCv_.notify_all();
+}
+
+void Agent::wait_for_workers() {
+    std::unique_lock lock(workerMutex_);
+    workersDoneCv_.wait(lock, [this] {
+        return completedWorkerCount_ == activeWorkerCount_;
+    });
 }
 
 void Agent::reset_search_state() {
@@ -258,9 +372,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
 
     const size_t workerCount = static_cast<size_t>(numThreads) * engines.size();
-    while (searchThreads.size() < workerCount) {
-        searchThreads.push_back(new SearchThread());
-    }
+    ensure_worker_pool(workerCount);
 
     // Set up active search threads with shared root node, search info, and transposition table
     for (size_t i = 0; i < workerCount; ++i) {
@@ -268,73 +380,26 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         st->set_root_node(rootNode.get());
         st->set_search_info(&searchInfo);
         st->set_runtime_config(options.search);
+        st->set_inference_worker_index(i / engines.size());
         st->set_transposition_table(
             options.search.enableMCGS && options.search.enableTranspositions
                 ? transpositionTable.get()
                 : nullptr);
     }
     
-    running = true;
-
-    // Launch worker threads
-    vector<thread> workers;
-    workers.reserve(workerCount);
-    std::exception_ptr workerException;
-    std::mutex workerExceptionMutex;
-    for (size_t i = 0; i < workerCount; ++i) {
-        Engine* engine = engines[i % engines.size()];
-        SearchThread* st = searchThreads[i];
-
-        auto recordWorkerException = [this, &workerException, &workerExceptionMutex]() {
-            {
-                std::lock_guard lock(workerExceptionMutex);
-                if (!workerException) {
-                    workerException = std::current_exception();
-                }
-            }
-            running = false;
-        };
-        
-        // Use time-based stopping if moveTimeMs > 0, otherwise use node-based
-        // Workers check running flag and effective move time for time extension support
-        if (moveTimeMs > 0) {
-            workers.emplace_back([this, &board, engine, st, teamHasTimeAdvantage,
-                                  &searchInfo, recordWorkerException]() {
-                try {
-                    Board localBoard(board);
-                    while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
-                        st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
-                    }
-                } catch (...) {
-                    recordWorkerException();
-                }
-            });
-        } else {
-            workers.emplace_back([this, &board, engine, st, targetNodes, teamHasTimeAdvantage,
-                                  &searchInfo, recordWorkerException]() {
-                try {
-                    Board localBoard(board);
-                    while (running && static_cast<size_t>(searchInfo.get_nodes_searched()) < targetNodes) {
-                        st->run_iteration(localBoard, engine, teamHasTimeAdvantage);
-                    }
-                } catch (...) {
-                    recordWorkerException();
-                }
-            });
-        }
-    }
+    dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
+                     targetNodes, moveTimeMs, workerCount);
     
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension
     constexpr int MIN_INFO_INTERVAL_MS = 100;
     bool nodeSearchStalled = false;
     int stalledCompletedNodes = 0;
+    int lastReportedDepth = 0;
     if (options.verbose && moveTimeMs > 0) {
         searchInfo.set_in_game(true);
         constexpr float C = 180.0f;
         constexpr float k = 1.56f;
-        int lastReportedDepth = 0;
-        double lastInfoElapsedMs = 0.0;
         float lastCheckEval = 0.0f;
         bool evalInitialized = false;
         
@@ -424,11 +489,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         lastCheckEval = bestQ;
                     }
                     
-                    // Report new depths immediately and continue reporting once per second
-                    // when maximum depth stalls, so score convergence remains visible.
-                    if (depth > lastReportedDepth || elapsedMs - lastInfoElapsedMs >= 1000.0) {
+                    // Report each completed depth once.
+                    if (depth > lastReportedDepth) {
                         lastReportedDepth = depth;
-                        lastInfoElapsedMs = elapsedMs;
                         
                         // Use solver-aware selection for the best child to display
                         int solverBestIdx = rootNode->get_best_move_idx_with_q_weight(
@@ -571,13 +634,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Signal workers to stop (in case they're still running)
     running = false;
     
-    // Wait for all threads to complete
-    for (auto& worker : workers) {
-        worker.join();
-    }
+    wait_for_workers();
 
-    if (workerException) {
-        std::rethrow_exception(workerException);
+    if (workerException_) {
+        std::rethrow_exception(workerException_);
     }
     if (nodeSearchStalled) {
         throw std::runtime_error(
@@ -637,8 +697,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         constexpr float C = 180.0f;
         constexpr float k = 1.56f;
         
-        // Multi-PV output: sort children by visits and output top N lines
-        if (rootNode && rootNode->is_expanded()) {
+        // Multi-PV requires one line per variation at the same depth. For a
+        // single PV, suppress a final line if that depth was already reported.
+        const bool shouldReportFinalInfo = options.multiPV > 1 || depth > lastReportedDepth;
+        if (shouldReportFinalInfo && rootNode && rootNode->is_expanded()) {
             auto childVisits = rootNode->get_child_visits();
             auto children = rootNode->get_children();
             size_t numChildren = min(childVisits.size(), children.size());
@@ -683,7 +745,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 }
                 cout << endl;
             }
-        } else {
+        } else if (shouldReportFinalInfo) {
             // Fallback: single PV line with root Q
             string pv = extract_pv(board, 20);
             // Use root's own Q value (which is from root's perspective)

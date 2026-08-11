@@ -12,27 +12,19 @@
 
 class Engine;
 
-struct PassPriorFloors {
-    float wait = 0.0f;
-    float coordination = 0.0f;
-};
-
 struct TournamentConfig {
     size_t games = 20;
     size_t nodes = 400;
+    int moveTimeMs = 0;
+    int contenderBatchSize = SearchParams::BATCH_SIZE;
+    int baselineBatchSize = SearchParams::BATCH_SIZE;
     size_t maxMacroPlies = 400;
     float dirichletAlpha = 0.3f;
     float dirichletEpsilon = 0.10f;
     float contenderPwCoefficient = SearchParams::PW_COEFFICIENT;
     float baselinePwCoefficient = SearchParams::PW_COEFFICIENT;
-    PassPriorFloors contenderPassPriorFloors;
-    PassPriorFloors baselinePassPriorFloors;
     uint64_t seed = 1;
     std::filesystem::path outputDirectory = "tournament_results";
-
-    const PassPriorFloors& passPriorFloorsFor(bool isContender) const {
-        return isContender ? contenderPassPriorFloors : baselinePassPriorFloors;
-    }
 
     float pwCoefficientFor(bool isContender) const {
         return isContender ? contenderPwCoefficient : baselinePwCoefficient;

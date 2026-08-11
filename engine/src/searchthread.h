@@ -71,6 +71,12 @@ struct LeafContext {
     LeafContext& operator=(const LeafContext&) = delete;
 };
 
+struct LeafSelection {
+    Node* leaf = nullptr;
+    bool hasEvaluationReservation = false;
+    Node* pendingEvaluation = nullptr;
+};
+
 class SearchThread {
 private: 
     Node* root; 
@@ -82,18 +88,14 @@ private:
     vector<TrajectoryEntry> trajectoryBuffer;
     
     // Pre-allocated inference buffers for batched inference
-    float* obs = nullptr;
-    float* value = nullptr;
-    float* piA = nullptr;
-    float* piB = nullptr;
-    float* wdl = nullptr;
-    float* movesLeft = nullptr;
+    __half* obs = nullptr;
     
     // Batch collection for minibatch MCTS
     vector<LeafContext> batchContexts;
     
     // Current batch size (initialized on first run_iteration call)
     int currentBatchSize = 0;
+    size_t inferenceWorkerIndex = 0;
     
     // Allocate/reallocate buffers for given batch size
     void ensureBufferSize(int batchSize);
@@ -106,9 +108,10 @@ public:
     void set_root_node(Node* node);
     void set_transposition_table(TranspositionTable* table);
     void set_runtime_config(const SearchParams::RuntimeConfig& config);
+    void set_inference_worker_index(size_t workerIndex);
     
     // MCGS (Monte Carlo Graph Search) with prior-ordered joint action expansion
-    Node* select_and_expand(Board& board, bool teamHasTimeAdvantage);
+    LeafSelection select_and_expand(Board& board, bool teamHasTimeAdvantage);
     void expand_leaf_node(Node* leaf, 
                           const vector<Stockfish::Move>& actionsA,
                           const vector<Stockfish::Move>& actionsB,

@@ -35,16 +35,13 @@ void printUsage(const char* progName) {
     cout << "    --mcts-temperature <x> --mcts-temperature-decay <x>" << endl;
     cout << "    --node-random-factor <x>" << endl;
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
-    cout << "    --wait-pass-prior-floor <x> --coordination-pass-prior-floor <x>" << endl;
     cout << "  tournament [options] Run a paired network-vs-network tournament" << endl;
-    cout << "    --contender <onnx> --baseline <onnx> --games <even-n> --nodes <n>" << endl;
+    cout << "    --contender <onnx> --baseline <onnx> --games <even-n>" << endl;
+    cout << "    --nodes <n> or --movetime <ms>" << endl;
+    cout << "    --contender-batch-size <n> --baseline-batch-size <n>" << endl;
     cout << "    --output <dir> --seed <n> --max-macro-plies <n>" << endl;
     cout << "    --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
     cout << "    --contender-pw-coefficient <x> --baseline-pw-coefficient <x>" << endl;
-    cout << "    --contender-wait-pass-prior-floor <x>" << endl;
-    cout << "    --contender-coordination-pass-prior-floor <x>" << endl;
-    cout << "    --baseline-wait-pass-prior-floor <x>" << endl;
-    cout << "    --baseline-coordination-pass-prior-floor <x>" << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -91,7 +88,7 @@ int main(int argc, char* argv[]) {
             cerr << "No ONNX file found in ./networks" << endl;
             return EXIT_FAILURE;
         }
-        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v1");
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v3");
         
         if (!engine.loadNetwork(onnxFile, engineFile)) {
             cerr << "Failed to load engine" << endl;
@@ -135,8 +132,6 @@ int main(int argc, char* argv[]) {
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
-                else if (option == "--wait-pass-prior-floor") config.waitPassPriorFloor = stof(value);
-                else if (option == "--coordination-pass-prior-floor") config.coordinationPassPriorFloor = stof(value);
                 else throw invalid_argument("Unknown selfplay option: " + option);
             }
         } catch (const exception& error) {
@@ -162,7 +157,7 @@ int main(int argc, char* argv[]) {
         for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
             auto engine = make_unique<Engine>(deviceId);
             const string engineFile = getEnginePath(
-                onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v1");
+                onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v3");
             if (!engine->loadNetwork(onnxFile, engineFile)) {
                 cerr << "Failed to load engine on device " << deviceId << endl;
                 continue;
@@ -195,7 +190,16 @@ int main(int argc, char* argv[]) {
                 }
                 const string value = argv[++i];
                 if (option == "--games") config.games = stoull(value);
-                else if (option == "--nodes") config.nodes = stoull(value);
+                else if (option == "--nodes") {
+                    config.nodes = stoull(value);
+                    config.moveTimeMs = 0;
+                }
+                else if (option == "--movetime") {
+                    config.moveTimeMs = stoi(value);
+                    config.nodes = 0;
+                }
+                else if (option == "--contender-batch-size") config.contenderBatchSize = stoi(value);
+                else if (option == "--baseline-batch-size") config.baselineBatchSize = stoi(value);
                 else if (option == "--contender") contenderPath = value;
                 else if (option == "--baseline") baselinePath = value;
                 else if (option == "--output") config.outputDirectory = value;
@@ -205,10 +209,6 @@ int main(int argc, char* argv[]) {
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
                 else if (option == "--contender-pw-coefficient") config.contenderPwCoefficient = stof(value);
                 else if (option == "--baseline-pw-coefficient") config.baselinePwCoefficient = stof(value);
-                else if (option == "--contender-wait-pass-prior-floor") config.contenderPassPriorFloors.wait = stof(value);
-                else if (option == "--contender-coordination-pass-prior-floor") config.contenderPassPriorFloors.coordination = stof(value);
-                else if (option == "--baseline-wait-pass-prior-floor") config.baselinePassPriorFloors.wait = stof(value);
-                else if (option == "--baseline-coordination-pass-prior-floor") config.baselinePassPriorFloors.coordination = stof(value);
                 else throw invalid_argument("Unknown tournament option: " + option);
             }
         } catch (const exception& error) {
@@ -220,12 +220,12 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
 
-        Engine contender(0);
-        Engine baseline(0);
+        Engine contender(0, config.contenderBatchSize);
+        Engine baseline(0, config.baselineBatchSize);
         const string contenderEngine = getEnginePath(
-            contenderPath.string(), "fp16", SearchParams::BATCH_SIZE, 0, "v1");
+            contenderPath.string(), "fp16", config.contenderBatchSize, 0, "v3");
         const string baselineEngine = getEnginePath(
-            baselinePath.string(), "fp16", SearchParams::BATCH_SIZE, 0, "v1");
+            baselinePath.string(), "fp16", config.baselineBatchSize, 0, "v3");
         if (!contender.loadNetwork(contenderPath.string(), contenderEngine)) {
             cerr << "Failed to load contender network" << endl;
             return EXIT_FAILURE;
@@ -237,7 +237,8 @@ int main(int argc, char* argv[]) {
         try {
             return run_tournament(
                 contender, baseline,
-                contenderPath.stem().string(), baselinePath.stem().string(),
+                contenderPath.stem().string() + "-b" + std::to_string(config.contenderBatchSize),
+                baselinePath.stem().string() + "-b" + std::to_string(config.baselineBatchSize),
                 config);
         } catch (const exception& error) {
             cerr << "Tournament failed: " << error.what() << endl;
