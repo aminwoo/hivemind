@@ -74,7 +74,7 @@ constexpr bool ENABLE_MCGS = true;
 
 /// Enable transposition table for graph-based search (only used if ENABLE_MCGS is true)
 /// When true, positions reached through different paths share the same node
-constexpr bool ENABLE_TRANSPOSITIONS = false;
+constexpr bool ENABLE_TRANSPOSITIONS = true;
 
 /// Initial capacity for transposition table (number of positions)
 /// Higher values reduce rehashing overhead but use more memory
@@ -257,7 +257,7 @@ constexpr bool ENABLE_MCTS_SOLVER = true;
 // =============================================================================
 
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
-constexpr float PW_COEFFICIENT = 1.0f;
+constexpr float PW_COEFFICIENT = 3.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.3f;
 
