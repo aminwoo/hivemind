@@ -570,14 +570,22 @@ bool Engine::runInferenceHalf(const __half* obs, HalfInferenceOutputs& outputs,
     return runInferenceHalfImpl(obs, outputs, workerIndex, false);
 }
 
-bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outputs,
-                                  size_t workerIndex, bool copyAuxiliaryOutputs) {
-    outputs = {};
+bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
+    return enqueueInferenceHalfImpl(obs, workerIndex, false);
+}
+
+bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
+                                      bool copyAuxiliaryOutputs) {
     if (!obs || workerIndex >= m_executionStates.size() ||
         !checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice")) {
         return false;
     }
     ExecutionState& state = *m_executionStates[workerIndex];
+    if (state.inferencePending) {
+        std::cerr << "TensorRT worker context " << workerIndex
+                  << " already has an inference pending" << std::endl;
+        return false;
+    }
 
     const size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT
         * BOARD_WIDTH * sizeof(__half);
@@ -616,6 +624,7 @@ bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outpu
     if (!checkCuda(cudaGraphLaunch(state.graphInstance, state.stream), "cudaGraphLaunch")) {
         return false;
     }
+    state.inferencePending = true;
 
     if (!checkCuda(cudaMemcpyAsync(state.hostValueHalf, state.deviceValueBuffer, valSize, cudaMemcpyDeviceToHost, state.stream),
                    "cudaMemcpyAsync(value)") ||
@@ -623,6 +632,8 @@ bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outpu
                    "cudaMemcpyAsync(policy A)") ||
         !checkCuda(cudaMemcpyAsync(state.hostPolicyBHalf, state.devicePolicyBBuffer, polSize, cudaMemcpyDeviceToHost, state.stream),
                    "cudaMemcpyAsync(policy B)")) {
+        cudaStreamSynchronize(state.stream);
+        state.inferencePending = false;
         return false;
     }
     if (copyAuxiliaryOutputs &&
@@ -630,16 +641,44 @@ bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outpu
                     "cudaMemcpyAsync(WDL)") ||
          !checkCuda(cudaMemcpyAsync(state.hostMovesLeftHalf, state.deviceMovesLeftBuffer, movesLeftSize, cudaMemcpyDeviceToHost, state.stream),
                     "cudaMemcpyAsync(moves left)"))) {
+        cudaStreamSynchronize(state.stream);
+        state.inferencePending = false;
+        return false;
+    }
+
+    return true;
+}
+
+bool Engine::synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
+                                      size_t workerIndex) {
+    outputs = {};
+    if (workerIndex >= m_executionStates.size() ||
+        !checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice")) {
+        return false;
+    }
+    ExecutionState& state = *m_executionStates[workerIndex];
+    if (!state.inferencePending) {
+        std::cerr << "TensorRT worker context " << workerIndex
+                  << " has no inference pending" << std::endl;
         return false;
     }
 
     if (!checkCuda(cudaStreamSynchronize(state.stream), "cudaStreamSynchronize")) {
+        state.inferencePending = false;
         return false;
     }
+    state.inferencePending = false;
 
     outputs.value = static_cast<const __half*>(state.hostValueHalf);
     outputs.policyA = static_cast<const __half*>(state.hostPolicyAHalf);
     outputs.policyB = static_cast<const __half*>(state.hostPolicyBHalf);
 
     return true;
+}
+
+bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outputs,
+                                  size_t workerIndex, bool copyAuxiliaryOutputs) {
+    outputs = {};
+    return enqueueInferenceHalfImpl(obs, workerIndex, copyAuxiliaryOutputs)
+        && synchronizeInferenceHalf(outputs, workerIndex);
 }
