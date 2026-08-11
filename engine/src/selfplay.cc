@@ -548,11 +548,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         || config.mctsTemperatureDecay <= 0.0
         || config.mctsTemperatureDecay > 1.0
         || config.nodeRandomFactor < 0.0
-        || config.nodeRandomFactor >= 1.0
-        || config.waitPassPriorFloor < 0.0f
-        || config.waitPassPriorFloor > 1.0f
-        || config.coordinationPassPriorFloor < 0.0f
-        || config.coordinationPassPriorFloor > 1.0f) {
+        || config.nodeRandomFactor >= 1.0) {
         throw std::invalid_argument("Invalid self-play exploration configuration");
     }
     const uint64_t runId = config.seed != 0
@@ -634,8 +630,6 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
             searchOptions.search.rootDirichletAlpha = config.dirichletAlpha;
             searchOptions.search.rootDirichletEpsilon = config.dirichletEpsilon;
-            searchOptions.search.waitPassPriorFloor = config.waitPassPriorFloor;
-            searchOptions.search.coordinationPassPriorFloor = config.coordinationPassPriorFloor;
             searchOptions.search.rootNoiseSeed = mix_seed(runId, gameIndex * config.maxMacroPlies + macroPly);
             agent.run_search(board, engines, team, hasTimeAdvantage, searchOptions);
             const std::vector<RootEdgeStats> edges = agent.root_edge_stats();

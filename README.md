@@ -105,8 +105,7 @@ the most recently modified ONNX model from `./networks`.
 # Run self-play for training data generation
 ./engine/build-ninja/hivemind selfplay \
   --network src/training/weights/rl/model-rl-final-v3.0.onnx \
-  --games 1000 --nodes 400 --output engine/selfplay_games \
-  --wait-pass-prior-floor 0 --coordination-pass-prior-floor 0
+  --games 1000 --nodes 400 --output engine/selfplay_games
 ```
 
 Self-play diversifies each opening with raw-policy initialization. Its length is

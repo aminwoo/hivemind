@@ -4,6 +4,8 @@
 #include <cmath>
 #include <numeric>   
 #include <algorithm>  
+#include <type_traits>
+#include <cuda_fp16.h>
 #include "Fairy-Stockfish/src/types.h"
 #include "board.h"
 #include "constants.h"
@@ -163,41 +165,6 @@ inline std::vector<float> normalize_logits(const std::vector<float>& logits) {
     return probabilities;
 }
 
-inline void apply_probability_floor(std::vector<float>& probabilities,
-                                    size_t targetIdx,
-                                    float probabilityFloor) {
-    if (targetIdx >= probabilities.size()) {
-        return;
-    }
-
-    probabilityFloor = std::clamp(probabilityFloor, 0.0f, 1.0f);
-    const float currentProbability = probabilities[targetIdx];
-    if (currentProbability >= probabilityFloor || currentProbability >= 1.0f) {
-        return;
-    }
-
-    const float scale = (1.0f - probabilityFloor) / (1.0f - currentProbability);
-    for (size_t idx = 0; idx < probabilities.size(); ++idx) {
-        if (idx != targetIdx) {
-            probabilities[idx] *= scale;
-        }
-    }
-    probabilities[targetIdx] = probabilityFloor;
-}
-
-inline float get_pass_prior_floor(bool teamHasTimeAdvantage,
-                                  bool boardAOnTurn,
-                                  bool boardBOnTurn,
-                                  const SearchParams::RuntimeConfig& config) {
-    if (is_double_sit_legal(teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn)) {
-        return config.waitPassPriorFloor;
-    }
-    if (boardAOnTurn && boardBOnTurn) {
-        return config.coordinationPassPriorFloor;
-    }
-    return 0.0f;
-}
-
 inline bool is_policy_move_representable(Board& board,
                                          int boardNum,
                                          Stockfish::Move move) {
@@ -208,18 +175,23 @@ inline bool is_policy_move_representable(Board& board,
     return uci.size() != 5 || (uci.back() != 'r' && uci.back() != 'b');
 }
 
-inline std::vector<float> get_normalized_probability(float* policyOutput,
-const std::vector<Stockfish::Move>& actions,
-int board_num, Board& board, float passPriorFloor = 0.0f) {
+template <typename T>
+inline float policy_value_to_float(T value) {
+    if constexpr (std::is_same_v<T, __half>) {
+        return __half2float(value);
+    }
+    return value;
+}
+
+template <typename T>
+inline std::vector<float> get_normalized_probability(
+    const T* policyOutput, const std::vector<Stockfish::Move>& actions,
+    int board_num, Board& board) {
     size_t length = actions.size();
     std::vector<float> logits(length);
-    size_t passIdx = actions.size();
 
     for (size_t i = 0; i < length; i++) {
         Stockfish::Move action = actions[i];
-        if (action == Stockfish::MOVE_NONE) {
-            passIdx = i;
-        }
         if (!is_policy_move_representable(board, board_num, action)) {
             logits[i] = -std::numeric_limits<float>::infinity();
             continue;
@@ -237,11 +209,9 @@ int board_num, Board& board, float passPriorFloor = 0.0f) {
             : uci;
         auto policyIt = POLICY_INDEX.find(policyMove);
         logits[i] = policyIt != POLICY_INDEX.end()
-            ? policyOutput[policyIt->second]
+            ? policy_value_to_float(policyOutput[policyIt->second])
             : -std::numeric_limits<float>::infinity();
     }
 
-    std::vector<float> probabilities = normalize_logits(logits);
-    apply_probability_floor(probabilities, passIdx, passPriorFloor);
-    return probabilities;
+    return normalize_logits(logits);
 }

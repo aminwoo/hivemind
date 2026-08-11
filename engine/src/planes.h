@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cuda_fp16.h>
+
 #include "board.h"
 #include "utils.h"
 #include "Fairy-Stockfish/src/types.h"
@@ -16,3 +18,5 @@
  * @param hasTimeAdvantage A flag indicating whether the team has a time advantage.
  */
 void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);
+
+void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);
