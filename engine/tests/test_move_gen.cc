@@ -624,7 +624,7 @@ TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
     EXPECT_FALSE(SearchParams::ENABLE_Q_EARLY_EXIT);
     EXPECT_FALSE(SearchParams::ENABLE_TIME_EXTENSION);
     EXPECT_FALSE(SearchParams::ENABLE_TREE_REUSE);
-    EXPECT_FALSE(config.enableTranspositions);
+    EXPECT_TRUE(config.enableTranspositions);
     EXPECT_EQ(SearchParams::TT_MAX_SIZE, TranspositionTable::kDefaultMaxCapacity);
 }
 
@@ -865,6 +865,89 @@ TEST(NodeTest, TranspositionEdgeUsesParentPerspectiveWithoutInheritedVisits) {
 
     EXPECT_FLOAT_EQ(parent.get_child_q(childIdx), -0.75f);
     EXPECT_EQ(parent.get_child_visits()[childIdx], 1);
+}
+
+TEST_F(EngineTest, ReservedCanonicalExpansionRestoresBoardAndEdgeState) {
+    Board board;
+    const uint64_t initialHash = board.hash_key(false);
+    const std::string initialFenA = board.fen(BOARD_A);
+    const std::string initialFenB = board.fen(BOARD_B);
+    const auto legalMoves = board.legal_moves(BOARD_A);
+    ASSERT_GE(legalMoves.size(), 2U);
+
+    Node root(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableTranspositions = true;
+    ASSERT_TRUE(root.try_init_and_expand(
+        {legalMoves[0], legalMoves[1]}, {Stockfish::MOVE_NONE},
+        {0.9f, 0.1f}, {1.0f}, false, true, false, config));
+    root.update(0, 0.0f);
+
+    const JointActionCandidate action = root.peek_next_joint_action();
+    board.make_moves(action.moveA, action.moveB);
+    const uint64_t childHash = board.hash_key(true);
+    board.unmake_moves(action.moveA, action.moveB);
+
+    auto canonical = std::make_shared<Node>(Stockfish::BLACK, childHash);
+    ASSERT_TRUE(canonical->try_reserve_evaluation());
+    TranspositionTable table;
+    ASSERT_EQ(table.insertOrGet(childHash, canonical), canonical);
+
+    SearchThread searchThread;
+    searchThread.set_root_node(&root);
+    searchThread.set_runtime_config(config);
+    searchThread.set_transposition_table(&table);
+    const LeafSelection selection = searchThread.select_and_expand(board, false);
+
+    EXPECT_EQ(selection.leaf, nullptr);
+    EXPECT_EQ(selection.pendingEvaluation, canonical.get());
+    EXPECT_EQ(board.hash_key(false), initialHash);
+    EXPECT_EQ(board.fen(BOARD_A), initialFenA);
+    EXPECT_EQ(board.fen(BOARD_B), initialFenB);
+    ASSERT_EQ(root.get_children().size(), 2U);
+    EXPECT_EQ(root.get_children()[1], canonical);
+    EXPECT_EQ(root.get_child_visits()[1], 0);
+
+    canonical->release_evaluation_reservation();
+}
+
+TEST_F(EngineTest, InitialGeneratedChildUsesCanonicalTransposition) {
+    Board board;
+    const auto legalMoves = board.legal_moves(BOARD_A);
+    ASSERT_FALSE(legalMoves.empty());
+
+    Node root(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableTranspositions = true;
+    ASSERT_TRUE(root.try_init_and_expand(
+        {legalMoves[0]}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        false, true, false, config));
+    const JointActionCandidate action = root.get_joint_action(0);
+
+    board.make_moves(action.moveA, action.moveB);
+    const uint64_t childHash = board.hash_key(true);
+    board.unmake_moves(action.moveA, action.moveB);
+
+    auto canonical = std::make_shared<Node>(Stockfish::BLACK, childHash);
+    TranspositionTable table;
+    ASSERT_EQ(table.insertOrGet(childHash, canonical), canonical);
+
+    SearchThread searchThread;
+    searchThread.set_root_node(&root);
+    searchThread.set_runtime_config(config);
+    searchThread.set_transposition_table(&table);
+    const LeafSelection selection = searchThread.select_and_expand(board, false);
+
+    EXPECT_EQ(selection.leaf, canonical.get());
+    EXPECT_TRUE(selection.hasEvaluationReservation);
+    EXPECT_EQ(selection.pendingEvaluation, nullptr);
+    EXPECT_EQ(root.get_children()[0], canonical);
+    EXPECT_EQ(board.hash_key(true), childHash);
+    EXPECT_EQ(table.getHits(), 1U);
+
+    root.remove_virtual_loss(0);
+    canonical->release_evaluation_reservation();
+    board.unmake_moves(action.moveA, action.moveB);
 }
 
 TEST(NodeTest, EvaluationReservationIsExclusiveUntilReleased) {

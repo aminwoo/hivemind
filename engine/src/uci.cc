@@ -254,6 +254,11 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableQEarlyExit = value == "true";
             std::cout << "info string QEarlyExit set to " << value << std::endl;
         }
+    } else if (name == "Transpositions") {
+        if (value == "true" || value == "false") {
+            searchConfig.enableTranspositions = value == "true";
+            std::cout << "info string Transpositions set to " << value << std::endl;
+        }
     } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
@@ -280,6 +285,8 @@ void UCI::send_uci_response() {
     cout << "option name PWExponentPermille type spin default 300 min 1 max 1000" << endl;
         cout << "option name QEarlyExit type check default "
             << (SearchParams::ENABLE_Q_EARLY_EXIT ? "true" : "false") << endl;
+        cout << "option name Transpositions type check default "
+            << (SearchParams::ENABLE_TRANSPOSITIONS ? "true" : "false") << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "info string CUDA engines " << engines.size()
