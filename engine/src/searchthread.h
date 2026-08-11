@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "board.h"
 #include "node.h"
 #include "searchinfo.h"
@@ -79,6 +81,19 @@ struct LeafSelection {
 
 class SearchThread {
 private: 
+    struct SearchBatch {
+        __half* observations = nullptr;
+        vector<LeafContext> contexts;
+        int validInferenceCount = 0;
+        int sameBatchCollisions = 0;
+        int reservationCollisions = 0;
+    };
+
+    struct CanonicalChildResult {
+        bool expanded = false;
+        Node* pendingEvaluation = nullptr;
+    };
+
     Node* root; 
     SearchInfo* searchInfo;
     TranspositionTable* transpositionTable;  // Shared across all search threads (MCGS)
@@ -87,11 +102,9 @@ private:
     // Trajectory stores entries for backup and move undoing
     vector<TrajectoryEntry> trajectoryBuffer;
     
-    // Pre-allocated inference buffers for batched inference
-    __half* obs = nullptr;
-    
-    // Batch collection for minibatch MCTS
-    vector<LeafContext> batchContexts;
+    // Double-buffered batches allow leaf collection to overlap GPU inference.
+    array<SearchBatch, 2> batches;
+    int pendingBatchIndex = -1;
     
     // Current batch size (initialized on first run_iteration call)
     int currentBatchSize = 0;
@@ -99,6 +112,20 @@ private:
     
     // Allocate/reallocate buffers for given batch size
     void ensureBufferSize(int batchSize);
+    void collect_batch(SearchBatch& batch, Board& board,
+                       bool teamHasTimeAdvantage, bool allowReservationWait);
+    void process_batch(SearchBatch& batch, Board& board,
+                       bool teamHasTimeAdvantage,
+                       const Engine::HalfInferenceOutputs& inferenceOutputs);
+    void abort_batch(SearchBatch& batch, Board& board);
+    CanonicalChildResult canonicalize_child(
+        Board& board,
+        Node* parent,
+        int childIdx,
+        const JointActionCandidate& action,
+        shared_ptr<Node>& child,
+        bool& hasEvaluationReservation,
+        bool teamHasTimeAdvantage);
 
 public: 
     SearchThread();
@@ -127,4 +154,6 @@ public:
     
     // Minibatch MCGS - collects SearchParams::BATCH_SIZE leaves, runs batched inference, processes results
     void run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage);
+    void finish_pending_iteration(Board& board, Engine* engine,
+                                  bool teamHasTimeAdvantage);
 };

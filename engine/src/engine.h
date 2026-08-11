@@ -65,6 +65,12 @@ public:
 
     bool runInferenceHalf(const __half* obs, HalfInferenceOutputs& outputs,
                           size_t workerIndex = 0);
+
+    // Each worker may have one request in flight. The pinned input must remain
+    // unchanged until synchronizeInferenceHalf returns.
+    bool enqueueInferenceHalf(const __half* obs, size_t workerIndex = 0);
+    bool synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
+                                  size_t workerIndex = 0);
     
     /**
      * @brief Get the batch size this engine was built with.
@@ -80,6 +86,7 @@ private:
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t graphInstance = nullptr;
         bool graphCreated = false;
+        bool inferencePending = false;
         void* deviceObsBuffer = nullptr;
         void* deviceValueBuffer = nullptr;
         void* devicePolicyABuffer = nullptr;
@@ -115,6 +122,8 @@ private:
     bool loadEngineFromFile(const std::string& engineFile);
     bool saveEngineToFile(const std::string& engineFile);
     bool initializeResources();
+    bool enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
+                                  bool copyAuxiliaryOutputs);
     bool runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outputs,
                               size_t workerIndex, bool copyAuxiliaryOutputs);
 };
