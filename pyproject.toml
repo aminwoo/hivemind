@@ -10,6 +10,7 @@ dependencies = [
     "einops>=0.8.1",
     "matplotlib>=3.10.8",
     "onnx>=1.20.1",
+    "onnxruntime>=1.23.2",
     "onnxscript>=0.5.7",
     "onnxsim>=0.4.36",
     "pandas>=2.3.3",

@@ -1,7 +1,10 @@
 #include "onnx_utils.h"
+#include <array>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <optional>
-#include <string>
+#include <sstream>
 #include <chrono>
 
 namespace fs = std::filesystem;
@@ -36,4 +39,35 @@ std::string getEnginePath(const std::string& onnxPath, const std::string& precis
                            + "_gpu" + std::to_string(deviceId) + "_" + version + ".engine";
     
     return directory.empty() ? engineName : directory + "/" + engineName;
+}
+
+std::string computeFileSignature(const std::string& path, std::string_view buildDescriptor) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return {};
+    }
+
+    constexpr uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
+    constexpr uint64_t FNV_PRIME = 1099511628211ULL;
+    uint64_t hash = FNV_OFFSET_BASIS;
+    auto addBytes = [&](const char* data, size_t size) {
+        for (size_t index = 0; index < size; ++index) {
+            hash ^= static_cast<unsigned char>(data[index]);
+            hash *= FNV_PRIME;
+        }
+    };
+
+    std::array<char, 64 * 1024> buffer;
+    while (file) {
+        file.read(buffer.data(), buffer.size());
+        addBytes(buffer.data(), static_cast<size_t>(file.gcount()));
+    }
+    if (!file.eof()) {
+        return {};
+    }
+    addBytes(buildDescriptor.data(), buildDescriptor.size());
+
+    std::ostringstream signature;
+    signature << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return signature.str();
 }

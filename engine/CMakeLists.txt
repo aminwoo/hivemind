@@ -70,7 +70,11 @@ endif()
 
 add_library(${PROJECT_NAME}_lib STATIC ${LIB_SOURCES})
 target_include_directories(${PROJECT_NAME}_lib PUBLIC ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_definitions(${PROJECT_NAME}_lib PUBLIC TENSORRT_LIBRARY_DIR="${TensorRT_DIR}/lib")
+target_compile_definitions(${PROJECT_NAME}_lib PUBLIC
+    TENSORRT_LIBRARY_DIR="${TensorRT_DIR}/lib"
+    HIVEMIND_WORKSPACE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+    HIVEMIND_FP16_CONVERTER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/convert_onnx_fp16.py"
+)
 if(HIVEMIND_USE_UNITY_BUILD)
     set_target_properties(${PROJECT_NAME}_lib PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
 endif()

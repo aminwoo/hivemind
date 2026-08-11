@@ -1,7 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
+#include <exception>
 #include <mutex>
+#include <thread>
+#include <vector>
 #include "node.h"
 #include "engine.h"
 #include "search_params.h"
@@ -11,6 +15,7 @@
 #include "joint_action.h"
 
 class SearchThread;
+struct SearchInfo;
 
 /**
  * @brief Search options to configure Agent::run_search behavior.
@@ -53,8 +58,23 @@ struct RootEdgeStats {
 class Agent {
 private:
     std::vector<SearchThread*> searchThreads;
+    std::vector<std::thread> workerPool_;
     std::atomic<bool> running;                            
     std::mutex searchMutex_;
+    std::mutex workerMutex_;
+    std::condition_variable workerCv_;
+    std::condition_variable workersDoneCv_;
+    uint64_t workerGeneration_ = 0;
+    size_t activeWorkerCount_ = 0;
+    size_t completedWorkerCount_ = 0;
+    bool shutdownWorkers_ = false;
+    const Board* workerBoard_ = nullptr;
+    std::vector<Engine*> workerEngines_;
+    SearchInfo* workerSearchInfo_ = nullptr;
+    bool workerTeamHasTimeAdvantage_ = false;
+    size_t workerTargetNodes_ = 0;
+    int workerMoveTimeMs_ = 0;
+    std::exception_ptr workerException_;
     shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
     int numThreads;                                          // Search threads per engine
@@ -67,6 +87,17 @@ private:
     
     // Garbage collection thread for async tree cleanup
     GCThread gcThread_;
+
+    void ensure_worker_pool(size_t workerCount);
+    void worker_loop(size_t workerIndex, uint64_t observedGeneration);
+    void dispatch_workers(const Board& board,
+                          const std::vector<Engine*>& engines,
+                          SearchInfo& searchInfo,
+                          bool teamHasTimeAdvantage,
+                          size_t targetNodes,
+                          int moveTimeMs,
+                          size_t workerCount);
+    void wait_for_workers();
 
 public:
     /**
