@@ -236,6 +236,8 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                         localBoard, engine, teamHasTimeAdvantage);
                 }
             }
+            searchThread->finish_pending_iteration(
+                localBoard, engine, teamHasTimeAdvantage);
         } catch (...) {
             std::lock_guard lock(workerMutex_);
             if (!workerException_) {
@@ -418,8 +420,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             double elapsedMs = searchInfo.elapsed();
             int nodes = searchInfo.get_nodes_searched();
             int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-            size_t tbhits = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getHits() : 0;
-            int hashfull = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+            size_t tbhits = (options.search.enableMCGS
+                             && options.search.enableTranspositions
+                             && transpositionTable)
+                ? transpositionTable->getHits() : 0;
+            int hashfull = (options.search.enableMCGS
+                            && options.search.enableTranspositions
+                            && transpositionTable)
+                ? transpositionTable->getFullness() : 0;
             
             if (rootNode && rootNode->is_expanded()) {
                 auto childVisits = rootNode->get_child_visits();
@@ -690,8 +698,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         int nodes = searchInfo.get_nodes_searched();
         int depth = searchInfo.get_max_depth();
         int nps = (elapsedMs > 0) ? static_cast<int>((nodes * 1000.0) / elapsedMs) : 0;
-        size_t tbhits = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getHits() : 0;
-        int hashfull = (options.search.enableMCGS && transpositionTable) ? transpositionTable->getFullness() : 0;
+        size_t tbhits = (options.search.enableMCGS
+                         && options.search.enableTranspositions
+                         && transpositionTable)
+            ? transpositionTable->getHits() : 0;
+        int hashfull = (options.search.enableMCGS
+                        && options.search.enableTranspositions
+                        && transpositionTable)
+            ? transpositionTable->getFullness() : 0;
         
         // Convert Q-value [-1, 1] to centipawns using Lc0 tangent formula
         constexpr float C = 180.0f;
@@ -770,7 +784,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         cout << "info string rejected selection attempts "
                << searchInfo.get_collisions()
                << " (same batch " << searchInfo.get_same_batch_collisions()
-               << ", reserved by other worker " << searchInfo.get_reservation_collisions()
+             << ", pending evaluation " << searchInfo.get_reservation_collisions()
                << ")" << endl;
         string bestMoveStr = extract_best_move(board);
         cout << "bestmove " << bestMoveStr << endl;
