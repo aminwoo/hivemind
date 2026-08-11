@@ -142,27 +142,33 @@ SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) 
 }
 
 SearchThread::~SearchThread() {
-    if (obs) cudaFreeHost(obs);
+    for (SearchBatch& batch : batches) {
+        if (batch.observations) {
+            cudaFreeHost(batch.observations);
+        }
+    }
 }
 
 void SearchThread::ensureBufferSize(int batchSize) {
     if (batchSize == currentBatchSize) return;
+    if (pendingBatchIndex >= 0) {
+        throw std::logic_error("Cannot resize search buffers with inference pending");
+    }
 
-    if (obs) cudaFreeHost(obs);
-    obs = nullptr;
-
-    auto allocatePinned = [](__half** buffer, size_t count) {
+    for (SearchBatch& batch : batches) {
+        if (batch.observations) {
+            cudaFreeHost(batch.observations);
+            batch.observations = nullptr;
+        }
         cudaError_t result = cudaMallocHost(
-            reinterpret_cast<void**>(buffer), count * sizeof(__half));
+            reinterpret_cast<void**>(&batch.observations),
+            batchSize * NB_INPUT_VALUES() * sizeof(__half));
         if (result != cudaSuccess) {
             throw std::runtime_error(
                 std::string("cudaMallocHost failed: ") + cudaGetErrorString(result));
         }
-    };
-
-    allocatePinned(&obs, batchSize * NB_INPUT_VALUES());
-    
-    batchContexts.reserve(batchSize);
+        batch.contexts.reserve(batchSize);
+    }
     currentBatchSize = batchSize;
 }
 
@@ -244,15 +250,19 @@ void SearchThread::cancel_virtual_losses(const vector<TrajectoryEntry>& trajecto
  * This collects leaves based on the engine's batch size, runs batched neural network inference,
  * then expands and backs up all leaves. This better utilizes GPU parallelism.
  */
-void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage) {
-    // Get batch size from engine and ensure buffers are properly sized
-    int batchSize = engine->getBatchSize();
-    ensureBufferSize(batchSize);
-    
+void SearchThread::collect_batch(SearchBatch& batch, Board& board,
+                                 bool teamHasTimeAdvantage,
+                                 bool allowReservationWait) {
+    const int batchSize = currentBatchSize;
+    vector<LeafContext>& batchContexts = batch.contexts;
+    __half* obs = batch.observations;
     batchContexts.clear();
-    int validInferenceCount = 0;
-    int sameBatchCollisions = 0;
-    int reservationCollisions = 0;
+    int& validInferenceCount = batch.validInferenceCount;
+    int& sameBatchCollisions = batch.sameBatchCollisions;
+    int& reservationCollisions = batch.reservationCollisions;
+    validInferenceCount = 0;
+    sameBatchCollisions = 0;
+    reservationCollisions = 0;
     
     // Phase 1: Collect batchSize leaf nodes
     constexpr int MAX_SELECTION_ATTEMPTS_PER_SLOT = 2;
@@ -277,6 +287,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
             }
             if (batchContexts.empty()
                 && selectionAttempts == maxSelectionAttempts
+                && allowReservationWait
                 && selection.pendingEvaluation) {
                 selection.pendingEvaluation->wait_for_evaluation_completion();
             }
@@ -415,11 +426,9 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
         }
     }
     
-    // Phase 2: Run batched neural network inference (only if we have non-terminal leaves)
-    Engine::HalfInferenceOutputs inferenceOutputs;
+    // TensorRT is built for a fixed batch. Duplicate the last valid row so
+    // underfilled batches never upload stale or uninitialized host memory.
     if (validInferenceCount > 0) {
-        // TensorRT is built for a fixed batch. Duplicate the last valid row so
-        // underfilled batches never upload stale or uninitialized host memory.
         const __half* paddingSource = obs
             + static_cast<size_t>(validInferenceCount - 1) * NB_INPUT_VALUES();
         for (int batchIndex = validInferenceCount; batchIndex < batchSize; ++batchIndex) {
@@ -427,29 +436,15 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
                 paddingSource, NB_INPUT_VALUES(),
                 obs + static_cast<size_t>(batchIndex) * NB_INPUT_VALUES());
         }
-        if (!engine->runInferenceHalf(
-            obs, inferenceOutputs, inferenceWorkerIndex)) {
-            cerr << "Batch inference failed" << endl;
-            int completedTerminals = 0;
-            for (auto& ctx : batchContexts) {
-                if (ctx.hasEvaluationReservation) {
-                    ctx.leaf->release_evaluation_reservation();
-                }
-                if (ctx.isTerminal) {
-                    backup(ctx.trajectory, board, ctx.terminalValue);
-                    completedTerminals++;
-                } else {
-                    cancel_virtual_losses(ctx.trajectory);
-                }
-            }
-            searchInfo->increment_nodes(completedTerminals);
-            searchInfo->increment_same_batch_collisions(sameBatchCollisions);
-            searchInfo->increment_reservation_collisions(reservationCollisions);
-            throw std::runtime_error("Batch inference failed");
-        }
     }
-    
-    // Phase 3: Process results and backup
+}
+
+void SearchThread::process_batch(
+    SearchBatch& batch,
+    Board& board,
+    bool teamHasTimeAdvantage,
+    const Engine::HalfInferenceOutputs& inferenceOutputs) {
+    vector<LeafContext>& batchContexts = batch.contexts;
     int inferenceIdx = 0;
     for (auto& ctx : batchContexts) {
         if (ctx.isTerminal) {
@@ -564,8 +559,159 @@ void SearchThread::run_iteration(Board& board, Engine* engine, bool teamHasTimeA
     }
     
     searchInfo->increment_nodes(static_cast<int>(batchContexts.size()));
-    searchInfo->increment_same_batch_collisions(sameBatchCollisions);
-    searchInfo->increment_reservation_collisions(reservationCollisions);
+    searchInfo->increment_same_batch_collisions(batch.sameBatchCollisions);
+    searchInfo->increment_reservation_collisions(batch.reservationCollisions);
+    batchContexts.clear();
+    batch.validInferenceCount = 0;
+}
+
+void SearchThread::abort_batch(SearchBatch& batch, Board& board) {
+    int completedTerminals = 0;
+    for (LeafContext& ctx : batch.contexts) {
+        if (ctx.hasEvaluationReservation) {
+            ctx.leaf->release_evaluation_reservation();
+        }
+        if (ctx.isTerminal) {
+            backup(ctx.trajectory, board, ctx.terminalValue);
+            completedTerminals++;
+        } else {
+            cancel_virtual_losses(ctx.trajectory);
+        }
+    }
+    searchInfo->increment_nodes(completedTerminals);
+    searchInfo->increment_same_batch_collisions(batch.sameBatchCollisions);
+    searchInfo->increment_reservation_collisions(batch.reservationCollisions);
+    batch.contexts.clear();
+    batch.validInferenceCount = 0;
+}
+
+void SearchThread::run_iteration(Board& board, Engine* engine,
+                                 bool teamHasTimeAdvantage) {
+    ensureBufferSize(engine->getBatchSize());
+
+    if (pendingBatchIndex < 0) {
+        SearchBatch& initialBatch = batches[0];
+        collect_batch(initialBatch, board, teamHasTimeAdvantage, true);
+        if (initialBatch.validInferenceCount == 0) {
+            process_batch(initialBatch, board, teamHasTimeAdvantage, {});
+            return;
+        }
+        if (!engine->enqueueInferenceHalf(
+                initialBatch.observations, inferenceWorkerIndex)) {
+            abort_batch(initialBatch, board);
+            throw std::runtime_error("Batch inference submission failed");
+        }
+        pendingBatchIndex = 0;
+    }
+
+    const int completedBatchIndex = pendingBatchIndex;
+    const int lookaheadBatchIndex = 1 - completedBatchIndex;
+    SearchBatch& completedBatch = batches[completedBatchIndex];
+    SearchBatch& lookaheadBatch = batches[lookaheadBatchIndex];
+
+    collect_batch(lookaheadBatch, board, teamHasTimeAdvantage, false);
+
+    Engine::HalfInferenceOutputs inferenceOutputs;
+    if (!engine->synchronizeInferenceHalf(
+            inferenceOutputs, inferenceWorkerIndex)) {
+        pendingBatchIndex = -1;
+        abort_batch(completedBatch, board);
+        abort_batch(lookaheadBatch, board);
+        throw std::runtime_error("Batch inference completion failed");
+    }
+    pendingBatchIndex = -1;
+    process_batch(completedBatch, board, teamHasTimeAdvantage, inferenceOutputs);
+
+    if (lookaheadBatch.validInferenceCount == 0) {
+        process_batch(lookaheadBatch, board, teamHasTimeAdvantage, {});
+        return;
+    }
+    if (!engine->enqueueInferenceHalf(
+            lookaheadBatch.observations, inferenceWorkerIndex)) {
+        abort_batch(lookaheadBatch, board);
+        throw std::runtime_error("Batch inference submission failed");
+    }
+    pendingBatchIndex = lookaheadBatchIndex;
+}
+
+void SearchThread::finish_pending_iteration(Board& board, Engine* engine,
+                                            bool teamHasTimeAdvantage) {
+    if (pendingBatchIndex < 0) {
+        return;
+    }
+
+    const int completedBatchIndex = pendingBatchIndex;
+    pendingBatchIndex = -1;
+    SearchBatch& completedBatch = batches[completedBatchIndex];
+    Engine::HalfInferenceOutputs inferenceOutputs;
+    if (!engine->synchronizeInferenceHalf(
+            inferenceOutputs, inferenceWorkerIndex)) {
+        abort_batch(completedBatch, board);
+        throw std::runtime_error("Batch inference completion failed");
+    }
+    process_batch(completedBatch, board, teamHasTimeAdvantage, inferenceOutputs);
+}
+
+SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
+    Board& board,
+    Node* parent,
+    int childIdx,
+    const JointActionCandidate& action,
+    shared_ptr<Node>& child,
+    bool& hasEvaluationReservation,
+    bool teamHasTimeAdvantage) {
+    if (!runtimeConfig.enableMCGS || !runtimeConfig.enableTranspositions
+        || !transpositionTable) {
+        return {child->is_expanded(), nullptr};
+    }
+    if (child->get_hash() != 0) {
+        return {child->is_expanded(), nullptr};
+    }
+
+    const bool childTeamHasTimeAdvantage =
+        child->get_team_to_play() == root->get_team_to_play()
+        ? teamHasTimeAdvantage
+        : !teamHasTimeAdvantage;
+    const uint64_t childHash = board.hash_key(childTeamHasTimeAdvantage);
+    child->set_hash(childHash);
+
+    shared_ptr<Node> canonicalNode = transpositionTable->insertOrGet(
+        childHash, child);
+    const bool isAncestor = std::any_of(
+        trajectoryBuffer.begin(), trajectoryBuffer.end(),
+        [&canonicalNode](const TrajectoryEntry& entry) {
+            return entry.node == canonicalNode.get();
+        });
+    if (canonicalNode == child || isAncestor) {
+        return {child->is_expanded(), nullptr};
+    }
+
+    if (hasEvaluationReservation) {
+        child->release_evaluation_reservation();
+        hasEvaluationReservation = false;
+    }
+    parent->replace_child(childIdx, canonicalNode);
+    child = std::move(canonicalNode);
+
+    if (child->is_expanded()) {
+        return {true, nullptr};
+    }
+    if (child->get_node_type() != NodeType::UNSOLVED) {
+        return {false, nullptr};
+    }
+    if (!child->try_reserve_evaluation()) {
+        parent->remove_virtual_loss(childIdx);
+        board.unmake_moves(action.moveA, action.moveB);
+        return {false, child.get()};
+    }
+    if (child->is_expanded()
+        || child->get_node_type() != NodeType::UNSOLVED) {
+        child->release_evaluation_reservation();
+        return {child->is_expanded(), nullptr};
+    }
+
+    hasEvaluationReservation = true;
+    return {false, nullptr};
 }
 
 /**
@@ -621,53 +767,21 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
             if (nextNode) {
                 // Make moves with the actual expanded action
                 board.make_moves(expandedAction.moveA, expandedAction.moveB);
-                
-                // MCGS: Compute position hash and register in transposition table
-                bool childTeamHasTimeAdvantage = (nextNode->get_team_to_play() == root->get_team_to_play())
-                    ? teamHasTimeAdvantage
-                    : !teamHasTimeAdvantage;
-                uint64_t childHash = board.hash_key(childTeamHasTimeAdvantage);
-                nextNode->set_hash(childHash);
-                
-                // Reuse the canonical node unless doing so would create a cycle in this trajectory.
-                bool continueFromTransposition = false;
-                if (runtimeConfig.enableMCGS && runtimeConfig.enableTranspositions && transpositionTable) {
-                    auto canonicalNode = transpositionTable->insertOrGet(childHash, nextNode);
-                    bool isAncestor = std::any_of(
-                        trajectoryBuffer.begin(), trajectoryBuffer.end(),
-                        [&canonicalNode](const TrajectoryEntry& entry) {
-                            return entry.node == canonicalNode.get();
-                        });
-                    if (canonicalNode != nextNode && !isAncestor) {
-                        if (expandedChildReserved) {
-                            nextNode->release_evaluation_reservation();
-                            expandedChildReserved = false;
-                        }
-                        currentNode->replace_child(childIdx, canonicalNode);
-                        nextNode = canonicalNode;
-                        continueFromTransposition = canonicalNode->is_expanded();
-                        if (!continueFromTransposition
-                            && canonicalNode->get_node_type() == NodeType::UNSOLVED) {
-                            if (!canonicalNode->try_reserve_evaluation()) {
-                                return {nullptr, false, canonicalNode.get()};
-                            }
-                            if (canonicalNode->is_expanded()
-                                || canonicalNode->get_node_type() != NodeType::UNSOLVED) {
-                                canonicalNode->release_evaluation_reservation();
-                                continueFromTransposition = canonicalNode->is_expanded();
-                            } else {
-                                expandedChildReserved = true;
-                            }
-                        }
-                    }
+
+                const CanonicalChildResult canonicalResult = canonicalize_child(
+                    board, currentNode, childIdx, expandedAction, nextNode,
+                    expandedChildReserved, teamHasTimeAdvantage);
+                if (canonicalResult.pendingEvaluation) {
+                    return {
+                        nullptr, false, canonicalResult.pendingEvaluation};
                 }
-                
+
                 // Update the parent trajectory entry with the selected child index
                 trajectoryBuffer.back().selectedChildIdx = childIdx;
                 
                 trajectoryBuffer.emplace_back(nextNode.get(), expandedAction, -1);
 
-                if (continueFromTransposition) {
+                if (canonicalResult.expanded) {
                     currentNode = nextNode.get();
                     hasEvaluationReservation = false;
                     continue;
@@ -687,13 +801,19 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
         nextNode = selection.child;
         childIdx = selection.childIdx;
         hasEvaluationReservation = selection.hasEvaluationReservation;
-        
-        // Update the parent trajectory entry with the selected child index
-        trajectoryBuffer.back().selectedChildIdx = childIdx;
 
         JointActionCandidate action = currentNode->get_joint_action(childIdx);
         board.make_moves(action.moveA, action.moveB);
-        
+
+        const CanonicalChildResult canonicalResult = canonicalize_child(
+            board, currentNode, childIdx, action, nextNode,
+            hasEvaluationReservation, teamHasTimeAdvantage);
+        if (canonicalResult.pendingEvaluation) {
+            return {nullptr, false, canonicalResult.pendingEvaluation};
+        }
+
+        // Update the parent trajectory entry with the selected child index
+        trajectoryBuffer.back().selectedChildIdx = childIdx;
         trajectoryBuffer.emplace_back(nextNode.get(), action, -1);
         currentNode = nextNode.get();
     }
