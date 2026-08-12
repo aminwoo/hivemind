@@ -365,7 +365,6 @@ TEST_F(EngineTest, CommonBackupPropagatesProvenLeafState) {
     };
     Board board;
     SearchThread searchThread;
-    searchThread.set_root_node(&parent);
     searchThread.backup(trajectory, board, 0.25f);
 
     EXPECT_EQ(parent.get_node_type(), NodeType::WIN);
@@ -374,20 +373,20 @@ TEST_F(EngineTest, CommonBackupPropagatesProvenLeafState) {
 }
 
 TEST_F(EngineTest, SelectionStopsAtSolvedExpandedNode) {
-    Node root(Stockfish::WHITE);
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
     std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
     std::vector<float> priors = {1.0f};
-    ASSERT_TRUE(root.try_init_and_expand(
+    ASSERT_TRUE(root->try_init_and_expand(
         actions, actions, priors, priors, true, true, false,
         SearchParams::RuntimeConfig{}));
-    root.mark_as_win(4);
+    root->mark_as_win(4);
 
     Board board;
     SearchThread searchThread;
-    searchThread.set_root_node(&root);
+    searchThread.set_root_node(root);
 
-    EXPECT_EQ(searchThread.select_and_expand(board, true).leaf, &root);
-    EXPECT_EQ(root.get_child_visits().front(), 0);
+    EXPECT_EQ(searchThread.select_and_expand(board, true).leaf, root);
+    EXPECT_EQ(root->get_child_visits().front(), 0);
 }
 
 TEST_F(EngineTest, CheckmatePrecedesFiftyMoveDraw) {
@@ -797,7 +796,7 @@ TEST(NodeTest, SelectionWaitsWhenEveryChildEvaluationIsPending) {
     EXPECT_EQ(selectedChild, nullptr);
     EXPECT_EQ(selectedIdx, -1);
     EXPECT_FALSE(evaluationReserved);
-    EXPECT_EQ(pendingEvaluation, children[0].get());
+    EXPECT_EQ(pendingEvaluation, children[0]);
 
     children[0]->release_evaluation_reservation();
 }
@@ -875,15 +874,15 @@ TEST_F(EngineTest, ReservedCanonicalExpansionRestoresBoardAndEdgeState) {
     const auto legalMoves = board.legal_moves(BOARD_A);
     ASSERT_GE(legalMoves.size(), 2U);
 
-    Node root(Stockfish::WHITE);
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
     config.enableTranspositions = true;
-    ASSERT_TRUE(root.try_init_and_expand(
+    ASSERT_TRUE(root->try_init_and_expand(
         {legalMoves[0], legalMoves[1]}, {Stockfish::MOVE_NONE},
         {0.9f, 0.1f}, {1.0f}, false, true, false, config));
-    root.update(0, 0.0f);
+    root->update(0, 0.0f);
 
-    const JointActionCandidate action = root.peek_next_joint_action();
+    const JointActionCandidate action = root->peek_next_joint_action();
     board.make_moves(action.moveA, action.moveB);
     const uint64_t childHash = board.hash_key(true);
     board.unmake_moves(action.moveA, action.moveB);
@@ -894,19 +893,19 @@ TEST_F(EngineTest, ReservedCanonicalExpansionRestoresBoardAndEdgeState) {
     ASSERT_EQ(table.insertOrGet(childHash, canonical), canonical);
 
     SearchThread searchThread;
-    searchThread.set_root_node(&root);
+    searchThread.set_root_node(root);
     searchThread.set_runtime_config(config);
     searchThread.set_transposition_table(&table);
     const LeafSelection selection = searchThread.select_and_expand(board, false);
 
     EXPECT_EQ(selection.leaf, nullptr);
-    EXPECT_EQ(selection.pendingEvaluation, canonical.get());
+    EXPECT_EQ(selection.pendingEvaluation, canonical);
     EXPECT_EQ(board.hash_key(false), initialHash);
     EXPECT_EQ(board.fen(BOARD_A), initialFenA);
     EXPECT_EQ(board.fen(BOARD_B), initialFenB);
-    ASSERT_EQ(root.get_children().size(), 2U);
-    EXPECT_EQ(root.get_children()[1], canonical);
-    EXPECT_EQ(root.get_child_visits()[1], 0);
+    ASSERT_EQ(root->get_children().size(), 2U);
+    EXPECT_EQ(root->get_children()[1], canonical);
+    EXPECT_EQ(root->get_child_visits()[1], 0);
 
     canonical->release_evaluation_reservation();
 }
@@ -916,13 +915,13 @@ TEST_F(EngineTest, InitialGeneratedChildUsesCanonicalTransposition) {
     const auto legalMoves = board.legal_moves(BOARD_A);
     ASSERT_FALSE(legalMoves.empty());
 
-    Node root(Stockfish::WHITE);
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
     config.enableTranspositions = true;
-    ASSERT_TRUE(root.try_init_and_expand(
+    ASSERT_TRUE(root->try_init_and_expand(
         {legalMoves[0]}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
         false, true, false, config));
-    const JointActionCandidate action = root.get_joint_action(0);
+    const JointActionCandidate action = root->get_joint_action(0);
 
     board.make_moves(action.moveA, action.moveB);
     const uint64_t childHash = board.hash_key(true);
@@ -933,19 +932,19 @@ TEST_F(EngineTest, InitialGeneratedChildUsesCanonicalTransposition) {
     ASSERT_EQ(table.insertOrGet(childHash, canonical), canonical);
 
     SearchThread searchThread;
-    searchThread.set_root_node(&root);
+    searchThread.set_root_node(root);
     searchThread.set_runtime_config(config);
     searchThread.set_transposition_table(&table);
     const LeafSelection selection = searchThread.select_and_expand(board, false);
 
-    EXPECT_EQ(selection.leaf, canonical.get());
+    EXPECT_EQ(selection.leaf, canonical);
     EXPECT_TRUE(selection.hasEvaluationReservation);
     EXPECT_EQ(selection.pendingEvaluation, nullptr);
-    EXPECT_EQ(root.get_children()[0], canonical);
+    EXPECT_EQ(root->get_children()[0], canonical);
     EXPECT_EQ(board.hash_key(true), childHash);
     EXPECT_EQ(table.getHits(), 1U);
 
-    root.remove_virtual_loss(0);
+    root->remove_virtual_loss(0);
     canonical->release_evaluation_reservation();
     board.unmake_moves(action.moveA, action.moveB);
 }
@@ -959,6 +958,29 @@ TEST(NodeTest, EvaluationReservationIsExclusiveUntilReleased) {
     node.release_evaluation_reservation();
     EXPECT_TRUE(node.try_reserve_evaluation());
     node.release_evaluation_reservation();
+}
+
+TEST(NodeTest, PendingEvaluationRetainsReplacedChild) {
+    Node parent(Stockfish::WHITE);
+    ASSERT_TRUE(parent.try_init_and_expand(
+        {Stockfish::Move(1)}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        false, true, false, SearchParams::RuntimeConfig{}));
+
+    auto child = parent.get_children().front();
+    ASSERT_TRUE(child->try_reserve_evaluation());
+
+    auto selection = parent.select_child_and_apply_virtual_loss();
+    ASSERT_EQ(selection.child, nullptr);
+    ASSERT_EQ(selection.pendingEvaluation, child);
+
+    std::weak_ptr<Node> childLifetime = child;
+    parent.replace_child(0, std::make_shared<Node>(Stockfish::BLACK));
+    child.reset();
+    EXPECT_FALSE(childLifetime.expired());
+
+    selection.pendingEvaluation->release_evaluation_reservation();
+    selection.pendingEvaluation.reset();
+    EXPECT_TRUE(childLifetime.expired());
 }
 
 TEST(NodeTest, QAveragesOnlyRealVisits) {
