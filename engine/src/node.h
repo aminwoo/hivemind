@@ -72,7 +72,7 @@ public:
         std::shared_ptr<Node> child;
         int childIdx = -1;
         bool hasEvaluationReservation = false;
-        Node* pendingEvaluation = nullptr;
+        std::shared_ptr<Node> pendingEvaluation;
     };
 
     Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) {}

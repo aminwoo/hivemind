@@ -379,7 +379,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Set up active search threads with shared root node, search info, and transposition table
     for (size_t i = 0; i < workerCount; ++i) {
         SearchThread* st = searchThreads[i];
-        st->set_root_node(rootNode.get());
+        st->set_root_node(rootNode);
         st->set_search_info(&searchInfo);
         st->set_runtime_config(options.search);
         st->set_inference_worker_index(i / engines.size());
