@@ -27,7 +27,7 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
                 return child && child->get_node_type() != NodeType::WIN;
             });
     std::vector<uint8_t> unavailableChildren;
-    Node* pendingEvaluation = nullptr;
+    std::shared_ptr<Node> pendingEvaluation;
 
     while (true) {
         float bestScore = -std::numeric_limits<float>::infinity();
@@ -92,7 +92,7 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
         if (!bestChild->is_expanded()
             && bestChild->get_node_type() == NodeType::UNSOLVED) {
             if (!bestChild->try_reserve_evaluation()) {
-                pendingEvaluation = bestChild.get();
+                pendingEvaluation = bestChild;
                 if (unavailableChildren.empty()) {
                     unavailableChildren.resize(limit, 0);
                 }
