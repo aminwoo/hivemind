@@ -176,8 +176,9 @@ void SearchThread::set_search_info(SearchInfo* info) {
     searchInfo = info;
 }
 
-void SearchThread::set_root_node(Node* node) {
-    root = node;
+void SearchThread::set_root_node(const std::shared_ptr<Node>& node) {
+    root = node.get();
+    rootOwner = node;
 }
 
 void SearchThread::set_inference_worker_index(size_t workerIndex) {
@@ -293,7 +294,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             }
             continue;
         }
-        Node* leaf = selection.leaf;
+        const std::shared_ptr<Node>& leaf = selection.leaf;
         
         // A repeated leaf is not an independent simulation. Revert its
         // temporary selection state and leave the first trajectory responsible
@@ -535,7 +536,7 @@ void SearchThread::process_batch(
             // Expand leaf node and register in transposition table (MCGS)
             // Use leafTeamHasTimeAdvantage for the team making the move at this leaf.
             // The generator creates joint actions that THIS team will play.
-            expand_leaf_node(ctx.leaf, actionsA, actionsB, priorsA, priorsB,
+            expand_leaf_node(ctx.leaf.get(), actionsA, actionsB, priorsA, priorsB,
                              leafTeamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
                              ctx.leafHash);
             ctx.leaf->release_evaluation_reservation();
@@ -702,7 +703,7 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
     if (!child->try_reserve_evaluation()) {
         parent->remove_virtual_loss(childIdx);
         board.unmake_moves(action.moveA, action.moveB);
-        return {false, child.get()};
+        return {false, child};
     }
     if (child->is_expanded()
         || child->get_node_type() != NodeType::UNSOLVED) {
@@ -725,7 +726,10 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
  * @param teamHasTimeAdvantage Whether the searching team has time advantage
  */
 LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
-    Node* currentNode = root;
+    shared_ptr<Node> currentNode = rootOwner.lock();
+    if (!currentNode) {
+        return {};
+    }
     shared_ptr<Node> nextNode;
     int childIdx;
     bool hasEvaluationReservation = false;
@@ -769,7 +773,7 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
                 board.make_moves(expandedAction.moveA, expandedAction.moveB);
 
                 const CanonicalChildResult canonicalResult = canonicalize_child(
-                    board, currentNode, childIdx, expandedAction, nextNode,
+                    board, currentNode.get(), childIdx, expandedAction, nextNode,
                     expandedChildReserved, teamHasTimeAdvantage);
                 if (canonicalResult.pendingEvaluation) {
                     return {
@@ -779,16 +783,16 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
                 // Update the parent trajectory entry with the selected child index
                 trajectoryBuffer.back().selectedChildIdx = childIdx;
                 
-                trajectoryBuffer.emplace_back(nextNode.get(), expandedAction, -1);
+                trajectoryBuffer.emplace_back(nextNode, expandedAction, -1);
 
                 if (canonicalResult.expanded) {
-                    currentNode = nextNode.get();
+                    currentNode = nextNode;
                     hasEvaluationReservation = false;
                     continue;
                 }
                 
                 // Return the newly expanded leaf
-                return {nextNode.get(), expandedChildReserved};
+                return {nextNode, expandedChildReserved};
             }
         }
 
@@ -806,7 +810,7 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
         board.make_moves(action.moveA, action.moveB);
 
         const CanonicalChildResult canonicalResult = canonicalize_child(
-            board, currentNode, childIdx, action, nextNode,
+            board, currentNode.get(), childIdx, action, nextNode,
             hasEvaluationReservation, teamHasTimeAdvantage);
         if (canonicalResult.pendingEvaluation) {
             return {nullptr, false, canonicalResult.pendingEvaluation};
@@ -814,8 +818,8 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
 
         // Update the parent trajectory entry with the selected child index
         trajectoryBuffer.back().selectedChildIdx = childIdx;
-        trajectoryBuffer.emplace_back(nextNode.get(), action, -1);
-        currentNode = nextNode.get();
+        trajectoryBuffer.emplace_back(nextNode, action, -1);
+        currentNode = nextNode;
     }
 
     return {currentNode, hasEvaluationReservation};

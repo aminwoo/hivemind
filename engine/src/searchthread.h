@@ -35,11 +35,15 @@ TerminalOutcome classify_terminal_position(Board& board,
  */
 struct TrajectoryEntry {
     Node* node;
+    std::shared_ptr<Node> nodeOwner;
     JointActionCandidate action;
     int selectedChildIdx;  // Index of the child that was selected (-1 for root/leaf)
     
     TrajectoryEntry(Node* n, const JointActionCandidate& a, int idx = -1)
         : node(n), action(a), selectedChildIdx(idx) {}
+
+    TrajectoryEntry(std::shared_ptr<Node> n, const JointActionCandidate& a, int idx = -1)
+        : node(n.get()), nodeOwner(std::move(n)), action(a), selectedChildIdx(idx) {}
 };
 
 /**
@@ -49,7 +53,7 @@ struct TrajectoryEntry {
  * position in the inference batch so we can properly process results.
  */
 struct LeafContext {
-    Node* leaf;
+    std::shared_ptr<Node> leaf;
     vector<TrajectoryEntry> trajectory;
     Stockfish::Color teamToPlay;
     bool sitPlaneActive;
@@ -74,9 +78,9 @@ struct LeafContext {
 };
 
 struct LeafSelection {
-    Node* leaf = nullptr;
+    std::shared_ptr<Node> leaf;
     bool hasEvaluationReservation = false;
-    Node* pendingEvaluation = nullptr;
+    std::shared_ptr<Node> pendingEvaluation;
 };
 
 class SearchThread {
@@ -91,10 +95,11 @@ private:
 
     struct CanonicalChildResult {
         bool expanded = false;
-        Node* pendingEvaluation = nullptr;
+        std::shared_ptr<Node> pendingEvaluation;
     };
 
-    Node* root; 
+    Node* root;
+    std::weak_ptr<Node> rootOwner;
     SearchInfo* searchInfo;
     TranspositionTable* transpositionTable;  // Shared across all search threads (MCGS)
     SearchParams::RuntimeConfig runtimeConfig;
@@ -132,7 +137,7 @@ public:
     ~SearchThread(); 
 
     void set_search_info(SearchInfo* info);
-    void set_root_node(Node* node);
+    void set_root_node(const std::shared_ptr<Node>& node);
     void set_transposition_table(TranspositionTable* table);
     void set_runtime_config(const SearchParams::RuntimeConfig& config);
     void set_inference_worker_index(size_t workerIndex);
