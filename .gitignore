@@ -217,4 +217,5 @@ __marimo__/
 
 src/training/weights/
 src/training/logs
+src/traininglogs/
 data/
