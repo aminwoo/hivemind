@@ -13,6 +13,7 @@
  */
 struct SearchInfo {
     std::chrono::time_point<std::chrono::steady_clock> start;
+    std::atomic<int64_t> startTimeMs_{0};
     int moveTime; 
     std::atomic<int> nodes{0};
     std::atomic<int> maxDepth{0};
@@ -27,10 +28,23 @@ struct SearchInfo {
     bool inGame_ = false;              // Whether this is a timed game
 
     // Constructor initializes the start time and move time.
-    SearchInfo(std::chrono::time_point<std::chrono::steady_clock> start, int moveTime)
-        : start(start), moveTime(moveTime), effectiveMoveTime_(moveTime) {}
+    SearchInfo(std::chrono::time_point<std::chrono::steady_clock> startTime, int moveTime)
+        : start(startTime), moveTime(moveTime), effectiveMoveTime_(moveTime) {
+        startTimeMs_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            startTime.time_since_epoch()).count(), std::memory_order_relaxed);
+    }
     
     ~SearchInfo() = default;
+
+    // Resets search start time (used on ponderhit to measure turn duration).
+    void reset_start_time() {
+        std::lock_guard<std::mutex> lock(timeMutex_);
+        auto now = std::chrono::steady_clock::now();
+        start = now;
+        startTimeMs_.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count(), std::memory_order_release);
+        timeExtensionCount_ = 0;
+    }
 
     // Returns the original move time.
     int get_move_time() const {
@@ -49,11 +63,12 @@ struct SearchInfo {
         return std::max(0.0, effectiveMoveTime_ - elapsed_unlocked());
     }
 
-    // Returns the elapsed time in milliseconds since start (no lock).
+    // Returns the elapsed time in milliseconds since start (lock-free).
     double elapsed_unlocked() const {
-        auto elapsed_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start);
-        return elapsed_duration.count(); 
+        int64_t startMs = startTimeMs_.load(std::memory_order_relaxed);
+        int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        return static_cast<double>(std::max<int64_t>(0, nowMs - startMs));
     }
 
     // Returns the elapsed time in milliseconds since start.
