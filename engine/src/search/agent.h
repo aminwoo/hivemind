@@ -1,0 +1,215 @@
+#pragma once
+
+#include <atomic>
+#include <condition_variable>
+#include <exception>
+#include <mutex>
+#include <thread>
+#include <vector>
+#include "search/node.h"
+#include "nn/engine.h"
+#include "search/search_params.h"
+#include "search/transposition_table.h"
+#include "search/gc_thread.h"
+#include "common/globals.h"
+#include "environment/joint_action.h"
+
+class SearchThread;
+struct SearchInfo;
+
+/**
+ * @brief Search options to configure Agent::run_search behavior.
+ */
+struct SearchOptions {
+    // Stopping conditions (one must be set)
+    size_t targetNodes = 0;      // Stop after this many nodes (0 = use time)
+    int moveTimeMs = 0;          // Stop after this many milliseconds (0 = use nodes)
+    
+    // UCI mode options
+    bool verbose = false;        // Output UCI info strings (info, bestmove)
+    int multiPV = 1;             // Number of principal variations to output
+    
+    SearchParams::RuntimeConfig search;
+    
+    // Convenience constructors
+    static SearchOptions uci(int moveTimeMs, int multiPV = 1) {
+        SearchOptions opts;
+        opts.moveTimeMs = moveTimeMs;
+        opts.verbose = true;
+        opts.multiPV = multiPV;
+        return opts;
+    }
+    
+};
+
+struct RootEdgeStats {
+    JointActionCandidate action;
+    int visits = 0;
+};
+
+/**
+ * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
+ *
+ * Runs multiple search threads in parallel, each with its own engine instance.
+ * All threads share the same search graph with thread-safe node operations.
+ * Uses a transposition table to detect when different move sequences reach
+ * the same position, enabling more efficient value estimation.
+ */
+class Agent {
+private:
+    std::vector<SearchThread*> searchThreads;
+    std::vector<std::thread> workerPool_;
+    std::atomic<bool> running;                            
+    std::mutex searchMutex_;
+    std::mutex workerMutex_;
+    std::condition_variable workerCv_;
+    std::condition_variable workersDoneCv_;
+    uint64_t workerGeneration_ = 0;
+    size_t activeWorkerCount_ = 0;
+    size_t completedWorkerCount_ = 0;
+    bool shutdownWorkers_ = false;
+    const Board* workerBoard_ = nullptr;
+    std::vector<Engine*> workerEngines_;
+    SearchInfo* workerSearchInfo_ = nullptr;
+    bool workerTeamHasTimeAdvantage_ = false;
+    size_t workerTargetNodes_ = 0;
+    int workerMoveTimeMs_ = 0;
+    std::exception_ptr workerException_;
+    std::shared_ptr<Node> rootNode;
+    std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
+    int numThreads;                                          // Search threads per engine
+    SearchParams::RuntimeConfig lastRuntimeConfig_;
+    
+    // Tree reuse support (CrazyAra-style)
+    std::shared_ptr<Node> ownNextRoot_;      // Expected next root after our move
+    std::shared_ptr<Node> opponentsNextRoot_; // Expected next root after opponent's move
+    std::string ownNextRootSignature_;        // Exact board behind ownNextRoot_
+    std::string opponentsNextRootSignature_;  // Exact board behind opponentsNextRoot_
+    uint64_t lastSearchHash_ = 0;            // Hash of last search position
+    
+    // Garbage collection thread for async tree cleanup
+    GCThread gcThread_;
+
+    void ensure_worker_pool(size_t workerCount);
+    void worker_loop(size_t workerIndex, uint64_t observedGeneration);
+    void dispatch_workers(const Board& board,
+                          const std::vector<Engine*>& engines,
+                          SearchInfo& searchInfo,
+                          bool teamHasTimeAdvantage,
+                          size_t targetNodes,
+                          int moveTimeMs,
+                          size_t workerCount);
+    void wait_for_workers();
+
+public:
+    /**
+     * @brief Constructs a multi-threaded Agent with MCGS support.
+    * @param numThreads Search threads per engine (0 = use SearchParams::NUM_SEARCH_THREADS)
+     */
+    Agent(int numThreads = 0);
+
+    /**
+     * @brief Destructor to clean up resources.
+     */
+    ~Agent();
+
+    /**
+     * @brief Runs a UCI search.
+     * @param board The board on which to perform the search.
+     * @param engines A vector of engine pointers to use during the search.
+     * @param side The side to move.
+     * @param teamHasTimeAdvantage If true, team is ahead on time and can double-sit.
+     * @param options Search options (stopping conditions, verbosity, noise).
+     * @return The best joint action found.
+     */
+    JointActionCandidate run_search(Board& board, const std::vector<Engine*>& engines, 
+                                    Stockfish::Color side, bool teamHasTimeAdvantage,
+                                    const SearchOptions& options);
+
+    /** Returns an immutable snapshot of the expanded root edges after search. */
+    std::vector<RootEdgeStats> root_edge_stats() const;
+
+    /** Returns the evaluated Q-value of the root node after search. */
+    float root_q() const;
+    
+    /**
+     * @brief Extracts PV line starting from a specific child index.
+     * @param board The current board position.
+     * @param childIdx The child index to start the PV from.
+     * @param maxDepth Maximum number of moves to extract in the PV.
+     * @return Space-separated sequence of joint moves.
+     */
+    std::string extract_pv_from_child(Board& board, int childIdx, int maxDepth);
+
+    /**
+     * @brief Extracts the best move from the root node after search.
+     * @param board The board state for move formatting.
+     * @return String representation of the best joint move.
+     */
+    std::string extract_best_move(Board& board);
+
+    /**
+     * @brief Extracts the principal variation (PV) by following most-visited children.
+     * @param board The current board position.
+     * @param maxDepth Maximum number of moves to extract in the PV.
+     * @return Space-separated sequence of joint moves.
+     */
+    std::string extract_pv(Board& board, int maxDepth);
+
+    /**
+     * @brief Sets the running state of the agent.
+     * @param value Boolean indicating whether the agent should be running.
+     */
+    void set_is_running(bool value);
+
+    /**
+     * @brief Checks if the agent is currently running.
+     * @return true if running, false otherwise.
+     */
+    bool is_running();
+    
+    /**
+     * @brief Set the hash table size in MB.
+     * 
+     * Resizes the transposition table used for MCGS.
+     * @param sizeMB Size in megabytes (1 - 33554432)
+     */
+    void setHashSize(size_t sizeMB);
+
+    /**
+     * @brief Discard all search state retained between moves.
+     */
+    void reset_search_state();
+    
+    /**
+     * @brief Exact positional identity of a board (both FENs, pockets included).
+     *
+     * Used instead of the search hash when adopting a retained subtree, because
+     * the hash mixes in repetition history that a UCI position reconstruction
+     * discards.
+     */
+    static std::string board_signature(Board& board);
+
+    /**
+     * @brief Try to reuse the search tree from a previous search.
+     *
+     * Checks whether the current position matches a saved next-root candidate.
+     * @param positionHash Hash of the current position.
+     * @param teamSide Team to play at the current position.
+     * @param signature Exact board signature of the current position.
+     * @return Shared pointer to reusable root, or nullptr if no reuse possible
+     */
+    std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash,
+                                         Stockfish::Color teamSide,
+                                         const std::string& signature);
+    
+    /**
+     * @brief Store next-root candidates for tree reuse.
+     * 
+     * Called after search completes to save references to likely next positions:
+     * - ownNextRoot_: Most-visited child (our expected move)
+     * - opponentsNextRoot_: Most-visited grandchild (opponent's response)
+     */
+    void store_next_root_candidates(Board& board);
+    
+};

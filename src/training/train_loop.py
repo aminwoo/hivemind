@@ -14,6 +14,7 @@ from configs.train_config import TrainConfig, TrainObjects, rl_train_config
 from configs.main_config import main_config
 from src.training.data_loaders import load_parquet_shard, load_rl_data_from_directory, load_rl_parquet_shard, RLDataset, StreamingRLDataset, CombinedRLDataset
 from src.preprocessing.convert_selfplay_data import (
+    DEFAULT_Q_VALUE_RATIO,
     DEFAULT_REPLAY_FILES,
     DEFAULT_REPLAY_SELECTION_FRACTION,
     DEFAULT_RL_VALIDATION_FRACTION,
@@ -179,6 +180,25 @@ def _checkpoint_progress(checkpoint) -> tuple[int, int]:
     )
 
 
+def get_model_prefix(
+    mode: str,
+    iteration: int | str = None,
+    architecture: str = "risev33",
+    val_loss: float = None,
+    policy_acc: float = None,
+) -> str:
+    """Generate model file prefix adhering to option 1 naming scheme."""
+    if mode == "rl":
+        iter_str = f"it{int(iteration):02d}" if isinstance(iteration, (int, float)) or (isinstance(iteration, str) and iteration.isdigit()) else f"{iteration}"
+        if val_loss is not None and policy_acc is not None:
+            return f"hivemind-rl-{iter_str}-{architecture}-loss{val_loss:.3f}-p{policy_acc * 100:.1f}"
+        return f"hivemind-rl-{iter_str}-{architecture}"
+    else:
+        if val_loss is not None and policy_acc is not None:
+            return f"hivemind-sl-{architecture}-loss{val_loss:.3f}-p{policy_acc * 100:.1f}"
+        return f"hivemind-sl-{architecture}"
+
+
 def save_final_rl_checkpoint(
     model,
     optimizer,
@@ -186,10 +206,11 @@ def save_final_rl_checkpoint(
     training_iteration: int = None,
     evaluation_step: int = None,
     batch_steps: int = None,
+    model_prefix: str = "hivemind-rl-final",
 ) -> Path:
     """Save the final trainable RL state for the next self-play iteration."""
     weights_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = weights_dir / "model-rl-final.tar"
+    checkpoint_path = weights_dir / f"{model_prefix}.tar"
     save_torch_state(
         model,
         optimizer,
@@ -306,7 +327,8 @@ def train_supervised(
 
 def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
              augment_flip: bool = True, architecture: str = "risev33",
-             batch_size: int = None, precision: str = None):
+             batch_size: int = None, precision: str = None,
+             iteration_label: str = None):
     """
     Run RL training on self-play data.
     
@@ -315,6 +337,7 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
         val_data_dir: Directory containing validation parquet files
         checkpoint_path: Optional path to load model weights from
         augment_flip: If True, use board flip augmentation to double training data
+        iteration_label: Optional label for iteration (e.g. "9" or "it09")
     """
     import glob
     from pathlib import Path as PathLib
@@ -423,6 +446,12 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
     trainer = TrainerAgentPytorch(model, val_loader, tc, to, use_rtpt=True, 
                                   is_rl=True, rl_train_loader=train_loader)
     trainer.train()
+
+    # Determine model prefix using Option 1 naming convention: hivemind-rl-it{N}-{arch}-loss{val_loss}-p{policy_acc}
+    val_loss = trainer.val_loss_best if trainer.val_loss_best is not None else 0.0
+    val_p_acc = trainer.val_p_acc_best if trainer.val_p_acc_best is not None else 0.0
+    iter_label = iteration_label if iteration_label else "01"
+    model_prefix = get_model_prefix("rl", iter_label, architecture, val_loss, val_p_acc)
     
     # Save a trainable checkpoint before ONNX conversion mutates export state.
     final_checkpoint = save_final_rl_checkpoint(
@@ -432,15 +461,15 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
         training_iteration=trainer.cur_it,
         evaluation_step=trainer.k_steps,
         batch_steps=tc.batch_steps,
+        model_prefix=model_prefix,
     )
     print(f"\nFinal RL checkpoint saved to {final_checkpoint}")
 
-    print("Exporting final model to ONNX...")
+    print(f"Exporting final model to ONNX with prefix: {model_prefix}...")
     ctx = get_context(tc.context, tc.device_id)
     dummy_input = torch.zeros(1, NUM_BUGHOUSE_CHANNELS, 8, 8).to(ctx)
-    model_prefix = f"model-rl-final"
     export_to_onnx(model, 1, dummy_input, weights_dir, model_prefix, True, True)
-    print(f"Final RL ONNX exported under {weights_dir}")
+    print(f"Final RL ONNX exported under {weights_dir} as {model_prefix}.onnx")
 
 
 if __name__ == '__main__':
@@ -483,12 +512,14 @@ if __name__ == '__main__':
     parser.add_argument('--replay-dir', type=str, default=None,
                         help='Archived self-play directory used as CrazyAra-style replay memory')
     parser.add_argument('--replay-files', type=int, default=DEFAULT_REPLAY_FILES,
-                        help='Number of archived HVM3 chunks to include (default: 5)')
+                        help=f'Number of archived HVM chunks to include (default: {DEFAULT_REPLAY_FILES} chunks / 409,600 samples)')
+    parser.add_argument('--all-replay', action='store_true',
+                        help='Include all archived HVM chunks from replay-dir instead of sampling a subset')
     parser.add_argument(
         '--replay-selection-fraction',
         type=float,
         default=DEFAULT_REPLAY_SELECTION_FRACTION,
-        help='Newest fraction of replay chunks eligible for selection (default: 0.05)',
+        help=f'Newest fraction of replay chunks eligible for selection (default: {DEFAULT_REPLAY_SELECTION_FRACTION})',
     )
     parser.add_argument('--rl-output-dir', type=str, default=None,
                         help='Generated train/validation Parquet directory (default: <selfplay-dir>/rl_data)')
@@ -496,7 +527,7 @@ if __name__ == '__main__':
         '--validation-fraction',
         type=float,
         default=DEFAULT_RL_VALIDATION_FRACTION,
-        help='Fraction of complete games reserved for validation (default: 0.02)',
+        help=f'Fraction of complete games reserved for validation (default: {DEFAULT_RL_VALIDATION_FRACTION})',
     )
     parser.add_argument('--split-seed', type=int, default=42,
                         help='Deterministic game-level split seed (default: 42)')
@@ -506,6 +537,14 @@ if __name__ == '__main__':
                         help='Supervised training Parquet directory')
     parser.add_argument('--sl-validation-shard', type=str, default=None,
                         help='Supervised validation Parquet shard')
+    parser.add_argument('--iteration', type=str, default=None,
+                        help='RL iteration label for model naming (e.g. "9" or "it09", default: auto-detected from selfplay-dir)')
+    parser.add_argument(
+        '--q-value-ratio',
+        type=float,
+        default=DEFAULT_Q_VALUE_RATIO,
+        help=f'Ratio of root Q-value to mix with game outcome (default: {DEFAULT_Q_VALUE_RATIO})',
+    )
     
     args = parser.parse_args()
 
@@ -553,15 +592,26 @@ if __name__ == '__main__':
                     if (replay_root / "training_data").is_dir()
                     else replay_root
                 )
+            replay_files = None if args.all_replay else args.replay_files
             train_path, val_path, _, _ = convert_to_split_parquet(
                 hvm_path,
                 output_path,
                 validation_fraction=args.validation_fraction,
                 split_seed=args.split_seed,
                 replay_input_dir=replay_path,
-                replay_files=args.replay_files,
+                replay_files=replay_files,
                 replay_selection_fraction=args.replay_selection_fraction,
+                q_value_ratio=args.q_value_ratio,
             )
+            # Auto-detect iteration label from selfplay_path if not explicitly provided
+            iter_label = args.iteration
+            if not iter_label:
+                dir_name = selfplay_path.name if selfplay_path.name != "training_data" else selfplay_path.parent.name
+                if "iteration-" in dir_name:
+                    iter_label = dir_name.split("iteration-")[-1]
+                elif "it" in dir_name:
+                    iter_label = dir_name.split("it")[-1]
+
             train_rl(
                 str(train_path),
                 str(val_path),
@@ -569,4 +619,5 @@ if __name__ == '__main__':
                 architecture=args.architecture,
                 batch_size=args.batch_size,
                 precision=args.precision,
+                iteration_label=iter_label,
             )

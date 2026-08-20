@@ -22,11 +22,16 @@ from src.training.train_loop import (
 )
 
 
-def _write_chunk(path, game_ids):
+def _write_chunk(path, game_ids, version=4):
+    magic = b"HVM4" if version == 4 else b"HVM3"
     with path.open("wb") as output:
-        output.write(HEADER.pack(b"HVM3", 3, 74, 4672, len(game_ids)))
+        output.write(HEADER.pack(magic, version, 74, 4672, len(game_ids)))
         for game_id in game_ids:
-            output.write(SAMPLE_METADATA.pack(game_id, 100, 1, 20, 0, 0, 1, 2))
+            if version == 4:
+                output.write(SAMPLE_METADATA.pack(game_id, 100, 1, 20, 0, 0, 1, 2, 0.5))
+            else:
+                from src.preprocessing.convert_selfplay_data import SAMPLE_METADATA_V3
+                output.write(SAMPLE_METADATA_V3.pack(game_id, 100, 1, 20, 0, 0, 1, 2))
             output.write(bytes(NB_INPUT_VALUES))
             for _ in range(2):
                 output.write(struct.pack("<H", 1))
@@ -146,8 +151,25 @@ def test_split_conversion_rejects_output_containing_source(tmp_path):
     assert source_chunk.exists()
 
 
-def test_default_validation_fraction_is_two_percent():
-    assert DEFAULT_RL_VALIDATION_FRACTION == 0.02
+def test_default_validation_fraction_is_ten_percent():
+    assert DEFAULT_RL_VALIDATION_FRACTION == 0.10
+
+
+def test_select_replay_files_uses_all_when_replay_files_is_none_or_all(tmp_path):
+    from src.preprocessing.convert_selfplay_data import select_replay_files
+
+    replay_dir = tmp_path / "replay_data"
+    replay_dir.mkdir()
+    for index in range(5):
+        _write_chunk(replay_dir / f"chunk_{index:06d}.hvm", [index])
+
+    # replay_files=None -> returns all chunks
+    all_chunks = select_replay_files(replay_dir, replay_files=None, replay_selection_fraction=0.05, seed=42)
+    assert len(all_chunks) == 5
+
+    # replay_files >= available -> returns all chunks without error
+    all_chunks_capped = select_replay_files(replay_dir, replay_files=25, replay_selection_fraction=0.05, seed=42)
+    assert len(all_chunks_capped) == 5
 
 
 def test_model_artifacts_use_separate_directories():
@@ -160,8 +182,42 @@ def test_final_rl_checkpoint_is_resumable(tmp_path):
     model = torch.nn.Linear(2, 1)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
-    checkpoint_path = save_final_rl_checkpoint(model, optimizer, tmp_path)
+    checkpoint_path = save_final_rl_checkpoint(model, optimizer, tmp_path, model_prefix="hivemind-rl-it01-risev33")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-    assert checkpoint_path.name == "model-rl-final.tar"
+    assert checkpoint_path.name == "hivemind-rl-it01-risev33.tar"
     assert set(checkpoint) == {"model_state_dict", "optimizer_state_dict"}
+
+
+def test_soft_cross_entropy_honors_sample_weights():
+    from src.training.trainer_agent import SoftCrossEntropyLoss, SampleWeightedLoss
+
+    loss_fn = SampleWeightedLoss(SoftCrossEntropyLoss)
+    logits = torch.tensor([[10.0, 0.0], [0.0, 10.0]])
+    targets = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    weights = torch.tensor([1.0, 0.0])
+
+    loss = loss_fn(logits, targets, weights)
+    # The second sample has weight 0.0, so only the first (correct prediction) should contribute
+    assert loss.item() < 0.01
+
+
+def test_q_value_blending_in_shard_reading(tmp_path):
+    from src.preprocessing.convert_selfplay_data import read_binary_shard
+
+    chunk_v4 = tmp_path / "chunk_v4.hvm"
+    _write_chunk(chunk_v4, [1], version=4)
+    # in _write_chunk: outcome = 1, root_q = 0.5
+    # with q_value_ratio = 0.15: blended = 0.85 * 1.0 + 0.15 * 0.5 = 0.925
+    samples = read_binary_shard(chunk_v4, q_value_ratio=0.15)
+    assert len(samples) == 1    
+    assert np.isclose(samples[0]["y_value"], 0.925)
+    assert np.isclose(samples[0]["root_q"], 0.5)
+    assert np.isclose(samples[0]["outcome"], 1.0)
+
+    chunk_v3 = tmp_path / "chunk_v3.hvm"
+    _write_chunk(chunk_v3, [2], version=3)
+    samples_v3 = read_binary_shard(chunk_v3, q_value_ratio=0.15)
+    assert len(samples_v3) == 1
+    assert np.isclose(samples_v3[0]["y_value"], 1.0)
+    assert np.isclose(samples_v3[0]["root_q"], 1.0)

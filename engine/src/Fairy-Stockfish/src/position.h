@@ -26,13 +26,10 @@
 #include <functional>
 
 #include "bitboard.h"
-#include "evaluate.h"
-#include "psqt.h"
 #include "types.h"
 #include "variant.h"
 #include "movegen.h"
-
-#include "nnue/nnue_accumulator.h"
+#include "stubs.h"
 
 namespace Stockfish {
 
