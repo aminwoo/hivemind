@@ -28,15 +28,18 @@ struct SearchOptions {
     // UCI mode options
     bool verbose = false;        // Output UCI info strings (info, bestmove)
     int multiPV = 1;             // Number of principal variations to output
+    bool isPonder = false;       // Ponder mode: think continuously until ponderhit or stop
+    bool enablePonder = true;    // Output ponder move with bestmove
     
     SearchParams::RuntimeConfig search;
     
     // Convenience constructors
-    static SearchOptions uci(int moveTimeMs, int multiPV = 1) {
+    static SearchOptions uci(int moveTimeMs, int multiPV = 1, bool isPonder = false) {
         SearchOptions opts;
         opts.moveTimeMs = moveTimeMs;
         opts.verbose = true;
         opts.multiPV = multiPV;
+        opts.isPonder = isPonder;
         return opts;
     }
     
@@ -79,6 +82,8 @@ private:
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
     int numThreads;                                          // Search threads per engine
     SearchParams::RuntimeConfig lastRuntimeConfig_;
+    std::atomic<bool> isPondering_{false};                   // Whether current search is in ponder mode
+    std::atomic<SearchInfo*> currentSearchInfo_{nullptr};    // Active search info pointer
     
     // Tree reuse support (CrazyAra-style)
     std::shared_ptr<Node> ownNextRoot_;      // Expected next root after our move
@@ -149,12 +154,31 @@ public:
     std::string extract_best_move(Board& board);
 
     /**
+     * @brief Extracts the predicted opponent reply from the root node after search.
+     * @param board The board state for move formatting.
+     * @return String representation of the predicted opponent joint move, or empty string.
+     */
+    std::string extract_ponder_move(Board& board);
+
+    /**
      * @brief Extracts the principal variation (PV) by following most-visited children.
      * @param board The current board position.
      * @param maxDepth Maximum number of moves to extract in the PV.
      * @return Space-separated sequence of joint moves.
      */
     std::string extract_pv(Board& board, int maxDepth);
+
+    /**
+     * @brief Signals ponderhit from the UCI interface when the expected ponder move was played.
+     * Switches search from ponder mode to active timed search, resetting search time.
+     */
+    void ponderhit();
+
+    /**
+     * @brief Checks if the agent is currently in ponder mode.
+     * @return true if pondering, false otherwise.
+     */
+    bool is_pondering() const;
 
     /**
      * @brief Sets the running state of the agent.

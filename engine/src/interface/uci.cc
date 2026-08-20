@@ -143,10 +143,13 @@ void UCI::go(std::istringstream& is) {
     std::string token;
     int moveTime = 0;
     size_t nodes = 0;
+    bool isPonder = false;
     
     // Parse go parameters
     while (is >> token) {
-        if (token == "movetime") {
+        if (token == "ponder") {
+            isPonder = true;
+        } else if (token == "movetime") {
             is >> moveTime;
         } else if (token == "nodes") {
             is >> nodes;
@@ -173,15 +176,16 @@ void UCI::go(std::istringstream& is) {
     // Build search options based on what was specified
     SearchOptions opts;
     if (nodes > 0) {
-        opts = SearchOptions::uci(static_cast<int>(nodes), multiPV);
+        opts = SearchOptions::uci(static_cast<int>(nodes), multiPV, isPonder);
         opts.moveTimeMs = 0;  // Node-based search
         opts.targetNodes = nodes;
     } else if (moveTime > 0) {
-        opts = SearchOptions::uci(moveTime, multiPV);
+        opts = SearchOptions::uci(moveTime, multiPV, isPonder);
     } else {
         // Default to 1 second if nothing specified
-        opts = SearchOptions::uci(1000, multiPV);
+        opts = SearchOptions::uci(1000, multiPV, isPonder);
     }
+    opts.enablePonder = ponderEnabled;
     opts.search = searchConfig;
     
     // Launch the search thread
@@ -202,6 +206,12 @@ void UCI::go(std::istringstream& is) {
 
     while (ongoingSearch.load(std::memory_order_acquire) && !agent->is_running()) {
         std::this_thread::yield();
+    }
+}
+
+void UCI::ponderhit() {
+    if (agent && ongoingSearch.load(std::memory_order_acquire)) {
+        agent->ponderhit();
     }
 }
 
@@ -231,6 +241,11 @@ void UCI::setoption(std::istringstream& is) {
         if (mpv >= 1 && mpv <= 500) {
             multiPV = mpv;
             std::cout << "info string MultiPV set to " << multiPV << std::endl;
+        }
+    } else if (name == "Ponder") {
+        if (value == "true" || value == "false") {
+            ponderEnabled = (value == "true");
+            std::cout << "info string Ponder set to " << value << std::endl;
         }
     } else if (name == "DrawContemptPermille") {
         int permille = std::clamp(std::stoi(value), 0, 1000);
@@ -273,6 +288,7 @@ void UCI::send_uci_response() {
     cout << "id author aminwoo\n" << endl;
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
+    cout << "option name Ponder type check default true" << endl;
     cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
     cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
@@ -393,6 +409,7 @@ void UCI::loop() {
             if (token == "uci")             send_uci_response();
             else if (token == "isready")    cout << "readyok" << endl;
             else if (token == "go")         go(is);
+            else if (token == "ponderhit")  ponderhit();
             else if (token == "setoption")  setoption(is);
             else if (token == "position")   position(is);
             else if (token == "ucinewgame") new_game();

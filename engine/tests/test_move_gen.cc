@@ -8,6 +8,7 @@
 #include "environment/planes.h"
 #include "search/search_params.h"
 #include "search/searchthread.h"
+#include "search/agent.h"
 #include "search/transposition_table.h"
 #include "common/utils.h"
 #include "common/globals.h"
@@ -1287,6 +1288,34 @@ TEST(SearchParamsTest, EarlyStoppingRequiresFactoredVisitLead) {
     EXPECT_TRUE(SearchParams::has_insurmountable_visit_lead(100.0f, 40.0f, 2.0f));
     EXPECT_FALSE(SearchParams::has_insurmountable_visit_lead(100.0f, 60.0f, 2.0f));
     EXPECT_FALSE(SearchParams::has_insurmountable_visit_lead(100.0f, 50.0f, 2.0f));
+}
+
+TEST(PonderModeTest, SearchInfoResetStartTime) {
+    auto start = std::chrono::steady_clock::now() - std::chrono::milliseconds(500);
+    SearchInfo info(start, 1000);
+    EXPECT_GE(info.elapsed(), 400.0);
+
+    info.reset_start_time();
+    EXPECT_LT(info.elapsed(), 100.0);
+}
+
+TEST(PonderModeTest, SearchOptionsPonderFlags) {
+    SearchOptions normalOpts = SearchOptions::uci(1000, 1, false);
+    EXPECT_FALSE(normalOpts.isPonder);
+    EXPECT_TRUE(normalOpts.enablePonder);
+
+    SearchOptions ponderOpts = SearchOptions::uci(1000, 1, true);
+    EXPECT_TRUE(ponderOpts.isPonder);
+    EXPECT_TRUE(ponderOpts.enablePonder);
+}
+
+TEST(PonderModeTest, AgentPonderHitTransitions) {
+    Agent agent;
+    EXPECT_FALSE(agent.is_pondering());
+
+    SearchInfo info(std::chrono::steady_clock::now() - std::chrono::milliseconds(300), 1000);
+    agent.ponderhit(); // Safe to call when not running
+    EXPECT_FALSE(agent.is_pondering());
 }
 
 TEST_F(EngineTest, InitialMoves) {
