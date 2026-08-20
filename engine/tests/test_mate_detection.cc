@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
-#include "../src/board.h"
-#include "../src/constants.h"
+#include "environment/board.h"
+#include "environment/constants.h"
+#include "common/globals.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/bitboard.h"
@@ -908,4 +909,20 @@ TEST_F(MateDetectionTest, ReportedQueenDropD2IsMateInOne) {
         << "Q@d2 should be mate in one in this exact position";
     EXPECT_TRUE(board.is_checkmate(opponentTeam, true))
         << "Immediate Q@d2 mate must not depend on clock advantage";
+}
+
+TEST_F(MateDetectionTest, ReportedQueenDropE8IsMateInOne) {
+    Board board;
+    board.set(
+        "r1bk1b1r/ppp1p1pp/8/6Nn/B7/2Nn4/PP1B1PPP/5K1R/PPNBRQpbbbq w - - 0 2|"
+        "r2qr1k1/p1p1ppP1/2p3nQ/3p2Pp/3P3n/2N1PP2/PPPp3P/R2K2R1/pP w - - 1 2");
+
+    Stockfish::Move qDropE8 = Stockfish::UCI::to_move(*board.pos[BOARD_A], "Q@e8");
+    ASSERT_NE(qDropE8, Stockfish::MOVE_NONE);
+
+    board.push_move(BOARD_A, qDropE8);
+    EXPECT_TRUE(board.is_in_check(BOARD_A));
+    EXPECT_TRUE(board.legal_moves(BOARD_A).empty());
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, true));
 }

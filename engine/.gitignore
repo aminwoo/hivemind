@@ -78,6 +78,7 @@ Testing/
 .cache/
 
 networks/
+models/
 changelog.txt
 selfplay_games/
 tournament_results/

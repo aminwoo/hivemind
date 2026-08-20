@@ -1,11 +1,12 @@
-#include "uci.h"
-#include "constants.h"
-#include "globals.h"
-#include "engine.h"
-#include "onnx_utils.h"
-#include "benchmark.h"
-#include "selfplay.h"
-#include "tournament.h"
+#include "interface/uci.h"
+#include "environment/constants.h"
+#include "common/globals.h"
+#include "nn/engine.h"
+#include "nn/onnx_utils.h"
+#include "tools/benchmark.h"
+#include "tools/selfplay.h"
+#include "tools/tournament.h"
+#include "search/search_params.h"
 #include "Fairy-Stockfish/src/bitboard.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
@@ -16,6 +17,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <vector>
 
@@ -25,17 +27,17 @@ void printUsage(const char* progName) {
     cout << "Usage: " << progName << " [options]" << endl;
     cout << "Options:" << endl;
     cout << "  --log <level>      Set log level: none, info, debug (default: none)" << endl;
-    cout << "  --network <onnx>   Load this model in UCI mode instead of scanning ./networks" << endl;
+    cout << "  --model <onnx>     Load this model in UCI mode (or --network, default: scans ./models)" << endl;
     cout << "  bench [iters]      Run inference benchmark" << endl;
     cout << "  perft [depth]      Run move generation benchmark" << endl;
     cout << "  selfplay [options] Generate HVM3 training chunks and bughouse PGN" << endl;
-    cout << "    --network <onnx> --games <n> --nodes <n> --output <dir> --seed <n>" << endl;
+    cout << "    --model <onnx> --games <n> --nodes <n> --output <dir> --seed <n>" << endl;
     cout << "    --max-macro-plies <n> --raw-policy-mean-macro-plies <x>" << endl;
     cout << "    --raw-policy-max-macro-plies <n> --raw-policy-high-temp-probability <x>" << endl;
     cout << "    --mcts-temperature <x> --mcts-temperature-decay <x>" << endl;
     cout << "    --node-random-factor <x>" << endl;
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
-    cout << "  tournament [options] Run a paired network-vs-network tournament" << endl;
+    cout << "  tournament [options] Run a paired model-vs-model tournament" << endl;
     cout << "    --contender <onnx> --baseline <onnx> --games <even-n>" << endl;
     cout << "    --nodes <n> or --movetime <ms>" << endl;
     cout << "    --contender-batch-size <n> --baseline-batch-size <n>" << endl;
@@ -83,9 +85,9 @@ int main(int argc, char* argv[]) {
         cout << "Running inference benchmark..." << endl;
         Engine engine(0);
         
-        const std::string onnxFile = findLatestOnnxFile("./networks");
+        const std::string onnxFile = resolveModelPath();
         if (onnxFile.empty()) {
-            cerr << "No ONNX file found in ./networks" << endl;
+            cerr << "No ONNX model found in ./models or ./engine/models" << endl;
             return EXIT_FAILURE;
         }
         const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v3");
@@ -109,7 +111,7 @@ int main(int argc, char* argv[]) {
 
     if (argc > 1 && string(argv[1]) == "selfplay") {
         SelfPlayConfig config;
-        filesystem::path networkPath;
+        filesystem::path modelPath;
         try {
             for (int i = 2; i < argc; ++i) {
                 const string option = argv[i];
@@ -119,7 +121,7 @@ int main(int argc, char* argv[]) {
                 const string value = argv[++i];
                 if (option == "--games") config.games = stoull(value);
                 else if (option == "--nodes") config.nodes = stoull(value);
-                else if (option == "--network") networkPath = value;
+                else if (option == "--model" || option == "--network") modelPath = value;
                 else if (option == "--output") config.outputDirectory = value;
                 else if (option == "--seed") config.seed = stoull(value);
                 else if (option == "--max-macro-plies") config.maxMacroPlies = stoull(value);
@@ -128,6 +130,11 @@ int main(int argc, char* argv[]) {
                 else if (option == "--raw-policy-high-temp-probability") config.rawPolicyHighTemperatureProbability = stod(value);
                 else if (option == "--mcts-temperature") config.mctsTemperature = stod(value);
                 else if (option == "--mcts-temperature-decay") config.mctsTemperatureDecay = stod(value);
+                else if (option == "--mcts-temperature-plies") config.mctsTemperaturePlies = stoull(value);
+                else if (option == "--resign-threshold") config.resignThreshold = stof(value);
+                else if (option == "--resign-consecutive-plies") config.resignConsecutivePlies = stoull(value);
+                else if (option == "--resign-disable-fraction") config.resignDisableFraction = stod(value);
+                else if (option == "--q-value-ratio") config.qValueRatio = stod(value);
                 else if (option == "--node-random-factor") config.nodeRandomFactor = stod(value);
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
@@ -139,17 +146,9 @@ int main(int argc, char* argv[]) {
             return EXIT_FAILURE;
         }
 
-        if (networkPath.empty()) {
-            const filesystem::path networkDirectory = filesystem::exists("./networks")
-                ? filesystem::path("./networks")
-                : filesystem::path("./engine/networks");
-            if (filesystem::exists(networkDirectory)) {
-                networkPath = findLatestOnnxFile(networkDirectory.string());
-            }
-        }
-        const string onnxFile = networkPath.string();
+        const string onnxFile = resolveModelPath(modelPath.string());
         if (onnxFile.empty()) {
-            cerr << "No ONNX model found; pass --network <onnx>" << endl;
+            cerr << "No ONNX model found; pass --model <onnx>" << endl;
             return EXIT_FAILURE;
         }
         vector<unique_ptr<Engine>> ownedEngines;
@@ -227,11 +226,11 @@ int main(int argc, char* argv[]) {
         const string baselineEngine = getEnginePath(
             baselinePath.string(), "fp16", config.baselineBatchSize, 0, "v3");
         if (!contender.loadNetwork(contenderPath.string(), contenderEngine)) {
-            cerr << "Failed to load contender network" << endl;
+            cerr << "Failed to load contender model" << endl;
             return EXIT_FAILURE;
         }
         if (!baseline.loadNetwork(baselinePath.string(), baselineEngine)) {
-            cerr << "Failed to load baseline network" << endl;
+            cerr << "Failed to load baseline model" << endl;
             return EXIT_FAILURE;
         }
         try {
@@ -246,17 +245,17 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    filesystem::path networkPath;
+    filesystem::path modelPath;
     try {
         for (int i = 1; i < argc; ++i) {
             const string option = argv[i];
-            if (option != "--network") {
+            if (option != "--model" && option != "--network") {
                 throw invalid_argument("Unknown UCI option: " + option);
             }
             if (i + 1 >= argc) {
-                throw invalid_argument("Missing value for --network");
+                throw invalid_argument("Missing value for " + option);
             }
-            networkPath = argv[++i];
+            modelPath = argv[++i];
         }
     } catch (const exception& error) {
         cerr << "Invalid UCI arguments: " << error.what() << endl;
@@ -269,7 +268,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Hivemind 1.0" << std::endl;
 
-    if (!uci.initializeEngines(deviceIds, networkPath.string())) {
+    if (!uci.initializeEngines(deviceIds, modelPath.string())) {
         return EXIT_FAILURE;
     }
     uci.loop();

@@ -3,7 +3,11 @@
 #include <filesystem>
 #include <fstream>
 
-#include "onnx_utils.h"
+#include "nn/onnx_utils.h"
+
+TEST(OnnxUtilsTest, ResolveModelPathReturnsExplicitPathWhenProvided) {
+    EXPECT_EQ(resolveModelPath("/custom/path/model.onnx"), "/custom/path/model.onnx");
+}
 
 TEST(OnnxUtilsTest, MissingDirectoryHasNoLatestModel) {
     const auto missingDirectory = std::filesystem::temp_directory_path()
