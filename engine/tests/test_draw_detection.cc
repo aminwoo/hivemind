@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <sstream>
-#include "../src/board.h"
-#include "../src/constants.h"
+#include "environment/board.h"
+#include "environment/constants.h"
+#include "common/globals.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/bitboard.h"

@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-#include "tournament.h"
+#include "tools/tournament.h"
 
 TEST(TournamentConfigTest, SelectsPwCoefficientByNetwork) {
     TournamentConfig config;

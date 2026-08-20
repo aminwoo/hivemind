@@ -28,9 +28,7 @@
 #include "movegen.h"
 #include "position.h"
 #include "thread.h"
-#include "tt.h"
-#include "uci.h"
-#include "syzygy/tbprobe.h"
+#include "stubs.h"
 
 using std::string;
 
@@ -111,22 +109,6 @@ std::ostream& operator<<(std::ostream& os, const Position& pos) {
   os << "\nChased: ";
   for (Bitboard b = pos.state()->chased; b; )
       os << UCI::square(pos, pop_lsb(b)) << " ";
-
-  if (    int(Tablebases::MaxCardinality) >= popcount(pos.pieces())
-      && Options["UCI_Variant"] == "chess"
-      && !pos.can_castle(ANY_CASTLING))
-  {
-      StateInfo st;
-      ASSERT_ALIGNED(&st, Eval::NNUE::CacheLineSize);
-
-      Position p;
-      p.set(pos.variant(), pos.fen(), pos.is_chess960(), &st, pos.this_thread());
-      Tablebases::ProbeState s1, s2;
-      Tablebases::WDLScore wdl = Tablebases::probe_wdl(p, &s1);
-      int dtz = Tablebases::probe_dtz(p, &s2);
-      os << "\nTablebases WDL: " << std::setw(4) << wdl << " (" << s1 << ")"
-         << "\nTablebases DTZ: " << std::setw(4) << dtz << " (" << s2 << ")";
-  }
 
   return os;
 }
@@ -502,7 +484,7 @@ Position& Position::set(const Variant* v, const string& fenStr, bool isChess960,
   }
 
   chess960 = isChess960 || v->chess960;
-  tsumeMode = Options["TsumeMode"];
+  tsumeMode = false;
   thisThread = th;
   set_state(st);
 
@@ -638,7 +620,8 @@ Position& Position::set(const string& code, Color c, StateInfo* si) {
   assert(sides[0].length() > 0 && sides[0].length() < 8);
   assert(sides[1].length() > 0 && sides[1].length() < 8);
 
-  std::transform(sides[c].begin(), sides[c].end(), sides[c].begin(), tolower);
+  std::transform(sides[c].begin(), sides[c].end(), sides[c].begin(),
+                 [](unsigned char ch) { return std::tolower(ch); });
 
   string n = std::to_string(FILE_NB);
   string fenStr =  n + "/" + sides[0] + char(FILE_NB - sides[0].length() + '0') + "/" + n + "/" + n + "/" + n + "/"
@@ -1498,9 +1481,6 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
       // Update material hash key and prefetch access to materialTable
       k ^= Zobrist::psq[captured][capsq];
       st->materialKey ^= Zobrist::psq[captured][pieceCount[captured]];
-#ifndef NO_THREADS
-      prefetch(thisThread->materialTable[st->materialKey]);
-#endif
       // Reset rule 50 counter
       st->rule50 = 0;
   }
@@ -2073,7 +2053,6 @@ void Position::do_null_move(StateInfo& newSt) {
   }
 
   st->key ^= Zobrist::side;
-  prefetch(TT.first_entry(key()));
 
   ++st->rule50;
   st->pliesFromNull = 0;

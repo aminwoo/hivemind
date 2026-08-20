@@ -7,6 +7,7 @@ option(HIVEMIND_USE_CCACHE "Use ccache when available" ON)
 
 # Set C++ version and optimization level
 set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(HIVEMIND_USE_CCACHE)
     find_program(CCACHE_PROGRAM ccache)
@@ -30,26 +31,32 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${HIVEMIND_COMMON_FLAGS}")
 
 # Add source files
 set(LIB_SOURCES
-    src/engine.cc
-    src/board.cc
-    src/node.cc
-    src/planes.cc
-    src/searchthread.cc
-    src/uci.cc
-    src/agent.cc
-    src/onnx_utils.cc
-    src/benchmark.cc
-    src/selfplay.cc
-    src/tournament.cc
-    src/zobrist.cc
-    src/globals.cc
+    src/common/globals.cc
+    src/environment/board.cc
+    src/environment/planes.cc
+    src/environment/zobrist.cc
+    src/nn/engine.cc
+    src/nn/onnx_utils.cc
+    src/search/agent.cc
+    src/search/node.cc
+    src/search/searchthread.cc
+    src/interface/uci.cc
+    src/tools/benchmark.cc
+    src/tools/selfplay.cc
+    src/tools/tournament.cc
 )
 
 # For finding FindTensorRT.cmake
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 
 if(NOT TensorRT_DIR)
-    set(TensorRT_DIR /usr/src/tensorrt/)
+    if(DEFINED ENV{TensorRT_DIR})
+        set(TensorRT_DIR $ENV{TensorRT_DIR})
+    elseif(EXISTS "/home/ben/opt/TensorRT-11.1.0.106")
+        set(TensorRT_DIR "/home/ben/opt/TensorRT-11.1.0.106")
+    else()
+        set(TensorRT_DIR /usr/src/tensorrt/)
+    endif()
 endif()
 if(NOT CUDA_TOOLKIT_ROOT_DIR)
     set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda)
