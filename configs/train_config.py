@@ -96,16 +96,12 @@ class TrainConfig:
 
     info_optimizer_name: str = "optimizer_name is the optimizer that used in the training loop to update the weights." \
                                "(e.g. nag, sgd, adam, adamw)"
-    optimizer_name: str = "nag"
+    optimizer_name: str = "adamw"
 
     info_max_lr: str = "max_lr defines the maximum learning rate used for training."
-    max_lr: float = 0.07 / div_factor
+    max_lr: float = 0.0003
     info_min_lr: str = "min_lr defines the minimum learning rate used for training."
-    min_lr: float = 0.00001 / div_factor
-
-    if "adam" in optimizer_name:
-        max_lr = 0.001001  # 1e-3
-        min_lr = 0.001
+    min_lr: float = 0.00001
 
     info_max_momentum: str = "max_momentum defines the maximum momentum factor used during training (only applicable to" \
                              "optimizers that are momentum based)"
@@ -195,6 +191,11 @@ class TrainConfig:
 def rl_train_config():
     tc = TrainConfig()
 
+    tc.optimizer_name = "nag"
+    tc.max_lr = 0.005 / tc.div_factor
+    tc.min_lr = 0.00005 / tc.div_factor
+    tc.wd = 1e-4
+
     tc.use_wdl = True
     tc.use_plys_to_end = True
 
@@ -203,16 +204,13 @@ def rl_train_config():
     tc.batch_steps = 100 * tc.div_factor
     tc.batch_size = int(1024 / tc.div_factor)
 
-    tc.max_lr = 0.001 / tc.div_factor
-    tc.min_lr = 0.00001 / tc.div_factor
-
-    tc.val_loss_factor = 0.5
-    tc.policy_loss_factor = 0.5
+    tc.val_loss_factor = 0.15
+    tc.policy_loss_factor = 0.7
     tc.plys_to_end_loss_factor = 0.01
-    tc.wdl_loss_factor = 0.1
+    tc.wdl_loss_factor = 0.15
 
     tc.nb_training_epochs = 1
-    tc.q_value_ratio = 0  # previously 0.15
+    tc.q_value_ratio = 0.0
     tc.sparse_policy_label = False
 
     return tc

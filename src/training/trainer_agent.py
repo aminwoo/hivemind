@@ -822,7 +822,12 @@ class SoftCrossEntropyLoss(_Loss):
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         log_softmax = torch.nn.LogSoftmax(dim=1)
-        return torch.mean(torch.sum(-target * log_softmax(input), 1))
+        loss = torch.sum(-target * log_softmax(input), 1)
+        if self.reduction == 'none':
+            return loss
+        elif self.reduction == 'sum':
+            return torch.sum(loss)
+        return torch.mean(loss)
 
 
 class SampleWeightedLoss(nn.Module):
