@@ -321,7 +321,8 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
             SearchThread* searchThread = searchThreads[workerIndex];
             if (moveTimeMs > 0) {
                 while (running &&
-                       searchInfo->elapsed() < searchInfo->get_effective_move_time()) {
+                       (isPondering_.load(std::memory_order_relaxed) ||
+                        searchInfo->elapsed() < searchInfo->get_effective_move_time())) {
                     if (SearchParams::ENABLE_MATE_EARLY_EXIT && rootNode
                         && rootNode->get_node_type() != NodeType::UNSOLVED) {
                         running = false;
@@ -332,7 +333,8 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                 }
             } else {
                 while (running &&
-                       static_cast<size_t>(searchInfo->get_nodes_searched()) < targetNodes) {
+                       (isPondering_.load(std::memory_order_relaxed) ||
+                        static_cast<size_t>(searchInfo->get_nodes_searched()) < targetNodes)) {
                     if (SearchParams::ENABLE_MATE_EARLY_EXIT && rootNode
                         && rootNode->get_node_type() != NodeType::UNSOLVED) {
                         running = false;
@@ -400,6 +402,8 @@ void Agent::wait_for_workers() {
 
 void Agent::reset_search_state() {
     std::unique_lock searchLock(searchMutex_);
+    isPondering_.store(false, std::memory_order_release);
+    currentSearchInfo_.store(nullptr, std::memory_order_release);
     auto oldRoot = std::move(rootNode);
     ownNextRoot_.reset();
     opponentsNextRoot_.reset();
@@ -527,6 +531,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
     
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTimeMs);
+    isPondering_.store(options.isPonder, std::memory_order_release);
+    currentSearchInfo_.store(&searchInfo, std::memory_order_release);
     
     // MCGS: Clear and set up transposition table for new search (if enabled)
     if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
@@ -567,9 +573,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         bool evalInitialized = false;
         int lastBestChildIdx = -1;
         
-        while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
+        while (running && (isPondering_.load(std::memory_order_relaxed)
+                           || searchInfo.elapsed() < searchInfo.get_effective_move_time())) {
             double remainingMs = searchInfo.get_effective_move_time() - searchInfo.elapsed();
-            int sleepMs = std::min(POLL_INTERVAL_MS, std::max(1, static_cast<int>(remainingMs)));
+            int sleepMs = isPondering_.load(std::memory_order_relaxed)
+                ? POLL_INTERVAL_MS
+                : std::min(POLL_INTERVAL_MS, std::max(1, static_cast<int>(remainingMs)));
             std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
             
             // Update NPS tracking
@@ -624,46 +633,48 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         break;
                     }
                     
-                    // Early stopping check (visit-based)
-                    if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
-                        double remaining = searchInfo.get_effective_move_time() - elapsedMs;
-                        float projectedVisits = static_cast<float>(secondMax) + 
-                                               static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
-                        
-                        // Stop if second-best can't catch up AND best move has better Q
-                        if (SearchParams::has_insurmountable_visit_lead(
-                            static_cast<float>(firstMax), projectedVisits) &&
-                            bestQ >= secondQ) {
-                            double savedMs = std::max(0.0, static_cast<double>(searchInfo.get_move_time()) - elapsedMs);
-                            cout << "info string Early stopping: saved " 
-                                 << static_cast<int>(savedMs) << "ms" << endl;
-                            running = false;
-                            break;
+                    if (!isPondering_.load(std::memory_order_relaxed)) {
+                        // Early stopping check (visit-based)
+                        if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
+                            double remaining = searchInfo.get_effective_move_time() - elapsedMs;
+                            float projectedVisits = static_cast<float>(secondMax) + 
+                                                   static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
+                            
+                            // Stop if second-best can't catch up AND best move has better Q
+                            if (SearchParams::has_insurmountable_visit_lead(
+                                static_cast<float>(firstMax), projectedVisits) &&
+                                bestQ >= secondQ) {
+                                double savedMs = std::max(0.0, static_cast<double>(searchInfo.get_move_time()) - elapsedMs);
+                                cout << "info string Early stopping: saved " 
+                                     << static_cast<int>(savedMs) << "ms" << endl;
+                                running = false;
+                                break;
+                            }
                         }
-                    }
-                    
-                    // Time extension check - extend if eval is falling or leading move changes late
-                    if (SearchParams::ENABLE_TIME_EXTENSION) {
-                        if (evalInitialized) {
-                            float evalDrop = lastCheckEval - bestQ;
-                            if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
+                        
+                        // Time extension check - extend if eval is falling or leading move changes late
+                        if (SearchParams::ENABLE_TIME_EXTENSION) {
+                            if (evalInitialized) {
+                                float evalDrop = lastCheckEval - bestQ;
+                                if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
+                                    if (searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
+                                                                  SearchParams::MAX_TIME_EXTENSIONS)) {
+                                        cout << "info string Extending search time (eval dropped by " 
+                                             << static_cast<int>(evalDrop * 100) << " cp)" << endl;
+                                    }
+                                }
+                                lastCheckEval = bestQ;
+                            }
+                            if (lastBestChildIdx >= 0 && firstIdx != lastBestChildIdx && 
+                                elapsedMs > searchInfo.get_move_time() * SearchParams::INSTABILITY_TIME_FRACTION) {
                                 if (searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
                                                               SearchParams::MAX_TIME_EXTENSIONS)) {
-                                    cout << "info string Extending search time (eval dropped by " 
-                                         << static_cast<int>(evalDrop * 100) << " cp)" << endl;
+                                    cout << "info string Extending search time (best move changed to " 
+                                         << firstIdx << ")" << endl;
                                 }
                             }
-                            lastCheckEval = bestQ;
+                            lastBestChildIdx = firstIdx;
                         }
-                        if (lastBestChildIdx >= 0 && firstIdx != lastBestChildIdx && 
-                            elapsedMs > searchInfo.get_move_time() * SearchParams::INSTABILITY_TIME_FRACTION) {
-                            if (searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
-                                                          SearchParams::MAX_TIME_EXTENSIONS)) {
-                                cout << "info string Extending search time (best move changed to " 
-                                     << firstIdx << ")" << endl;
-                            }
-                        }
-                        lastBestChildIdx = firstIdx;
                     }
                     
                     // Report each completed depth once.
@@ -701,7 +712,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     }
                 }
             }
-            if (!running || searchInfo.elapsed() >= searchInfo.get_effective_move_time()) break;
+            if (!running || (!isPondering_.load(std::memory_order_relaxed)
+                             && searchInfo.elapsed() >= searchInfo.get_effective_move_time())) break;
         }
     } else if (moveTimeMs > 0) {
         // Non-verbose mode: still check for early stopping
@@ -710,9 +722,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         bool evalInitialized = false;
         int lastBestChildIdx = -1;
         
-        while (running && searchInfo.elapsed() < searchInfo.get_effective_move_time()) {
+        while (running && (isPondering_.load(std::memory_order_relaxed)
+                           || searchInfo.elapsed() < searchInfo.get_effective_move_time())) {
             double remainingMs = searchInfo.get_effective_move_time() - searchInfo.elapsed();
-            int sleepMs = std::min(POLL_INTERVAL_MS, std::max(1, static_cast<int>(remainingMs)));
+            int sleepMs = isPondering_.load(std::memory_order_relaxed)
+                ? POLL_INTERVAL_MS
+                : std::min(POLL_INTERVAL_MS, std::max(1, static_cast<int>(remainingMs)));
             std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
             
             // Update NPS
@@ -755,40 +770,43 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         break;
                     }
                     
-                    // Early stopping (visit-based)
-                    if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
-                        double remaining = searchInfo.get_effective_move_time() - searchInfo.elapsed();
-                        float projectedVisits = static_cast<float>(secondMax) + 
-                                               static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
-                        
-                        if (SearchParams::has_insurmountable_visit_lead(
-                            static_cast<float>(firstMax), projectedVisits) &&
-                            bestQ >= secondQ) {
-                            running = false;
-                            break;
+                    if (!isPondering_.load(std::memory_order_relaxed)) {
+                        // Early stopping (visit-based)
+                        if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
+                            double remaining = searchInfo.get_effective_move_time() - searchInfo.elapsed();
+                            float projectedVisits = static_cast<float>(secondMax) + 
+                                                   static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
+                            
+                            if (SearchParams::has_insurmountable_visit_lead(
+                                static_cast<float>(firstMax), projectedVisits) &&
+                                bestQ >= secondQ) {
+                                running = false;
+                                break;
+                            }
                         }
-                    }
-                    
-                    // Time extension
-                    if (SearchParams::ENABLE_TIME_EXTENSION) {
-                        if (evalInitialized) {
-                            float evalDrop = lastCheckEval - bestQ;
-                            if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
+                        
+                        // Time extension
+                        if (SearchParams::ENABLE_TIME_EXTENSION) {
+                            if (evalInitialized) {
+                                float evalDrop = lastCheckEval - bestQ;
+                                if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
+                                    searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
+                                                               SearchParams::MAX_TIME_EXTENSIONS);
+                                }
+                                lastCheckEval = bestQ;
+                            }
+                            if (lastBestChildIdx >= 0 && firstIdx != lastBestChildIdx && 
+                                searchInfo.elapsed() > searchInfo.get_move_time() * SearchParams::INSTABILITY_TIME_FRACTION) {
                                 searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
                                                            SearchParams::MAX_TIME_EXTENSIONS);
                             }
-                            lastCheckEval = bestQ;
+                            lastBestChildIdx = firstIdx;
                         }
-                        if (lastBestChildIdx >= 0 && firstIdx != lastBestChildIdx && 
-                            searchInfo.elapsed() > searchInfo.get_move_time() * SearchParams::INSTABILITY_TIME_FRACTION) {
-                            searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
-                                                       SearchParams::MAX_TIME_EXTENSIONS);
-                        }
-                        lastBestChildIdx = firstIdx;
                     }
                 }
             }
-            if (!running || searchInfo.elapsed() >= searchInfo.get_effective_move_time()) break;
+            if (!running || (!isPondering_.load(std::memory_order_relaxed)
+                             && searchInfo.elapsed() >= searchInfo.get_effective_move_time())) break;
         }
     } else {
         // Node-based search: wait for workers to reach target nodes
@@ -805,13 +823,15 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 break;
             }
             const int completedNodes = searchInfo.get_nodes_searched();
-            if (static_cast<size_t>(completedNodes) >= targetNodes) {
+            if (!isPondering_.load(std::memory_order_relaxed)
+                && static_cast<size_t>(completedNodes) >= targetNodes) {
                 break;
             }
             if (completedNodes != lastCompletedNodes) {
                 lastCompletedNodes = completedNodes;
                 lastNodeProgress = std::chrono::steady_clock::now();
-            } else if (std::chrono::steady_clock::now() - lastNodeProgress
+            } else if (!isPondering_.load(std::memory_order_relaxed)
+                       && std::chrono::steady_clock::now() - lastNodeProgress
                        >= NODE_PROGRESS_TIMEOUT) {
                 running = false;
                 nodeSearchStalled = true;
@@ -823,6 +843,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     
     // Signal workers to stop (in case they're still running)
     running = false;
+    isPondering_.store(false, std::memory_order_release);
+    currentSearchInfo_.store(nullptr, std::memory_order_release);
     
     wait_for_workers();
 
@@ -977,7 +999,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
              << ", pending evaluation " << searchInfo.get_reservation_collisions()
                << ")" << endl;
         string bestMoveStr = extract_best_move(board);
-        cout << "bestmove " << bestMoveStr << endl;
+        string ponderMoveStr = options.enablePonder ? extract_ponder_move(board) : "";
+        if (!ponderMoveStr.empty()) {
+            cout << "bestmove " << bestMoveStr << " ponder " << ponderMoveStr << endl;
+        } else {
+            cout << "bestmove " << bestMoveStr << endl;
+        }
     }
     
     return result;
@@ -1027,6 +1054,73 @@ string Agent::extract_best_move(Board& board) {
                     ? "pass" : board.uci_move(BOARD_A, action.moveA);
     string moveB = (action.moveB == Stockfish::MOVE_NONE) 
                     ? "pass" : board.uci_move(BOARD_B, action.moveB);
+    return "(" + moveA + "," + moveB + ")";
+}
+
+/**
+ * @brief Extracts the predicted opponent reply from the root node after search.
+ */
+string Agent::extract_ponder_move(Board& board) {
+    if (!rootNode || !rootNode->is_expanded()) {
+        return "";
+    }
+
+    int bestIdx = rootNode->get_best_move_idx_with_q_weight(
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
+    if (bestIdx < 0) {
+        auto visits = rootNode->get_child_visits();
+        int maxVisits = 0;
+        for (size_t i = 0; i < visits.size(); ++i) {
+            if (visits[i] > maxVisits) {
+                maxVisits = visits[i];
+                bestIdx = static_cast<int>(i);
+            }
+        }
+    }
+    if (bestIdx < 0) {
+        return "";
+    }
+
+    auto children = rootNode->get_children();
+    if (static_cast<size_t>(bestIdx) >= children.size() || !children[bestIdx]) {
+        return "";
+    }
+
+    Node* bestChild = children[bestIdx].get();
+    if (!bestChild->is_expanded()) {
+        return "";
+    }
+
+    auto grandVisits = bestChild->get_child_visits();
+    auto grandChildren = bestChild->get_children();
+    if (grandVisits.empty() || grandChildren.empty()) {
+        return "";
+    }
+
+    int bestGrandIdx = bestChild->get_best_move_idx_with_q_weight(
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
+    if (bestGrandIdx < 0) {
+        int maxGrandVisits = 0;
+        for (size_t i = 0; i < grandVisits.size(); ++i) {
+            if (grandVisits[i] > maxGrandVisits) {
+                maxGrandVisits = grandVisits[i];
+                bestGrandIdx = static_cast<int>(i);
+            }
+        }
+    }
+    if (bestGrandIdx < 0 || static_cast<size_t>(bestGrandIdx) >= bestChild->get_num_generated()) {
+        return "";
+    }
+
+    JointActionCandidate rootAction = rootNode->get_joint_action(bestIdx);
+    Board nextBoard(board);
+    nextBoard.make_moves(rootAction.moveA, rootAction.moveB);
+
+    JointActionCandidate replyAction = bestChild->get_joint_action(bestGrandIdx);
+    string moveA = (replyAction.moveA == Stockfish::MOVE_NONE)
+                    ? "pass" : nextBoard.uci_move(BOARD_A, replyAction.moveA);
+    string moveB = (replyAction.moveB == Stockfish::MOVE_NONE)
+                    ? "pass" : nextBoard.uci_move(BOARD_B, replyAction.moveB);
     return "(" + moveA + "," + moveB + ")";
 }
 
@@ -1206,11 +1300,26 @@ string Agent::extract_pv_from_child(Board& board, int childIdx, int maxDepth) {
 }
 
 void Agent::set_is_running(bool value) {
+    if (!value) {
+        isPondering_.store(false, std::memory_order_release);
+    }
     running = value;
 }
 
 bool Agent::is_running() {
     return running;
+}
+
+void Agent::ponderhit() {
+    isPondering_.store(false, std::memory_order_release);
+    SearchInfo* info = currentSearchInfo_.load(std::memory_order_acquire);
+    if (info) {
+        info->reset_start_time();
+    }
+}
+
+bool Agent::is_pondering() const {
+    return isPondering_.load(std::memory_order_acquire);
 }
 
 void Agent::setHashSize(size_t sizeMB) {
