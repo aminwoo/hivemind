@@ -23,6 +23,7 @@ private:
     std::vector<std::unique_ptr<Engine>> engines;
     std::atomic<bool> ongoingSearch{false};
     int multiPV = 1;  // Number of principal variations to display
+    bool ponderEnabled = true;  // Whether to output ponder move and accept ponder search
     SearchParams::RuntimeConfig searchConfig;
 
 public:
@@ -37,6 +38,7 @@ public:
 
     void send_uci_response();
     void go(std::istringstream& is);
+    void ponderhit();
     void setoption(std::istringstream& is);
     void stop();
     void new_game();
