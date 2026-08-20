@@ -27,10 +27,15 @@ Hivemind is a neural network-based engine for [Bughouse chess](https://en.wikipe
 ```
 hivemind/
 ├── engine/              # C++ UCI engine
-│   ├── src/             # Engine source code
-│   │   ├── Fairy-Stockfish/  # Move generation library
-│   │   └── rl/          # Self-play and training data generation
-│   └── networks/        # ONNX model files
+│   ├── src/             # Modular engine source code
+│   │   ├── common/      # Globals, logging, utilities
+│   │   ├── environment/ # Bughouse board, joint actions, planes, zobrist
+│   │   ├── nn/          # TensorRT inference engine, ONNX utilities
+│   │   ├── search/      # MCTS/MCGS search, agent, nodes, transposition table
+│   │   ├── interface/   # UCI protocol interface
+│   │   ├── tools/       # Selfplay, tournament, benchmarks
+│   │   └── Fairy-Stockfish/  # Move generation library
+│   └── models/          # ONNX and TensorRT engine model files
 ├── src/                 # Python training code
 │   ├── architectures/   # Neural network architectures (RISEv3)
 │   ├── domain/          # Board representation and move encoding
@@ -85,13 +90,13 @@ uv sync
 
 ```bash
 ./engine/build-ninja/hivemind \
-  --network "$(realpath src/training/weights/rl/model-rl-final-v3.0.onnx)"
+  --model "$(realpath src/training/weights/rl/model-rl-final-v3.0.onnx)"
 ```
 
 The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
-Passing an explicit network path makes startup independent of the current working
-directory. Without `--network`, the engine retains the legacy behavior of loading
-the most recently modified ONNX model from `./networks`.
+Passing an explicit model path via `--model` (or `--network`) makes startup independent
+of the current working directory. Without explicit path, the engine searches `./models`,
+`./engine/models`, and legacy `./networks` for the latest ONNX model.
 
 ### Engine Commands
 
@@ -104,7 +109,7 @@ the most recently modified ONNX model from `./networks`.
 
 # Run self-play for training data generation
 ./engine/build-ninja/hivemind selfplay \
-  --network src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --model src/training/weights/rl/model-rl-final-v3.0.onnx \
   --games 1000 --nodes 400 --output engine/selfplay_games
 ```
 
@@ -114,16 +119,16 @@ maximum of 30; these positions are recorded in PGN but excluded from HVM3.
 Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
 every two macro plies. Search budgets are randomized by ±5% per position.
 
-### Network Tournament
+### Paired Model Tournament
 
 ```bash
 ./engine/build-ninja/hivemind tournament \
   --contender src/training/weights/rl/model-rl-final-v3.0.onnx \
-  --baseline engine/networks/model-0.97574-0.677-0055-v3.0.onnx \
+  --baseline engine/models/model-rl-final-v3.0.onnx \
   --games 100 --nodes 800 --output engine/tournament_results --seed 1
 ```
 
-Tournament games are paired, so `--games` must be even. Each network controls
+Tournament games are paired, so `--games` must be even. Each model controls
 the White team in one game and the Black team in the other, with the starting
 team alternated between pairs. Both games in a pair use the same seeded root
 noise schedule, and moves are selected by maximum root visits. The command

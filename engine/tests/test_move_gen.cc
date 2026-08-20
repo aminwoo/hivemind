@@ -1,15 +1,16 @@
 #include <gtest/gtest.h>
 #include <mutex>
 #include <thread>
-#include "../src/board.h"
-#include "../src/constants.h"
-#include "../src/joint_action.h"
-#include "../src/node.h"
-#include "../src/planes.h"
-#include "../src/search_params.h"
-#include "../src/searchthread.h"
-#include "../src/transposition_table.h"
-#include "../src/utils.h"
+#include "environment/board.h"
+#include "environment/constants.h"
+#include "environment/joint_action.h"
+#include "search/node.h"
+#include "environment/planes.h"
+#include "search/search_params.h"
+#include "search/searchthread.h"
+#include "search/transposition_table.h"
+#include "common/utils.h"
+#include "common/globals.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/bitboard.h"
@@ -153,19 +154,78 @@ TEST(JointActionTest, DoubleSitRequiresTimeAdvantageAndAnIdleBoard) {
     JointActionCandidate disadvantaged(
         Stockfish::MOVE_NONE, 0.5f, 0,
         Stockfish::MOVE_NONE, 0.5f, 0,
-        true, false, false);
+        JointActionRules{true, false, false});
     JointActionCandidate advantaged(
         Stockfish::MOVE_NONE, 0.5f, 0,
         Stockfish::MOVE_NONE, 0.5f, 0,
-        true, false, true);
+        JointActionRules{true, false, true});
     JointActionCandidate bothBoardsOnTurn(
         Stockfish::MOVE_NONE, 0.5f, 0,
         Stockfish::MOVE_NONE, 0.5f, 0,
-        true, true, true);
+        JointActionRules{true, true, true});
 
     EXPECT_LT(disadvantaged.jointPrior, 0.0f);
     EXPECT_FLOAT_EQ(advantaged.jointPrior, 0.25f);
     EXPECT_LT(bothBoardsOnTurn.jointPrior, 0.0f);
+}
+
+TEST(JointActionTest, SinglePassWithoutTimeAdvantageRequiresAPartnerCapture) {
+    EXPECT_FALSE(is_single_pass_legal(false, true, true, false));
+    EXPECT_TRUE(is_single_pass_legal(false, true, true, true));
+    EXPECT_TRUE(is_single_pass_legal(true, true, true, false));
+    EXPECT_TRUE(is_single_pass_legal(false, true, false, false));
+
+    const Stockfish::Move moveB = static_cast<Stockfish::Move>(7);
+    const JointActionRules bothOnTurn{true, true, false, true, true};
+
+    JointActionCandidate passWithQuietPartner(
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        moveB, 0.5f, 0,
+        bothOnTurn, false, false);
+    JointActionCandidate passWithCapturingPartner(
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        moveB, 0.5f, 0,
+        bothOnTurn, false, true);
+    // A board that is on turn without legal moves must wait; that is not a choice.
+    JointActionCandidate forcedPass(
+        Stockfish::MOVE_NONE, 0.5f, 0,
+        moveB, 0.5f, 0,
+        JointActionRules{true, true, false, false, true}, false, false);
+
+    EXPECT_LT(passWithQuietPartner.jointPrior, 0.0f);
+    EXPECT_FLOAT_EQ(passWithCapturingPartner.jointPrior, 0.25f);
+    EXPECT_FLOAT_EQ(forcedPass.jointPrior, 0.25f);
+}
+
+TEST(JointActionTest, GeneratorSkipsQuietPassPairsWhenBothBoardsAreOnTurn) {
+    const Stockfish::Move quietA = static_cast<Stockfish::Move>(1);
+    const Stockfish::Move captureB = static_cast<Stockfish::Move>(2);
+    const Stockfish::Move quietB = static_cast<Stockfish::Move>(3);
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {quietA, Stockfish::MOVE_NONE}, {quietB, captureB, Stockfish::MOVE_NONE},
+        {0.6f, 0.4f}, {0.5f, 0.3f, 0.2f},
+        false, true, true,
+        {0, 0}, {0, 1, 0});
+
+    std::vector<std::pair<Stockfish::Move, Stockfish::Move>> generated;
+    while (generator.hasNext()) {
+        JointActionCandidate candidate = generator.getNext();
+        generated.emplace_back(candidate.moveA, candidate.moveB);
+    }
+
+    EXPECT_NE(std::find(generated.begin(), generated.end(),
+                        std::make_pair(Stockfish::MOVE_NONE, captureB)),
+              generated.end());
+    EXPECT_EQ(std::find(generated.begin(), generated.end(),
+                        std::make_pair(Stockfish::MOVE_NONE, quietB)),
+              generated.end());
+    EXPECT_EQ(std::find(generated.begin(), generated.end(),
+                        std::make_pair(quietA, Stockfish::MOVE_NONE)),
+              generated.end());
+    EXPECT_EQ(std::find(generated.begin(), generated.end(),
+                        std::make_pair(Stockfish::MOVE_NONE, Stockfish::MOVE_NONE)),
+              generated.end());
 }
 
 TEST(JointActionTest, JointCandidatesFollowPriorOrdering) {
@@ -323,6 +383,52 @@ TEST_F(EngineTest, InterleavedGameReplayPreservesPocketKeys) {
         EXPECT_EQ(board.pos[BOARD_B]->key(), recomputed_position_key(board, BOARD_B))
             << token << " changed board B key incorrectly";
     }
+}
+
+TEST_F(EngineTest, PromotedPieceCaptureGivesPawnAndBoardCopyPreservesPromotedState) {
+    Board board;
+    board.set(
+        "r1bBk2r/pppn1ppp/4p3/3p4/3PB3/P1P1P3/2P2PPP/q~2QK1NR[NPp] w Kkq - 0 10|"
+        "r1bq1bnr/ppp1k1pp/8/3pn1N1/5B2/8/PPP1PPPP/RN1QKB1R[Rqbn] b KQ - 1 7");
+
+    // Board copy constructor must preserve ~ on promoted piece
+    Board copy(board);
+    EXPECT_NE(copy.fen(BOARD_A).find("q~"), std::string::npos);
+    EXPECT_EQ(copy.fen(BOARD_A), board.fen(BOARD_A));
+    EXPECT_EQ(copy.fen(BOARD_B), board.fen(BOARD_B));
+
+    // Capturing promoted queen on a1 should add a PAWN to partner on Board B, NOT a Queen
+    const Stockfish::Move capturePromotedQueen = find_move(board, BOARD_A, "d1a1");
+    ASSERT_NE(capturePromotedQueen, Stockfish::MOVE_NONE);
+
+    const int initialPawnsInHandB = board.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::PAWN);
+    const int initialQueensInHandB = board.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::QUEEN);
+
+    board.push_move(BOARD_A, capturePromotedQueen);
+
+    EXPECT_EQ(board.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::PAWN), initialPawnsInHandB + 1);
+    EXPECT_EQ(board.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::QUEEN), initialQueensInHandB);
+
+    // Black on Board B had 1 Queen in hand ([Rqbn]). After dropping that 1 Queen,
+    // dropping a 2nd Queen must be illegal because capturing q~ gave a Pawn, not a 2nd Queen.
+    const Stockfish::Move firstQueenDrop = Stockfish::make_drop(
+        Stockfish::SQ_D6, Stockfish::QUEEN, Stockfish::QUEEN);
+    EXPECT_TRUE(board.is_legal_move(BOARD_B, firstQueenDrop));
+    board.push_move(BOARD_B, firstQueenDrop);
+    EXPECT_EQ(board.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::QUEEN), 0);
+    const Stockfish::Move secondQueenDrop = Stockfish::make_drop(
+        Stockfish::SQ_D5, Stockfish::QUEEN, Stockfish::QUEEN);
+    EXPECT_FALSE(board.is_legal_move(BOARD_B, secondQueenDrop));
+
+    // Test that the copy behaves identically
+    const Stockfish::Move copyCapture = find_move(copy, BOARD_A, "d1a1");
+    ASSERT_NE(copyCapture, Stockfish::MOVE_NONE);
+    copy.push_move(BOARD_A, copyCapture);
+    EXPECT_EQ(copy.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::PAWN), initialPawnsInHandB + 1);
+    EXPECT_EQ(copy.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::QUEEN), initialQueensInHandB);
+    copy.push_move(BOARD_B, firstQueenDrop);
+    EXPECT_EQ(copy.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::QUEEN), 0);
+    EXPECT_FALSE(copy.is_legal_move(BOARD_B, secondQueenDrop));
 }
 
 TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
@@ -620,11 +726,32 @@ TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
 
     EXPECT_FLOAT_EQ(config.drawContempt, 0.0f);
     EXPECT_TRUE(SearchParams::ENABLE_MATE_EARLY_EXIT);
-    EXPECT_FALSE(SearchParams::ENABLE_Q_EARLY_EXIT);
-    EXPECT_FALSE(SearchParams::ENABLE_TIME_EXTENSION);
-    EXPECT_FALSE(SearchParams::ENABLE_TREE_REUSE);
+    EXPECT_TRUE(SearchParams::ENABLE_TIME_EXTENSION);
+    EXPECT_TRUE(SearchParams::ENABLE_TREE_REUSE);
     EXPECT_TRUE(config.enableTranspositions);
     EXPECT_EQ(SearchParams::TT_MAX_SIZE, TranspositionTable::kDefaultMaxCapacity);
+}
+
+TEST_F(EngineTest, FastPolicyIndexMatchesMapLookupForAllMoves) {
+    Board board;
+    board.set("2rq1rk1/pppnb1p1/4p1p1/3pP1pp/4P3/2N1P1B1/PPP2NPP/R2Q1RK1/NN b - - 0 3|r4rk1/ppp2p1p/4bB1p/8/6b1/2P5/P1PB1PPP/R3R1K1/qbbnnppPB w");
+
+    for (int boardNum : {BOARD_A, BOARD_B}) {
+        const Stockfish::Color stm = board.side_to_move(boardNum);
+        for (Stockfish::Move move : board.legal_moves(boardNum)) {
+            std::string uci = board.uci_move(boardNum, move);
+            if (uci.size() == 5 && uci.back() == 'q') {
+                uci.pop_back();
+            }
+            std::string policyMove = (stm == Stockfish::BLACK && move != Stockfish::MOVE_NONE)
+                ? mirror_move(uci)
+                : uci;
+
+            int expectedIndex = POLICY_INDEX.count(policyMove) ? POLICY_INDEX[policyMove] : -1;
+            int fastIndex = get_fast_policy_index(move, stm);
+            EXPECT_EQ(fastIndex, expectedIndex) << "Mismatch for move " << uci << " (policy " << policyMove << ")";
+        }
+    }
 }
 
 TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
@@ -633,13 +760,33 @@ TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
     config.rootPwCoefficient = 4.0f;
 
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  1000, config.pwCoefficient, config.pwExponent), 8);
+                  1000, config.pwCoefficient, config.pwExponent), 16);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  1000, config.rootPwCoefficient, config.pwExponent), 32);
+                  1000, config.rootPwCoefficient, config.pwExponent), 64);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  10000, config.pwCoefficient, config.pwExponent), 16);
+                  10000, config.pwCoefficient, config.pwExponent), 40);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  10000, config.rootPwCoefficient, config.pwExponent), 64);
+                  10000, config.rootPwCoefficient, config.pwExponent), 160);
+}
+
+TEST(SearchConfigTest, MovesLeftDiscountingPrefersFastWinAndDistantLoss) {
+    const float discount = 0.20f;
+    const float fastPlies = 0.05f;   // 5 plies
+    const float distantPlies = 0.95f; // 95 plies
+
+    // Positive evaluation (winning): fast win is preferred over distant win
+    float winFast = 1.0f * (1.0f - discount * fastPlies);
+    float winDistant = 1.0f * (1.0f - discount * distantPlies);
+    EXPECT_GT(winFast, winDistant);
+    EXPECT_GT(winFast, 0.98f);
+    EXPECT_LT(winDistant, 0.82f);
+
+    // Negative evaluation (losing): distant loss (survival) is preferred over fast loss
+    float lossFast = -1.0f * (1.0f - discount * fastPlies);
+    float lossDistant = -1.0f * (1.0f - discount * distantPlies);
+    EXPECT_GT(lossDistant, lossFast); // lossDistant is less negative (closer to 0)
+    EXPECT_LT(lossFast, -0.98f);
+    EXPECT_GT(lossDistant, -0.82f);
 }
 
 TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
@@ -799,6 +946,32 @@ TEST(NodeTest, SelectionWaitsWhenEveryChildEvaluationIsPending) {
     EXPECT_EQ(pendingEvaluation, children[0]);
 
     children[0]->release_evaluation_reservation();
+}
+
+TEST(NodeTest, DynamicFpuBoostsUnvisitedChildInWinningParent) {
+    Node node(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+    config.enableDynamicFpu = true;
+    config.fpuReduction = 0.5f;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.6f, 0.4f}, {1.0f},
+        false, true, false, config));
+    // Parent is strongly winning: +0.9
+    node.update(0, 0.9f);
+
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    // With dynamic FPU (parentQ=0.9, fpuReduction=0.5, visitedPolicy=0.6),
+    // unvisited child 1 has FPU Q = 0.9 - 0.5 * sqrt(0.6) = ~0.51 > -1.0.
+    auto selection = node.select_child_and_apply_virtual_loss(config);
+    EXPECT_NE(selection.child, nullptr);
+    EXPECT_TRUE(selection.hasEvaluationReservation);
+    node.remove_virtual_loss(selection.childIdx);
+    selection.child->release_evaluation_reservation();
 }
 
 TEST(NodeTest, ConcurrentExpansionReturnsMatchingActionIndex) {
