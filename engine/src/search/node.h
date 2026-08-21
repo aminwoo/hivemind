@@ -4,8 +4,10 @@
 #include <atomic>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <shared_mutex>
+#include <unordered_set>
 #include <vector>
 
 #include "environment/board.h"
@@ -31,8 +33,13 @@ enum class NodeType : uint8_t {
     DRAW = 3
 };
 
-class Node {
+class Node : public std::enable_shared_from_this<Node> {
 private:
+    struct ParentEdge {
+        std::weak_ptr<Node> parent;
+        int childIdx;
+    };
+
     // Reader-writer mutex for thread-safe access to node state
     // Allows multiple concurrent readers, exclusive writers
     mutable std::shared_mutex nodeMutex;
@@ -66,6 +73,18 @@ private:
     std::vector<NodeType> childNodeTypes;    // Cached node types of children
     std::atomic<int> unsolvedChildCount{0};  // Number of unsolved children (for solver)
     std::atomic<int> endInPly{0};                        // Distance to terminal (for mate distance)
+
+    // Reverse graph edges let a proof discovered through one transposition
+    // update every parent of the canonical node, not just the active path.
+    // Keep these on a separate mutex so proof propagation never nests two
+    // nodes' state mutexes.
+    mutable std::mutex parentEdgesMutex;
+    std::vector<ParentEdge> parentEdges;
+
+    void register_parent_edge(const std::shared_ptr<Node>& parent, int childIdx);
+    void propagate_proof_to_parents();
+    bool update_child_node_type_from(
+        int childIdx, const Node* expectedChild, NodeType childType);
 
 public:
     struct ChildSelection {
@@ -258,6 +277,10 @@ public:
         if (outChildIdx) {
             *outChildIdx = expandedCount - 1;
         }
+        const int childIdx = expandedCount - 1;
+        std::shared_ptr<Node> parent = weak_from_this().lock();
+        guard.unlock();
+        child->register_parent_edge(parent, childIdx);
         return child;
     }
     
@@ -335,6 +358,9 @@ public:
             
             expandedCount++;
             m_is_expanded.store(true, std::memory_order_release);
+            std::shared_ptr<Node> parent = weak_from_this().lock();
+            guard.unlock();
+            child->register_parent_edge(parent, 0);
             return true;
         }
         
@@ -363,7 +389,8 @@ public:
      * @return pair of (child pointer, child index), or (nullptr, -1) if no children
      */
     ChildSelection select_child_and_apply_virtual_loss(
-        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{});
+        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{},
+        const std::unordered_set<const Node*>* blockedNodes = nullptr);
 
     std::vector<std::shared_ptr<Node>> get_children() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
@@ -374,6 +401,15 @@ public:
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < children.size()) {
             children[childIdx] = child;
+            if (nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
+                && static_cast<size_t>(childIdx) < childNodeTypes.size()
+                && childNodeTypes[childIdx] != NodeType::UNSOLVED) {
+                childNodeTypes[childIdx] = NodeType::UNSOLVED;
+                unsolvedChildCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            std::shared_ptr<Node> parent = weak_from_this().lock();
+            guard.unlock();
+            child->register_parent_edge(parent, childIdx);
         }
     }
 
@@ -478,37 +514,23 @@ public:
      * @brief Get the node type (UNSOLVED, WIN, LOSS, DRAW).
      */
     NodeType get_node_type() const {
-        return nodeType.load(std::memory_order_relaxed);
+        return nodeType.load(std::memory_order_acquire);
     }
     
     /**
      * @brief Mark this node as a WIN (opponent is mated).
      */
-    void mark_as_win(int ply = 0) {
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        nodeType.store(NodeType::WIN, std::memory_order_release);
-        valueSum = 1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
-        endInPly.store(ply, std::memory_order_relaxed);
-    }
+    void mark_as_win(int ply = 0);
     
     /**
      * @brief Mark this node as a LOSS (we are mated).
      */
-    void mark_as_loss(int ply = 0) {
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        nodeType.store(NodeType::LOSS, std::memory_order_release);
-        valueSum = -1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
-        endInPly.store(ply, std::memory_order_relaxed);
-    }
+    void mark_as_loss(int ply = 0);
 
     /**
      * @brief Mark this node as a proven draw.
      */
-    void mark_as_draw(int ply = 0) {
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        nodeType.store(NodeType::DRAW, std::memory_order_release);
-        endInPly.store(ply, std::memory_order_relaxed);
-    }
+    void mark_as_draw(int ply = 0);
     
     /**
      * @brief Get the ply distance to terminal.
@@ -543,73 +565,7 @@ public:
      * @return True if this node became solved as a result
      */
     bool update_child_node_type(int childIdx, NodeType childType) {
-        if (!SearchParams::ENABLE_MCTS_SOLVER) return false;
-        
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        
-        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED) {
-            return false;  // Already solved
-        }
-        
-        if (childIdx < 0 || static_cast<size_t>(childIdx) >= childNodeTypes.size()) {
-            return false;
-        }
-        
-        if (childNodeTypes[childIdx] != NodeType::UNSOLVED) {
-            return false;  // Already recorded
-        }
-        
-        childNodeTypes[childIdx] = childType;
-        unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
-        
-        // Check solver conditions (from child's perspective, so inverted)
-        // If any child is a LOSS (for the child), this node is a WIN (we can force mate)
-        if (childType == NodeType::LOSS) {
-            nodeType.store(NodeType::WIN, std::memory_order_release);
-            // Use shortest path to win
-            if (children[childIdx]) {
-                endInPly.store(children[childIdx]->get_end_in_ply() + 1, std::memory_order_relaxed);
-            }
-            return true;
-        }
-        
-        // If all expanded children are solved AND there are no more children to expand,
-        // check if we're lost or drawn.
-        // IMPORTANT: We can only mark as LOSS if ALL possible moves have been explored.
-        // There may be unexpanded moves that could save us.
-        // CRITICAL: Must also verify the node is actually expanded (generator initialized).
-        // An unexpanded node has an empty generator which would incorrectly pass hasNext() check.
-        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0 && 
-            m_is_expanded.load(std::memory_order_relaxed)
-            && !candidateGenerator.hasNext()) {
-            bool allWins = true;
-            bool hasDrawn = false;
-            int longestPly = 0;
-            
-            for (size_t i = 0; i < childNodeTypes.size(); i++) {
-                if (childNodeTypes[i] != NodeType::WIN) {
-                    allWins = false;
-                }
-                if (childNodeTypes[i] == NodeType::DRAW) {
-                    hasDrawn = true;
-                }
-                if (children[i] && children[i]->get_end_in_ply() > longestPly) {
-                    longestPly = children[i]->get_end_in_ply();
-                }
-            }
-            
-            if (allWins) {
-                // All children are wins for them = loss for us
-                nodeType.store(NodeType::LOSS, std::memory_order_release);
-                endInPly.store(longestPly + 1, std::memory_order_relaxed);  // Delay mate as long as possible
-                return true;
-            } else if (hasDrawn) {
-                nodeType.store(NodeType::DRAW, std::memory_order_release);
-                return true;
-            }
-        }
-        
-        return false;
+        return update_child_node_type_from(childIdx, nullptr, childType);
     }
     
     // =========================================================================

@@ -940,6 +940,32 @@ TEST(NodeTest, PendingEvaluationDivertsSelectionToAvailableSibling) {
     children[0]->release_evaluation_reservation();
 }
 
+TEST(NodeTest, BlockedBatchLeafDivertsSelectionToAvailableSibling) {
+    Node node(Stockfish::WHITE);
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    const auto children = node.get_children();
+    const std::unordered_set<const Node*> blocked = {children[0].get()};
+    auto [selectedChild, selectedIdx, evaluationReserved, pendingEvaluation] =
+        node.select_child_and_apply_virtual_loss(config, &blocked);
+
+    EXPECT_EQ(selectedChild, children[1]);
+    EXPECT_EQ(selectedIdx, 1);
+    EXPECT_TRUE(evaluationReserved);
+    EXPECT_EQ(pendingEvaluation, nullptr);
+
+    node.remove_virtual_loss(selectedIdx);
+    selectedChild->release_evaluation_reservation();
+}
+
 TEST(NodeTest, SelectionWaitsWhenEveryChildEvaluationIsPending) {
     Node node(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
@@ -1134,6 +1160,50 @@ TEST_F(EngineTest, InitialGeneratedChildUsesCanonicalTransposition) {
     board.unmake_moves(action.moveA, action.moveB);
 }
 
+TEST_F(EngineTest, BlockedCanonicalLeafIsExcludedAndReservationIsReleased) {
+    Board board;
+    const uint64_t initialHash = board.hash_key(false);
+    const auto legalMoves = board.legal_moves(BOARD_A);
+    ASSERT_FALSE(legalMoves.empty());
+
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableTranspositions = true;
+    ASSERT_TRUE(root->try_init_and_expand(
+        {legalMoves[0]}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        false, true, false, config));
+    const JointActionCandidate action = root->get_joint_action(0);
+
+    board.make_moves(action.moveA, action.moveB);
+    const uint64_t childHash = board.hash_key(true);
+    board.unmake_moves(action.moveA, action.moveB);
+
+    auto canonical = std::make_shared<Node>(Stockfish::BLACK, childHash);
+    TranspositionTable table;
+    ASSERT_EQ(table.insertOrGet(childHash, canonical), canonical);
+    const std::unordered_set<const Node*> blocked = {canonical.get()};
+
+    SearchThread searchThread;
+    searchThread.set_root_node(root);
+    searchThread.set_runtime_config(config);
+    searchThread.set_transposition_table(&table);
+    const LeafSelection collision = searchThread.select_and_expand(
+        board, false, &blocked);
+
+    EXPECT_EQ(collision.leaf, nullptr);
+    EXPECT_EQ(collision.pendingEvaluation, nullptr);
+    EXPECT_EQ(collision.exhaustedSubtree, canonical);
+    EXPECT_FALSE(canonical->is_evaluation_pending());
+    EXPECT_EQ(board.hash_key(false), initialHash);
+    EXPECT_EQ(root->get_children()[0], canonical);
+
+    const LeafSelection exhausted = searchThread.select_and_expand(
+        board, false, &blocked);
+    EXPECT_EQ(exhausted.leaf, nullptr);
+    EXPECT_EQ(exhausted.exhaustedSubtree, root);
+    EXPECT_EQ(board.hash_key(false), initialHash);
+}
+
 TEST(NodeTest, EvaluationReservationIsExclusiveUntilReleased) {
     Node node(Stockfish::WHITE);
 
@@ -1225,6 +1295,91 @@ TEST(MctsSolverTest, PropagatesDrawAfterAllMovesAreSolved) {
 
     EXPECT_TRUE(parent.update_child_node_type(0, child->get_node_type()));
     EXPECT_EQ(parent.get_node_type(), NodeType::DRAW);
+}
+
+TEST(MctsSolverTest, ReverseProofReachesEveryTranspositionParent) {
+    const std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    const std::vector<float> priors = {1.0f};
+    auto firstParent = std::make_shared<Node>(Stockfish::WHITE);
+    auto secondParent = std::make_shared<Node>(Stockfish::WHITE);
+
+    ASSERT_TRUE(firstParent->try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+    ASSERT_TRUE(secondParent->try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+
+    auto canonicalChild = std::make_shared<Node>(Stockfish::BLACK, 42);
+    firstParent->replace_child(0, canonicalChild);
+    secondParent->replace_child(0, canonicalChild);
+
+    canonicalChild->mark_as_loss(3);
+
+    EXPECT_EQ(firstParent->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(firstParent->get_end_in_ply(), 4);
+    EXPECT_EQ(secondParent->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(secondParent->get_end_in_ply(), 4);
+}
+
+TEST(MctsSolverTest, ReverseProofPropagatesTransitively) {
+    const std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    const std::vector<float> priors = {1.0f};
+    auto grandparent = std::make_shared<Node>(Stockfish::WHITE);
+    auto parent = std::make_shared<Node>(Stockfish::BLACK);
+
+    ASSERT_TRUE(grandparent->try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+    ASSERT_TRUE(parent->try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+    grandparent->replace_child(0, parent);
+
+    const auto leaf = parent->get_children().front();
+    leaf->mark_as_loss(5);
+
+    ASSERT_EQ(parent->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(parent->get_end_in_ply(), 6);
+    EXPECT_EQ(grandparent->get_node_type(), NodeType::LOSS);
+    EXPECT_EQ(grandparent->get_end_in_ply(), 7);
+}
+
+TEST(MctsSolverTest, ReverseProofIgnoresReplacedChild) {
+    const std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    const std::vector<float> priors = {1.0f};
+    auto parent = std::make_shared<Node>(Stockfish::WHITE);
+
+    ASSERT_TRUE(parent->try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+    const auto replacedChild = parent->get_children().front();
+    auto canonicalChild = std::make_shared<Node>(Stockfish::BLACK, 84);
+
+    parent->replace_child(0, canonicalChild);
+    replacedChild->mark_as_loss(9);
+    EXPECT_EQ(parent->get_node_type(), NodeType::UNSOLVED);
+
+    canonicalChild->mark_as_loss(2);
+    ASSERT_EQ(parent->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(parent->get_end_in_ply(), 3);
+}
+
+TEST(MctsSolverTest, ReverseProofCatchesAlreadySolvedCanonicalChild) {
+    const std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+    const std::vector<float> priors = {1.0f};
+    auto parent = std::make_shared<Node>(Stockfish::WHITE);
+
+    ASSERT_TRUE(parent->try_init_and_expand(
+        actions, actions, priors, priors, true, true, false,
+        SearchParams::RuntimeConfig{}));
+    auto solvedCanonical = std::make_shared<Node>(Stockfish::BLACK, 126);
+    solvedCanonical->mark_as_loss(2);
+
+    parent->replace_child(0, solvedCanonical);
+
+    EXPECT_EQ(parent->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(parent->get_end_in_ply(), 3);
 }
 
 TEST(MctsSolverTest, AvoidsProvenLosingChildWhileDefenseRemains) {

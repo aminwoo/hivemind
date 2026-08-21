@@ -3,8 +3,196 @@
 #include <limits>
 #include <algorithm>
 
+void Node::register_parent_edge(
+    const std::shared_ptr<Node>& parent, int childIdx) {
+    if (!SearchParams::ENABLE_MCTS_SOLVER || !parent || parent.get() == this
+        || childIdx < 0) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> guard(parentEdgesMutex);
+        bool alreadyRegistered = false;
+        auto edge = parentEdges.begin();
+        while (edge != parentEdges.end()) {
+            std::shared_ptr<Node> existingParent = edge->parent.lock();
+            if (!existingParent) {
+                edge = parentEdges.erase(edge);
+                continue;
+            }
+            if (existingParent.get() == parent.get()
+                && edge->childIdx == childIdx) {
+                alreadyRegistered = true;
+            }
+            ++edge;
+        }
+        if (!alreadyRegistered) {
+            parentEdges.push_back({parent, childIdx});
+        }
+    }
+
+    // Register first, then sample the proof state. This handshake cannot miss a
+    // concurrent solve: either this read observes it, or the solving thread
+    // observes the newly registered reverse edge.
+    const NodeType solvedType = get_node_type();
+    if (solvedType != NodeType::UNSOLVED) {
+        parent->update_child_node_type_from(childIdx, this, solvedType);
+    }
+}
+
+void Node::propagate_proof_to_parents() {
+    if (!SearchParams::ENABLE_MCTS_SOLVER) {
+        return;
+    }
+
+    const NodeType solvedType = get_node_type();
+    if (solvedType == NodeType::UNSOLVED) {
+        return;
+    }
+
+    std::vector<ParentEdge> edges;
+    {
+        std::lock_guard<std::mutex> guard(parentEdgesMutex);
+        auto edge = parentEdges.begin();
+        while (edge != parentEdges.end()) {
+            if (edge->parent.expired()) {
+                edge = parentEdges.erase(edge);
+            } else {
+                ++edge;
+            }
+        }
+        edges = parentEdges;
+    }
+
+    // Never hold this node's mutex while updating a parent. Each parent accepts
+    // a child proof at most once, which also terminates duplicate paths/cycles.
+    for (const ParentEdge& edge : edges) {
+        if (std::shared_ptr<Node> parent = edge.parent.lock()) {
+            parent->update_child_node_type_from(
+                edge.childIdx, this, solvedType);
+        }
+    }
+}
+
+void Node::mark_as_win(int ply) {
+    {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED) {
+            return;
+        }
+        valueSum = static_cast<float>(m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly.store(ply, std::memory_order_relaxed);
+        nodeType.store(NodeType::WIN, std::memory_order_release);
+    }
+    propagate_proof_to_parents();
+}
+
+void Node::mark_as_loss(int ply) {
+    {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED) {
+            return;
+        }
+        valueSum = -static_cast<float>(m_visits.load(std::memory_order_relaxed) + 1);
+        endInPly.store(ply, std::memory_order_relaxed);
+        nodeType.store(NodeType::LOSS, std::memory_order_release);
+    }
+    propagate_proof_to_parents();
+}
+
+void Node::mark_as_draw(int ply) {
+    {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED) {
+            return;
+        }
+        endInPly.store(ply, std::memory_order_relaxed);
+        nodeType.store(NodeType::DRAW, std::memory_order_release);
+    }
+    propagate_proof_to_parents();
+}
+
+bool Node::update_child_node_type_from(
+    int childIdx, const Node* expectedChild, NodeType childType) {
+    if (!SearchParams::ENABLE_MCTS_SOLVER
+        || childType == NodeType::UNSOLVED) {
+        return false;
+    }
+
+    bool becameSolved = false;
+    {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+
+        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED
+            || childIdx < 0
+            || static_cast<size_t>(childIdx) >= children.size()
+            || (expectedChild && children[childIdx].get() != expectedChild)) {
+            return false;
+        }
+
+        if (childNodeTypes.size() < children.size()) {
+            const size_t oldSize = childNodeTypes.size();
+            childNodeTypes.resize(children.size(), NodeType::UNSOLVED);
+            unsolvedChildCount.fetch_add(
+                static_cast<int>(children.size() - oldSize),
+                std::memory_order_relaxed);
+        }
+        if (childNodeTypes[childIdx] != NodeType::UNSOLVED) {
+            return false;
+        }
+
+        childNodeTypes[childIdx] = childType;
+        unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
+
+        // Child values are from the child's perspective, so a losing child is
+        // an immediately proven winning move for this node.
+        if (childType == NodeType::LOSS) {
+            const int childPly = children[childIdx]
+                ? children[childIdx]->get_end_in_ply()
+                : 0;
+            endInPly.store(childPly + 1, std::memory_order_relaxed);
+            nodeType.store(NodeType::WIN, std::memory_order_release);
+            becameSolved = true;
+        } else if (unsolvedChildCount.load(std::memory_order_relaxed) == 0
+                   && m_is_expanded.load(std::memory_order_relaxed)
+                   && !candidateGenerator.hasNext()) {
+            // A loss/draw is proven only after every legal action is expanded.
+            bool allWins = true;
+            bool hasDrawn = false;
+            int longestPly = 0;
+            for (size_t index = 0; index < childNodeTypes.size(); ++index) {
+                if (childNodeTypes[index] != NodeType::WIN) {
+                    allWins = false;
+                }
+                if (childNodeTypes[index] == NodeType::DRAW) {
+                    hasDrawn = true;
+                }
+                if (children[index]) {
+                    longestPly = std::max(
+                        longestPly, children[index]->get_end_in_ply());
+                }
+            }
+
+            if (allWins) {
+                endInPly.store(longestPly + 1, std::memory_order_relaxed);
+                nodeType.store(NodeType::LOSS, std::memory_order_release);
+                becameSolved = true;
+            } else if (hasDrawn) {
+                nodeType.store(NodeType::DRAW, std::memory_order_release);
+                becameSolved = true;
+            }
+        }
+    }
+
+    if (becameSolved) {
+        propagate_proof_to_parents();
+    }
+    return becameSolved;
+}
+
 Node::ChildSelection Node::select_child_and_apply_virtual_loss(
-    const SearchParams::RuntimeConfig& config) {
+    const SearchParams::RuntimeConfig& config,
+    const std::unordered_set<const Node*>* blockedNodes) {
     std::unique_lock<std::shared_mutex> guard(nodeMutex);
     
     // 1. Initial validation
@@ -51,6 +239,7 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
         // 4. Iterate only over expanded children
         for (size_t i = 0; i < limit; i++) {
             if (!children[i]
+                || (blockedNodes && blockedNodes->contains(children[i].get()))
                 || (!unavailableChildren.empty() && unavailableChildren[i])) {
                 continue;
             }
