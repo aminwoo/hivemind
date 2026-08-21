@@ -405,10 +405,7 @@ void Agent::reset_search_state() {
     isPondering_.store(false, std::memory_order_release);
     currentSearchInfo_.store(nullptr, std::memory_order_release);
     auto oldRoot = std::move(rootNode);
-    ownNextRoot_.reset();
-    opponentsNextRoot_.reset();
-    ownNextRootSignature_.clear();
-    opponentsNextRootSignature_.clear();
+    nextRootCandidates_.clear();
     lastSearchHash_ = 0;
     if (transpositionTable) {
         transpositionTable->clear();
@@ -489,7 +486,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootNode->mark_as_win(1);
 
         if (SearchParams::ENABLE_TREE_REUSE) {
-            store_next_root_candidates(board);
+            store_next_root_candidates(board, teamHasTimeAdvantage);
             lastSearchHash_ = positionHash;
         }
 
@@ -849,17 +846,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     wait_for_workers();
 
     if (workerException_) {
-        ownNextRoot_.reset();
-        opponentsNextRoot_.reset();
-        ownNextRootSignature_.clear();
-        opponentsNextRootSignature_.clear();
+        nextRootCandidates_.clear();
         std::rethrow_exception(workerException_);
     }
     if (nodeSearchStalled) {
-        ownNextRoot_.reset();
-        opponentsNextRoot_.reset();
-        ownNextRootSignature_.clear();
-        opponentsNextRootSignature_.clear();
+        nextRootCandidates_.clear();
         throw std::runtime_error(
             "Node-limited search stalled at "
             + std::to_string(stalledCompletedNodes) + "/"
@@ -900,7 +891,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     
     // Store next-root candidates for tree reuse
     if (SearchParams::ENABLE_TREE_REUSE) {
-        store_next_root_candidates(board);
+        store_next_root_candidates(board, teamHasTimeAdvantage);
         lastSearchHash_ = board.hash_key(teamHasTimeAdvantage);
     }
     
@@ -1345,9 +1336,9 @@ void Agent::setHashSize(size_t sizeMB) {
 /**
  * @brief Try to reuse the search tree from a previous search.
  * 
- * Implements CrazyAra-style tree reuse by checking if the current position
- * matches either our expected move (ownNextRoot_) or opponent's expected
- * response (opponentsNextRoot_).
+ * Implements CrazyAra-style tree reuse by checking the current position
+ * against the selected move and every generated opponent response retained
+ * from the previous search.
  */
 std::string Agent::board_signature(Board& board) {
     return board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
@@ -1358,30 +1349,23 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
                                             const std::string& signature) {
     // The signature must match exactly: retained edges were generated against
     // that board, and a stale pocket would make reused drops illegal.
-    auto matches = [&](const std::shared_ptr<Node>& candidate,
-                       const std::string& candidateSignature) {
-        return candidate
-            && candidate->get_hash() == positionHash
-            && candidate->get_team_to_play() == teamSide
-            && !candidateSignature.empty()
-            && candidateSignature == signature;
-    };
-
     std::shared_ptr<Node> reused;
-    if (matches(ownNextRoot_, ownNextRootSignature_)) {
-        reused = ownNextRoot_;
-    } else if (matches(opponentsNextRoot_, opponentsNextRootSignature_)) {
-        reused = opponentsNextRoot_;
+    for (const RetainedRootCandidate& candidate : nextRootCandidates_) {
+        if (candidate.node
+            && candidate.positionHash == positionHash
+            && candidate.node->get_team_to_play() == teamSide
+            && !candidate.signature.empty()
+            && candidate.signature == signature) {
+            reused = candidate.node;
+            break;
+        }
     }
 
     if (rootNode && rootNode != reused) {
         gcThread_.enqueue(rootNode);
     }
 
-    ownNextRoot_.reset();
-    opponentsNextRoot_.reset();
-    ownNextRootSignature_.clear();
-    opponentsNextRootSignature_.clear();
+    nextRootCandidates_.clear();
 
     return reused;
 }
@@ -1389,15 +1373,14 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
 /**
  * @brief Store next-root candidates for tree reuse.
  * 
- * After search completes, store references to likely next positions:
- * - ownNextRoot_: Best child (our expected move)
- * - opponentsNextRoot_: Best grandchild (opponent's expected response)
+ * After search completes, retain the selected child and every generated
+ * opponent response beneath it. A solver-proven loss for the opponent covers
+ * all legal replies, so retaining only the principal reply throws away most of
+ * the proof and can make a later search report a longer mate.
  */
-void Agent::store_next_root_candidates(Board& board) {
-    ownNextRoot_.reset();
-    opponentsNextRoot_.reset();
-    ownNextRootSignature_.clear();
-    opponentsNextRootSignature_.clear();
+void Agent::store_next_root_candidates(Board& board,
+                                       bool teamHasTimeAdvantage) {
+    nextRootCandidates_.clear();
 
     if (!rootNode || !rootNode->is_expanded()) {
         return;
@@ -1431,37 +1414,38 @@ void Agent::store_next_root_candidates(Board& board) {
     const JointActionCandidate ownAction = rootNode->get_joint_action(bestIdx);
     Board ownNextBoard(board);
     ownNextBoard.make_moves(ownAction.moveA, ownAction.moveB);
-    ownNextRoot_ = children[bestIdx];
-    ownNextRootSignature_ = board_signature(ownNextBoard);
+    const std::shared_ptr<Node>& ownNextRoot = children[bestIdx];
+    nextRootCandidates_.push_back({
+        ownNextRoot,
+        ownNextBoard.hash_key(!teamHasTimeAdvantage),
+        board_signature(ownNextBoard)});
 
-    // Find best grandchild (opponent's expected response)
-    if (!ownNextRoot_->is_expanded()) {
+    if (!ownNextRoot->is_expanded()) {
         return;
     }
 
-    auto grandchildren = ownNextRoot_->get_children();
-    auto grandVisits = ownNextRoot_->get_child_visits();
-    if (grandchildren.empty() || grandVisits.empty()) {
+    auto grandchildren = ownNextRoot->get_children();
+    if (grandchildren.empty()) {
         return;
     }
 
-    int bestGrandIdx = 0;
-    int maxGrandVisits = 0;
-    for (size_t i = 0; i < grandVisits.size(); ++i) {
-        if (grandVisits[i] > maxGrandVisits) {
-            maxGrandVisits = grandVisits[i];
-            bestGrandIdx = static_cast<int>(i);
-        }
-    }
-
-    if (static_cast<size_t>(bestGrandIdx) >= grandchildren.size()) {
-        return;
-    }
-
-    const JointActionCandidate reply =
-        ownNextRoot_->get_joint_action(bestGrandIdx);
+    nextRootCandidates_.reserve(1 + grandchildren.size());
     Board opponentsNextBoard(ownNextBoard);
-    opponentsNextBoard.make_moves(reply.moveA, reply.moveB);
-    opponentsNextRoot_ = grandchildren[bestGrandIdx];
-    opponentsNextRootSignature_ = board_signature(opponentsNextBoard);
+    for (size_t index = 0; index < grandchildren.size(); ++index) {
+        if (!grandchildren[index]) {
+            continue;
+        }
+
+        const JointActionCandidate reply =
+            ownNextRoot->get_joint_action(static_cast<int>(index));
+        opponentsNextBoard.make_moves(reply.moveA, reply.moveB);
+        const uint64_t replyHash =
+            opponentsNextBoard.hash_key(teamHasTimeAdvantage);
+        const std::string replySignature =
+            board_signature(opponentsNextBoard);
+
+        nextRootCandidates_.push_back({
+            grandchildren[index], replyHash, replySignature});
+        opponentsNextBoard.unmake_moves(reply.moveA, reply.moveB);
+    }
 }

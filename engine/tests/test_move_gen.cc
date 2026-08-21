@@ -18,6 +18,17 @@
 #include "Fairy-Stockfish/src/piece.h"
 #include "Fairy-Stockfish/src/thread.h"
 
+class AgentTreeReuseTestPeer {
+public:
+    static void set_root(Agent& agent, const std::shared_ptr<Node>& root) {
+        agent.rootNode = root;
+    }
+
+    static size_t retained_candidate_count(const Agent& agent) {
+        return agent.nextRootCandidates_.size();
+    }
+};
+
 // Fixture for engine initialization
 class EngineTest : public ::testing::Test {
 protected:
@@ -1316,6 +1327,67 @@ TEST(PonderModeTest, AgentPonderHitTransitions) {
     SearchInfo info(std::chrono::steady_clock::now() - std::chrono::milliseconds(300), 1000);
     agent.ponderhit(); // Safe to call when not running
     EXPECT_FALSE(agent.is_pondering());
+}
+
+TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
+    Board board;
+    constexpr bool teamHasTimeAdvantage = false;
+    auto root = std::make_shared<Node>(
+        Stockfish::WHITE, board.hash_key(teamHasTimeAdvantage));
+
+    const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
+    ASSERT_NE(ownMove, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {ownMove}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        teamHasTimeAdvantage, true, false, SearchParams::RuntimeConfig{}));
+
+    const auto rootChildren = root->get_children();
+    ASSERT_EQ(rootChildren.size(), 1U);
+    const std::shared_ptr<Node>& opponentNode = rootChildren.front();
+
+    Board afterOwnMove(board);
+    afterOwnMove.make_moves(ownMove, Stockfish::MOVE_NONE);
+    const Stockfish::Move firstReply =
+        find_move(afterOwnMove, BOARD_A, "e7e5");
+    const Stockfish::Move secondReply =
+        find_move(afterOwnMove, BOARD_A, "c7c5");
+    ASSERT_NE(firstReply, Stockfish::MOVE_NONE);
+    ASSERT_NE(secondReply, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(opponentNode->try_init_and_expand(
+        {firstReply, secondReply}, {Stockfish::MOVE_NONE},
+        {0.75f, 0.25f}, {1.0f}, !teamHasTimeAdvantage, true, true,
+        SearchParams::RuntimeConfig{}));
+
+    JointActionCandidate expandedReply;
+    int expandedReplyIndex = -1;
+    ASSERT_TRUE(opponentNode->expand_next_joint_child(
+        nullptr, 0, expandedReply, SearchParams::RuntimeConfig{},
+        &expandedReplyIndex));
+    ASSERT_EQ(expandedReplyIndex, 1);
+
+    const auto replyNodes = opponentNode->get_children();
+    ASSERT_EQ(replyNodes.size(), 2U);
+    replyNodes[0]->mark_as_win(5);
+    replyNodes[1]->mark_as_win(3);
+
+    Agent agent;
+    AgentTreeReuseTestPeer::set_root(agent, root);
+    agent.store_next_root_candidates(board, teamHasTimeAdvantage);
+    ASSERT_EQ(AgentTreeReuseTestPeer::retained_candidate_count(agent), 3U);
+
+    const JointActionCandidate nonPrincipalReply =
+        opponentNode->get_joint_action(1);
+    Board actualPosition(afterOwnMove);
+    actualPosition.make_moves(
+        nonPrincipalReply.moveA, nonPrincipalReply.moveB);
+
+    const std::shared_ptr<Node> reused = agent.try_reuse_tree(
+        actualPosition.hash_key(teamHasTimeAdvantage), Stockfish::WHITE,
+        Agent::board_signature(actualPosition));
+    EXPECT_EQ(reused, replyNodes[1]);
+    ASSERT_NE(reused, nullptr);
+    EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(reused->get_end_in_ply(), 3);
 }
 
 TEST_F(EngineTest, InitialMoves) {
