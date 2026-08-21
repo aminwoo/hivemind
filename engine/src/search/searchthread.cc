@@ -265,11 +265,38 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
     validInferenceCount = 0;
     sameBatchCollisions = 0;
     reservationCollisions = 0;
+
+    // Leaves already accepted by this batch, or still in flight in the other
+    // half of the inference pipeline, must not be selected again. As exhausted
+    // subtrees are discovered they are added too, allowing the blocked frontier
+    // to bubble toward the root instead of replaying the same collision path.
+    std::unordered_set<const Node*> blockedNodes;
+    blockedNodes.reserve(static_cast<size_t>(batchSize) * 4);
+    if (pendingBatchIndex >= 0 && &batches[pendingBatchIndex] != &batch) {
+        for (const LeafContext& pending : batches[pendingBatchIndex].contexts) {
+            if (pending.leaf) {
+                blockedNodes.insert(pending.leaf.get());
+            }
+        }
+    }
+
+    auto restore_selection = [&]() {
+        cancel_virtual_losses(trajectoryBuffer);
+        for (auto it = trajectoryBuffer.rbegin();
+             it != trajectoryBuffer.rend(); ++it) {
+            const JointActionCandidate& action = it->action;
+            if (action.moveA != Stockfish::MOVE_NONE
+                || action.moveB != Stockfish::MOVE_NONE) {
+                board.unmake_moves(action.moveA, action.moveB);
+            }
+        }
+    };
     
     // Phase 1: Collect batchSize leaf nodes
-    constexpr int MAX_SELECTION_ATTEMPTS_PER_SLOT = 2;
+    constexpr int MAX_SELECTION_ATTEMPTS_PER_SLOT = 16;
     const int maxSelectionAttempts = batchSize * MAX_SELECTION_ATTEMPTS_PER_SLOT;
     int selectionAttempts = 0;
+    std::shared_ptr<Node> pendingToWaitFor;
     while (static_cast<int>(batchContexts.size()) < batchSize &&
            selectionAttempts < maxSelectionAttempts) {
         selectionAttempts++;
@@ -277,21 +304,40 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         trajectoryBuffer.clear();
         
         // Select and expand to get a leaf node (MCGS: with transposition lookup)
-        LeafSelection selection = select_and_expand(board, teamHasTimeAdvantage);
+        LeafSelection selection = select_and_expand(
+            board, teamHasTimeAdvantage, &blockedNodes);
         if (!selection.leaf) {
-            reservationCollisions++;
-            cancel_virtual_losses(trajectoryBuffer);
-            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
-                const JointActionCandidate& action = it->action;
-                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
-                    board.unmake_moves(action.moveA, action.moveB);
-                }
+            if (selection.pendingEvaluation) {
+                reservationCollisions++;
+                pendingToWaitFor = selection.pendingEvaluation;
+            } else {
+                sameBatchCollisions++;
+            }
+            if (selection.exhaustedSubtree) {
+                blockedNodes.insert(selection.exhaustedSubtree.get());
+            }
+            restore_selection();
+
+            const bool rootExhausted = selection.exhaustedSubtree
+                && selection.exhaustedSubtree.get() == root;
+            if (rootExhausted && batchContexts.empty() && allowReservationWait
+                && pendingToWaitFor) {
+                pendingToWaitFor->wait_for_evaluation_completion();
+                blockedNodes.clear();
+                selectionAttempts = 0;
+                pendingToWaitFor.reset();
+                continue;
+            }
+            if (rootExhausted) {
+                break;
             }
             if (batchContexts.empty()
                 && selectionAttempts == maxSelectionAttempts
-                && allowReservationWait
-                && selection.pendingEvaluation) {
-                selection.pendingEvaluation->wait_for_evaluation_completion();
+                && allowReservationWait && pendingToWaitFor) {
+                pendingToWaitFor->wait_for_evaluation_completion();
+                blockedNodes.clear();
+                selectionAttempts = 0;
+                pendingToWaitFor.reset();
             }
             continue;
         }
@@ -305,18 +351,14 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             [leaf](const LeafContext& previous) { return previous.leaf == leaf; });
         if (isCollision) {
             sameBatchCollisions++;
+            blockedNodes.insert(leaf.get());
             if (selection.hasEvaluationReservation) {
                 leaf->release_evaluation_reservation();
             }
-            cancel_virtual_losses(trajectoryBuffer);
-            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
-                const JointActionCandidate& action = it->action;
-                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
-                    board.unmake_moves(action.moveA, action.moveB);
-                }
-            }
+            restore_selection();
             continue;
         }
+        blockedNodes.insert(leaf.get());
         
         // Store trajectory
         ctx.trajectory = trajectoryBuffer;
@@ -398,13 +440,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         ctx.isTerminal = false;
         if (!ctx.hasEvaluationReservation) {
             reservationCollisions++;
-            cancel_virtual_losses(trajectoryBuffer);
-            for (auto it = trajectoryBuffer.rbegin(); it != trajectoryBuffer.rend(); ++it) {
-                const JointActionCandidate& action = it->action;
-                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
-                    board.unmake_moves(action.moveA, action.moveB);
-                }
-            }
+            restore_selection();
             continue;
         }
         bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == root->get_team_to_play())
@@ -815,7 +851,10 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
  * @param board The current board state (will be modified during selection)
  * @param teamHasTimeAdvantage Whether the searching team has time advantage
  */
-LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdvantage) {
+LeafSelection SearchThread::select_and_expand(
+    Board& board,
+    bool teamHasTimeAdvantage,
+    const std::unordered_set<const Node*>* blockedNodes) {
     shared_ptr<Node> currentNode = rootOwner.lock();
     if (!currentNode) {
         return {};
@@ -828,6 +867,14 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
     trajectoryBuffer.emplace_back(currentNode, JointActionCandidate(), -1);
 
     while (true) {
+        if (blockedNodes && blockedNodes->contains(currentNode.get())) {
+            return {
+                nullptr,
+                false,
+                currentNode->is_evaluation_pending() ? currentNode : nullptr,
+                currentNode};
+        }
+
         if (SearchParams::ENABLE_MCTS_SOLVER
             && currentNode->get_node_type() != NodeType::UNSOLVED) {
             break;
@@ -837,7 +884,7 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
         if (!currentNode->is_expanded()) {
             if (!hasEvaluationReservation) {
                 if (!currentNode->try_reserve_evaluation()) {
-                    return {nullptr, false, currentNode};
+                    return {nullptr, false, currentNode, currentNode};
                 }
                 if (currentNode->is_expanded()
                     || currentNode->get_node_type() != NodeType::UNSOLVED) {
@@ -867,7 +914,17 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
                     expandedChildReserved, teamHasTimeAdvantage);
                 if (canonicalResult.pendingEvaluation) {
                     return {
-                        nullptr, false, canonicalResult.pendingEvaluation};
+                        nullptr, false, canonicalResult.pendingEvaluation,
+                        canonicalResult.pendingEvaluation};
+                }
+                if (blockedNodes && blockedNodes->contains(nextNode.get())) {
+                    if (expandedChildReserved) {
+                        nextNode->release_evaluation_reservation();
+                    }
+                    currentNode->remove_virtual_loss(childIdx);
+                    board.unmake_moves(
+                        expandedAction.moveA, expandedAction.moveB);
+                    return {nullptr, false, nullptr, nextNode};
                 }
 
                 // Update the parent trajectory entry with the selected child index
@@ -888,9 +945,11 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
 
         // Standard PUCT selection among expanded children
         Node::ChildSelection selection =
-            currentNode->select_child_and_apply_virtual_loss(runtimeConfig);
+            currentNode->select_child_and_apply_virtual_loss(
+                runtimeConfig, blockedNodes);
         if (!selection.child || selection.childIdx < 0) {
-            return {nullptr, false, selection.pendingEvaluation};
+            return {
+                nullptr, false, selection.pendingEvaluation, currentNode};
         }
         nextNode = selection.child;
         childIdx = selection.childIdx;
@@ -903,7 +962,17 @@ LeafSelection SearchThread::select_and_expand(Board& board, bool teamHasTimeAdva
             board, currentNode.get(), childIdx, action, nextNode,
             hasEvaluationReservation, teamHasTimeAdvantage);
         if (canonicalResult.pendingEvaluation) {
-            return {nullptr, false, canonicalResult.pendingEvaluation};
+            return {
+                nullptr, false, canonicalResult.pendingEvaluation,
+                canonicalResult.pendingEvaluation};
+        }
+        if (blockedNodes && blockedNodes->contains(nextNode.get())) {
+            if (hasEvaluationReservation) {
+                nextNode->release_evaluation_reservation();
+            }
+            currentNode->remove_virtual_loss(childIdx);
+            board.unmake_moves(action.moveA, action.moveB);
+            return {nullptr, false, nullptr, nextNode};
         }
 
         // Update the parent trajectory entry with the selected child index
