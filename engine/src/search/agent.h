@@ -60,6 +60,12 @@ struct RootEdgeStats {
  */
 class Agent {
 private:
+    struct RetainedRootCandidate {
+        std::shared_ptr<Node> node;
+        uint64_t positionHash = 0;
+        std::string signature;
+    };
+
     std::vector<SearchThread*> searchThreads;
     std::vector<std::thread> workerPool_;
     std::atomic<bool> running;                            
@@ -85,15 +91,15 @@ private:
     std::atomic<bool> isPondering_{false};                   // Whether current search is in ponder mode
     std::atomic<SearchInfo*> currentSearchInfo_{nullptr};    // Active search info pointer
     
-    // Tree reuse support (CrazyAra-style)
-    std::shared_ptr<Node> ownNextRoot_;      // Expected next root after our move
-    std::shared_ptr<Node> opponentsNextRoot_; // Expected next root after opponent's move
-    std::string ownNextRootSignature_;        // Exact board behind ownNextRoot_
-    std::string opponentsNextRootSignature_;  // Exact board behind opponentsNextRoot_
+    // Tree reuse support (CrazyAra-style). Retain every generated opponent
+    // response below the selected move, not only the predicted response.
+    std::vector<RetainedRootCandidate> nextRootCandidates_;
     uint64_t lastSearchHash_ = 0;            // Hash of last search position
     
     // Garbage collection thread for async tree cleanup
     GCThread gcThread_;
+
+    friend class AgentTreeReuseTestPeer;
 
     void ensure_worker_pool(size_t workerCount);
     void worker_loop(size_t workerIndex, uint64_t observedGeneration);
@@ -208,9 +214,8 @@ public:
     /**
      * @brief Exact positional identity of a board (both FENs, pockets included).
      *
-     * Used instead of the search hash when adopting a retained subtree, because
-     * the hash mixes in repetition history that a UCI position reconstruction
-     * discards.
+     * Used alongside the history-sensitive search hash when adopting a retained
+     * subtree, protecting against collisions and stale pocket contents.
      */
     static std::string board_signature(Board& board);
 
@@ -230,10 +235,9 @@ public:
     /**
      * @brief Store next-root candidates for tree reuse.
      * 
-     * Called after search completes to save references to likely next positions:
-     * - ownNextRoot_: Most-visited child (our expected move)
-     * - opponentsNextRoot_: Most-visited grandchild (opponent's response)
+     * Called after search completes to retain the selected child and every
+     * generated opponent response beneath it.
      */
-    void store_next_root_candidates(Board& board);
+    void store_next_root_candidates(Board& board, bool teamHasTimeAdvantage);
     
 };
