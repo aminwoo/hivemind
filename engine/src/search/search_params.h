@@ -263,6 +263,39 @@ constexpr float INSTABILITY_TIME_FRACTION = 0.4f;
  */
 constexpr bool ENABLE_MCTS_SOLVER = true;
 
+/**
+ * Maximum attacker moves for the root single-board forced-mate search.
+ * The search is iteratively deepened from 2, so a shorter mate is preferred.
+ */
+constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 5;
+
+/**
+ * Node budget (attacker moves plus defender replies tried) for the whole root
+ * forced-mate pre-pass, shared across its deepening iterations.
+ *
+ * The pre-pass runs synchronously before MCTS, so it needs a cap of its own:
+ * without one, an exposed king plus a full hand reaches multiple seconds. This
+ * is the hard ceiling (~100 ms); Agent::search() scales it down further with the
+ * budget of the search it precedes. Exhausting it only means "not proven" - the
+ * position then goes to MCTS as usual, where the in-tree solver can still prove
+ * the mate.
+ */
+constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 50000;
+
+/// Floor for the scaled budget, so even a very short search still gets a scan.
+constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
+
+/**
+ * Conversion factors from the search's own budget to mate-search nodes.
+ *
+ * A mate-search node is a make/unmake plus a mate test, roughly fifty times
+ * cheaper than an MCTS node with its network evaluation, so these keep the
+ * pre-pass at a few percent of the search it precedes instead of a fixed cost
+ * that can dominate a short one (self-play runs searches of a few hundred nodes).
+ */
+constexpr uint64_t MATE_SEARCH_NODES_PER_SEARCH_NODE = 10;
+constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 20;
+
 // =============================================================================
 // Progressive Widening Parameters
 // =============================================================================

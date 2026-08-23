@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <chrono>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -2343,5 +2344,101 @@ TEST_F(EngineTest, ImmediateMateIn1DetectedInAllModesAndTurnConfigurations) {
         EXPECT_TRUE(foundGo);
         EXPECT_EQ(board.uci_move(BOARD_A, mateGo.moveA), "Q@f7");
         EXPECT_NE(mateGo.moveB, Stockfish::MOVE_NONE);
+    }
+}
+
+// Regression: is_checkmate() identifies a team by the color it plays on Board A,
+// so a mate delivered on Board B must be tested with the attacker's own team id.
+// Using ~attackerColor there searched for a mate against our own team, which both
+// hid every Board B mate and reported our own losses as forced wins.
+TEST_F(EngineTest, SingleBoardForcedMateFoundOnBoardB) {
+    // Same forced mate as SingleBoardForcedMateOnPosition4, mirrored onto Board B
+    // so that our partner (Black) is the attacker.
+    Board board;
+    board.set(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+        "|"
+        "r2qk1nr/p1p2ppp/2p1p3/3p4/3P4/2N1nPKP/PPP5/R2Q3R[pnPPPNBBRQ] b kq - 0 2");
+
+    EXPECT_EQ(board.side_to_move(BOARD_A), Stockfish::WHITE);
+    EXPECT_EQ(board.side_to_move(BOARD_B), Stockfish::BLACK);
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    bool found = Agent::find_root_mate(board, Stockfish::WHITE, true, mateAction, matePly);
+    EXPECT_TRUE(found);
+    EXPECT_EQ(mateAction.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, mateAction.moveB), "d8h4");
+    EXPECT_EQ(matePly, 9);
+}
+
+// Regression: our own team being mated on Board A must never be reported as a
+// forced mate for us just because our partner has a checking move on Board B.
+TEST_F(EngineTest, RootMateScanDoesNotReportOurOwnLossAsAMate) {
+    Board board;
+    // Board A: White is in check with no legal move, saved only by the partner's
+    // capture on Board B under the time-advantage rule. Board B: Black (our
+    // partner) has checking moves but no mate.
+    board.set(
+        "4k3/8/8/8/8/8/5PPP/4r1K1[] w - - 0 1"
+        "|"
+        "1r2k3/8/8/3q4/8/8/6N1/R6K[] b - - 0 1");
+
+    ASSERT_TRUE(board.is_in_check(BOARD_A));
+    ASSERT_EQ(board.legal_moves(BOARD_A).size(), 0u);
+    ASSERT_FALSE(board.is_checkmate(Stockfish::WHITE, true));
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_FALSE(Agent::find_root_mate(board, Stockfish::WHITE, true, mateAction, matePly));
+}
+
+// Bughouse scores a team with no legal action as a loss, and a quiet move can
+// create that state, so the root scan must not be limited to checking moves.
+TEST_F(EngineTest, RootMateScanFindsQuietStalemateWin) {
+    Board board;
+    // Board A: 1.Kf7 leaves Black without a legal move (h7 is blocked by h6).
+    board.set(
+        "7k/7p/5K1P/8/8/8/8/8[] w - - 0 1"
+        "|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    bool found = Agent::find_root_mate(board, Stockfish::WHITE, true, mateAction, matePly);
+    EXPECT_TRUE(found);
+    EXPECT_EQ(board.uci_move(BOARD_A, mateAction.moveA), "f6f7");
+    EXPECT_EQ(matePly, 1);
+
+    // The scan reported a terminal position, so verify it really is one.
+    board.push_move(BOARD_A, mateAction.moveA);
+    EXPECT_EQ(board.legal_moves(BOARD_A).size(), 0u);
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    board.pop_move(BOARD_A);
+}
+
+// The root scan runs synchronously before MCTS, so it must stay bounded even
+// with an exposed king and a full hand on both boards.
+TEST_F(EngineTest, RootMateScanStaysBounded) {
+    Board board;
+    board.set(
+        "6k1/5ppp/8/8/8/8/5PPP/6K1[QRRBBNNPqrrbbnnp] w - - 0 1"
+        "|"
+        "6k1/5ppp/8/8/8/8/5PPP/6K1[QRRBBNNPqrrbbnnp] b - - 0 1");
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    auto start = std::chrono::steady_clock::now();
+    bool found = Agent::find_root_mate(board, Stockfish::WHITE, true, mateAction, matePly);
+    double elapsedMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    std::cout << "Bounded mate scan: found=" << found << " ply=" << matePly
+              << " time=" << elapsedMs << " ms" << std::endl;
+    EXPECT_LT(elapsedMs, 1000.0);
+    if (found) {
+        // Deepening reports the shortest proof it can find, not the first one.
+        EXPECT_LE(matePly, 9);
+        EXPECT_TRUE(mateAction.moveA != Stockfish::MOVE_NONE
+                    || mateAction.moveB != Stockfish::MOVE_NONE);
     }
 }
