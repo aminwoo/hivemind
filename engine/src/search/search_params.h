@@ -280,7 +280,7 @@ constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 5;
  * position then goes to MCTS as usual, where the in-tree solver can still prove
  * the mate.
  */
-constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 50000;
+constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 100000;
 
 /// Floor for the scaled budget, so even a very short search still gets a scan.
 constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
@@ -294,7 +294,10 @@ constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
  * that can dominate a short one (self-play runs searches of a few hundred nodes).
  */
 constexpr uint64_t MATE_SEARCH_NODES_PER_SEARCH_NODE = 10;
-constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 20;
+// Give a 1-second UCI search the full root-mate budget.  This prevents
+// short searches from falling through to MCTS before the single-board solver
+// has had enough work to prove tactical mates such as Qh5.
+constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 50;
 
 // =============================================================================
 // Progressive Widening Parameters
