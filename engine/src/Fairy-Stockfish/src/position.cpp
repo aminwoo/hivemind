@@ -46,13 +46,19 @@ namespace Zobrist {
 
 void Position::add_to_hand_with_key(Piece pc) {
     int count = pieceCountInHand[color_of(pc)][type_of(pc)];
-    st->key ^= Zobrist::inHand[pc][count] ^ Zobrist::inHand[pc][count + 1];
+    const Key delta =
+        Zobrist::inHand[pc][count] ^ Zobrist::inHand[pc][count + 1];
+    st->key ^= delta;
+    st->pocketKey ^= delta;
     add_to_hand(pc);
 }
 
 void Position::remove_from_hand_with_key(Piece pc) {
     int count = pieceCountInHand[color_of(pc)][type_of(pc)];
-    st->key ^= Zobrist::inHand[pc][count] ^ Zobrist::inHand[pc][count - 1];
+    const Key delta =
+        Zobrist::inHand[pc][count] ^ Zobrist::inHand[pc][count - 1];
+    st->key ^= delta;
+    st->pocketKey ^= delta;
     remove_from_hand(pc);
 }
 
@@ -559,7 +565,7 @@ void Position::set_check_info(StateInfo* si) const {
 
 void Position::set_state(StateInfo* si) const {
 
-  si->key = si->materialKey = 0;
+  si->key = si->materialKey = si->pocketKey = 0;
   si->pawnKey = Zobrist::noPawns;
   si->nonPawnMaterial[WHITE] = si->nonPawnMaterial[BLACK] = VALUE_ZERO;
   si->checkersBB = count<KING>(sideToMove) ? attackers_to(square<KING>(sideToMove), ~sideToMove) : Bitboard(0);
@@ -597,7 +603,11 @@ void Position::set_state(StateInfo* si) const {
               si->materialKey ^= Zobrist::psq[pc][cnt];
 
           if (piece_drops() || seirawan_gating() || arrow_gating())
-              si->key ^= Zobrist::inHand[pc][pieceCountInHand[c][pt]];
+          {
+              const Key pocket = Zobrist::inHand[pc][pieceCountInHand[c][pt]];
+              si->key ^= pocket;
+              si->pocketKey ^= pocket;
+          }
       }
 
   if (check_counting())
@@ -1466,8 +1476,11 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
                              : unpromotedCaptured ? ~unpromotedCaptured
                                                   : make_piece(~color_of(captured), PAWN);
           add_to_hand(pieceToHand);
-          k ^=  Zobrist::inHand[pieceToHand][pieceCountInHand[color_of(pieceToHand)][type_of(pieceToHand)] - 1]
+          const Key pocketDelta =
+              Zobrist::inHand[pieceToHand][pieceCountInHand[color_of(pieceToHand)][type_of(pieceToHand)] - 1]
               ^ Zobrist::inHand[pieceToHand][pieceCountInHand[color_of(pieceToHand)][type_of(pieceToHand)]];
+          k ^= pocketDelta;
+          st->pocketKey ^= pocketDelta;
 
           if (Eval::useNNUE)
           {
@@ -1489,9 +1502,11 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
   if (type_of(m) == DROP)
   {
       Piece pc_hand = make_piece(us, in_hand_piece_type(m));
-      k ^=  Zobrist::psq[pc][to]
-          ^ Zobrist::inHand[pc_hand][pieceCountInHand[color_of(pc_hand)][type_of(pc_hand)] - 1]
+      const Key pocketDelta =
+          Zobrist::inHand[pc_hand][pieceCountInHand[color_of(pc_hand)][type_of(pc_hand)] - 1]
           ^ Zobrist::inHand[pc_hand][pieceCountInHand[color_of(pc_hand)][type_of(pc_hand)]];
+      k ^= Zobrist::psq[pc][to] ^ pocketDelta;
+      st->pocketKey ^= pocketDelta;
   }
   else
       k ^= Zobrist::psq[pc][from] ^ Zobrist::psq[pc][to];
@@ -1792,8 +1807,11 @@ void Position::do_move(Move m, StateInfo& newSt, bool givesCheck) {
                                  : unpromotedCaptured ? ~unpromotedCaptured
                                                       : make_piece(~color_of(bpc), PAWN);
               add_to_hand(pieceToHand);
-              k ^=  Zobrist::inHand[pieceToHand][pieceCountInHand[color_of(pieceToHand)][type_of(pieceToHand)] - 1]
+              const Key pocketDelta =
+                  Zobrist::inHand[pieceToHand][pieceCountInHand[color_of(pieceToHand)][type_of(pieceToHand)] - 1]
                   ^ Zobrist::inHand[pieceToHand][pieceCountInHand[color_of(pieceToHand)][type_of(pieceToHand)]];
+              k ^= pocketDelta;
+              st->pocketKey ^= pocketDelta;
 
               if (Eval::useNNUE)
               {

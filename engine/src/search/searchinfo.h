@@ -24,7 +24,7 @@ struct SearchInfo {
     mutable std::mutex timeMutex_;
     float overallNPS_ = 0.0f;          // Running average of nodes per second
     int timeExtensionCount_ = 0;       // Number of time extensions applied
-    int effectiveMoveTime_ = 0;        // Current move time (may be extended)
+    std::atomic<int> effectiveMoveTime_{0};  // Current move time (may be extended)
     bool inGame_ = false;              // Whether this is a timed game
 
     // Constructor initializes the start time and move time.
@@ -53,14 +53,15 @@ struct SearchInfo {
     
     // Returns the effective move time (may be extended).
     int get_effective_move_time() const {
-        std::lock_guard<std::mutex> lock(timeMutex_);
-        return effectiveMoveTime_;
+        return effectiveMoveTime_.load(std::memory_order_relaxed);
     }
     
     // Returns remaining time in milliseconds.
     double remaining_time() const {
         std::lock_guard<std::mutex> lock(timeMutex_);
-        return std::max(0.0, effectiveMoveTime_ - elapsed_unlocked());
+        return std::max(
+            0.0,
+            effectiveMoveTime_.load(std::memory_order_relaxed) - elapsed_unlocked());
     }
 
     // Returns the elapsed time in milliseconds since start (lock-free).
@@ -168,13 +169,16 @@ struct SearchInfo {
             return false;
         }
         
-        double remaining = effectiveMoveTime_ - elapsed_unlocked();
+        const int effectiveMoveTime =
+            effectiveMoveTime_.load(std::memory_order_relaxed);
+        double remaining = effectiveMoveTime - elapsed_unlocked();
         if (remaining <= 0) {
             return false;
         }
         
         int extension = static_cast<int>(remaining * (factor - 1.0f));
-        effectiveMoveTime_ += extension;
+        effectiveMoveTime_.store(
+            effectiveMoveTime + extension, std::memory_order_relaxed);
         timeExtensionCount_++;
         return true;
     }

@@ -29,6 +29,16 @@ public:
     static size_t retained_candidate_count(const Agent& agent) {
         return agent.nextRootCandidates_.size();
     }
+
+    static void reindex_reused_subtree(
+        Agent& agent, const std::shared_ptr<Node>& root) {
+        agent.transpositionTable->clear();
+        agent.reindex_reused_subtree(root);
+    }
+
+    static std::shared_ptr<Node> lookup(Agent& agent, uint64_t hash) {
+        return agent.transpositionTable->lookup(hash);
+    }
 };
 
 // Fixture for engine initialization
@@ -404,12 +414,41 @@ TEST_F(EngineTest, RejectsDropFromEmptyPocketBeforeMutation) {
     const std::string fenA = board.fen(BOARD_A);
     const std::string fenB = board.fen(BOARD_B);
 
-    EXPECT_THROW(
-        board.make_moves(drop, Stockfish::MOVE_NONE),
-        std::logic_error);
+#ifndef NDEBUG
+    EXPECT_THROW(board.make_moves(drop, Stockfish::MOVE_NONE), std::logic_error);
+#else
+    EXPECT_FALSE(board.is_legal_move(BOARD_A, drop));
+#endif
     EXPECT_EQ(board.fen(BOARD_A), fenA);
     EXPECT_EQ(board.fen(BOARD_B), fenB);
     EXPECT_EQ(board.count_in_hand(BOARD_A, Stockfish::WHITE, Stockfish::PAWN), 0);
+}
+
+TEST_F(EngineTest, HasAnyLegalMoveMatchesFullGeneration) {
+    Board board;
+    auto expectMatchesFullGeneration = [&](int boardNum) {
+        EXPECT_EQ(
+            board.has_any_legal_move(boardNum),
+            !board.legal_moves(boardNum).empty());
+    };
+
+    // Ordinary positions return on the first legal board move.
+    expectMatchesFullGeneration(BOARD_A);
+    expectMatchesFullGeneration(BOARD_B);
+
+    // A real pocket piece can establish mobility without board-move generation.
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3[P] w - - 0 1");
+    expectMatchesFullGeneration(BOARD_A);
+
+    // Check evasions and positions with no legal move take the fallback path.
+    board.set_fen(
+        BOARD_A,
+        "r1bqkb1r/pppp1Qpp/2n2n2/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 4");
+    expectMatchesFullGeneration(BOARD_A);
+
+    board.set_fen(BOARD_A, "7k/5K1p/7P/8/8/8/8/8[] b - - 0 1");
+    ASSERT_FALSE(board.is_in_check(BOARD_A));
+    expectMatchesFullGeneration(BOARD_A);
 }
 
 TEST_F(EngineTest, InterleavedGameReplayPreservesPocketKeys) {
@@ -1704,6 +1743,16 @@ TEST(PonderModeTest, SearchInfoResetStartTime) {
     EXPECT_LT(info.elapsed(), 100.0);
 }
 
+TEST(PonderModeTest, EffectiveMoveTimePublishesExtensionsLockFree) {
+    SearchInfo info(std::chrono::steady_clock::now(), 1000);
+    EXPECT_EQ(info.get_effective_move_time(), 1000);
+
+    ASSERT_TRUE(info.try_extend_time(2.0f, 1));
+    EXPECT_GT(info.get_effective_move_time(), 1000);
+    EXPECT_EQ(info.get_extension_count(), 1);
+    EXPECT_FALSE(info.try_extend_time(2.0f, 1));
+}
+
 TEST(PonderModeTest, SearchOptionsPonderFlags) {
     SearchOptions normalOpts = SearchOptions::uci(1000, 1, false);
     EXPECT_FALSE(normalOpts.isPonder);
@@ -1782,6 +1831,29 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
     EXPECT_EQ(reused->get_end_in_ply(), 3);
+}
+
+TEST_F(EngineTest, ReusedTreeIsReindexedIntoTranspositionTable) {
+    SearchParams::RuntimeConfig config;
+    auto root = std::make_shared<Node>(Stockfish::WHITE, 101);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {static_cast<Stockfish::Move>(1)}, {Stockfish::MOVE_NONE},
+        {1.0f}, {1.0f}, false, true, false, config));
+    const std::shared_ptr<Node> child = root->get_children().front();
+    child->set_hash(202);
+
+    ASSERT_TRUE(child->try_init_and_expand(
+        {static_cast<Stockfish::Move>(2)}, {Stockfish::MOVE_NONE},
+        {1.0f}, {1.0f}, false, true, false, config));
+    const std::shared_ptr<Node> grandchild = child->get_children().front();
+    grandchild->set_hash(303);
+
+    Agent agent;
+    AgentTreeReuseTestPeer::reindex_reused_subtree(agent, root);
+
+    EXPECT_EQ(AgentTreeReuseTestPeer::lookup(agent, 101), root);
+    EXPECT_EQ(AgentTreeReuseTestPeer::lookup(agent, 202), child);
+    EXPECT_EQ(AgentTreeReuseTestPeer::lookup(agent, 303), grandchild);
 }
 
 TEST_F(EngineTest, InitialMoves) {

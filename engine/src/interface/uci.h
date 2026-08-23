@@ -19,6 +19,8 @@ private:
     std::unique_ptr<Agent> agent;
     Board board;
     Stockfish::Color teamSide = Stockfish::WHITE;
+    // True when our team is ahead on the clocks, which is what makes sitting
+    // and double-sitting legal. Set by the TimeAdvantage option.
     bool teamHasTimeAdvantage = false;
     std::vector<std::unique_ptr<Engine>> engines;
     // Retained so the BatchSize option can rebuild the engines in place.
