@@ -65,27 +65,40 @@ class Board {
          * @param board_num The board index.
          * @return uint64_t Hash of the on-board position.
          */
-        uint64_t board_only_key(int board_num) {
-            std::string fenStr = pos[board_num]->fen(false, true);
-            
-            // FEN format: piece_placement side_to_move castling en_passant halfmove fullmove [pocket]
-            // We only want: piece_placement + side_to_move + castling + en_passant
-            std::stringstream ss(fenStr);
-            std::string piecePlacement, sideToMove, castling, enPassant;
-            ss >> piecePlacement >> sideToMove >> castling >> enPassant;
+        uint64_t board_only_key(int board_num) const {
+            // Zobrist over the same fields the FEN form used to encode: piece
+            // placement including promotion markers, side to move, castling
+            // rights and the en passant file. Pockets stay excluded. This runs
+            // on every move made in the search, so it must not build a string.
+            const Stockfish::Position& position = *pos[board_num];
+            uint64_t key = 0;
 
-            // Fairy-Stockfish appends pockets to piece placement as "[pieces]".
-            // Bughouse repetition depends only on pieces currently on the board.
-            const size_t pocketStart = piecePlacement.find('[');
-            if (pocketStart != std::string::npos) {
-                piecePlacement.erase(pocketStart);
+            Stockfish::Bitboard occupied = position.pieces();
+            while (occupied) {
+                const Stockfish::Square square = Stockfish::pop_lsb(occupied);
+                key ^= Stockfish::Zobrist::boardPsq[position.piece_on(square)][square];
+                if (position.promotedPieces & Stockfish::square_bb(square)) {
+                    key ^= Stockfish::Zobrist::boardPromoted[square];
+                }
             }
 
-            // Ignore move counters, which do not define repetition identity.
-            std::string boardOnlyFen = piecePlacement + " " + sideToMove + " " + castling + " " + enPassant;
-            
-            // Use std::hash for the string
-            return std::hash<std::string>{}(boardOnlyFen);
+            if (position.side_to_move() == Stockfish::BLACK) {
+                key ^= Stockfish::Zobrist::boardSide;
+            }
+
+            const int castlingMask =
+                  (position.can_castle(Stockfish::WHITE_OO)  ? 1 : 0)
+                | (position.can_castle(Stockfish::WHITE_OOO) ? 2 : 0)
+                | (position.can_castle(Stockfish::BLACK_OO)  ? 4 : 0)
+                | (position.can_castle(Stockfish::BLACK_OOO) ? 8 : 0);
+            key ^= Stockfish::Zobrist::boardCastling[castlingMask];
+
+            if (position.ep_square() != Stockfish::SQ_NONE) {
+                key ^= Stockfish::Zobrist::boardEnPassant[
+                    Stockfish::file_of(position.ep_square())];
+            }
+
+            return key;
         }
 
         /**

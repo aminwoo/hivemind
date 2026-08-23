@@ -344,3 +344,53 @@ TEST_F(DrawDetectionTest, ReportedBoardTwoMoveCompletesThreefoldRepetition) {
     EXPECT_TRUE(board.is_draw_on_board(BOARD_B));
     EXPECT_TRUE(board.is_draw());
 }
+
+// The repetition key is a Zobrist over the board fields rather than a hashed
+// FEN string. Beyond ignoring pockets (covered above), it must still separate
+// promoted pieces, side to move, castling rights and the en passant file, and
+// must be restored exactly by unmake.
+TEST_F(DrawDetectionTest, RepetitionKeyTracksEveryBoardField) {
+    Board withEmptyHand;
+    withEmptyHand.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3[] w - - 0 1");
+
+    Board blackToMove;
+    blackToMove.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3[] b - - 0 1");
+    EXPECT_NE(withEmptyHand.board_only_key(BOARD_A),
+              blackToMove.board_only_key(BOARD_A))
+        << "Side to move must affect repetition identity";
+
+    Board promotedQueen;
+    promotedQueen.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/3QK3[] w - - 0 1");
+    Board originalQueen;
+    originalQueen.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/3Q~K3[] w - - 0 1");
+    EXPECT_NE(promotedQueen.board_only_key(BOARD_A),
+              originalQueen.board_only_key(BOARD_A))
+        << "A promoted piece is not the same piece for repetition purposes";
+
+    Board withCastling;
+    withCastling.set_fen(BOARD_A, "r3k2r/8/8/8/8/8/8/R3K2R[] w KQkq - 0 1");
+    Board withoutCastling;
+    withoutCastling.set_fen(BOARD_A, "r3k2r/8/8/8/8/8/8/R3K2R[] w - - 0 1");
+    EXPECT_NE(withCastling.board_only_key(BOARD_A),
+              withoutCastling.board_only_key(BOARD_A))
+        << "Castling rights must affect repetition identity";
+
+    Board withEnPassant;
+    withEnPassant.set_fen(BOARD_A, "4k3/8/8/3pP3/8/8/8/4K3[] w - d6 0 2");
+    Board withoutEnPassant;
+    withoutEnPassant.set_fen(BOARD_A, "4k3/8/8/3pP3/8/8/8/4K3[] w - - 0 2");
+    EXPECT_NE(withEnPassant.board_only_key(BOARD_A),
+              withoutEnPassant.board_only_key(BOARD_A))
+        << "The en passant file must affect repetition identity";
+
+    // The key must survive make/unmake unchanged.
+    Board roundTrip;
+    roundTrip.set_fen(BOARD_A, "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R[Qp] w KQkq - 0 1");
+    const uint64_t before = roundTrip.board_only_key(BOARD_A);
+    for (Stockfish::Move move : roundTrip.legal_moves(BOARD_A)) {
+        roundTrip.push_move(BOARD_A, move);
+        roundTrip.pop_move(BOARD_A);
+        ASSERT_EQ(roundTrip.board_only_key(BOARD_A), before)
+            << "Key changed after make/unmake of " << roundTrip.uci_move(BOARD_A, move);
+    }
+}
