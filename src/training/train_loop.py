@@ -113,6 +113,9 @@ def get_model_args(train_config=None, architecture="risev33"):
                 train_config and train_config.use_mlp_wdl_ply
             )
             self.shared_policy_trunk = bool(train_config and train_config.use_wdl)
+            self.joint_policy_rank = (
+                train_config.joint_policy_rank if train_config else 0
+            )
     return Args()
 
 
@@ -365,6 +368,24 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
         raise ValueError(f"No parquet files found in {rl_data_dir}")
     
     print(f"Found {len(parquet_files)} training parquet files in {rl_data_dir}")
+    if tc.joint_policy_rank > 0:
+        schema_names = set(
+            pl.scan_parquet(parquet_files[0]).collect_schema().names()
+        )
+        if "joint_policy_count" not in schema_names:
+            raise ValueError(
+                "Joint-policy RL training requires HVM5-converted Parquet data"
+            )
+        joint_target_count = int(
+            pl.scan_parquet(parquet_files)
+            .select(pl.col("joint_policy_count").sum())
+            .collect()
+            .item()
+        )
+        if joint_target_count == 0:
+            raise ValueError(
+                "Joint-policy RL training found no HVM5 joint visit targets"
+            )
     
     # Load validation data from separate directory
     val_parquet_files = sorted(glob.glob(str(PathLib(val_data_dir) / "*.parquet")))
@@ -372,36 +393,33 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
         raise ValueError(f"No parquet files found in validation directory {val_data_dir}")
     
     print(f"Found {len(val_parquet_files)} validation parquet files in {val_data_dir}")
-    print(f"Loading validation data...")
-    
-    val_samples = []
-    for vf in val_parquet_files:
-        x, y_val, pol_a, pol_b, wdl, moves_left = load_rl_parquet_shard(vf)
-        for i in range(len(x)):
-            val_samples.append((x[i], y_val[i], pol_a[i], pol_b[i], wdl[i], moves_left[i]))
-    
-    if not val_samples:
-        raise ValueError(f"No validation samples found in {val_data_dir}")
-    
-    # Convert validation to tensors
-    x_val = torch.stack([s[0] for s in val_samples])
-    y_val = torch.stack([s[1] for s in val_samples])
-    pol_a_val = torch.stack([s[2] for s in val_samples])
-    pol_b_val = torch.stack([s[3] for s in val_samples])
-    wdl_val = torch.stack([s[4] for s in val_samples])
-    moves_left_val = torch.stack([s[5] for s in val_samples])
-    
-    val_dataset = RLDataset(
-        x_val,
-        y_val,
-        pol_a_val,
-        pol_b_val,
-        wdl_val,
-        moves_left_val,
-        augment_flip=augment_flip,
+    validation_samples = int(
+        pl.scan_parquet(val_parquet_files).select(pl.len()).collect().item()
     )
-    val_loader = DataLoader(val_dataset, batch_size=tc.batch_size, shuffle=False)
-    print(f"Loaded {len(val_dataset)} validation samples")
+    if validation_samples == 0:
+        raise ValueError(f"No validation samples found in {val_data_dir}")
+
+    # Stream validation one shard at a time. Dense dual-policy targets make a
+    # fully materialized validation set tens of gigabytes at RL scale.
+    val_dataset = StreamingRLDataset(
+        val_parquet_files,
+        shuffle_files=False,
+        augment_flip=augment_flip,
+        shuffle_samples=False,
+        include_joint_policy=tc.joint_policy_rank > 0,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=tc.batch_size,
+        num_workers=0,
+    )
+    augmented_validation_samples = validation_samples * (
+        2 if augment_flip else 1
+    )
+    print(
+        f"Validation samples: {augmented_validation_samples} "
+        "(streamed from Parquet)"
+    )
     
     # Count rows from Parquet metadata so partial shards are handled exactly.
     training_samples = int(
@@ -417,7 +435,13 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
     print(f"Training samples: {n_train}")
     
     # Create streaming training dataset from all training files
-    train_dataset = StreamingRLDataset(parquet_files, shuffle_files=True, shuffle_buffer_size=10000, augment_flip=augment_flip)
+    train_dataset = StreamingRLDataset(
+        parquet_files,
+        shuffle_files=True,
+        shuffle_buffer_size=10000,
+        augment_flip=augment_flip,
+        include_joint_policy=tc.joint_policy_rank > 0,
+    )
     train_loader = DataLoader(train_dataset, batch_size=tc.batch_size, num_workers=0)
     
     nb_it_per_epoch = max(1, (n_train + tc.batch_size - 1) // tc.batch_size)
@@ -439,8 +463,24 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
     # Optionally load checkpoint
     if checkpoint_path:
         print(f"Loading checkpoint from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Stage on CPU so a CUDA-saved checkpoint cannot create a second,
+        # transient GPU copy during deserialization.
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        incompatible = model.load_state_dict(
+            checkpoint['model_state_dict'], strict=False
+        )
+        unexpected = list(incompatible.unexpected_keys)
+        non_joint_missing = [
+            key for key in incompatible.missing_keys
+            if not key.startswith('joint_policy_heads.')
+        ]
+        if unexpected or non_joint_missing:
+            raise RuntimeError(
+                "Checkpoint is incompatible with this architecture: "
+                f"missing={non_joint_missing}, unexpected={unexpected}"
+            )
+        del checkpoint
+        print("Checkpoint loaded successfully")
     
     # Train with streaming RL data loader
     trainer = TrainerAgentPytorch(model, val_loader, tc, to, use_rtpt=True, 
@@ -508,7 +548,7 @@ if __name__ == '__main__':
                         help='Path to checkpoint to resume training from')
     parser.add_argument('--selfplay-dir', type=str,
                         default=str(project_root / 'engine/selfplay_games'),
-                        help='Self-play output directory, or its training_data directory, containing HVM3 chunks')
+                        help='Self-play output directory, or its training_data directory, containing HVM chunks')
     parser.add_argument('--replay-dir', type=str, default=None,
                         help='Archived self-play directory used as CrazyAra-style replay memory')
     parser.add_argument('--replay-files', type=int, default=DEFAULT_REPLAY_FILES,

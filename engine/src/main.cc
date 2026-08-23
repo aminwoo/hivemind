@@ -30,7 +30,7 @@ void printUsage(const char* progName) {
     cout << "  --model <onnx>     Load this model in UCI mode (or --network, default: scans ./models)" << endl;
     cout << "  bench [iters]      Run inference benchmark" << endl;
     cout << "  perft [depth]      Run move generation benchmark" << endl;
-    cout << "  selfplay [options] Generate HVM3 training chunks and bughouse PGN" << endl;
+    cout << "  selfplay [options] Generate HVM5 training chunks and bughouse PGN" << endl;
     cout << "    --model <onnx> --games <n> --nodes <n> --output <dir> --seed <n>" << endl;
     cout << "    --max-macro-plies <n> --raw-policy-mean-macro-plies <x>" << endl;
     cout << "    --raw-policy-max-macro-plies <n> --raw-policy-high-temp-probability <x>" << endl;

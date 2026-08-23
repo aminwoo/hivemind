@@ -159,6 +159,9 @@ public:
                           bool boardBOnTurn,
                           const vector<uint8_t>& capturesA,
                           const vector<uint8_t>& capturesB,
+                          const vector<float>& jointFactorsA = {},
+                          const vector<float>& jointFactorsB = {},
+                          size_t jointFactorRank = 0,
                           uint64_t positionHash = 0);
     void backup(vector<TrajectoryEntry>& trajectory, 
                 Board& board, float value);

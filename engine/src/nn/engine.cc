@@ -19,7 +19,7 @@
 namespace {
 
 constexpr int BUILDER_OPTIMIZATION_LEVEL = 5;
-constexpr std::string_view ENGINE_CACHE_SCHEMA = "hivemind-trt-cache-v4";
+constexpr std::string_view ENGINE_CACHE_SCHEMA = "hivemind-trt-cache-v5";
 constexpr std::string_view FP16_CONVERTER_SCHEMA = "onnxruntime-fp16-v1";
 
 std::string engineBuildDescriptor(int deviceId, int batchSize) {
@@ -199,12 +199,16 @@ Engine::ExecutionState::~ExecutionState() {
     if (devicePolicyBBuffer) cudaFree(devicePolicyBBuffer);
     if (deviceWdlBuffer) cudaFree(deviceWdlBuffer);
     if (deviceMovesLeftBuffer) cudaFree(deviceMovesLeftBuffer);
+    if (deviceJointFactorsABuffer) cudaFree(deviceJointFactorsABuffer);
+    if (deviceJointFactorsBBuffer) cudaFree(deviceJointFactorsBBuffer);
     if (hostObsHalf) cudaFreeHost(hostObsHalf);
     if (hostValueHalf) cudaFreeHost(hostValueHalf);
     if (hostPolicyAHalf) cudaFreeHost(hostPolicyAHalf);
     if (hostPolicyBHalf) cudaFreeHost(hostPolicyBHalf);
     if (hostWdlHalf) cudaFreeHost(hostWdlHalf);
     if (hostMovesLeftHalf) cudaFreeHost(hostMovesLeftHalf);
+    if (hostJointFactorsAHalf) cudaFreeHost(hostJointFactorsAHalf);
+    if (hostJointFactorsBHalf) cudaFreeHost(hostJointFactorsBHalf);
     if (stream) cudaStreamDestroy(stream);
 }
 
@@ -414,6 +418,9 @@ bool Engine::initializeResources() {
     m_policyBName.clear();
     m_wdlName.clear();
     m_movesLeftName.clear();
+    m_jointFactorsAName.clear();
+    m_jointFactorsBName.clear();
+    m_jointFactorRank = 0;
 
     auto normalizedName = [](std::string name) {
         std::transform(name.begin(), name.end(), name.begin(), [](unsigned char character) {
@@ -455,6 +462,19 @@ bool Engine::initializeResources() {
             } else if ((lowerName == "moves_left" || lowerName == "plys_to_end_out") &&
                        outputElements == 1) {
                 m_movesLeftName = tensorName;
+            } else if (lowerName == "joint_factors_a" &&
+                       outputElements % (NB_POLICY_VALUES() + 1) == 0) {
+                m_jointFactorsAName = tensorName;
+                m_jointFactorRank = outputElements / (NB_POLICY_VALUES() + 1);
+            } else if (lowerName == "joint_factors_b" &&
+                       outputElements % (NB_POLICY_VALUES() + 1) == 0) {
+                m_jointFactorsBName = tensorName;
+                const size_t rank = outputElements / (NB_POLICY_VALUES() + 1);
+                if (m_jointFactorRank != 0 && rank != m_jointFactorRank) {
+                    std::cerr << "Joint policy factor ranks do not match" << std::endl;
+                    return false;
+                }
+                m_jointFactorRank = rank;
             } else {
                 std::cerr << "Unexpected TensorRT output tensor " << tensorName << std::endl;
                 return false;
@@ -465,6 +485,10 @@ bool Engine::initializeResources() {
     if (m_inputName.empty() || m_valueName.empty() || m_policyAName.empty() ||
         m_policyBName.empty() || m_wdlName.empty() || m_movesLeftName.empty()) {
         std::cerr << "TensorRT model must expose data, value, pi_a, pi_b, wdl_out, and moves_left" << std::endl;
+        return false;
+    }
+    if (m_jointFactorsAName.empty() != m_jointFactorsBName.empty()) {
+        std::cerr << "TensorRT model must expose both joint factor outputs" << std::endl;
         return false;
     }
 
@@ -489,11 +513,20 @@ bool Engine::initializeResources() {
     size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(__half);
     size_t wdlSize = m_batchSize * 3 * sizeof(__half);
     size_t movesLeftSize = m_batchSize * sizeof(__half);
+    size_t jointFactorsSize = m_batchSize * m_jointFactorRank
+        * (NB_POLICY_VALUES() + 1) * sizeof(__half);
 
     m_executionStates.reserve(SearchParams::NUM_SEARCH_THREADS);
     for (int workerIndex = 0; workerIndex < SearchParams::NUM_SEARCH_THREADS; ++workerIndex) {
         auto state = std::make_unique<ExecutionState>();
         if (!checkCuda(cudaStreamCreate(&state->stream), "cudaStreamCreate")) {
+            return false;
+        }
+        if (m_jointFactorRank > 0 &&
+            (!checkCuda(cudaMalloc(&state->deviceJointFactorsABuffer, jointFactorsSize), "cudaMalloc(joint factors A)") ||
+             !checkCuda(cudaMalloc(&state->deviceJointFactorsBBuffer, jointFactorsSize), "cudaMalloc(joint factors B)") ||
+             !checkCuda(cudaMallocHost(&state->hostJointFactorsAHalf, jointFactorsSize), "cudaMallocHost(joint factors A)") ||
+             !checkCuda(cudaMallocHost(&state->hostJointFactorsBHalf, jointFactorsSize), "cudaMallocHost(joint factors B)"))) {
             return false;
         }
         state->context.reset(m_engine->createExecutionContext());
@@ -526,6 +559,12 @@ bool Engine::initializeResources() {
             !state->context->setTensorAddress(m_movesLeftName.c_str(), state->deviceMovesLeftBuffer) ||
             !checkCuda(cudaStreamSynchronize(state->stream), "TensorRT profile setup")) {
             std::cerr << "Failed to bind TensorRT worker context " << workerIndex << std::endl;
+            return false;
+        }
+        if (m_jointFactorRank > 0 &&
+            (!state->context->setTensorAddress(m_jointFactorsAName.c_str(), state->deviceJointFactorsABuffer) ||
+             !state->context->setTensorAddress(m_jointFactorsBName.c_str(), state->deviceJointFactorsBBuffer))) {
+            std::cerr << "Failed to bind joint policy factor outputs" << std::endl;
             return false;
         }
         m_executionStates.push_back(std::move(state));
@@ -594,6 +633,8 @@ bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
         * BOARD_WIDTH * sizeof(__half);
     const size_t wdlSize = m_batchSize * 3 * sizeof(__half);
     const size_t movesLeftSize = m_batchSize * sizeof(__half);
+    const size_t jointFactorsSize = m_batchSize * m_jointFactorRank
+        * (NB_POLICY_VALUES() + 1) * sizeof(__half);
 
     if (!checkCuda(cudaMemcpyAsync(
             state.deviceObsBuffer, obs, inputSize, cudaMemcpyHostToDevice,
@@ -645,6 +686,15 @@ bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
         state.inferencePending = false;
         return false;
     }
+    if (m_jointFactorRank > 0 &&
+        (!checkCuda(cudaMemcpyAsync(state.hostJointFactorsAHalf, state.deviceJointFactorsABuffer, jointFactorsSize, cudaMemcpyDeviceToHost, state.stream),
+                    "cudaMemcpyAsync(joint factors A)") ||
+         !checkCuda(cudaMemcpyAsync(state.hostJointFactorsBHalf, state.deviceJointFactorsBBuffer, jointFactorsSize, cudaMemcpyDeviceToHost, state.stream),
+                    "cudaMemcpyAsync(joint factors B)"))) {
+        cudaStreamSynchronize(state.stream);
+        state.inferencePending = false;
+        return false;
+    }
 
     return true;
 }
@@ -674,6 +724,9 @@ bool Engine::synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
     outputs.policyB = static_cast<const __half*>(state.hostPolicyBHalf);
     outputs.wdl = static_cast<const __half*>(state.hostWdlHalf);
     outputs.movesLeft = static_cast<const __half*>(state.hostMovesLeftHalf);
+    outputs.jointFactorsA = static_cast<const __half*>(state.hostJointFactorsAHalf);
+    outputs.jointFactorsB = static_cast<const __half*>(state.hostJointFactorsBHalf);
+    outputs.jointFactorRank = m_jointFactorRank;
 
     return true;
 }

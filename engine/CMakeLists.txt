@@ -1,4 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
+
+if(POLICY CMP0146)
+    cmake_policy(SET CMP0146 OLD)
+endif()
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+
 project(hivemind)
 
 option(HIVEMIND_FAST_BUILD "Favor faster local builds over maximum runtime optimization" ON)
@@ -76,7 +84,8 @@ if(HIVEMIND_USE_UNITY_BUILD)
 endif()
 
 add_library(${PROJECT_NAME}_lib STATIC ${LIB_SOURCES})
-target_include_directories(${PROJECT_NAME}_lib PUBLIC ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(${PROJECT_NAME}_lib SYSTEM PUBLIC ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS})
+target_include_directories(${PROJECT_NAME}_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(${PROJECT_NAME}_lib PUBLIC
     TENSORRT_LIBRARY_DIR="${TensorRT_DIR}/lib"
     HIVEMIND_WORKSPACE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."

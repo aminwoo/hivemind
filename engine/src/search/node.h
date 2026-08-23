@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -74,6 +75,18 @@ private:
     std::atomic<int> unsolvedChildCount{0};  // Number of unsolved children (for solver)
     std::atomic<int> endInPly{0};                        // Distance to terminal (for mate distance)
 
+    struct RootGumbelEntry {
+        int childIdx;
+        int baselineVisits;
+    };
+    bool rootGumbelEnabled = false;
+    float rootGumbelValueScale = SearchParams::ROOT_GUMBEL_VALUE_SCALE;
+    int rootGumbelExpansionTarget = 0;
+    int rootGumbelRoundQuota = 1;
+    std::vector<RootGumbelEntry> rootGumbelActive;
+    std::vector<int> rootGumbelWaiting;
+    std::vector<float> childGumbelScores;
+
     // Reverse graph edges let a proof discovered through one transposition
     // update every parent of the canonical node, not just the active path.
     // Keep these on a separate mutex so proof propagation never nests two
@@ -85,6 +98,12 @@ private:
     void propagate_proof_to_parents();
     bool update_child_node_type_from(
         int childIdx, const Node* expectedChild, NodeType childType);
+    void initialize_root_gumbel_locked(
+        const SearchParams::RuntimeConfig& config);
+    void replenish_root_gumbel_locked(
+        const SearchParams::RuntimeConfig& config);
+    void advance_root_gumbel_round_locked(
+        const SearchParams::RuntimeConfig& config);
 
 public:
     struct ChildSelection {
@@ -117,7 +136,7 @@ public:
             childValueSum[childIdx] += value;
             qValues[childIdx] = childValueSum[childIdx] / static_cast<float>(childVisits[childIdx]);
         }
-        
+
         valueSum += value;
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -176,6 +195,10 @@ public:
                 });
         if (candidateGenerator.hasNext() && allExpandedChildrenLose) {
             return true;
+        }
+        if (rootGumbelEnabled) {
+            return candidateGenerator.pendingGumbelCount() > 0
+                && expandedCount < rootGumbelExpansionTarget;
         }
         for (size_t index = 0; index < childVisits.size(); index++) {
             const int virtualVisits = virtualLoss[index];
@@ -272,6 +295,12 @@ public:
         }
         children.push_back(child);
         qValues.push_back(childQ);
+        childGumbelScores.push_back(candidate.gumbelScore);
+        if (rootGumbelEnabled) {
+            rootGumbelActive.push_back({
+                expandedCount,
+                childVisits.back()});
+        }
         
         expandedCount++;
         if (outChildIdx) {
@@ -298,7 +327,10 @@ public:
                              bool boardBOnTurn,
                              const SearchParams::RuntimeConfig& config,
                              const std::vector<uint8_t>& capturesA = {},
-                             const std::vector<uint8_t>& capturesB = {}) {
+                             const std::vector<uint8_t>& capturesB = {},
+                             const std::vector<float>& jointFactorsA = {},
+                             const std::vector<float>& jointFactorsB = {},
+                             size_t jointFactorRank = 0) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
@@ -309,6 +341,7 @@ public:
         std::vector<float> rootPriorsA = priorsA;
         std::vector<float> rootPriorsB = priorsB;
         if (m_depth.load(std::memory_order_relaxed) == 0
+            && !config.enableGumbelRootSearch
             && config.rootDirichletAlpha > 0.0f
             && config.rootDirichletEpsilon > 0.0f) {
             auto applyNoise = [&](std::vector<float>& priors, uint64_t salt) {
@@ -339,8 +372,12 @@ public:
 
         candidateGenerator.initialize(actionsA, actionsB, rootPriorsA, rootPriorsB,
                           teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
-                          capturesA, capturesB);
+                          capturesA, capturesB, jointFactorsA, jointFactorsB,
+                          jointFactorRank,
+                          static_cast<size_t>(std::max(0, config.jointPolicyTopK)),
+                          config.jointPolicyResidualScale);
         expandedCount = 0;
+        initialize_root_gumbel_locked(config);
         
         // Try to expand the first child
         if (candidateGenerator.hasNext()) {
@@ -355,6 +392,10 @@ public:
             virtualLoss.push_back(0);
             children.push_back(child);
             qValues.push_back(SearchParams::Q_INIT);
+            childGumbelScores.push_back(candidate.gumbelScore);
+            if (rootGumbelEnabled) {
+                rootGumbelActive.push_back({0, 0});
+            }
             
             expandedCount++;
             m_is_expanded.store(true, std::memory_order_release);
@@ -363,7 +404,7 @@ public:
             child->register_parent_edge(parent, 0);
             return true;
         }
-        
+
         return false;
     }
 
@@ -505,6 +546,11 @@ public:
     void set_hash(uint64_t hash) {
         positionHash.store(hash, std::memory_order_relaxed);
     }
+
+    /**
+     * @brief Configure a newly created or reused node as this search's root.
+     */
+    void configure_root_search(const SearchParams::RuntimeConfig& config);
     
     // =========================================================================
     // MCTS Solver Methods
@@ -642,6 +688,33 @@ public:
                 }
             }
             return bestIdx;
+        }
+
+        if (rootGumbelEnabled && !rootGumbelActive.empty()) {
+            int bestIdx = -1;
+            float bestScore = -std::numeric_limits<float>::infinity();
+            for (const RootGumbelEntry& entry : rootGumbelActive) {
+                const int childIdx = entry.childIdx;
+                if (childIdx < 0
+                    || static_cast<size_t>(childIdx) >= children.size()
+                    || !children[childIdx]
+                    || children[childIdx]->get_node_type() == NodeType::WIN) {
+                    continue;
+                }
+                const NodeType childType = children[childIdx]->get_node_type();
+                const float solverQ = childType == NodeType::LOSS
+                    ? 1.0f
+                    : childType == NodeType::DRAW ? 0.0f : qValues[childIdx];
+                const float score = childGumbelScores[childIdx]
+                    + rootGumbelValueScale * solverQ;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = childIdx;
+                }
+            }
+            if (bestIdx >= 0) {
+                return bestIdx;
+            }
         }
 
         const bool hasNonLosingAlternative = std::any_of(

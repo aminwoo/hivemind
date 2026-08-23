@@ -526,6 +526,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // Create new root node
         rootNode = make_shared<Node>(teamSide, positionHash);
     }
+    rootNode->configure_root_search(options.search);
     
     SearchInfo searchInfo(chrono::steady_clock::now(), moveTimeMs);
     isPondering_.store(options.isPonder, std::memory_order_release);
@@ -555,7 +556,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     
     dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
                      targetNodes, moveTimeMs, workerCount);
-    
+
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension
     constexpr int POLL_INTERVAL_MS = 5;
@@ -615,7 +616,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
                     
-                    float bestQ = rootNode->get_child_q(firstIdx);
+                    const int decisionIdx = options.search.enableGumbelRootSearch
+                        ? rootNode->get_best_move_idx_with_q_weight(
+                            options.search.qVetoDelta,
+                            options.search.qValueWeight)
+                        : firstIdx;
+                    float bestQ = rootNode->get_child_q(
+                        decisionIdx >= 0 ? decisionIdx : firstIdx);
                     float secondQ = (secondIdx >= 0) ? rootNode->get_child_q(secondIdx) : -1.0f;
                     
                     // Initialize eval tracking
@@ -625,14 +632,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     }
                     
                     // Early exit for solved/winning positions
-                    if (should_exit_early_winning(rootNode, firstIdx, true)) {
+                    if (should_exit_early_winning(
+                            rootNode,
+                            decisionIdx >= 0 ? decisionIdx : firstIdx,
+                            true)) {
                         running = false;
                         break;
                     }
                     
                     if (!isPondering_.load(std::memory_order_relaxed)) {
                         // Early stopping check (visit-based)
-                        if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
+                        if (SearchParams::ENABLE_EARLY_STOPPING
+                            && !options.search.enableGumbelRootSearch
+                            && searchInfo.get_nps() > 0) {
                             double remaining = searchInfo.get_effective_move_time() - elapsedMs;
                             float projectedVisits = static_cast<float>(secondMax) + 
                                                    static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
@@ -650,7 +662,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                         
                         // Time extension check - extend if eval is falling or leading move changes late
-                        if (SearchParams::ENABLE_TIME_EXTENSION) {
+                        if (SearchParams::ENABLE_TIME_EXTENSION
+                            && !options.search.enableGumbelRootSearch) {
                             if (evalInitialized) {
                                 float evalDrop = lastCheckEval - bestQ;
                                 if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
@@ -662,15 +675,16 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                 }
                                 lastCheckEval = bestQ;
                             }
-                            if (lastBestChildIdx >= 0 && firstIdx != lastBestChildIdx && 
+                            if (lastBestChildIdx >= 0
+                                && decisionIdx != lastBestChildIdx &&
                                 elapsedMs > searchInfo.get_move_time() * SearchParams::INSTABILITY_TIME_FRACTION) {
                                 if (searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
                                                               SearchParams::MAX_TIME_EXTENSIONS)) {
                                     cout << "info string Extending search time (best move changed to " 
-                                         << firstIdx << ")" << endl;
+                                         << decisionIdx << ")" << endl;
                                 }
                             }
-                            lastBestChildIdx = firstIdx;
+                            lastBestChildIdx = decisionIdx;
                         }
                     }
                     
@@ -710,7 +724,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 }
             }
             if (!running || (!isPondering_.load(std::memory_order_relaxed)
-                             && searchInfo.elapsed() >= searchInfo.get_effective_move_time())) break;
+                             && searchInfo.elapsed() >= searchInfo.get_effective_move_time())) {
+                break;
+            }
         }
     } else if (moveTimeMs > 0) {
         // Non-verbose mode: still check for early stopping
@@ -751,7 +767,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
                     
-                    float bestQ = rootNode->get_child_q(firstIdx);
+                    const int decisionIdx = options.search.enableGumbelRootSearch
+                        ? rootNode->get_best_move_idx_with_q_weight(
+                            options.search.qVetoDelta,
+                            options.search.qValueWeight)
+                        : firstIdx;
+                    float bestQ = rootNode->get_child_q(
+                        decisionIdx >= 0 ? decisionIdx : firstIdx);
                     float secondQ = (secondIdx >= 0) ? rootNode->get_child_q(secondIdx) : -1.0f;
                     
                     if (!evalInitialized) {
@@ -759,17 +781,20 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         evalInitialized = true;
                     }
                     
-                    int nodes = searchInfo.get_nodes_searched();
-                    
                     // Early exit for solved/winning positions
-                    if (should_exit_early_winning(rootNode, firstIdx, false)) {
+                    if (should_exit_early_winning(
+                            rootNode,
+                            decisionIdx >= 0 ? decisionIdx : firstIdx,
+                            false)) {
                         running = false;
                         break;
                     }
                     
                     if (!isPondering_.load(std::memory_order_relaxed)) {
                         // Early stopping (visit-based)
-                        if (SearchParams::ENABLE_EARLY_STOPPING && searchInfo.get_nps() > 0) {
+                        if (SearchParams::ENABLE_EARLY_STOPPING
+                            && !options.search.enableGumbelRootSearch
+                            && searchInfo.get_nps() > 0) {
                             double remaining = searchInfo.get_effective_move_time() - searchInfo.elapsed();
                             float projectedVisits = static_cast<float>(secondMax) + 
                                                    static_cast<float>(remaining * searchInfo.get_nps() / 1000.0);
@@ -783,7 +808,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                         
                         // Time extension
-                        if (SearchParams::ENABLE_TIME_EXTENSION) {
+                        if (SearchParams::ENABLE_TIME_EXTENSION
+                            && !options.search.enableGumbelRootSearch) {
                             if (evalInitialized) {
                                 float evalDrop = lastCheckEval - bestQ;
                                 if (evalDrop > SearchParams::TIME_EXTENSION_THRESHOLD) {
@@ -792,12 +818,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                 }
                                 lastCheckEval = bestQ;
                             }
-                            if (lastBestChildIdx >= 0 && firstIdx != lastBestChildIdx && 
+                            if (lastBestChildIdx >= 0
+                                && decisionIdx != lastBestChildIdx &&
                                 searchInfo.elapsed() > searchInfo.get_move_time() * SearchParams::INSTABILITY_TIME_FRACTION) {
                                 searchInfo.try_extend_time(SearchParams::TIME_EXTENSION_FACTOR, 
                                                            SearchParams::MAX_TIME_EXTENSIONS);
                             }
-                            lastBestChildIdx = firstIdx;
+                            lastBestChildIdx = decisionIdx;
                         }
                     }
                 }

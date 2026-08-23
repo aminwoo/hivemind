@@ -57,6 +57,31 @@ class _SharedPolicyHeads(Module):
         )
 
 
+class _JointPolicyFactorHead(Module):
+    """State-conditioned low-rank factors for residual joint-action scoring."""
+
+    def __init__(self, channels, policy_channels, rank):
+        super().__init__()
+        self.rank = rank
+        self.policy_values = policy_channels * 8 * 8
+        self.move_factors = Conv2d(
+            channels, rank * policy_channels, kernel_size=3, padding=1,
+            bias=False,
+        )
+        self.pass_factors = nn.Linear(channels, rank)
+        nn.init.normal_(self.move_factors.weight, std=0.01)
+        nn.init.normal_(self.pass_factors.weight, std=0.01)
+        nn.init.zeros_(self.pass_factors.bias)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        move_factors = self.move_factors(x).reshape(
+            batch_size, self.rank, self.policy_values
+        )
+        pass_factors = self.pass_factors(x.mean(dim=(2, 3))).unsqueeze(2)
+        return torch.cat((move_factors, pass_factors), dim=2).flatten(1)
+
+
 def _get_res_blocks(act_types, channels, channels_operating_init, channel_expansion, kernels, se_types, use_transformers, path_dropout_rates, conv_block, kernel_5_channel_ratio, round_channels_to_next_32):
     """Helper function which generates the residual blocks for Risev3"""
 
@@ -113,6 +138,7 @@ class RiseV3(Module):
                  use_transformers=None, path_dropout=0, conv_block="mobile_bottlekneck_res_block",
                  kernel_5_channel_ratio=None, round_channels_to_next_32=False,
                  shared_policy_trunk=False,
+                 joint_policy_rank=0,
                  ):
         """
         RISEv3 architecture
@@ -152,6 +178,7 @@ class RiseV3(Module):
         self.use_plys_to_end = use_plys_to_end
         self.use_wdl = use_wdl
         self.shared_policy_trunk = shared_policy_trunk
+        self.joint_policy_rank = joint_policy_rank
 
         if round_channels_to_next_32:
             channels = round_to_next_multiple_of_32(channels)
@@ -202,6 +229,16 @@ class RiseV3(Module):
                 _PolicyHead(board_height, board_width, channels, channels_policy_head, n_labels,
                             act_types[-1], select_policy_from_plane)
             ])
+        self.joint_policy_heads = (
+            nn.ModuleList([
+                _JointPolicyFactorHead(
+                    channels, channels_policy_head, joint_policy_rank
+                )
+                for _ in range(2)
+            ])
+            if joint_policy_rank > 0
+            else None
+        )
 
     def forward(self, x):
         """
@@ -218,16 +255,27 @@ class RiseV3(Module):
             if self.use_plys_to_end and self.use_wdl:
                 value_out, wdl_out, plys_to_end_out = value_head_out
                 auxiliary_out = torch.cat((wdl_out, plys_to_end_out), dim=1)
-                return (
+                outputs = (
                     value_out,
                     policy_out,
                     auxiliary_out,
                     wdl_out,
                     plys_to_end_out,
                 )
-            return value_head_out, policy_out
+            else:
+                outputs = (value_head_out, policy_out)
+            if self.joint_policy_heads is not None:
+                outputs += (
+                    self.joint_policy_heads[0](out),
+                    self.joint_policy_heads[1](out),
+                )
+            return outputs
 
-        return process_value_policy_head(out, self.value_head, self.policy_heads, self.use_plys_to_end, self.use_wdl)
+        return process_value_policy_head(
+            out, self.value_head, self.policy_heads,
+            self.use_plys_to_end, self.use_wdl,
+            joint_policy_heads=self.joint_policy_heads,
+        )
 
     def merge_bn(self):
         """
@@ -283,6 +331,7 @@ class CrossBoardRiseV3(RiseV3):
 
     def __init__(self, *args, attention_dim=192, attention_heads=6,
                  attention_layers=2, **kwargs):
+        joint_policy_rank = kwargs.pop("joint_policy_rank", 0)
         if kwargs.get("shared_policy_trunk", False):
             raise ValueError(
                 "CrossBoardRiseV3 uses separate post-attention policy heads"
@@ -345,6 +394,17 @@ class CrossBoardRiseV3(RiseV3):
             )
             for _ in range(2)
         ])
+        self.joint_policy_rank = joint_policy_rank
+        self.joint_policy_heads = (
+            nn.ModuleList([
+                _JointPolicyFactorHead(
+                    attention_dim, policy_channels, joint_policy_rank
+                )
+                for _ in range(2)
+            ])
+            if joint_policy_rank > 0
+            else None
+        )
 
         nn.init.trunc_normal_(self.position_embedding, std=0.02)
         nn.init.trunc_normal_(self.board_embedding, std=0.02)
@@ -409,6 +469,7 @@ class CrossBoardRiseV3(RiseV3):
             self.use_plys_to_end,
             self.use_wdl,
             policy_inputs=(board_a_map, board_b_map),
+            joint_policy_heads=self.joint_policy_heads,
         )
 
 
@@ -561,6 +622,7 @@ class DualStreamMemoryRiseV3(Module):
         attention_heads=6,
         memory_tokens=8,
         stage_sizes=(5, 5, 5),
+        joint_policy_rank=0,
     ):
         super().__init__()
         if nb_input_channels != 2 * NUM_BUGHOUSE_CHANNELS_PER_BOARD:
@@ -595,6 +657,7 @@ class DualStreamMemoryRiseV3(Module):
         self.use_wdl = use_wdl
         self.use_plys_to_end = use_plys_to_end
         self.shared_policy_trunk = False
+        self.joint_policy_rank = joint_policy_rank
 
         path_dropout_rates = [
             value.item()
@@ -700,6 +763,16 @@ class DualStreamMemoryRiseV3(Module):
             )
             for _ in range(2)
         ])
+        self.joint_policy_heads = (
+            nn.ModuleList([
+                _JointPolicyFactorHead(
+                    channels, channels_policy_head, joint_policy_rank
+                )
+                for _ in range(2)
+            ])
+            if joint_policy_rank > 0
+            else None
+        )
 
         nn.init.trunc_normal_(self.position_embedding, std=0.02)
         nn.init.trunc_normal_(self.board_embedding, std=0.02)
@@ -807,6 +880,7 @@ class DualStreamMemoryRiseV3(Module):
             self.use_plys_to_end,
             self.use_wdl,
             policy_inputs=(board_a_map, board_b_map),
+            joint_policy_heads=self.joint_policy_heads,
         )
 
     def merge_bn(self):
@@ -845,6 +919,7 @@ def get_rise_v33_model(args):
                    kernels=kernels, se_types=se_types, use_avg_features=False, n_labels=args.n_labels,
                    use_wdl=args.use_wdl, use_plys_to_end=args.use_plys_to_end, use_mlp_wdl_ply=args.use_mlp_wdl_ply,
                    shared_policy_trunk=getattr(args, "shared_policy_trunk", False),
+                   joint_policy_rank=getattr(args, "joint_policy_rank", 0),
                    )
     return model
 
@@ -885,6 +960,7 @@ def get_cross_board_rise_v33_model(args):
         attention_dim=getattr(args, "attention_dim", 192),
         attention_heads=getattr(args, "attention_heads", 6),
         attention_layers=getattr(args, "attention_layers", 2),
+        joint_policy_rank=getattr(args, "joint_policy_rank", 0),
     )
 
 
@@ -920,6 +996,7 @@ def get_dual_stream_memory_rise_v33_model(args):
         attention_dim=getattr(args, "attention_dim", 192),
         attention_heads=getattr(args, "attention_heads", 6),
         memory_tokens=getattr(args, "memory_tokens", 8),
+        joint_policy_rank=getattr(args, "joint_policy_rank", 0),
     )
 
 

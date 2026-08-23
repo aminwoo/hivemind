@@ -10,6 +10,8 @@ from src.preprocessing.convert_selfplay_data import (
     HEADER,
     NB_INPUT_VALUES,
     POLICY_ENTRY,
+    JOINT_POLICY_ENTRY,
+    MAX_JOINT_POLICY_ENTRIES,
     SAMPLE_METADATA,
     convert_to_split_parquet,
     is_validation_game,
@@ -23,11 +25,11 @@ from src.training.train_loop import (
 
 
 def _write_chunk(path, game_ids, version=4):
-    magic = b"HVM4" if version == 4 else b"HVM3"
+    magic = {3: b"HVM3", 4: b"HVM4", 5: b"HVM5"}[version]
     with path.open("wb") as output:
         output.write(HEADER.pack(magic, version, 74, 4672, len(game_ids)))
         for game_id in game_ids:
-            if version == 4:
+            if version >= 4:
                 output.write(SAMPLE_METADATA.pack(game_id, 100, 1, 20, 0, 0, 1, 2, 0.5))
             else:
                 from src.preprocessing.convert_selfplay_data import SAMPLE_METADATA_V3
@@ -36,6 +38,10 @@ def _write_chunk(path, game_ids, version=4):
             for _ in range(2):
                 output.write(struct.pack("<H", 1))
                 output.write(POLICY_ENTRY.pack(0, np.float32(1.0)))
+            if version >= 5:
+                output.write(struct.pack("<H", 2))
+                output.write(JOINT_POLICY_ENTRY.pack(4672, 12, np.float32(0.75)))
+                output.write(JOINT_POLICY_ENTRY.pack(8, 4672, np.float32(0.25)))
 
 
 def test_split_conversion_is_deterministic_and_game_disjoint(tmp_path):
@@ -202,6 +208,35 @@ def test_soft_cross_entropy_honors_sample_weights():
     assert loss.item() < 0.01
 
 
+def test_joint_policy_loss_learns_pair_correlation_and_pass_id():
+    from src.training.trainer_agent import joint_policy_cross_entropy
+
+    rank = 2
+    vocabulary = 4673
+    policy_a = torch.zeros(1, 4672, requires_grad=True)
+    policy_b = torch.zeros(1, 4672, requires_grad=True)
+    factors_a = torch.randn(1, rank * vocabulary, requires_grad=True)
+    factors_b = torch.randn(1, rank * vocabulary, requires_grad=True)
+    target_a = torch.zeros(1, 256, dtype=torch.long)
+    target_b = torch.zeros(1, 256, dtype=torch.long)
+    probability = torch.zeros(1, 256)
+    target_a[0, :2] = torch.tensor([4672, 10])
+    target_b[0, :2] = torch.tensor([12, 4672])
+    probability[0, :2] = torch.tensor([0.75, 0.25])
+
+    loss = joint_policy_cross_entropy(
+        policy_a, policy_b, factors_a, factors_b,
+        target_a, target_b, probability, torch.tensor([2]),
+        rank=rank, top_k=8,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert factors_a.grad is not None
+    assert factors_b.grad is not None
+    assert factors_a.grad.abs().sum() > 0
+
+
 def test_q_value_blending_in_shard_reading(tmp_path):
     from src.preprocessing.convert_selfplay_data import read_binary_shard
 
@@ -221,3 +256,21 @@ def test_q_value_blending_in_shard_reading(tmp_path):
     assert len(samples_v3) == 1
     assert np.isclose(samples_v3[0]["y_value"], 1.0)
     assert np.isclose(samples_v3[0]["root_q"], 1.0)
+
+
+def test_hvm5_preserves_sparse_joint_policy_and_distinct_pass(tmp_path):
+    from src.preprocessing.convert_selfplay_data import read_binary_shard
+
+    chunk = tmp_path / "chunk_v5.hvm"
+    _write_chunk(chunk, [7], version=5)
+    sample = read_binary_shard(chunk)[0]
+
+    indices_a = np.frombuffer(sample["joint_policy_a"], dtype=np.uint16)
+    indices_b = np.frombuffer(sample["joint_policy_b"], dtype=np.uint16)
+    probabilities = np.frombuffer(
+        sample["joint_policy_probability"], dtype=np.float32
+    )
+    assert len(indices_a) == MAX_JOINT_POLICY_ENTRIES
+    assert sample["joint_policy_count"] == 2
+    assert (indices_a[0], indices_b[0]) == (4672, 12)
+    assert np.allclose(probabilities[:2], [0.75, 0.25])

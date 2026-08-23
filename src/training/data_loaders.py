@@ -15,6 +15,8 @@ BOARD_SIZE = 8
 NB_INPUT_VALUES = NB_INPUT_CHANNELS * BOARD_SIZE * BOARD_SIZE
 NB_POLICY_CHANNELS = 73
 NB_POLICY_VALUES = NB_POLICY_CHANNELS * BOARD_SIZE * BOARD_SIZE  # 4672
+NB_JOINT_POLICY_VALUES = NB_POLICY_VALUES + 1  # dedicated pass action
+MAX_JOINT_POLICY_ENTRIES = 256
 def _decode_plane_bytes(encoded_planes) -> np.ndarray:
     planes = np.frombuffer(encoded_planes, dtype=np.uint8)
     if planes.size != NB_INPUT_VALUES:
@@ -124,7 +126,7 @@ def load_parquet_shard(file_path, include_auxiliary=False):
     return x_tensor, y_val_tensor, y_pol_tensor
 
 
-def load_rl_parquet_shard(file_path):
+def load_rl_parquet_shard(file_path, include_joint_policy=False):
     """
     Loads a single RL/self-play parquet shard and converts it to PyTorch tensors.
     
@@ -142,10 +144,18 @@ def load_rl_parquet_shard(file_path):
         policy_a_tensor: (N, 4672) float32 policy distribution for board A
         policy_b_tensor: (N, 4672) float32 policy distribution for board B
     """
-    df = pl.read_parquet(
-        file_path,
-        columns=['x', 'policy_a', 'policy_b', 'y_value', 'y_wdl', 'y_moves_left'],
-    )
+    columns = ['x', 'policy_a', 'policy_b', 'y_value', 'y_wdl', 'y_moves_left']
+    joint_columns = [
+        'joint_policy_a',
+        'joint_policy_b',
+        'joint_policy_probability',
+        'joint_policy_count',
+    ]
+    available_columns = set(pl.scan_parquet(file_path).collect_schema().names())
+    has_joint_policy = all(column in available_columns for column in joint_columns)
+    if include_joint_policy and has_joint_policy:
+        columns.extend(joint_columns)
+    df = pl.read_parquet(file_path, columns=columns)
 
     x_array = _decode_fixed_width_binary_column(
         df['x'].to_list(),
@@ -177,13 +187,52 @@ def load_rl_parquet_shard(file_path):
         df['y_moves_left'].to_list(), dtype=torch.float32
     ).clamp_(0, 100) / 100.0
 
-    return (
+    base = (
         x_tensor,
         y_val_tensor,
         policy_a_tensor,
         policy_b_tensor,
         wdl_tensor,
         moves_left_tensor,
+    )
+    if not include_joint_policy:
+        return base
+
+    sample_count = len(x_tensor)
+    if has_joint_policy:
+        joint_a_array = _decode_fixed_width_binary_column(
+            df['joint_policy_a'].to_list(),
+            dtype=np.uint16,
+            width=MAX_JOINT_POLICY_ENTRIES,
+        )
+        joint_b_array = _decode_fixed_width_binary_column(
+            df['joint_policy_b'].to_list(),
+            dtype=np.uint16,
+            width=MAX_JOINT_POLICY_ENTRIES,
+        )
+        joint_probability_array = _decode_fixed_width_binary_column(
+            df['joint_policy_probability'].to_list(),
+            dtype=np.float32,
+            width=MAX_JOINT_POLICY_ENTRIES,
+        )
+        joint_count = torch.tensor(
+            df['joint_policy_count'].to_list(), dtype=torch.long
+        )
+    else:
+        joint_a_array = np.zeros(
+            (sample_count, MAX_JOINT_POLICY_ENTRIES), dtype=np.uint16
+        )
+        joint_b_array = np.zeros_like(joint_a_array)
+        joint_probability_array = np.zeros(
+            (sample_count, MAX_JOINT_POLICY_ENTRIES), dtype=np.float32
+        )
+        joint_count = torch.zeros(sample_count, dtype=torch.long)
+
+    return base + (
+        torch.from_numpy(joint_a_array.astype(np.int64)),
+        torch.from_numpy(joint_b_array.astype(np.int64)),
+        torch.from_numpy(joint_probability_array.copy()),
+        joint_count,
     )
 
 
@@ -248,18 +297,31 @@ class StreamingRLDataset(torch.utils.data.IterableDataset):
     This avoids loading all data into memory at once by streaming through
     parquet files and yielding samples one at a time.
     """
-    def __init__(self, parquet_files: list, shuffle_files: bool = True, shuffle_buffer_size: int = 10000, augment_flip: bool = False):
+    def __init__(
+        self,
+        parquet_files: list,
+        shuffle_files: bool = True,
+        shuffle_buffer_size: int = 10000,
+        augment_flip: bool = False,
+        shuffle_samples: bool = True,
+        include_joint_policy: bool = False,
+    ):
         """
         Args:
             parquet_files: List of paths to parquet files
             shuffle_files: Whether to shuffle file order each epoch
             shuffle_buffer_size: Size of buffer for sample shuffling within files
             augment_flip: If True, yields both original and flipped versions of each sample
+            shuffle_samples: If False, yield samples directly without retaining a
+                shuffle buffer. This is useful for validation, where order does
+                not matter and dense policy targets consume substantial RAM.
         """
         self.parquet_files = parquet_files
         self.shuffle_files = shuffle_files
         self.shuffle_buffer_size = shuffle_buffer_size
         self.augment_flip = augment_flip
+        self.shuffle_samples = shuffle_samples
+        self.include_joint_policy = include_joint_policy
         
     def __iter__(self):
         files = self.parquet_files.copy()
@@ -270,29 +332,54 @@ class StreamingRLDataset(torch.utils.data.IterableDataset):
         buffer = []
         
         for pf in files:
-            x, y_val, pol_a, pol_b, wdl, moves_left = load_rl_parquet_shard(pf)
+            shard = (
+                load_rl_parquet_shard(pf, include_joint_policy=True)
+                if self.include_joint_policy
+                else load_rl_parquet_shard(pf)
+            )
+            x, y_val, pol_a, pol_b, wdl, moves_left = shard[:6]
+            joint = shard[6:]
             
             # Add samples to buffer (both original and flipped if augmentation is enabled)
             for i in range(len(x)):
-                # Add original sample
-                buffer.append((x[i], y_val[i], pol_a[i], pol_b[i], wdl[i], moves_left[i]))
+                sample = (
+                    x[i], y_val[i], pol_a[i], pol_b[i], wdl[i], moves_left[i]
+                ) + tuple(values[i] for values in joint)
+                if self.shuffle_samples:
+                    buffer.append(sample)
+                else:
+                    yield sample
                 
                 # Add flipped sample if augmentation is enabled
                 if self.augment_flip:
                     flipped_x, flipped_pol_a, flipped_pol_b = flip_bughouse_sample(
                         x[i], pol_a[i], pol_b[i]
                     )
-                    buffer.append((
+                    flipped_sample = (
                         flipped_x,
                         y_val[i],
                         flipped_pol_a,
                         flipped_pol_b,
                         wdl[i],
                         moves_left[i],
-                    ))
+                    )
+                    if joint:
+                        flipped_sample += (
+                            joint[1][i],
+                            joint[0][i],
+                            joint[2][i],
+                            joint[3][i],
+                        )
+                    if self.shuffle_samples:
+                        buffer.append(flipped_sample)
+                    else:
+                        yield flipped_sample
                 
                 # When buffer is full, shuffle and yield half
-                if len(buffer) >= self.shuffle_buffer_size:
+                if (
+                    self.shuffle_samples
+                    and len(buffer) >= self.shuffle_buffer_size
+                ):
                     import random
                     random.shuffle(buffer)
                     # Yield first half
