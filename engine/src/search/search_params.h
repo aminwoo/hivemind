@@ -301,7 +301,7 @@ constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 20;
 // =============================================================================
 
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
-constexpr float PW_COEFFICIENT = 2.0f;
+constexpr float PW_COEFFICIENT = 4.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.4f;
 
