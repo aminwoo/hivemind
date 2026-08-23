@@ -272,6 +272,35 @@ constexpr float PW_COEFFICIENT = 2.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.4f;
 
+// =============================================================================
+// Solver-aware Gumbel root search
+// =============================================================================
+
+/// Use Gumbel sequential halving at the root while retaining ordinary PUCT below it.
+constexpr bool ENABLE_GUMBEL_ROOT_SEARCH = false;
+
+/// Number of high-policy joint actions assigned independent Gumbel samples.
+/// Tactical benchmarks favor a tiny tournament before returning to PUCT.
+constexpr int ROOT_GUMBEL_POOL_SIZE = 2;
+
+/// Number of actions in the first sequential-halving tournament.
+constexpr int ROOT_GUMBEL_INITIAL_CANDIDATES = 1;
+
+/// New actions introduced after an inconclusive tournament finalist.
+constexpr int ROOT_GUMBEL_REPLENISHMENT = 1;
+
+/// Relative influence of backed-up root Q in the Gumbel ranking.
+constexpr float ROOT_GUMBEL_VALUE_SCALE = 2.0f;
+
+/// Maximum equal-allocation quota for a single sequential-halving round.
+constexpr int ROOT_GUMBEL_MAX_ROUND_VISITS = 2;
+
+/// Number of marginal candidates per board rescored by an optional joint head.
+constexpr int JOINT_POLICY_TOP_K = 8;
+
+/// Scale applied to the learned residual compatibility score.
+constexpr float JOINT_POLICY_RESIDUAL_SCALE = 1.0f;
+
 struct RuntimeConfig {
     float cpuctInit = CPUCT_INIT;
     float cpuctBase = CPUCT_BASE;
@@ -292,6 +321,14 @@ struct RuntimeConfig {
     float rootDirichletAlpha = 0.0f;
     float rootDirichletEpsilon = 0.0f;
     uint64_t rootNoiseSeed = 0;
+    bool enableGumbelRootSearch = ENABLE_GUMBEL_ROOT_SEARCH;
+    int rootGumbelPoolSize = ROOT_GUMBEL_POOL_SIZE;
+    int rootGumbelInitialCandidates = ROOT_GUMBEL_INITIAL_CANDIDATES;
+    int rootGumbelReplenishment = ROOT_GUMBEL_REPLENISHMENT;
+    float rootGumbelValueScale = ROOT_GUMBEL_VALUE_SCALE;
+    int rootGumbelMaxRoundVisits = ROOT_GUMBEL_MAX_ROUND_VISITS;
+    int jointPolicyTopK = JOINT_POLICY_TOP_K;
+    float jointPolicyResidualScale = JOINT_POLICY_RESIDUAL_SCALE;
 };
 
 // =============================================================================

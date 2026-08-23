@@ -181,6 +181,13 @@ class TrainConfig:
     info_policy_loss_factor: str = "policy_loss_factor defines the weighting factor for the policy loss."
     policy_loss_factor: float = 0.978 if use_plys_to_end and use_wdl else 0.99
 
+    info_joint_policy_rank: str = "joint_policy_rank controls the low-rank joint-action compatibility head."
+    joint_policy_rank: int = 0
+    info_joint_policy_top_k: str = "joint_policy_top_k controls hard-negative Cartesian candidates during RL training."
+    joint_policy_top_k: int = 8
+    info_joint_policy_loss_factor: str = "joint_policy_loss_factor weights the residual joint-policy objective."
+    joint_policy_loss_factor: float = 0.0
+
     info_wdl_loss_factor: str = "wdl_loss_factor defines the weighting factor for the wdl-loss."
     wdl_loss_factor: float = 0.01
 
@@ -205,7 +212,10 @@ def rl_train_config():
     tc.batch_size = int(1024 / tc.div_factor)
 
     tc.val_loss_factor = 0.15
-    tc.policy_loss_factor = 0.7
+    tc.policy_loss_factor = 0.6
+    tc.joint_policy_rank = 4
+    tc.joint_policy_top_k = 8
+    tc.joint_policy_loss_factor = 0.1
     tc.plys_to_end_loss_factor = 0.01
     tc.wdl_loss_factor = 0.15
 

@@ -29,11 +29,18 @@
 
 namespace {
 
-constexpr std::array<char, 4> CHUNK_MAGIC = {'H', 'V', 'M', '4'};
-constexpr uint32_t CHUNK_VERSION = 4;
+constexpr std::array<char, 4> CHUNK_MAGIC = {'H', 'V', 'M', '5'};
+constexpr uint32_t CHUNK_VERSION = 5;
+constexpr uint16_t PASS_POLICY_INDEX = static_cast<uint16_t>(NB_POLICY_VALUES());
 
 struct SparsePolicyEntry {
     uint16_t index;
+    float probability;
+};
+
+struct SparseJointPolicyEntry {
+    uint16_t indexA;
+    uint16_t indexB;
     float probability;
 };
 
@@ -50,6 +57,7 @@ struct TrainingSample {
     std::array<uint8_t, NB_INPUT_VALUES()> planes{};
     std::vector<SparsePolicyEntry> policyA;
     std::vector<SparsePolicyEntry> policyB;
+    std::vector<SparseJointPolicyEntry> jointPolicy;
 };
 
 struct PgnMove {
@@ -93,11 +101,25 @@ public:
 private:
     void write_policy(std::ostream& stream, const std::vector<SparsePolicyEntry>& policy) {
         if (policy.size() > std::numeric_limits<uint16_t>::max()) {
-            throw std::runtime_error("Sparse policy is too large for HVM3");
+            throw std::runtime_error("Sparse policy is too large for HVM5");
         }
         write_scalar(stream, static_cast<uint16_t>(policy.size()));
         for (const SparsePolicyEntry& entry : policy) {
             write_scalar(stream, entry.index);
+            write_scalar(stream, entry.probability);
+        }
+    }
+
+    void write_joint_policy(
+        std::ostream& stream,
+        const std::vector<SparseJointPolicyEntry>& policy) {
+        if (policy.size() > std::numeric_limits<uint16_t>::max()) {
+            throw std::runtime_error("Sparse joint policy is too large for HVM5");
+        }
+        write_scalar(stream, static_cast<uint16_t>(policy.size()));
+        for (const SparseJointPolicyEntry& entry : policy) {
+            write_scalar(stream, entry.indexA);
+            write_scalar(stream, entry.indexB);
             write_scalar(stream, entry.probability);
         }
     }
@@ -135,6 +157,7 @@ private:
                 static_cast<std::streamsize>(sample.planes.size()));
             write_policy(stream, sample.policyA);
             write_policy(stream, sample.policyB);
+            write_joint_policy(stream, sample.jointPolicy);
         }
         stream.close();
         if (!stream) {
@@ -426,6 +449,44 @@ std::vector<SparsePolicyEntry> marginal_policy(
     return policy;
 }
 
+uint16_t joint_policy_index(Board& board, int boardNumber,
+                            Stockfish::Move move) {
+    if (move == Stockfish::MOVE_NONE) {
+        return PASS_POLICY_INDEX;
+    }
+    return static_cast<uint16_t>(policy_index(board, boardNumber, move));
+}
+
+std::vector<SparseJointPolicyEntry> joint_policy(
+    Board& board, const std::vector<RootEdgeStats>& edges) {
+    std::map<std::pair<uint16_t, uint16_t>, uint64_t> visitsByAction;
+    uint64_t totalVisits = 0;
+    for (const RootEdgeStats& edge : edges) {
+        if (edge.visits <= 0) {
+            continue;
+        }
+        const auto key = std::make_pair(
+            joint_policy_index(board, BOARD_A, edge.action.moveA),
+            joint_policy_index(board, BOARD_B, edge.action.moveB));
+        visitsByAction[key] += static_cast<uint64_t>(edge.visits);
+        totalVisits += static_cast<uint64_t>(edge.visits);
+    }
+    if (totalVisits == 0) {
+        throw std::runtime_error("Search returned no visited root edges");
+    }
+
+    std::vector<SparseJointPolicyEntry> policy;
+    policy.reserve(visitsByAction.size());
+    for (const auto& [indices, visits] : visitsByAction) {
+        policy.push_back({
+            indices.first,
+            indices.second,
+            static_cast<float>(visits) / static_cast<float>(totalVisits),
+        });
+    }
+    return policy;
+}
+
 JointActionCandidate select_action(
     const std::vector<RootEdgeStats>& edges,
     double temperature,
@@ -653,6 +714,10 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             agent.reset_search_state();
             SearchOptions searchOptions;
             searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
+            // Self-play policy targets and temperature sampling are visit-based.
+            // Keep that data-generation contract until it has a dedicated
+            // Gumbel-improved policy target rather than biased halving visits.
+            searchOptions.search.enableGumbelRootSearch = false;
             searchOptions.search.rootDirichletAlpha = config.dirichletAlpha;
             searchOptions.search.rootDirichletEpsilon = config.dirichletEpsilon;
             searchOptions.search.rootNoiseSeed = mix_seed(runId, gameIndex * config.maxMacroPlies + macroPly);
@@ -675,6 +740,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             sample.rootQ = rootQ;
             sample.policyA = marginal_policy(board, BOARD_A, edges);
             sample.policyB = marginal_policy(board, BOARD_B, edges);
+            sample.jointPolicy = joint_policy(board, edges);
             samples.push_back(std::move(sample));
 
             const size_t teamIdx = team == Stockfish::WHITE ? 0 : 1;

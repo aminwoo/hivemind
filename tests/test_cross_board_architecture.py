@@ -7,7 +7,7 @@ from src.architectures.rise_mobile_v3 import (
 )
 
 
-def _build_model(attention_layers=1):
+def _build_model(attention_layers=1, joint_policy_rank=0):
     return CrossBoardRiseV3(
         nb_input_channels=74,
         board_height=8,
@@ -29,6 +29,7 @@ def _build_model(attention_layers=1):
         attention_dim=32,
         attention_heads=4,
         attention_layers=attention_layers,
+        joint_policy_rank=joint_policy_rank,
     )
 
 
@@ -73,6 +74,15 @@ def test_cross_board_model_preserves_five_output_contract():
     (value.mean() + policies[0].mean() + policies[1].mean()).backward()
     assert inputs.grad is not None
     assert torch.isfinite(inputs.grad).all()
+
+
+def test_cross_board_joint_policy_head_adds_ranked_move_and_pass_factors():
+    model = _build_model(joint_policy_rank=4)
+    outputs = model(torch.rand(2, 74, 8, 8))
+
+    assert len(outputs) == 7
+    assert outputs[5].shape == outputs[6].shape == (2, 4 * 4673)
+    assert torch.isfinite(outputs[5]).all()
 
 
 @pytest.mark.parametrize(

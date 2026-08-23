@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <shared_mutex>
+#include <unordered_set>
 #include <vector>
 
 #include "environment/board.h"
@@ -31,8 +34,13 @@ enum class NodeType : uint8_t {
     DRAW = 3
 };
 
-class Node {
+class Node : public std::enable_shared_from_this<Node> {
 private:
+    struct ParentEdge {
+        std::weak_ptr<Node> parent;
+        int childIdx;
+    };
+
     // Reader-writer mutex for thread-safe access to node state
     // Allows multiple concurrent readers, exclusive writers
     mutable std::shared_mutex nodeMutex;
@@ -67,6 +75,36 @@ private:
     std::atomic<int> unsolvedChildCount{0};  // Number of unsolved children (for solver)
     std::atomic<int> endInPly{0};                        // Distance to terminal (for mate distance)
 
+    struct RootGumbelEntry {
+        int childIdx;
+        int baselineVisits;
+    };
+    bool rootGumbelEnabled = false;
+    float rootGumbelValueScale = SearchParams::ROOT_GUMBEL_VALUE_SCALE;
+    int rootGumbelExpansionTarget = 0;
+    int rootGumbelRoundQuota = 1;
+    std::vector<RootGumbelEntry> rootGumbelActive;
+    std::vector<int> rootGumbelWaiting;
+    std::vector<float> childGumbelScores;
+
+    // Reverse graph edges let a proof discovered through one transposition
+    // update every parent of the canonical node, not just the active path.
+    // Keep these on a separate mutex so proof propagation never nests two
+    // nodes' state mutexes.
+    mutable std::mutex parentEdgesMutex;
+    std::vector<ParentEdge> parentEdges;
+
+    void register_parent_edge(const std::shared_ptr<Node>& parent, int childIdx);
+    void propagate_proof_to_parents();
+    bool update_child_node_type_from(
+        int childIdx, const Node* expectedChild, NodeType childType);
+    void initialize_root_gumbel_locked(
+        const SearchParams::RuntimeConfig& config);
+    void replenish_root_gumbel_locked(
+        const SearchParams::RuntimeConfig& config);
+    void advance_root_gumbel_round_locked(
+        const SearchParams::RuntimeConfig& config);
+
 public:
     struct ChildSelection {
         std::shared_ptr<Node> child;
@@ -98,7 +136,7 @@ public:
             childValueSum[childIdx] += value;
             qValues[childIdx] = childValueSum[childIdx] / static_cast<float>(childVisits[childIdx]);
         }
-        
+
         valueSum += value;
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }
@@ -157,6 +195,10 @@ public:
                 });
         if (candidateGenerator.hasNext() && allExpandedChildrenLose) {
             return true;
+        }
+        if (rootGumbelEnabled) {
+            return candidateGenerator.pendingGumbelCount() > 0
+                && expandedCount < rootGumbelExpansionTarget;
         }
         for (size_t index = 0; index < childVisits.size(); index++) {
             const int virtualVisits = virtualLoss[index];
@@ -253,11 +295,21 @@ public:
         }
         children.push_back(child);
         qValues.push_back(childQ);
+        childGumbelScores.push_back(candidate.gumbelScore);
+        if (rootGumbelEnabled) {
+            rootGumbelActive.push_back({
+                expandedCount,
+                childVisits.back()});
+        }
         
         expandedCount++;
         if (outChildIdx) {
             *outChildIdx = expandedCount - 1;
         }
+        const int childIdx = expandedCount - 1;
+        std::shared_ptr<Node> parent = weak_from_this().lock();
+        guard.unlock();
+        child->register_parent_edge(parent, childIdx);
         return child;
     }
     
@@ -275,7 +327,10 @@ public:
                              bool boardBOnTurn,
                              const SearchParams::RuntimeConfig& config,
                              const std::vector<uint8_t>& capturesA = {},
-                             const std::vector<uint8_t>& capturesB = {}) {
+                             const std::vector<uint8_t>& capturesB = {},
+                             const std::vector<float>& jointFactorsA = {},
+                             const std::vector<float>& jointFactorsB = {},
+                             size_t jointFactorRank = 0) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         
         // Already expanded by another thread
@@ -286,6 +341,7 @@ public:
         std::vector<float> rootPriorsA = priorsA;
         std::vector<float> rootPriorsB = priorsB;
         if (m_depth.load(std::memory_order_relaxed) == 0
+            && !config.enableGumbelRootSearch
             && config.rootDirichletAlpha > 0.0f
             && config.rootDirichletEpsilon > 0.0f) {
             auto applyNoise = [&](std::vector<float>& priors, uint64_t salt) {
@@ -316,8 +372,12 @@ public:
 
         candidateGenerator.initialize(actionsA, actionsB, rootPriorsA, rootPriorsB,
                           teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
-                          capturesA, capturesB);
+                          capturesA, capturesB, jointFactorsA, jointFactorsB,
+                          jointFactorRank,
+                          static_cast<size_t>(std::max(0, config.jointPolicyTopK)),
+                          config.jointPolicyResidualScale);
         expandedCount = 0;
+        initialize_root_gumbel_locked(config);
         
         // Try to expand the first child
         if (candidateGenerator.hasNext()) {
@@ -332,12 +392,19 @@ public:
             virtualLoss.push_back(0);
             children.push_back(child);
             qValues.push_back(SearchParams::Q_INIT);
+            childGumbelScores.push_back(candidate.gumbelScore);
+            if (rootGumbelEnabled) {
+                rootGumbelActive.push_back({0, 0});
+            }
             
             expandedCount++;
             m_is_expanded.store(true, std::memory_order_release);
+            std::shared_ptr<Node> parent = weak_from_this().lock();
+            guard.unlock();
+            child->register_parent_edge(parent, 0);
             return true;
         }
-        
+
         return false;
     }
 
@@ -363,7 +430,8 @@ public:
      * @return pair of (child pointer, child index), or (nullptr, -1) if no children
      */
     ChildSelection select_child_and_apply_virtual_loss(
-        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{});
+        const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{},
+        const std::unordered_set<const Node*>* blockedNodes = nullptr);
 
     std::vector<std::shared_ptr<Node>> get_children() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
@@ -374,6 +442,15 @@ public:
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < children.size()) {
             children[childIdx] = child;
+            if (nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
+                && static_cast<size_t>(childIdx) < childNodeTypes.size()
+                && childNodeTypes[childIdx] != NodeType::UNSOLVED) {
+                childNodeTypes[childIdx] = NodeType::UNSOLVED;
+                unsolvedChildCount.fetch_add(1, std::memory_order_relaxed);
+            }
+            std::shared_ptr<Node> parent = weak_from_this().lock();
+            guard.unlock();
+            child->register_parent_edge(parent, childIdx);
         }
     }
 
@@ -469,6 +546,11 @@ public:
     void set_hash(uint64_t hash) {
         positionHash.store(hash, std::memory_order_relaxed);
     }
+
+    /**
+     * @brief Configure a newly created or reused node as this search's root.
+     */
+    void configure_root_search(const SearchParams::RuntimeConfig& config);
     
     // =========================================================================
     // MCTS Solver Methods
@@ -478,37 +560,23 @@ public:
      * @brief Get the node type (UNSOLVED, WIN, LOSS, DRAW).
      */
     NodeType get_node_type() const {
-        return nodeType.load(std::memory_order_relaxed);
+        return nodeType.load(std::memory_order_acquire);
     }
     
     /**
      * @brief Mark this node as a WIN (opponent is mated).
      */
-    void mark_as_win(int ply = 0) {
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        nodeType.store(NodeType::WIN, std::memory_order_release);
-        valueSum = 1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
-        endInPly.store(ply, std::memory_order_relaxed);
-    }
+    void mark_as_win(int ply = 0);
     
     /**
      * @brief Mark this node as a LOSS (we are mated).
      */
-    void mark_as_loss(int ply = 0) {
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        nodeType.store(NodeType::LOSS, std::memory_order_release);
-        valueSum = -1.0f * (m_visits.load(std::memory_order_relaxed) + 1);
-        endInPly.store(ply, std::memory_order_relaxed);
-    }
+    void mark_as_loss(int ply = 0);
 
     /**
      * @brief Mark this node as a proven draw.
      */
-    void mark_as_draw(int ply = 0) {
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        nodeType.store(NodeType::DRAW, std::memory_order_release);
-        endInPly.store(ply, std::memory_order_relaxed);
-    }
+    void mark_as_draw(int ply = 0);
     
     /**
      * @brief Get the ply distance to terminal.
@@ -543,73 +611,7 @@ public:
      * @return True if this node became solved as a result
      */
     bool update_child_node_type(int childIdx, NodeType childType) {
-        if (!SearchParams::ENABLE_MCTS_SOLVER) return false;
-        
-        std::unique_lock<std::shared_mutex> guard(nodeMutex);
-        
-        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED) {
-            return false;  // Already solved
-        }
-        
-        if (childIdx < 0 || static_cast<size_t>(childIdx) >= childNodeTypes.size()) {
-            return false;
-        }
-        
-        if (childNodeTypes[childIdx] != NodeType::UNSOLVED) {
-            return false;  // Already recorded
-        }
-        
-        childNodeTypes[childIdx] = childType;
-        unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
-        
-        // Check solver conditions (from child's perspective, so inverted)
-        // If any child is a LOSS (for the child), this node is a WIN (we can force mate)
-        if (childType == NodeType::LOSS) {
-            nodeType.store(NodeType::WIN, std::memory_order_release);
-            // Use shortest path to win
-            if (children[childIdx]) {
-                endInPly.store(children[childIdx]->get_end_in_ply() + 1, std::memory_order_relaxed);
-            }
-            return true;
-        }
-        
-        // If all expanded children are solved AND there are no more children to expand,
-        // check if we're lost or drawn.
-        // IMPORTANT: We can only mark as LOSS if ALL possible moves have been explored.
-        // There may be unexpanded moves that could save us.
-        // CRITICAL: Must also verify the node is actually expanded (generator initialized).
-        // An unexpanded node has an empty generator which would incorrectly pass hasNext() check.
-        if (unsolvedChildCount.load(std::memory_order_relaxed) == 0 && 
-            m_is_expanded.load(std::memory_order_relaxed)
-            && !candidateGenerator.hasNext()) {
-            bool allWins = true;
-            bool hasDrawn = false;
-            int longestPly = 0;
-            
-            for (size_t i = 0; i < childNodeTypes.size(); i++) {
-                if (childNodeTypes[i] != NodeType::WIN) {
-                    allWins = false;
-                }
-                if (childNodeTypes[i] == NodeType::DRAW) {
-                    hasDrawn = true;
-                }
-                if (children[i] && children[i]->get_end_in_ply() > longestPly) {
-                    longestPly = children[i]->get_end_in_ply();
-                }
-            }
-            
-            if (allWins) {
-                // All children are wins for them = loss for us
-                nodeType.store(NodeType::LOSS, std::memory_order_release);
-                endInPly.store(longestPly + 1, std::memory_order_relaxed);  // Delay mate as long as possible
-                return true;
-            } else if (hasDrawn) {
-                nodeType.store(NodeType::DRAW, std::memory_order_release);
-                return true;
-            }
-        }
-        
-        return false;
+        return update_child_node_type_from(childIdx, nullptr, childType);
     }
     
     // =========================================================================
@@ -686,6 +688,33 @@ public:
                 }
             }
             return bestIdx;
+        }
+
+        if (rootGumbelEnabled && !rootGumbelActive.empty()) {
+            int bestIdx = -1;
+            float bestScore = -std::numeric_limits<float>::infinity();
+            for (const RootGumbelEntry& entry : rootGumbelActive) {
+                const int childIdx = entry.childIdx;
+                if (childIdx < 0
+                    || static_cast<size_t>(childIdx) >= children.size()
+                    || !children[childIdx]
+                    || children[childIdx]->get_node_type() == NodeType::WIN) {
+                    continue;
+                }
+                const NodeType childType = children[childIdx]->get_node_type();
+                const float solverQ = childType == NodeType::LOSS
+                    ? 1.0f
+                    : childType == NodeType::DRAW ? 0.0f : qValues[childIdx];
+                const float score = childGumbelScores[childIdx]
+                    + rootGumbelValueScale * solverQ;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIdx = childIdx;
+                }
+            }
+            if (bestIdx >= 0) {
+                return bestIdx;
+            }
         }
 
         const bool hasNonLosingAlternative = std::any_of(

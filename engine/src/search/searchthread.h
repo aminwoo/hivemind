@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <unordered_set>
 
 #include "environment/board.h"
 #include "environment/joint_action.h"
@@ -81,6 +82,7 @@ struct LeafSelection {
     std::shared_ptr<Node> leaf;
     bool hasEvaluationReservation = false;
     std::shared_ptr<Node> pendingEvaluation;
+    std::shared_ptr<Node> exhaustedSubtree;
 };
 
 class SearchThread {
@@ -143,7 +145,10 @@ public:
     void set_inference_worker_index(size_t workerIndex);
     
     // MCGS (Monte Carlo Graph Search) with prior-ordered joint action expansion
-    LeafSelection select_and_expand(Board& board, bool teamHasTimeAdvantage);
+    LeafSelection select_and_expand(
+        Board& board,
+        bool teamHasTimeAdvantage,
+        const std::unordered_set<const Node*>* blockedNodes = nullptr);
     void expand_leaf_node(Node* leaf, 
                           const vector<Stockfish::Move>& actionsA,
                           const vector<Stockfish::Move>& actionsB,
@@ -154,6 +159,9 @@ public:
                           bool boardBOnTurn,
                           const vector<uint8_t>& capturesA,
                           const vector<uint8_t>& capturesB,
+                          const vector<float>& jointFactorsA = {},
+                          const vector<float>& jointFactorsB = {},
+                          size_t jointFactorRank = 0,
                           uint64_t positionHash = 0);
     void backup(vector<TrajectoryEntry>& trajectory, 
                 Board& board, float value);

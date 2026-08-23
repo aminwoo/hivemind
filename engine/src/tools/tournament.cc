@@ -26,17 +26,6 @@ uint64_t tournament_seed(uint64_t seed, uint64_t value) {
     return seed ^ (value ^ (value >> 31));
 }
 
-JointActionCandidate most_visited_action(const std::vector<RootEdgeStats>& edges) {
-    if (edges.empty()) {
-        throw std::runtime_error("Tournament search returned no root edges");
-    }
-    return std::max_element(
-        edges.begin(), edges.end(),
-        [](const RootEdgeStats& left, const RootEdgeStats& right) {
-            return left.visits < right.visits;
-        })->action;
-}
-
 std::string action_uci(Board& board, const JointActionCandidate& action) {
     const std::string moveA = action.moveA == Stockfish::MOVE_NONE
         ? "pass"
@@ -390,14 +379,14 @@ int run_tournament(
             options.search.rootNoiseSeed = tournament_seed(
                 config.seed,
                 pairIndex * config.maxMacroPlies + macroPly);
-            agent.run_search(board, engines, team, hasTimeAdvantage, options);
+            const JointActionCandidate action = agent.run_search(
+                board, engines, team, hasTimeAdvantage, options);
             const std::vector<RootEdgeStats> edges = agent.root_edge_stats();
             if (edges.empty()) {
                 winner = static_cast<int>(~team);
                 termination = "no legal action";
                 break;
             }
-            const JointActionCandidate action = most_visited_action(edges);
             actions.push_back(action_uci(board, action));
             board.make_moves(action.moveA, action.moveB);
             team = ~team;

@@ -268,6 +268,37 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableTranspositions = value == "true";
             std::cout << "info string Transpositions set to " << value << std::endl;
         }
+    } else if (name == "GumbelRootSearch") {
+        if (value == "true" || value == "false") {
+            searchConfig.enableGumbelRootSearch = value == "true";
+            std::cout << "info string GumbelRootSearch set to " << value << std::endl;
+        }
+    } else if (name == "RootGumbelPoolSize") {
+        searchConfig.rootGumbelPoolSize = std::clamp(
+            std::stoi(value), 1, 65536);
+        std::cout << "info string RootGumbelPoolSize set to "
+                  << searchConfig.rootGumbelPoolSize << std::endl;
+    } else if (name == "RootGumbelInitialCandidates") {
+        searchConfig.rootGumbelInitialCandidates = std::clamp(
+            std::stoi(value), 1, 4096);
+        std::cout << "info string RootGumbelInitialCandidates set to "
+                  << searchConfig.rootGumbelInitialCandidates << std::endl;
+    } else if (name == "RootGumbelReplenishment") {
+        searchConfig.rootGumbelReplenishment = std::clamp(
+            std::stoi(value), 1, 4096);
+        std::cout << "info string RootGumbelReplenishment set to "
+                  << searchConfig.rootGumbelReplenishment << std::endl;
+    } else if (name == "RootGumbelValueScalePermille") {
+        const int permille = std::clamp(std::stoi(value), 0, 10000);
+        searchConfig.rootGumbelValueScale =
+            static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string RootGumbelValueScalePermille set to "
+                  << permille << std::endl;
+    } else if (name == "RootGumbelMaxRoundVisits") {
+        searchConfig.rootGumbelMaxRoundVisits = std::clamp(
+            std::stoi(value), 1, 100000);
+        std::cout << "info string RootGumbelMaxRoundVisits set to "
+                  << searchConfig.rootGumbelMaxRoundVisits << std::endl;
     } else if (name == "Team") {
         if (value == "white") {
             teamSide = Stockfish::WHITE;
@@ -290,11 +321,30 @@ void UCI::send_uci_response() {
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
     cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
-    cout << "option name PWCoefficientPermille type spin default 1000 min 1 max 10000" << endl;
-    cout << "option name RootPWCoefficientPermille type spin default 4000 min 1 max 10000" << endl;
-    cout << "option name PWExponentPermille type spin default 300 min 1 max 1000" << endl;
+    cout << "option name PWCoefficientPermille type spin default "
+         << static_cast<int>(SearchParams::PW_COEFFICIENT * 1000.0f) << " min 1 max 10000" << endl;
+    cout << "option name RootPWCoefficientPermille type spin default "
+         << static_cast<int>(SearchParams::ROOT_PW_COEFFICIENT * 1000.0f) << " min 1 max 10000" << endl;
+    cout << "option name PWExponentPermille type spin default "
+         << static_cast<int>(SearchParams::PW_EXPONENT * 1000.0f) << " min 1 max 1000" << endl;
     cout << "option name Transpositions type check default "
         << (SearchParams::ENABLE_TRANSPOSITIONS ? "true" : "false") << endl;
+    cout << "option name GumbelRootSearch type check default "
+         << (SearchParams::ENABLE_GUMBEL_ROOT_SEARCH ? "true" : "false") << endl;
+    cout << "option name RootGumbelPoolSize type spin default "
+         << SearchParams::ROOT_GUMBEL_POOL_SIZE << " min 1 max 65536" << endl;
+    cout << "option name RootGumbelInitialCandidates type spin default "
+         << SearchParams::ROOT_GUMBEL_INITIAL_CANDIDATES
+         << " min 1 max 4096" << endl;
+    cout << "option name RootGumbelReplenishment type spin default "
+         << SearchParams::ROOT_GUMBEL_REPLENISHMENT
+         << " min 1 max 4096" << endl;
+    cout << "option name RootGumbelValueScalePermille type spin default "
+         << static_cast<int>(SearchParams::ROOT_GUMBEL_VALUE_SCALE * 1000.0f)
+         << " min 0 max 10000" << endl;
+    cout << "option name RootGumbelMaxRoundVisits type spin default "
+         << SearchParams::ROOT_GUMBEL_MAX_ROUND_VISITS
+         << " min 1 max 100000" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name Mode type combo default go var sit var go" << endl;
     cout << "info string CUDA engines " << engines.size()
