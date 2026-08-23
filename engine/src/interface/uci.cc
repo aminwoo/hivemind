@@ -24,8 +24,16 @@ UCI::~UCI() {
 }
 
 bool UCI::initializeEngines(
-    const std::vector<int>& deviceIds,
-    const std::string& networkPath) {
+    const std::vector<int>& deviceIdsToUse,
+    const std::string& networkPathToUse,
+    int batchSizeToUse) {
+    deviceIds = deviceIdsToUse;
+    networkPath = networkPathToUse;
+    batchSize = batchSizeToUse > 0 ? batchSizeToUse : SearchParams::BATCH_SIZE;
+    return reload_engines();
+}
+
+bool UCI::reload_engines() {
     stop();
 
     // Clear any existing engines.
@@ -42,11 +50,11 @@ bool UCI::initializeEngines(
     }
     // For each device ID, create a new Engine, load the network, and store it.
     for (int deviceId : deviceIds) {
-        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v3");
-        
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", batchSize, deviceId, "v3");
+
         // Create a new engine instance on the given GPU.
-        auto enginePtr = std::make_unique<Engine>(deviceId);
-        
+        auto enginePtr = std::make_unique<Engine>(deviceId, batchSize);
+
         // Attempt to load the network (build or deserialize).
         if (!enginePtr->loadNetwork(onnxFile, engineFile)) {
             std::cerr << "Error: Failed to load engine on device " << deviceId << std::endl;
@@ -236,6 +244,29 @@ void UCI::setoption(std::istringstream& is) {
             agent->setHashSize(sizeMB);
             std::cout << "info string Hash table set to " << sizeMB << " MB" << std::endl;
         }
+    } else if (name == "BatchSize") {
+        // The batch size is compiled into the TensorRT engine, so this reloads
+        // it. A cached engine for the requested size loads in about a second;
+        // an uncached one is built from the ONNX first, which takes minutes.
+        const int requested = std::stoi(value);
+        if (requested < 1 || requested > 1024) {
+            std::cout << "info string BatchSize must be between 1 and 1024" << std::endl;
+        } else if (requested == batchSize) {
+            std::cout << "info string BatchSize already " << batchSize << std::endl;
+        } else {
+            const int previous = batchSize;
+            batchSize = requested;
+            if (reload_engines()) {
+                std::cout << "info string BatchSize set to " << batchSize << std::endl;
+            } else {
+                batchSize = previous;
+                std::cout << "info string BatchSize " << requested
+                          << " failed to load; restoring " << previous << std::endl;
+                if (!reload_engines()) {
+                    std::cout << "info string no inference engine is loaded" << std::endl;
+                }
+            }
+        }
     } else if (name == "MultiPV") {
         int mpv = std::stoi(value);
         if (mpv >= 1 && mpv <= 500) {
@@ -318,6 +349,8 @@ void UCI::send_uci_response() {
     cout << "id name hivemind" << endl;
     cout << "id author aminwoo\n" << endl;
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
+    cout << "option name BatchSize type spin default " << batchSize
+         << " min 1 max 1024" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
     cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
@@ -360,13 +393,16 @@ void UCI::policy() {
         return;
     }
 
-    // Allocate inference buffers
-    float* obs = new float[SearchParams::BATCH_SIZE * NB_INPUT_VALUES()];
-    float* value = new float[SearchParams::BATCH_SIZE];
-    float* piA = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-    float* piB = new float[SearchParams::BATCH_SIZE * NB_POLICY_VALUES()];
-    float* wdl = new float[SearchParams::BATCH_SIZE * 3];
-    float* movesLeft = new float[SearchParams::BATCH_SIZE];
+    // Allocate inference buffers. runInference reads and writes a full batch,
+    // so these must be sized by the loaded engine, not by the compiled default.
+    const size_t loadedBatchSize =
+        static_cast<size_t>(engines[0]->getBatchSize());
+    float* obs = new float[loadedBatchSize * NB_INPUT_VALUES()];
+    float* value = new float[loadedBatchSize];
+    float* piA = new float[loadedBatchSize * NB_POLICY_VALUES()];
+    float* piB = new float[loadedBatchSize * NB_POLICY_VALUES()];
+    float* wdl = new float[loadedBatchSize * 3];
+    float* movesLeft = new float[loadedBatchSize];
 
     // Convert board to planes
     board_to_planes(board, obs, teamSide, teamHasTimeAdvantage);
