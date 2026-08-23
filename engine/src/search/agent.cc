@@ -9,6 +9,7 @@
 #include <random>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "environment/joint_action.h"
@@ -801,10 +802,15 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     isPondering_.store(options.isPonder, std::memory_order_release);
     currentSearchInfo_.store(&searchInfo, std::memory_order_release);
     
-    // MCGS: Clear and set up transposition table for new search (if enabled)
+    // MCGS: discard nodes outside the signature-verified reused graph, then
+    // re-index that graph so new transpositions merge into retained nodes.
     if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
         transpositionTable->clear();
-        transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
+        if (reusedRoot) {
+            reindex_reused_subtree(rootNode);
+        } else {
+            transpositionTable->insertOrGet(positionHash, rootNode);
+        }
     }
 
     const size_t workerCount = static_cast<size_t>(numThreads) * engines.size();
@@ -1638,6 +1644,33 @@ void Agent::setHashSize(size_t sizeMB) {
  */
 std::string Agent::board_signature(Board& board) {
     return board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
+}
+
+void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
+    if (!transpositionTable || !reusedRoot) {
+        return;
+    }
+
+    std::vector<std::shared_ptr<Node>> pending = {reusedRoot};
+    std::unordered_set<const Node*> visited;
+    while (!pending.empty()) {
+        std::shared_ptr<Node> node = std::move(pending.back());
+        pending.pop_back();
+        if (!node || !visited.insert(node.get()).second) {
+            continue;
+        }
+
+        const uint64_t hash = node->get_hash();
+        if (hash != 0) {
+            transpositionTable->insertOrGet(hash, node);
+        }
+
+        for (const std::shared_ptr<Node>& child : node->get_children()) {
+            if (child) {
+                pending.push_back(child);
+            }
+        }
+    }
 }
 
 std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,

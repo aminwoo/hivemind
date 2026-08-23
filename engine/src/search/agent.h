@@ -111,6 +111,7 @@ private:
                           int moveTimeMs,
                           size_t workerCount);
     void wait_for_workers();
+    void reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot);
 
 public:
     /**

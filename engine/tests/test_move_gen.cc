@@ -29,6 +29,16 @@ public:
     static size_t retained_candidate_count(const Agent& agent) {
         return agent.nextRootCandidates_.size();
     }
+
+    static void reindex_reused_subtree(
+        Agent& agent, const std::shared_ptr<Node>& root) {
+        agent.transpositionTable->clear();
+        agent.reindex_reused_subtree(root);
+    }
+
+    static std::shared_ptr<Node> lookup(Agent& agent, uint64_t hash) {
+        return agent.transpositionTable->lookup(hash);
+    }
 };
 
 // Fixture for engine initialization
@@ -1821,6 +1831,29 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
     EXPECT_EQ(reused->get_end_in_ply(), 3);
+}
+
+TEST_F(EngineTest, ReusedTreeIsReindexedIntoTranspositionTable) {
+    SearchParams::RuntimeConfig config;
+    auto root = std::make_shared<Node>(Stockfish::WHITE, 101);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {static_cast<Stockfish::Move>(1)}, {Stockfish::MOVE_NONE},
+        {1.0f}, {1.0f}, false, true, false, config));
+    const std::shared_ptr<Node> child = root->get_children().front();
+    child->set_hash(202);
+
+    ASSERT_TRUE(child->try_init_and_expand(
+        {static_cast<Stockfish::Move>(2)}, {Stockfish::MOVE_NONE},
+        {1.0f}, {1.0f}, false, true, false, config));
+    const std::shared_ptr<Node> grandchild = child->get_children().front();
+    grandchild->set_hash(303);
+
+    Agent agent;
+    AgentTreeReuseTestPeer::reindex_reused_subtree(agent, root);
+
+    EXPECT_EQ(AgentTreeReuseTestPeer::lookup(agent, 101), root);
+    EXPECT_EQ(AgentTreeReuseTestPeer::lookup(agent, 202), child);
+    EXPECT_EQ(AgentTreeReuseTestPeer::lookup(agent, 303), grandchild);
 }
 
 TEST_F(EngineTest, InitialMoves) {
