@@ -110,14 +110,17 @@ TerminalOutcome classify_terminal_position(Board& board,
     const bool teamToPlayHasTimeAdvantage = teamToPlay == rootTeam
         ? rootTeamHasTimeAdvantage
         : !rootTeamHasTimeAdvantage;
+    Board::LegalMoveCache legalMoveCache;
 
-    if (board.is_checkmate(~teamToPlay, !teamToPlayHasTimeAdvantage)) {
+    if (board.is_checkmate(
+            ~teamToPlay, !teamToPlayHasTimeAdvantage, &legalMoveCache)) {
         if (endInPly) {
             *endInPly = 1;
         }
         return TerminalOutcome::WIN;
     }
-    if (board.is_checkmate(teamToPlay, teamToPlayHasTimeAdvantage)) {
+    if (board.is_checkmate(
+            teamToPlay, teamToPlayHasTimeAdvantage, &legalMoveCache)) {
         if (endInPly) {
             *endInPly = 1;
         }

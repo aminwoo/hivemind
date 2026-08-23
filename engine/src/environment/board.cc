@@ -112,6 +112,42 @@ bool Board::is_legal_move(int board_num, Stockfish::Move move) const {
         || Stockfish::MoveList<Stockfish::LEGAL>(*pos[board_num]).contains(move);
 }
 
+bool Board::has_any_legal_move(int board_num) const {
+    const Stockfish::Position& position = *pos[board_num];
+    if (position.is_immediate_game_end()) {
+        return false;
+    }
+
+    // In bughouse an available drop is immediately legal when the king is not
+    // in check. Test the actual drop regions so pawn back-rank restrictions are
+    // respected without invoking move generation.
+    if (!position.checkers()
+        && position.piece_drops()
+        && position.count_in_hand(position.side_to_move(), Stockfish::ALL_PIECES) > 0) {
+        const Stockfish::Color side = position.side_to_move();
+        const Stockfish::Bitboard emptySquares = position.board_bb() & ~position.pieces();
+        for (Stockfish::PieceType pieceType : position.piece_types()) {
+            if (position.count_in_hand(side, pieceType) > 0
+                && (position.drop_region(side, pieceType) & emptySquares)) {
+                return true;
+            }
+        }
+    }
+
+    // Avoid LEGAL move generation, which checks and compacts every candidate.
+    // We only need one legal, non-virtual candidate.
+    Stockfish::ExtMove candidates[Stockfish::MAX_MOVES];
+    Stockfish::ExtMove* end = position.checkers()
+        ? Stockfish::generate<Stockfish::EVASIONS>(position, candidates)
+        : Stockfish::generate<Stockfish::NON_EVASIONS>(position, candidates);
+    for (Stockfish::ExtMove* candidate = candidates; candidate != end; ++candidate) {
+        if (position.legal(*candidate) && !position.virtual_drop(*candidate)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Reverts the last move on the board and updates the state.
 // Also removes a piece from the opponent's hand if necessary.
 void Board::pop_move(int board_num) {
@@ -166,23 +202,23 @@ std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color
 // pieces to drop and block a check. We must verify that:
 // 1. The player has no legal moves (including drops with current pieces in hand)
 // 2. The partner cannot capture any piece that could be used to block the check
-bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
+bool Board::is_checkmate(Stockfish::Color side,
+                         bool teamHasTimeAdvantage,
+                         LegalMoveCache* legalMoveCache) {
     const bool isOnTurnOnA = pos[BOARD_A]->side_to_move() == side;
     const bool isOnTurnOnB = pos[BOARD_B]->side_to_move() == ~side;
 
-    // Mate scans call this predicate once per candidate move, so each board
-    // generates its legal moves at most once here.
-    int legalCount[2] = {-1, -1};
-    auto legal_move_count = [&](int boardNum) {
-        if (legalCount[boardNum] < 0) {
-            legalCount[boardNum] = static_cast<int>(
-                Stockfish::MoveList<Stockfish::LEGAL>(*pos[boardNum]).size());
+    LegalMoveCache localLegalMoveCache;
+    LegalMoveCache& cache = legalMoveCache ? *legalMoveCache : localLegalMoveCache;
+    auto has_legal_move = [&](int boardNum) {
+        if (!cache[boardNum].has_value()) {
+            cache[boardNum] = has_any_legal_move(boardNum);
         }
-        return legalCount[boardNum];
+        return *cache[boardNum];
     };
 
     // Check Board A (where 'side' plays)
-    if (isOnTurnOnA && pos[BOARD_A]->checkers() && legal_move_count(BOARD_A) == 0) {
+    if (isOnTurnOnA && pos[BOARD_A]->checkers() && !has_legal_move(BOARD_A)) {
         // No legal moves - but can partner provide a blocking piece?
         if (!can_partner_provide_blocking_piece(BOARD_A, side, teamHasTimeAdvantage)) {
             return true;
@@ -190,7 +226,7 @@ bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
     }
 
     // Check Board B (where partner of 'side' plays, so opponent color is ~side)
-    if (isOnTurnOnB && pos[BOARD_B]->checkers() && legal_move_count(BOARD_B) == 0) {
+    if (isOnTurnOnB && pos[BOARD_B]->checkers() && !has_legal_move(BOARD_B)) {
         // No legal moves - but can partner provide a blocking piece?
         if (!can_partner_provide_blocking_piece(BOARD_B, ~side, teamHasTimeAdvantage)) {
             return true;
@@ -200,8 +236,8 @@ bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
     // If the team has no legal move, it loses unless time advantage makes
     // double-sit legal. Double-sit is still forbidden when both boards are on turn.
     if (isOnTurnOnA || isOnTurnOnB) {
-        const bool hasMovesOnA = isOnTurnOnA && legal_move_count(BOARD_A) > 0;
-        const bool hasMovesOnB = isOnTurnOnB && legal_move_count(BOARD_B) > 0;
+        const bool hasMovesOnA = isOnTurnOnA && has_legal_move(BOARD_A);
+        const bool hasMovesOnB = isOnTurnOnB && has_legal_move(BOARD_B);
         if (!hasMovesOnA && !hasMovesOnB
             && (!teamHasTimeAdvantage || (isOnTurnOnA && isOnTurnOnB))) {
             return true;
@@ -323,12 +359,14 @@ bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Co
 }
 
 void Board::make_moves(Stockfish::Move moveA, Stockfish::Move moveB) {
+#ifndef NDEBUG
     if (!is_legal_move(BOARD_A, moveA) || !is_legal_move(BOARD_B, moveB)) {
         throw std::logic_error(
             "Search tree supplied an illegal joint action (A="
             + std::to_string(static_cast<uint32_t>(moveA))
             + ", B=" + std::to_string(static_cast<uint32_t>(moveB)) + ")");
     }
+#endif
 
     auto apply_move = [&](int boardNum, Stockfish::Move move) {
         if (move == Stockfish::MOVE_NONE) {
