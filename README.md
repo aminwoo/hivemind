@@ -101,8 +101,9 @@ of the current working directory. Without explicit path, the engine searches `./
 ### Engine Commands
 
 ```bash
-# Run inference benchmark
+# Run inference benchmark (add --batch-size to compare batch throughput)
 ./hivemind bench
+./hivemind bench 1000 --batch-size 64
 
 # Run move generation benchmark
 ./hivemind perft 5
@@ -112,6 +113,34 @@ of the current working directory. Without explicit path, the engine searches `./
   --model src/training/weights/rl/model-rl-final-v3.0.onnx \
   --games 1000 --nodes 400 --output engine/selfplay_games
 ```
+
+### Inference Batch Size
+
+The number of leaves gathered per neural network evaluation defaults to
+`SearchParams::BATCH_SIZE` and can be overridden without recompiling:
+
+```bash
+# UCI mode, set at startup
+./engine/build-ninja/hivemind --model models/bughouse-rise-v3.onnx --batch-size 32
+
+# UCI mode, set at runtime (reloads the network)
+setoption name BatchSize value 32
+
+# Self-play
+./engine/build-ninja/hivemind selfplay --batch-size 32 ...
+
+# Head-to-head, one batch size per side
+./engine/build-ninja/hivemind tournament \
+  --contender models/bughouse-rise-v3.onnx --baseline models/bughouse-rise-v3.onnx \
+  --contender-batch-size 32 --baseline-batch-size 8 \
+  --games 200 --nodes 800 --output engine/batch_ab
+```
+
+Each batch size needs its own TensorRT engine. A cached one loads in about a
+second; the first use of a new size builds it from the ONNX, which takes a few
+minutes. Larger batches raise throughput but coarsen search: more leaves are
+selected under virtual loss before any of them is evaluated, so the trade-off is
+worth confirming with a paired tournament rather than by nodes per second alone.
 
 Self-play diversifies each opening with raw-policy initialization. Its length is
 sampled from an exponential distribution with a mean of 8 macro plies and a

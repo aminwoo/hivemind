@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <vector>
 
+#include "search/search_params.h"
+
 class Engine;
 
 struct SelfPlayConfig {
@@ -26,6 +28,7 @@ struct SelfPlayConfig {
     float dirichletAlpha = 0.3f;
     float dirichletEpsilon = 0.25f;
     float initialClockSeconds = 180.0f;
+    int batchSize = SearchParams::BATCH_SIZE;
     uint64_t seed = 0;
     std::filesystem::path outputDirectory = "selfplay_games";
 };

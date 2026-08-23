@@ -144,19 +144,47 @@ public:
     float root_q() const;
 
     /**
+     * @brief Node budget for the root forced-mate search.
+     *
+     * The search runs synchronously before MCTS and does not consult the move
+     * time, so it carries its own cap. Running out is reported as "not proven",
+     * never as a proof.
+     */
+    struct MateSearchBudget {
+        uint64_t remainingNodes = SearchParams::MATE_SEARCH_NODE_BUDGET;
+        bool exhausted = false;
+
+        bool consume() {
+            if (exhausted) {
+                return false;
+            }
+            if (remainingNodes == 0) {
+                exhausted = true;
+                return false;
+            }
+            --remainingNodes;
+            return true;
+        }
+    };
+
+    /**
      * @brief Searches for a forced checkmate on a single board where all attacker moves are checks.
+     *
+     * @param budget Optional node budget; the search aborts and returns false once it is spent.
      */
     static bool search_single_board_forced_mate(
         Board& board, int boardNum, Stockfish::Color attackerColor,
         int currentPly, int maxAttackerMoves,
-        Stockfish::Move& outMove, int& outPlyToMate);
+        Stockfish::Move& outMove, int& outPlyToMate,
+        MateSearchBudget* budget = nullptr);
 
     /**
      * @brief Performs checkmate detection at the root before starting MCTS.
      */
     static bool find_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
-        JointActionCandidate& outAction, int& outPlyToMate);
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET);
     
     /**
      * @brief Extracts PV line starting from a specific child index.

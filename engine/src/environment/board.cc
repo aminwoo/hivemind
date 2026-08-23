@@ -167,37 +167,41 @@ std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color
 // 1. The player has no legal moves (including drops with current pieces in hand)
 // 2. The partner cannot capture any piece that could be used to block the check
 bool Board::is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage) {
+    const bool isOnTurnOnA = pos[BOARD_A]->side_to_move() == side;
+    const bool isOnTurnOnB = pos[BOARD_B]->side_to_move() == ~side;
+
+    // Mate scans call this predicate once per candidate move, so each board
+    // generates its legal moves at most once here.
+    int legalCount[2] = {-1, -1};
+    auto legal_move_count = [&](int boardNum) {
+        if (legalCount[boardNum] < 0) {
+            legalCount[boardNum] = static_cast<int>(
+                Stockfish::MoveList<Stockfish::LEGAL>(*pos[boardNum]).size());
+        }
+        return legalCount[boardNum];
+    };
+
     // Check Board A (where 'side' plays)
-    if (pos[BOARD_A]->side_to_move() == side && pos[BOARD_A]->checkers()) {
-        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[BOARD_A]);
-        if (!legalMoves.size()) {
-            // No legal moves - but can partner provide a blocking piece?
-            if (!can_partner_provide_blocking_piece(BOARD_A, side, teamHasTimeAdvantage)) {
-                return true;
-            }
+    if (isOnTurnOnA && pos[BOARD_A]->checkers() && legal_move_count(BOARD_A) == 0) {
+        // No legal moves - but can partner provide a blocking piece?
+        if (!can_partner_provide_blocking_piece(BOARD_A, side, teamHasTimeAdvantage)) {
+            return true;
         }
     }
 
     // Check Board B (where partner of 'side' plays, so opponent color is ~side)
-    if (pos[BOARD_B]->side_to_move() == ~side && pos[BOARD_B]->checkers()) {
-        Stockfish::MoveList<Stockfish::LEGAL> legalMoves(*pos[BOARD_B]);
-        if (!legalMoves.size()) {
-            // No legal moves - but can partner provide a blocking piece?
-            if (!can_partner_provide_blocking_piece(BOARD_B, ~side, teamHasTimeAdvantage)) {
-                return true;
-            }
+    if (isOnTurnOnB && pos[BOARD_B]->checkers() && legal_move_count(BOARD_B) == 0) {
+        // No legal moves - but can partner provide a blocking piece?
+        if (!can_partner_provide_blocking_piece(BOARD_B, ~side, teamHasTimeAdvantage)) {
+            return true;
         }
     }
 
     // If the team has no legal move, it loses unless time advantage makes
     // double-sit legal. Double-sit is still forbidden when both boards are on turn.
-    const bool isOnTurnOnA = pos[BOARD_A]->side_to_move() == side;
-    const bool isOnTurnOnB = pos[BOARD_B]->side_to_move() == ~side;
     if (isOnTurnOnA || isOnTurnOnB) {
-        const bool hasMovesOnA = isOnTurnOnA
-            && Stockfish::MoveList<Stockfish::LEGAL>(*pos[BOARD_A]).size() > 0;
-        const bool hasMovesOnB = isOnTurnOnB
-            && Stockfish::MoveList<Stockfish::LEGAL>(*pos[BOARD_B]).size() > 0;
+        const bool hasMovesOnA = isOnTurnOnA && legal_move_count(BOARD_A) > 0;
+        const bool hasMovesOnB = isOnTurnOnB && legal_move_count(BOARD_B) > 0;
         if (!hasMovesOnA && !hasMovesOnB
             && (!teamHasTimeAdvantage || (isOnTurnOnA && isOnTurnOnB))) {
             return true;
@@ -300,10 +304,15 @@ bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Co
             return false;
         }
 
+        // MoveList holds its own copy of the generated moves, so probing each
+        // reply with make/unmake on this board is safe - and far cheaper than
+        // copying the whole Board once per reply, which this predicate does for
+        // every candidate move of every mate scan.
         for (const Stockfish::ExtMove& opponentMove : opponent_moves) {
-            Board future(*this);
-            future.push_move(partner_board, opponentMove);
-            if (!has_useful_capture(future)) {
+            push_move(partner_board, opponentMove);
+            const bool partnerCanCapture = has_useful_capture(*this);
+            pop_move(partner_board);
+            if (!partnerCanCapture) {
                 return false;
             }
         }

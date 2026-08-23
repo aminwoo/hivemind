@@ -23,12 +23,71 @@
 
 using namespace std; 
 
+namespace {
+
+/**
+ * @brief Reads the optional numeric argument of `bench` / `perft`.
+ *
+ * Both subcommands may also be given the --model flag the other subcommands
+ * accept, so scan for the count instead of assuming argv[2] is a number -
+ * stoi() on a flag terminates the process.
+ */
+int optional_count_argument(int argc, char** argv, int defaultValue) {
+    for (int index = 2; index < argc; ++index) {
+        const string argument = argv[index];
+        if (!argument.empty()
+            && argument.find_first_not_of("0123456789") == string::npos) {
+            return stoi(argument);
+        }
+    }
+    return defaultValue;
+}
+
+/**
+ * @brief Reads the --batch-size flag of a subcommand.
+ * @return The requested size, the compiled default when absent, or -1 on error.
+ */
+int batch_size_argument(int argc, char** argv) {
+    for (int index = 2; index + 1 < argc; ++index) {
+        if (string(argv[index]) != "--batch-size") {
+            continue;
+        }
+        try {
+            const int requested = stoi(argv[index + 1]);
+            if (requested < 1 || requested > 1024) {
+                cerr << "--batch-size must be between 1 and 1024" << endl;
+                return -1;
+            }
+            return requested;
+        } catch (const exception&) {
+            cerr << "--batch-size expects a number" << endl;
+            return -1;
+        }
+    }
+    return SearchParams::BATCH_SIZE;
+}
+
+/** Returns the --model / --network path of a subcommand, or "" when absent. */
+string model_path_argument(int argc, char** argv) {
+    for (int index = 2; index + 1 < argc; ++index) {
+        const string argument = argv[index];
+        if (argument == "--model" || argument == "--network") {
+            return argv[index + 1];
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
 void printUsage(const char* progName) {
     cout << "Usage: " << progName << " [options]" << endl;
     cout << "Options:" << endl;
     cout << "  --log <level>      Set log level: none, info, debug (default: none)" << endl;
     cout << "  --model <onnx>     Load this model in UCI mode (or --network, default: scans ./models)" << endl;
-    cout << "  bench [iters]      Run inference benchmark" << endl;
+    cout << "  --batch-size <n>   Inference batch size in UCI mode (default: "
+         << SearchParams::BATCH_SIZE << "; also settable with the BatchSize UCI option)" << endl;
+    cout << "  bench [iters]      Run inference benchmark (accepts --model, --batch-size)" << endl;
     cout << "  perft [depth]      Run move generation benchmark" << endl;
     cout << "  selfplay [options] Generate HVM5 training chunks and bughouse PGN" << endl;
     cout << "    --model <onnx> --games <n> --nodes <n> --output <dir> --seed <n>" << endl;
@@ -83,28 +142,33 @@ int main(int argc, char* argv[]) {
     // Check for benchmark flag
     if (argc > 1 && string(argv[1]) == "bench") {
         cout << "Running inference benchmark..." << endl;
-        Engine engine(0);
-        
-        const std::string onnxFile = resolveModelPath();
+        const int benchBatchSize = batch_size_argument(argc, argv);
+        if (benchBatchSize <= 0) {
+            return EXIT_FAILURE;
+        }
+        Engine engine(0, benchBatchSize);
+
+        const std::string onnxFile = resolveModelPath(
+            model_path_argument(argc, argv));
         if (onnxFile.empty()) {
             cerr << "No ONNX model found in ./models or ./engine/models" << endl;
             return EXIT_FAILURE;
         }
-        const std::string engineFile = getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v3");
+        const std::string engineFile = getEnginePath(onnxFile, "fp16", benchBatchSize, 0, "v3");
         
         if (!engine.loadNetwork(onnxFile, engineFile)) {
             cerr << "Failed to load engine" << endl;
             return EXIT_FAILURE;
         }
         
-        int iterations = (argc > 2) ? stoi(argv[2]) : 1000;
+        int iterations = optional_count_argument(argc, argv, 1000);
         benchmark_inference(engine, iterations);
         return EXIT_SUCCESS;
     }
 
     // Check for perft benchmark flag
     if (argc > 1 && string(argv[1]) == "perft") {
-        int depth = (argc > 2) ? stoi(argv[2]) : 5;
+        int depth = optional_count_argument(argc, argv, 5);
         benchmark_movegen(depth);
         return EXIT_SUCCESS;
     }
@@ -139,6 +203,7 @@ int main(int argc, char* argv[]) {
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
+                else if (option == "--batch-size") config.batchSize = stoi(value);
                 else throw invalid_argument("Unknown selfplay option: " + option);
             }
         } catch (const exception& error) {
@@ -153,10 +218,14 @@ int main(int argc, char* argv[]) {
         }
         vector<unique_ptr<Engine>> ownedEngines;
         vector<Engine*> engines;
+        if (config.batchSize < 1 || config.batchSize > 1024) {
+            cerr << "Self-play batch size must be between 1 and 1024" << endl;
+            return EXIT_FAILURE;
+        }
         for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
-            auto engine = make_unique<Engine>(deviceId);
+            auto engine = make_unique<Engine>(deviceId, config.batchSize);
             const string engineFile = getEnginePath(
-                onnxFile, "fp16", SearchParams::BATCH_SIZE, deviceId, "v3");
+                onnxFile, "fp16", config.batchSize, deviceId, "v3");
             if (!engine->loadNetwork(onnxFile, engineFile)) {
                 cerr << "Failed to load engine on device " << deviceId << endl;
                 continue;
@@ -246,16 +315,26 @@ int main(int argc, char* argv[]) {
     }
 
     filesystem::path modelPath;
+    int uciBatchSize = SearchParams::BATCH_SIZE;
     try {
         for (int i = 1; i < argc; ++i) {
             const string option = argv[i];
-            if (option != "--model" && option != "--network") {
+            if (option != "--model" && option != "--network"
+                && option != "--batch-size") {
                 throw invalid_argument("Unknown UCI option: " + option);
             }
             if (i + 1 >= argc) {
                 throw invalid_argument("Missing value for " + option);
             }
-            modelPath = argv[++i];
+            const string value = argv[++i];
+            if (option == "--batch-size") {
+                uciBatchSize = stoi(value);
+                if (uciBatchSize < 1 || uciBatchSize > 1024) {
+                    throw invalid_argument("--batch-size must be between 1 and 1024");
+                }
+            } else {
+                modelPath = value;
+            }
         }
     } catch (const exception& error) {
         cerr << "Invalid UCI arguments: " << error.what() << endl;
@@ -268,7 +347,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Hivemind 1.0" << std::endl;
 
-    if (!uci.initializeEngines(deviceIds, modelPath.string())) {
+    if (!uci.initializeEngines(deviceIds, modelPath.string(), uciBatchSize)) {
         return EXIT_FAILURE;
     }
     uci.loop();

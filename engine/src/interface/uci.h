@@ -21,10 +21,18 @@ private:
     Stockfish::Color teamSide = Stockfish::WHITE;
     bool teamHasTimeAdvantage = false;
     std::vector<std::unique_ptr<Engine>> engines;
+    // Retained so the BatchSize option can rebuild the engines in place.
+    std::vector<int> deviceIds;
+    std::string networkPath;
+    int batchSize = SearchParams::BATCH_SIZE;
     std::atomic<bool> ongoingSearch{false};
     int multiPV = 1;  // Number of principal variations to display
     bool ponderEnabled = true;  // Whether to output ponder move and accept ponder search
     SearchParams::RuntimeConfig searchConfig;
+
+    // Rebuilds the engines (and the agent) with the current settings. The batch
+    // size is baked into the TensorRT engine, so changing it means reloading.
+    bool reload_engines();
 
 public:
     UCI();
@@ -32,9 +40,11 @@ public:
 
     // Initialize engines on the specified GPU devices.
     // For each device ID in deviceIds, a new Engine is constructed.
+    // The arguments are retained so reload_engines() can repeat the setup.
     bool initializeEngines(
-        const std::vector<int>& deviceIds,
-        const std::string& networkPath = {});
+        const std::vector<int>& deviceIdsToUse,
+        const std::string& networkPathToUse = {},
+        int batchSizeToUse = SearchParams::BATCH_SIZE);
 
     void send_uci_response();
     void go(std::istringstream& is);
