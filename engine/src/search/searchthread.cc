@@ -518,6 +518,16 @@ void SearchThread::process_batch(
             const __half* batchMovesLeft = inferenceOutputs.movesLeft
                 ? inferenceOutputs.movesLeft + inferenceIdx
                 : nullptr;
+            const size_t jointFactorRank = inferenceOutputs.jointFactorRank;
+            const size_t jointVocabularySize = NB_POLICY_VALUES() + 1;
+            const __half* batchJointFactorsA = inferenceOutputs.jointFactorsA
+                ? inferenceOutputs.jointFactorsA
+                    + inferenceIdx * jointFactorRank * jointVocabularySize
+                : nullptr;
+            const __half* batchJointFactorsB = inferenceOutputs.jointFactorsB
+                ? inferenceOutputs.jointFactorsB
+                    + inferenceIdx * jointFactorRank * jointVocabularySize
+                : nullptr;
 
             Board& leafBoard = board;
             
@@ -593,12 +603,39 @@ void SearchThread::process_batch(
             const vector<uint8_t> capturesA = capture_flags(actionsA, BOARD_A);
             const vector<uint8_t> capturesB = capture_flags(actionsB, BOARD_B);
 
+            auto action_factors = [&leafBoard, jointFactorRank,
+                                   jointVocabularySize](
+                const vector<Stockfish::Move>& actions, int boardNumber,
+                const __half* factors) {
+                vector<float> result;
+                if (!factors || jointFactorRank == 0) {
+                    return result;
+                }
+                result.reserve(actions.size() * jointFactorRank);
+                const Stockfish::Color side = leafBoard.side_to_move(boardNumber);
+                for (Stockfish::Move move : actions) {
+                    const size_t policyIndex = move == Stockfish::MOVE_NONE
+                        ? NB_POLICY_VALUES()
+                        : static_cast<size_t>(get_fast_policy_index(move, side));
+                    for (size_t factor = 0; factor < jointFactorRank; ++factor) {
+                        result.push_back(__half2float(
+                            factors[factor * jointVocabularySize + policyIndex]));
+                    }
+                }
+                return result;
+            };
+            const vector<float> jointFactorsA = action_factors(
+                actionsA, BOARD_A, batchJointFactorsA);
+            const vector<float> jointFactorsB = action_factors(
+                actionsB, BOARD_B, batchJointFactorsB);
+
             // Expand leaf node and register in transposition table (MCGS)
             // Use leafTeamHasTimeAdvantage for the team making the move at this leaf.
             // The generator creates joint actions that THIS team will play.
             expand_leaf_node(ctx.leaf.get(), actionsA, actionsB, priorsA, priorsB,
                              leafTeamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
-                             capturesA, capturesB, ctx.leafHash);
+                             capturesA, capturesB, jointFactorsA, jointFactorsB,
+                             jointFactorRank, ctx.leafHash);
             ctx.leaf->release_evaluation_reservation();
                 
             // Backup value with WDL and moves-left shaping
@@ -948,6 +985,10 @@ LeafSelection SearchThread::select_and_expand(
             currentNode->select_child_and_apply_virtual_loss(
                 runtimeConfig, blockedNodes);
         if (!selection.child || selection.childIdx < 0) {
+            if (!selection.pendingEvaluation
+                && currentNode->should_expand_new_child(runtimeConfig)) {
+                continue;
+            }
             return {
                 nullptr, false, selection.pendingEvaluation, currentNode};
         }
@@ -1008,6 +1049,9 @@ void SearchThread::expand_leaf_node(Node* leaf,
                                     bool boardBOnTurn,
                                     const vector<uint8_t>& capturesA,
                                     const vector<uint8_t>& capturesB,
+                                    const vector<float>& jointFactorsA,
+                                    const vector<float>& jointFactorsB,
+                                    size_t jointFactorRank,
                                     uint64_t positionHash) {
     // Store the position hash in the node for MCGS
     if (positionHash != 0) {
@@ -1018,7 +1062,8 @@ void SearchThread::expand_leaf_node(Node* leaf,
     // This is safe for concurrent access from multiple threads
     leaf->try_init_and_expand(actionsA, actionsB, priorsA, priorsB,
                               teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
-                              runtimeConfig, capturesA, capturesB);
+                              runtimeConfig, capturesA, capturesB,
+                              jointFactorsA, jointFactorsB, jointFactorRank);
     
     // Note: The first child created during try_init_and_expand doesn't have its
     // hash computed yet (would require board access). However, when that child

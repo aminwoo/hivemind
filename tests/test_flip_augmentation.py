@@ -20,8 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.domain.move2planes import make_map
 from src.constants import NUM_BUGHOUSE_CHANNELS, NUM_BUGHOUSE_CHANNELS_PER_BOARD
+import src.training.data_loaders as data_loaders_module
 from src.training.data_loaders import (
     RLDataset,
+    StreamingRLDataset,
     flip_bughouse_sample,
     load_rl_parquet_shard,
 )
@@ -120,6 +122,82 @@ def test_dataset_augmentation():
     print("  ✓ Dataset with augmentation: 200 samples")
     print("  ✓ Dataset augmentation works correctly (policies swapped)")
     print()
+
+
+def test_streaming_dataset_can_bypass_shuffle_buffer(monkeypatch):
+    """Validation streaming should emit samples directly in shard order."""
+    offset = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    x = torch.zeros(2, NUM_BUGHOUSE_CHANNELS, 8, 8)
+    x[0, :offset] = 1
+    x[0, offset:] = 2
+    x[1, :offset] = 3
+    x[1, offset:] = 4
+    y_value = torch.tensor([0.25, -0.5])
+    policy_a = torch.tensor([[1.0, 0.0], [0.75, 0.25]])
+    policy_b = torch.tensor([[0.0, 1.0], [0.1, 0.9]])
+    wdl = torch.tensor([2, 0])
+    moves_left = torch.tensor([0.2, 0.4])
+
+    monkeypatch.setattr(
+        data_loaders_module,
+        "load_rl_parquet_shard",
+        lambda _: (x, y_value, policy_a, policy_b, wdl, moves_left),
+    )
+    dataset = StreamingRLDataset(
+        ["validation.parquet"],
+        shuffle_files=False,
+        augment_flip=True,
+        shuffle_samples=False,
+    )
+
+    samples = list(dataset)
+
+    assert len(samples) == 4
+    assert torch.equal(samples[0][0], x[0])
+    assert torch.equal(samples[1][0][:offset], x[0][offset:])
+    assert torch.equal(samples[1][2], policy_b[0])
+    assert torch.equal(samples[1][3], policy_a[0])
+    assert torch.equal(samples[2][0], x[1])
+
+
+def test_streaming_flip_swaps_joint_action_components(monkeypatch):
+    x = torch.zeros(1, NUM_BUGHOUSE_CHANNELS, 8, 8)
+    policy_a = torch.tensor([[1.0, 0.0]])
+    policy_b = torch.tensor([[0.0, 1.0]])
+    joint_a = torch.tensor([[4672, 10]])
+    joint_b = torch.tensor([[12, 4672]])
+    joint_probability = torch.tensor([[0.75, 0.25]])
+    joint_count = torch.tensor([2])
+    shard = (
+        x,
+        torch.tensor([1.0]),
+        policy_a,
+        policy_b,
+        torch.tensor([2]),
+        torch.tensor([0.1]),
+        joint_a,
+        joint_b,
+        joint_probability,
+        joint_count,
+    )
+    monkeypatch.setattr(
+        data_loaders_module,
+        "load_rl_parquet_shard",
+        lambda _, include_joint_policy: shard,
+    )
+
+    samples = list(StreamingRLDataset(
+        ["joint.parquet"],
+        shuffle_files=False,
+        augment_flip=True,
+        shuffle_samples=False,
+        include_joint_policy=True,
+    ))
+
+    assert len(samples) == 2
+    assert torch.equal(samples[1][6], joint_b[0])
+    assert torch.equal(samples[1][7], joint_a[0])
+    assert torch.equal(samples[1][8], joint_probability[0])
 
 
 def test_with_real_data():

@@ -115,7 +115,7 @@ of the current working directory. Without explicit path, the engine searches `./
 
 Self-play diversifies each opening with raw-policy initialization. Its length is
 sampled from an exponential distribution with a mean of 8 macro plies and a
-maximum of 30; these positions are recorded in PGN but excluded from HVM3.
+maximum of 30; these positions are recorded in PGN but excluded from HVM5.
 Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
 every two macro plies. Search budgets are randomized by ±5% per position.
 
@@ -159,13 +159,13 @@ uv run python scripts/train_from_games_parquet.py \
   --architecture crossboard-risev33 \
   --batch-size 256
 
-# RL training directly from native HVM3 self-play data
+# RL training directly from native HVM5 self-play data
 uv run python src/training/train_loop.py --mode rl --checkpoint /home/ben/hivemind/src/training/weights/rl/model-rl-final.tar --selfplay-dir /home/ben/hivemind/engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
 ```
 
 RL training reads `engine/selfplay_games/training_data` by default, creates a
 deterministic game-level 98/2 train/validation split under
-`engine/selfplay_games/rl_data`, and then starts training. Original HVM3 chunks
+`engine/selfplay_games/rl_data`, and then starts training. Original HVM chunks
 are preserved. Use `--selfplay-dir` for a different self-play directory, or
 provide both `--rl-data-dir` and `--val-data-dir` to train from existing Parquet
 data. Supervised artifacts are written under `src/training/weights/supervised`;
@@ -186,7 +186,11 @@ uv run python src/training/train_loop.py --mode rl \
   --architecture crossboard-risev33
 ```
 
-With `--replay-dir`, RL preparation adds five archived HVM3 chunks selected
+HVM5 stores the sparse joint root-visit distribution in addition to both
+marginal policies. RL models use it to train a rank-4 compatibility residual;
+older HVM3/HVM4 chunks remain readable but cannot train that head by themselves.
+
+With `--replay-dir`, RL preparation adds five archived HVM chunks selected
 deterministically from the newest 5% of that directory, matching CrazyAra's
 replay-memory defaults. Replay games are training-only; validation is made only
 from the current iteration. Adjust this with `--replay-files`,

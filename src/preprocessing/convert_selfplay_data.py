@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert native HVM3 self-play chunks to Parquet training shards."""
+"""Convert native HVM3-HVM5 self-play chunks to Parquet training shards."""
 
 import argparse
 import hashlib
@@ -26,6 +26,9 @@ SAMPLE_METADATA_V3 = struct.Struct('<QIHHBBbB')
 SAMPLE_METADATA_V4 = struct.Struct('<QIHHBBbBf')
 SAMPLE_METADATA = SAMPLE_METADATA_V4
 POLICY_ENTRY = struct.Struct('<Hf')
+JOINT_POLICY_ENTRY = struct.Struct('<HHf')
+PASS_POLICY_INDEX = NB_POLICY_VALUES
+MAX_JOINT_POLICY_ENTRIES = 256
 DEFAULT_RL_VALIDATION_FRACTION = 0.10
 DEFAULT_REPLAY_FILES = 25
 DEFAULT_REPLAY_SELECTION_FRACTION = 0.05
@@ -36,7 +39,7 @@ def read_exact(stream, size: int) -> bytes:
     payload = stream.read(size)
     if len(payload) != size:
         raise ValueError(
-            f"Truncated HVM3 chunk: expected {size} bytes, found {len(payload)}"
+            f"Truncated HVM chunk: expected {size} bytes, found {len(payload)}"
         )
     return payload
 
@@ -66,18 +69,57 @@ def read_sparse_policy(f) -> np.ndarray:
     return policy
 
 
+def read_sparse_joint_policy(f) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Read HVM5 joint visits into fixed-width, probability-sorted arrays."""
+    num_entries = struct.unpack('<H', read_exact(f, 2))[0]
+    entries = [
+        JOINT_POLICY_ENTRY.unpack(read_exact(f, JOINT_POLICY_ENTRY.size))
+        for _ in range(num_entries)
+    ]
+    entries.sort(key=lambda entry: entry[2], reverse=True)
+    entries = entries[:MAX_JOINT_POLICY_ENTRIES]
+
+    indices_a = np.zeros(MAX_JOINT_POLICY_ENTRIES, dtype=np.uint16)
+    indices_b = np.zeros(MAX_JOINT_POLICY_ENTRIES, dtype=np.uint16)
+    probabilities = np.zeros(MAX_JOINT_POLICY_ENTRIES, dtype=np.float32)
+    for position, (index_a, index_b, probability) in enumerate(entries):
+        if index_a > PASS_POLICY_INDEX or index_b > PASS_POLICY_INDEX:
+            raise ValueError(
+                f"Joint policy index ({index_a}, {index_b}) exceeds "
+                f"{PASS_POLICY_INDEX}"
+            )
+        indices_a[position] = index_a
+        indices_b[position] = index_b
+        probabilities[position] = probability
+
+    retained = len(entries)
+    total = float(probabilities.sum())
+    if retained and total > 0.0:
+        probabilities[:retained] /= total
+    return indices_a, indices_b, probabilities, retained
+
+
+def empty_joint_policy() -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    return (
+        np.zeros(MAX_JOINT_POLICY_ENTRIES, dtype=np.uint16),
+        np.zeros(MAX_JOINT_POLICY_ENTRIES, dtype=np.uint16),
+        np.zeros(MAX_JOINT_POLICY_ENTRIES, dtype=np.float32),
+        0,
+    )
+
+
 def read_binary_shard(
     filepath: str | Path,
     q_value_ratio: float = DEFAULT_Q_VALUE_RATIO,
 ) -> list[dict]:
-    """Read one HVM3 or HVM4 chunk and return its samples."""
+    """Read one HVM3, HVM4, or HVM5 chunk and return its samples."""
     samples = []
     
     with open(filepath, 'rb') as f:
         magic, version, channels, policy_values, num_samples = HEADER.unpack(
             read_exact(f, HEADER.size)
         )
-        if magic not in (b'HVM3', b'HVM4') or version not in (3, 4):
+        if magic not in (b'HVM3', b'HVM4', b'HVM5') or version not in (3, 4, 5):
             raise ValueError(
                 f"Unsupported self-play chunk {filepath}: {magic!r} v{version}"
             )
@@ -90,10 +132,10 @@ def read_binary_shard(
                 f"Expected {NB_POLICY_VALUES} policy values, found {policy_values}"
             )
         
-        sample_struct = SAMPLE_METADATA_V4 if version == 4 else SAMPLE_METADATA_V3
+        sample_struct = SAMPLE_METADATA_V4 if version >= 4 else SAMPLE_METADATA_V3
         # Read samples
         for _ in range(num_samples):
-            if version == 4:
+            if version >= 4:
                 (
                     game_id,
                     nodes,
@@ -121,6 +163,11 @@ def read_binary_shard(
             planes = read_exact(f, NB_INPUT_VALUES)
             policy_a = read_sparse_policy(f)
             policy_b = read_sparse_policy(f)
+            joint_a, joint_b, joint_probability, joint_count = (
+                read_sparse_joint_policy(f)
+                if version >= 5
+                else empty_joint_policy()
+            )
 
             blended_value = (1.0 - q_value_ratio) * float(outcome) + q_value_ratio * float(root_q)
 
@@ -128,6 +175,10 @@ def read_binary_shard(
                 'x': planes,
                 'policy_a': policy_a.tobytes(),
                 'policy_b': policy_b.tobytes(),
+                'joint_policy_a': joint_a.tobytes(),
+                'joint_policy_b': joint_b.tobytes(),
+                'joint_policy_probability': joint_probability.tobytes(),
+                'joint_policy_count': joint_count,
                 'y_value': float(blended_value),
                 'root_q': float(root_q),
                 'outcome': float(outcome),

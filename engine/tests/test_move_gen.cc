@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <mutex>
+#include <set>
 #include <thread>
 #include "environment/board.h"
 #include "environment/constants.h"
@@ -84,7 +85,7 @@ TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
 
 TEST_F(EngineTest, HalfInputRepresentationMatchesFloatConversion) {
     Board board;
-    for (const std::string& uci : {"g1f3", "g8f6", "f3g1"}) {
+    for (const char* uci : {"g1f3", "g8f6", "f3g1"}) {
         Stockfish::Move move = find_move(board, BOARD_A, uci);
         ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
         board.push_move(BOARD_A, move);
@@ -144,7 +145,7 @@ TEST_F(EngineTest, SettingCurrentFenClearsSearchHistory) {
 
 TEST_F(EngineTest, NewInputRepresentationEncodesRepetitionContext) {
     Board board;
-    for (const std::string& uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+    for (const char* uci : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
         Stockfish::Move move = find_move(board, BOARD_A, uci);
         ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
         board.push_move(BOARD_A, move);
@@ -275,6 +276,46 @@ TEST(JointActionTest, LowerPolicyChecksDoNotLeapfrogQuietMoves) {
     EXPECT_EQ(generator.getNext().moveA, quietA);
     EXPECT_EQ(generator.getNext().moveA, firstCheckingA);
     EXPECT_EQ(generator.getNext().moveA, secondCheckingA);
+}
+
+TEST(JointActionTest, RepreparingGumbelPoolPreservesEveryCandidateOnce) {
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {Stockfish::Move(1), Stockfish::Move(2),
+         Stockfish::Move(3), Stockfish::Move(4)},
+        {Stockfish::Move(5), Stockfish::Move(6), Stockfish::Move(7)},
+        {0.40f, 0.30f, 0.20f, 0.10f},
+        {0.50f, 0.30f, 0.20f},
+        false, true, true);
+
+    generator.prepareGumbelPool(6, 11);
+    std::unordered_set<std::pair<size_t, size_t>, PairHash> generated;
+    for (int count = 0; count < 2; ++count) {
+        const JointActionCandidate candidate = generator.getNext();
+        EXPECT_TRUE(generated.insert({candidate.idxA, candidate.idxB}).second);
+    }
+
+    generator.prepareGumbelPool(2, 29);
+    while (generator.hasNext()) {
+        const JointActionCandidate candidate = generator.getNext();
+        EXPECT_TRUE(generated.insert({candidate.idxA, candidate.idxB}).second);
+    }
+    EXPECT_EQ(generated.size(), 12U);
+}
+
+TEST(JointActionTest, DisablingGumbelRestoresFactorizedOrder) {
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)},
+        {Stockfish::MOVE_NONE}, {0.60f, 0.30f, 0.10f}, {1.0f},
+        false, true, false);
+
+    generator.prepareGumbelPool(3, 41);
+    generator.restoreFactorizedOrder();
+
+    EXPECT_FLOAT_EQ(generator.getNext().jointPrior, 0.60f);
+    EXPECT_FLOAT_EQ(generator.getNext().jointPrior, 0.30f);
+    EXPECT_FLOAT_EQ(generator.getNext().jointPrior, 0.10f);
 }
 
 TEST(NodeTest, DoubleSitPassesTurnToOtherTeam) {
@@ -741,6 +782,11 @@ TEST(SearchConfigTest, DefaultsPreferObjectiveAndSolverProvenResults) {
     EXPECT_TRUE(SearchParams::ENABLE_TIME_EXTENSION);
     EXPECT_TRUE(SearchParams::ENABLE_TREE_REUSE);
     EXPECT_TRUE(config.enableTranspositions);
+    EXPECT_FALSE(config.enableGumbelRootSearch);
+    EXPECT_EQ(config.rootGumbelPoolSize, 2);
+    EXPECT_EQ(config.rootGumbelInitialCandidates, 1);
+    EXPECT_EQ(config.rootGumbelReplenishment, 1);
+    EXPECT_EQ(config.rootGumbelMaxRoundVisits, 2);
     EXPECT_EQ(SearchParams::TT_MAX_SIZE, TranspositionTable::kDefaultMaxCapacity);
 }
 
@@ -834,6 +880,35 @@ TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
     EXPECT_FALSE(node.should_expand_new_child(config));
 }
 
+TEST(JointCandidateGeneratorTest, JointFactorsRescorePrefixAndPreserveFallback) {
+    JointCandidateGenerator generator;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    const std::vector<Stockfish::Move> actionsB = {
+        Stockfish::Move(3), Stockfish::Move(4)};
+    generator.initialize(
+        actionsA, actionsB, {0.9f, 0.1f}, {0.9f, 0.1f},
+        false, true, true, {}, {},
+        {0.0f, 10.0f}, {0.0f, 1.0f}, 1, 2, 1.0f);
+
+    ASSERT_TRUE(generator.hasNext());
+    const JointActionCandidate first = generator.getNext();
+    EXPECT_EQ(first.moveA, actionsA[1]);
+    EXPECT_EQ(first.moveB, actionsB[1]);
+
+    std::set<std::pair<uint32_t, uint32_t>> generated;
+    generated.emplace(
+        static_cast<uint32_t>(first.moveA),
+        static_cast<uint32_t>(first.moveB));
+    while (generator.hasNext()) {
+        const JointActionCandidate candidate = generator.getNext();
+        generated.emplace(
+            static_cast<uint32_t>(candidate.moveA),
+            static_cast<uint32_t>(candidate.moveB));
+    }
+    EXPECT_EQ(generated.size(), 4U);
+}
+
 TEST(NodeTest, RootProgressiveWideningExploresMoreCandidates) {
     SearchParams::RuntimeConfig config;
     config.pwCoefficient = 1.0f;
@@ -846,19 +921,21 @@ TEST(NodeTest, RootProgressiveWideningExploresMoreCandidates) {
 
 TEST(NodeTest, RootVisitsGeneratedChildBeforeWidening) {
     Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = false;
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
     std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
 
     ASSERT_TRUE(node.try_init_and_expand(
         actionsA, actionsB, {0.8f, 0.15f, 0.05f}, {1.0f}, false, true, false,
-        SearchParams::RuntimeConfig{}));
+        config));
     ASSERT_EQ(node.get_children().size(), 1U);
-    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_FALSE(node.should_expand_new_child(config));
 
     node.update(0, 0.25f);
 
-    EXPECT_TRUE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_TRUE(node.should_expand_new_child(config));
 }
 
 TEST(NodeTest, InFlightVisitAllowsBatchToWiden) {
@@ -883,6 +960,7 @@ TEST(NodeTest, AtomicVirtualLossDivertsNextSelection) {
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2)};
     SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = false;
 
     ASSERT_TRUE(node.try_init_and_expand(
         actionsA, {Stockfish::MOVE_NONE}, {0.5f, 0.5f}, {1.0f},
@@ -918,6 +996,7 @@ TEST(NodeTest, PendingEvaluationDivertsSelectionToAvailableSibling) {
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2)};
     SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = false;
 
     ASSERT_TRUE(node.try_init_and_expand(
         actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
@@ -945,6 +1024,7 @@ TEST(NodeTest, BlockedBatchLeafDivertsSelectionToAvailableSibling) {
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2)};
     SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = false;
 
     ASSERT_TRUE(node.try_init_and_expand(
         actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
@@ -969,6 +1049,7 @@ TEST(NodeTest, BlockedBatchLeafDivertsSelectionToAvailableSibling) {
 TEST(NodeTest, SelectionWaitsWhenEveryChildEvaluationIsPending) {
     Node node(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = false;
 
     ASSERT_TRUE(node.try_init_and_expand(
         {Stockfish::Move(1)}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
@@ -992,6 +1073,7 @@ TEST(NodeTest, DynamicFpuBoostsUnvisitedChildInWinningParent) {
         Stockfish::Move(1), Stockfish::Move(2)};
     SearchParams::RuntimeConfig config;
     config.enableDynamicFpu = true;
+    config.enableGumbelRootSearch = false;
     config.fpuReduction = 0.5f;
 
     ASSERT_TRUE(node.try_init_and_expand(
@@ -1010,6 +1092,162 @@ TEST(NodeTest, DynamicFpuBoostsUnvisitedChildInWinningParent) {
     EXPECT_TRUE(selection.hasEvaluationReservation);
     node.remove_virtual_loss(selection.childIdx);
     selection.child->release_evaluation_reservation();
+}
+
+TEST(NodeTest, GumbelRootBalancesCandidatesBeforeSequentialHalving) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = true;
+    config.rootGumbelPoolSize = 8;
+    config.rootGumbelInitialCandidates = 4;
+    config.rootGumbelReplenishment = 2;
+    config.rootGumbelMaxRoundVisits = 4;
+    config.rootNoiseSeed = 17;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3),
+        Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6),
+        Stockfish::Move(7), Stockfish::Move(8)};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE},
+        {0.30f, 0.20f, 0.15f, 0.12f, 0.09f, 0.06f, 0.05f, 0.03f},
+        {1.0f}, false, true, false, config));
+    while (node.get_children().size() < 4U) {
+        JointActionCandidate action;
+        ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+    }
+    EXPECT_FALSE(node.should_expand_new_child(config));
+
+    auto completeSimulation = [&](float value) {
+        Node::ChildSelection selection =
+            node.select_child_and_apply_virtual_loss(config);
+        EXPECT_NE(selection.child, nullptr);
+        if (!selection.child) {
+            return -1;
+        }
+        if (selection.hasEvaluationReservation) {
+            selection.child->release_evaluation_reservation();
+        }
+        node.update_and_remove_virtual_loss(selection.childIdx, value);
+        return selection.childIdx;
+    };
+
+    std::unordered_set<int> firstRound;
+    for (int simulation = 0; simulation < 4; ++simulation) {
+        firstRound.insert(completeSimulation(0.0f));
+    }
+    EXPECT_EQ(firstRound.size(), 4U);
+
+    std::unordered_set<int> secondRound;
+    for (int simulation = 0; simulation < 4; ++simulation) {
+        secondRound.insert(completeSimulation(0.25f));
+    }
+    EXPECT_EQ(secondRound.size(), 2U);
+}
+
+TEST(NodeTest, GumbelRootProgressivelyReplenishesAfterFinalist) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = true;
+    config.rootGumbelPoolSize = 6;
+    config.rootGumbelInitialCandidates = 2;
+    config.rootGumbelReplenishment = 1;
+    config.rootGumbelMaxRoundVisits = 1;
+    config.rootNoiseSeed = 23;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3),
+         Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6)},
+        {Stockfish::MOVE_NONE},
+        {0.30f, 0.24f, 0.18f, 0.12f, 0.09f, 0.07f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    auto completeSimulation = [&]() {
+        Node::ChildSelection selection =
+            node.select_child_and_apply_virtual_loss(config);
+        ASSERT_NE(selection.child, nullptr);
+        if (selection.hasEvaluationReservation) {
+            selection.child->release_evaluation_reservation();
+        }
+        node.update_and_remove_virtual_loss(selection.childIdx, 0.0f);
+    };
+    completeSimulation();
+    completeSimulation();
+    completeSimulation();
+
+    const Node::ChildSelection replenishSignal =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(replenishSignal.child, nullptr);
+    EXPECT_TRUE(node.should_expand_new_child(config));
+
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+    EXPECT_EQ(node.get_children().size(), 3U);
+}
+
+TEST(NodeTest, GumbelRootEliminatesSolverProvenLosingAction) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = true;
+    config.rootGumbelPoolSize = 4;
+    config.rootGumbelInitialCandidates = 2;
+    config.rootNoiseSeed = 31;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2),
+         Stockfish::Move(3), Stockfish::Move(4)},
+        {Stockfish::MOVE_NONE}, {0.4f, 0.3f, 0.2f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+    const auto children = node.get_children();
+    children[0]->mark_as_win(3);
+
+    Node::ChildSelection selection =
+        node.select_child_and_apply_virtual_loss(config);
+    ASSERT_NE(selection.child, nullptr);
+    EXPECT_EQ(selection.child, children[1]);
+    if (selection.hasEvaluationReservation) {
+        selection.child->release_evaluation_reservation();
+    }
+    node.remove_virtual_loss(selection.childIdx);
+}
+
+TEST(NodeTest, GumbelRootReconfiguresReusedSubtree) {
+    Node node(Stockfish::WHITE);
+    node.set_depth(2);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = true;
+    config.rootGumbelPoolSize = 6;
+    config.rootGumbelInitialCandidates = 2;
+    config.rootNoiseSeed = 47;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3),
+         Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6)},
+        {Stockfish::MOVE_NONE},
+        {0.30f, 0.24f, 0.18f, 0.12f, 0.09f, 0.07f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    node.set_depth(0);
+    node.configure_root_search(config);
+    EXPECT_FALSE(node.should_expand_new_child(config));
+
+    std::unordered_set<int> selected;
+    for (int simulation = 0; simulation < 2; ++simulation) {
+        Node::ChildSelection choice =
+            node.select_child_and_apply_virtual_loss(config);
+        ASSERT_NE(choice.child, nullptr);
+        selected.insert(choice.childIdx);
+        if (choice.hasEvaluationReservation) {
+            choice.child->release_evaluation_reservation();
+        }
+        node.update_and_remove_virtual_loss(choice.childIdx, 0.0f);
+    }
+    EXPECT_EQ(selected.size(), 2U);
 }
 
 TEST(NodeTest, ConcurrentExpansionReturnsMatchingActionIndex) {
@@ -1771,7 +2009,7 @@ TEST_F(EngineTest, CombinedHashIncludesRepetitionContext) {
         return Stockfish::MOVE_NONE;
     };
 
-    for (const std::string& uci : {"g1f3", "b8c6", "f3g1", "c6b8"}) {
+    for (const char* uci : {"g1f3", "b8c6", "f3g1", "c6b8"}) {
         Stockfish::Move move = findMove(uci);
         ASSERT_NE(move, Stockfish::MOVE_NONE);
         historical.push_move(BOARD_A, move);

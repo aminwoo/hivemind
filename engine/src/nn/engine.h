@@ -48,6 +48,9 @@ public:
         const __half* policyB = nullptr;
         const __half* wdl = nullptr;
         const __half* movesLeft = nullptr;
+        const __half* jointFactorsA = nullptr;
+        const __half* jointFactorsB = nullptr;
+        size_t jointFactorRank = 0;
     };
 
     explicit Engine(int deviceId, int batchSize = SearchParams::BATCH_SIZE);
@@ -96,12 +99,16 @@ private:
         void* devicePolicyBBuffer = nullptr;
         void* deviceWdlBuffer = nullptr;
         void* deviceMovesLeftBuffer = nullptr;
+        void* deviceJointFactorsABuffer = nullptr;
+        void* deviceJointFactorsBBuffer = nullptr;
         void* hostObsHalf = nullptr;
         void* hostValueHalf = nullptr;
         void* hostPolicyAHalf = nullptr;
         void* hostPolicyBHalf = nullptr;
         void* hostWdlHalf = nullptr;
         void* hostMovesLeftHalf = nullptr;
+        void* hostJointFactorsAHalf = nullptr;
+        void* hostJointFactorsBHalf = nullptr;
     };
 
     // Device ID and Logger
@@ -119,6 +126,9 @@ private:
     std::string m_policyBName;
     std::string m_wdlName;
     std::string m_movesLeftName;
+    std::string m_jointFactorsAName;
+    std::string m_jointFactorsBName;
+    size_t m_jointFactorRank = 0;
 
     // Internal helper methods
     bool buildEngineFromONNX(const std::string& onnxFile);

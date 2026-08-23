@@ -384,7 +384,7 @@ class _PolicyHeadFlat(Module):
 
 def process_value_policy_head(x, value_head: _ValueHead, policy_heads: nn.ModuleList,
                               use_plys_to_end: bool, use_wdl: bool,
-                              policy_inputs=None):
+                              policy_inputs=None, joint_policy_heads=None):
     """
     Use the output to create value/policy predictions
     """
@@ -400,10 +400,18 @@ def process_value_policy_head(x, value_head: _ValueHead, policy_heads: nn.Module
     if use_plys_to_end and use_wdl:
         value_out, wdl_out, plys_to_end_out = value_head_out
         auxiliary_out = torch.cat((wdl_out, plys_to_end_out), dim=1)
-        return value_out, policy_out, auxiliary_out, wdl_out, plys_to_end_out
+        outputs = (value_out, policy_out, auxiliary_out, wdl_out, plys_to_end_out)
     else:
         value_out = value_head_out
-        return value_out, policy_out
+        outputs = (value_out, policy_out)
+
+    if joint_policy_heads is None:
+        return outputs
+    joint_factors = (
+        joint_policy_heads[0](policy_inputs[0]),
+        joint_policy_heads[1](policy_inputs[1]),
+    )
+    return outputs + joint_factors
 
 
 class ClassicalResidualBlock(torch.nn.Module):

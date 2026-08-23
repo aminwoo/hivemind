@@ -536,19 +536,23 @@ class TrainerAgentPytorch:
         """
         self.optimizer.zero_grad()
 
-        data, value_label, policy_a, policy_b, wdl_label, moves_left_label = batch
+        data, value_label, policy_a, policy_b, wdl_label, moves_left_label = batch[:6]
+        joint_targets = batch[6:] if len(batch) > 6 else None
         data = data.to(self._ctx)
         value_label = value_label.to(self._ctx)
         policy_a = policy_a.to(self._ctx)
         policy_b = policy_b.to(self._ctx)
         wdl_label = wdl_label.to(self._ctx)
         moves_left_label = moves_left_label.to(self._ctx)
+        if joint_targets:
+            joint_targets = tuple(target.to(self._ctx) for target in joint_targets)
         sample_weights = torch.ones(len(value_label), device=self._ctx)
 
         self.old_label = value_label
 
         with autocast_context(self._ctx, self.tc.mixed_precision):
-            value_out, policy_out, _, wdl_out, moves_left_out = self._model(data)
+            model_out = self._model(data)
+            value_out, policy_out, _, wdl_out, moves_left_out = model_out[:5]
         value_loss = self.value_loss(
             torch.flatten(value_out.float()), value_label, sample_weights
         )
@@ -568,11 +572,23 @@ class TrainerAgentPytorch:
         moves_left_loss = self.ply_loss(
             torch.flatten(moves_left_out.float()), moves_left_label, sample_weights
         )
+        joint_loss = value_loss.new_zeros(())
+        if joint_targets and len(model_out) >= 7:
+            joint_loss = joint_policy_cross_entropy(
+                policy_out_1.float(),
+                policy_out_2.float(),
+                model_out[5].float(),
+                model_out[6].float(),
+                *joint_targets,
+                rank=self.tc.joint_policy_rank,
+                top_k=self.tc.joint_policy_top_k,
+            )
 
         combined_loss = (
             self.tc.val_loss_factor * value_loss + self.tc.policy_loss_factor * policy_loss
             + self.tc.wdl_loss_factor * wdl_loss
             + self.tc.plys_to_end_loss_factor * moves_left_loss
+            + self.tc.joint_policy_loss_factor * joint_loss
         )
         combined_loss.backward()
         for param_group in self.optimizer.param_groups:
@@ -611,24 +627,41 @@ class TrainerAgentPytorch:
         """
         reset_metrics(self.to.metrics)
         self._model.eval()
+        joint_loss_sum = 0.0
+        joint_loss_batches = 0
 
         with torch.no_grad():
             for i, batch in enumerate(data_loader):
-                data, value_label, policy_a, policy_b, wdl_label, moves_left_label = batch
+                data, value_label, policy_a, policy_b, wdl_label, moves_left_label = batch[:6]
+                joint_targets = batch[6:] if len(batch) > 6 else None
                 data = data.to(self._ctx)
                 value_label = value_label.to(self._ctx)
                 policy_a = policy_a.to(self._ctx)
                 policy_b = policy_b.to(self._ctx)
                 wdl_label = wdl_label.to(self._ctx)
                 moves_left_label = moves_left_label.to(self._ctx)
+                if joint_targets:
+                    joint_targets = tuple(
+                        target.to(self._ctx) for target in joint_targets
+                    )
                 sample_weights = torch.ones(len(value_label), device=self._ctx)
 
                 with autocast_context(self._ctx, self.tc.mixed_precision):
-                    value_out, policy_out, _, wdl_out, moves_left_out = self._model(data)
+                    model_out = self._model(data)
+                    value_out, policy_out, _, wdl_out, moves_left_out = model_out[:5]
                 value_out = value_out.float()
                 policy_out = tuple(output.float() for output in policy_out)
                 wdl_out = wdl_out.float()
                 moves_left_out = moves_left_out.float()
+                if joint_targets and len(model_out) >= 7:
+                    joint_loss_sum += float(joint_policy_cross_entropy(
+                        policy_out[0], policy_out[1],
+                        model_out[5].float(), model_out[6].float(),
+                        *joint_targets,
+                        rank=self.tc.joint_policy_rank,
+                        top_k=self.tc.joint_policy_top_k,
+                    ))
+                    joint_loss_batches += 1
 
                 # Update value metrics
                 self.to.metrics["value_loss"].update(
@@ -671,8 +704,19 @@ class TrainerAgentPytorch:
                 if nb_batches and i + 1 == nb_batches:
                     break
 
+        joint_loss_value = torch.tensor(
+            joint_loss_sum / max(1, joint_loss_batches), device=self._ctx
+        )
         metric_values = {
-            "loss": 0.01 * self.to.metrics["value_loss"].compute() + 0.99 * self.to.metrics["policy_loss"].compute()
+            "loss": (
+                self.tc.val_loss_factor * self.to.metrics["value_loss"].compute()
+                + self.tc.policy_loss_factor * self.to.metrics["policy_loss"].compute()
+                + self.tc.wdl_loss_factor * self.to.metrics["wdl_loss"].compute()
+                + self.tc.plys_to_end_loss_factor
+                    * self.to.metrics["plys_to_end_loss"].compute()
+                + self.tc.joint_policy_loss_factor * joint_loss_value
+            ),
+            "joint_policy_loss": joint_loss_value,
         }
         for metric_name in self.to.metrics:
             metric_values[metric_name] = self.to.metrics[metric_name].compute()
@@ -828,6 +872,98 @@ class SoftCrossEntropyLoss(_Loss):
         elif self.reduction == 'sum':
             return torch.sum(loss)
         return torch.mean(loss)
+
+
+def joint_policy_cross_entropy(
+    policy_a: Tensor,
+    policy_b: Tensor,
+    factors_a: Tensor,
+    factors_b: Tensor,
+    target_a: Tensor,
+    target_b: Tensor,
+    target_probability: Tensor,
+    target_count: Tensor,
+    *,
+    rank: int,
+    top_k: int,
+) -> Tensor:
+    """Residual joint-policy loss with marginal Cartesian hard negatives."""
+    if rank <= 0:
+        return factors_a.sum() * 0.0
+
+    batch_size = policy_a.shape[0]
+    vocabulary_size = factors_a.shape[1] // rank
+    factors_a = factors_a.reshape(batch_size, rank, vocabulary_size).transpose(1, 2)
+    factors_b = factors_b.reshape(batch_size, rank, vocabulary_size).transpose(1, 2)
+
+    target_a = target_a.long()
+    target_b = target_b.long()
+    target_probability = target_probability.float()
+    positions = torch.arange(target_a.shape[1], device=target_a.device)
+    target_valid = positions.unsqueeze(0) < target_count.long().unsqueeze(1)
+
+    selected = min(top_k, vocabulary_size)
+    masked_target_probability = target_probability * target_valid
+    target_marginal_a = target_probability.new_zeros(
+        batch_size, vocabulary_size
+    ).scatter_add(1, target_a, masked_target_probability)
+    target_marginal_b = target_probability.new_zeros(
+        batch_size, vocabulary_size
+    ).scatter_add(1, target_b, masked_target_probability)
+    marginal_probability_a, marginal_a = torch.topk(
+        target_marginal_a, selected, dim=1
+    )
+    marginal_probability_b, marginal_b = torch.topk(
+        target_marginal_b, selected, dim=1
+    )
+    cross_a = marginal_a.unsqueeze(2).expand(-1, -1, selected).reshape(batch_size, -1)
+    cross_b = marginal_b.unsqueeze(1).expand(-1, selected, -1).reshape(batch_size, -1)
+    cross_valid = (
+        marginal_probability_a.unsqueeze(2)
+        * marginal_probability_b.unsqueeze(1)
+    ).reshape(batch_size, -1) > 0
+    duplicate = (
+        (cross_a.unsqueeze(2) == target_a.unsqueeze(1))
+        & (cross_b.unsqueeze(2) == target_b.unsqueeze(1))
+        & target_valid.unsqueeze(1)
+    ).any(dim=2)
+
+    candidate_a = torch.cat((target_a, cross_a), dim=1)
+    candidate_b = torch.cat((target_b, cross_b), dim=1)
+    candidate_valid = torch.cat((target_valid, cross_valid & ~duplicate), dim=1)
+
+    def gather_factors(factors, indices):
+        return torch.gather(
+            factors,
+            1,
+            indices.unsqueeze(2).expand(-1, -1, rank),
+        )
+
+    compatibility = (
+        gather_factors(factors_a, candidate_a)
+        * gather_factors(factors_b, candidate_b)
+    ).sum(dim=2) / (rank ** 0.5)
+    marginal_index_a = candidate_a.masked_fill(
+        candidate_a == vocabulary_size - 1, 0
+    )
+    marginal_index_b = candidate_b.masked_fill(
+        candidate_b == vocabulary_size - 1, 0
+    )
+    logits = (
+        torch.gather(policy_a, 1, marginal_index_a)
+        + torch.gather(policy_b, 1, marginal_index_b)
+        + compatibility
+    ).masked_fill(~candidate_valid, -1.0e9)
+    target_log_probability = torch.log_softmax(logits, dim=1)[
+        :, :target_a.shape[1]
+    ]
+    per_sample = -(
+        target_probability * target_log_probability * target_valid
+    ).sum(dim=1)
+    available = target_count > 0
+    if not bool(available.any()):
+        return factors_a.sum() * 0.0
+    return per_sample[available].mean()
 
 
 class SampleWeightedLoss(nn.Module):
@@ -988,6 +1124,9 @@ def export_to_onnx(model, batch_size: int, dummy_input: torch.Tensor, dir: Path,
     else:
         input_names = ["obs"]
         output_names = ["value", "pi_a", "pi_b"]
+
+    if getattr(model, "joint_policy_rank", 0) > 0:
+        output_names.extend(("joint_factors_a", "joint_factors_b"))
 
     dynamic_axes = None
     if dynamic_batch_size:
