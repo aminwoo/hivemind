@@ -237,6 +237,144 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
     return false;
 }
 
+/**
+ * @brief Recursively searches for a forced single-board checkmating sequence where the attacker
+ * delivers continuous checks.
+ *
+ * @param board The bughouse board state
+ * @param boardNum BOARD_A or BOARD_B
+ * @param attackerColor Attacking side color on this board
+ * @param currentPly Current 1-based ply (1, 3, 5...)
+ * @param maxAttackerMoves Maximum attacker moves (e.g. 3 for mate in 3)
+ * @param outMove Stores the root move that delivers or begins the mate
+ * @param outPlyToMate Stores the total ply count to checkmate
+ * @return true if a forced checkmate is proven, false otherwise
+ */
+bool Agent::search_single_board_forced_mate(
+    Board& board,
+    int boardNum,
+    Stockfish::Color attackerColor,
+    int currentPly,
+    int maxAttackerMoves,
+    Stockfish::Move& outMove,
+    int& outPlyToMate) {
+    const int attackerMoveNum = (currentPly + 1) / 2;
+    if (attackerMoveNum > maxAttackerMoves) {
+        return false;
+    }
+
+    std::vector<Stockfish::Move> legalMoves = board.legal_moves(boardNum);
+    std::vector<Stockfish::Move> checkingMoves;
+    checkingMoves.reserve(legalMoves.size());
+    for (Stockfish::Move m : legalMoves) {
+        if (board.gives_check(boardNum, m)) {
+            checkingMoves.push_back(m);
+        }
+    }
+    if (checkingMoves.empty()) {
+        return false;
+    }
+
+    // 1. Check for immediate checkmate with checking moves first (fast path / shortest mate)
+    for (Stockfish::Move m : checkingMoves) {
+        board.push_move(boardNum, m);
+        const bool isMate = board.is_checkmate(~attackerColor, false);
+        board.pop_move(boardNum);
+        if (isMate) {
+            outMove = m;
+            outPlyToMate = currentPly;
+            return true;
+        }
+    }
+
+    // 2. If not immediate mate and we have moves remaining, verify all defender replies
+    if (attackerMoveNum < maxAttackerMoves) {
+        for (Stockfish::Move m : checkingMoves) {
+            board.push_move(boardNum, m);
+            std::vector<Stockfish::Move> defenderReplies = board.legal_moves(boardNum);
+            if (defenderReplies.empty()) {
+                // Stalemate or terminal without checkmate
+                board.pop_move(boardNum);
+                continue;
+            }
+
+            bool allRepliesMated = true;
+            int deepestReplyPly = currentPly;
+            for (Stockfish::Move reply : defenderReplies) {
+                board.push_move(boardNum, reply);
+                Stockfish::Move nextAttackerMove = Stockfish::MOVE_NONE;
+                int nextReplyPly = 0;
+                const bool replyMated = search_single_board_forced_mate(
+                    board, boardNum, attackerColor, currentPly + 2, maxAttackerMoves,
+                    nextAttackerMove, nextReplyPly);
+                board.pop_move(boardNum);
+                if (!replyMated) {
+                    allRepliesMated = false;
+                    break;
+                }
+                deepestReplyPly = std::max(deepestReplyPly, nextReplyPly);
+            }
+            board.pop_move(boardNum);
+
+            if (allRepliesMated) {
+                outMove = m;
+                outPlyToMate = deepestReplyPly;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool Agent::find_root_mate(Board& board, Stockfish::Color teamSide,
+                          bool teamHasTimeAdvantage,
+                          JointActionCandidate& outAction,
+                          int& outPlyToMate) {
+    // 1. Fast 1-ply immediate mate scan across all joint combinations
+    if (find_immediate_root_mate(board, teamSide, teamHasTimeAdvantage, outAction)) {
+        outPlyToMate = 1;
+        return true;
+    }
+
+    // 2. Multi-ply single-board forced mate detector:
+    // Only applies when team is ahead on time AND both boards are on turn for our team.
+    const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
+    const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
+    if (teamHasTimeAdvantage && boardAOnTurn && boardBOnTurn) {
+        const JointActionRules rules{boardAOnTurn, boardBOnTurn, teamHasTimeAdvantage,
+                                     true, true};
+        constexpr int MAX_MATE_MOVES = 5; // Deep single-board forced mate search (up to 5 moves / 9 plies)
+
+        Stockfish::Move mateMoveA = Stockfish::MOVE_NONE;
+        int plyA = 0;
+        const bool foundA = search_single_board_forced_mate(
+            board, BOARD_A, teamSide, 1, MAX_MATE_MOVES, mateMoveA, plyA);
+
+        Stockfish::Move mateMoveB = Stockfish::MOVE_NONE;
+        int plyB = 0;
+        const bool foundB = search_single_board_forced_mate(
+            board, BOARD_B, ~teamSide, 1, MAX_MATE_MOVES, mateMoveB, plyB);
+
+        if (foundA && (!foundB || plyA <= plyB)) {
+            const bool isCapA = board.is_capture(BOARD_A, mateMoveA);
+            outAction = JointActionCandidate(mateMoveA, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+                                             rules, isCapA, false);
+            outPlyToMate = plyA;
+            return true;
+        }
+        if (foundB) {
+            const bool isCapB = board.is_capture(BOARD_B, mateMoveB);
+            outAction = JointActionCandidate(Stockfish::MOVE_NONE, 1.0f, 0, mateMoveB, 1.0f, 0,
+                                             rules, false, isCapB);
+            outPlyToMate = plyB;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 Agent::Agent(int numThreadsParam) : running(false), numThreads(0) {
     // Use specified thread count, or fall back to search params default
     numThreads = (numThreadsParam > 0) ? numThreadsParam : SearchParams::NUM_SEARCH_THREADS;
@@ -451,10 +589,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         return result;
     }
 
-    // Fast 1-ply mate scan at the root
+    // Fast mate scan at the root
     JointActionCandidate rootMateAction;
-    if (SearchParams::ENABLE_MATE_EARLY_EXIT && find_immediate_root_mate(
-            board, teamSide, teamHasTimeAdvantage, rootMateAction)) {
+    int rootMatePly = 1;
+    if (SearchParams::ENABLE_MATE_EARLY_EXIT && find_root_mate(
+            board, teamSide, teamHasTimeAdvantage, rootMateAction, rootMatePly)) {
         result = rootMateAction;
         uint64_t positionHash = board.hash_key(teamHasTimeAdvantage);
         rootNode = make_shared<Node>(teamSide, positionHash);
@@ -478,12 +617,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
         auto children = rootNode->get_children();
         if (!children.empty() && children[0]) {
-            children[0]->mark_as_loss(0);
+            children[0]->mark_as_loss(std::max(0, rootMatePly - 1));
             rootNode->init_child_node_types();
             rootNode->update_child_node_type(0, NodeType::LOSS);
         }
         rootNode->update(0, 1.0f);
-        rootNode->mark_as_win(1);
+        rootNode->mark_as_win(rootMatePly);
 
         if (SearchParams::ENABLE_TREE_REUSE) {
             store_next_root_candidates(board, teamHasTimeAdvantage);
@@ -492,7 +631,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
         if (options.verbose) {
             string bestMoveStr = extract_best_move(board);
-            cout << "info depth 1 score mate 1 nodes 1 nps 1000 time 0 pv " << bestMoveStr << endl;
+            const int mateScore = (rootMatePly + 1) / 2;
+            cout << "info depth " << rootMatePly << " score mate " << mateScore
+                 << " nodes 1 nps 1000 time 0 pv " << bestMoveStr << endl;
             cout << "bestmove " << bestMoveStr << endl;
         }
         return result;

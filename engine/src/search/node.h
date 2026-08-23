@@ -113,10 +113,13 @@ public:
         std::shared_ptr<Node> pendingEvaluation;
     };
 
-    Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) {}
+    static inline std::atomic<long> s_liveNodes{0};
+    static long live_count() { return s_liveNodes.load(std::memory_order_relaxed); }
+
+    Node(Stockfish::Color teamToPlay) : teamToPlay(teamToPlay) { s_liveNodes.fetch_add(1, std::memory_order_relaxed); }
     Node(Stockfish::Color teamToPlay, uint64_t hash) 
-        : teamToPlay(teamToPlay), positionHash(hash) {}
-    ~Node() = default;
+        : teamToPlay(teamToPlay), positionHash(hash) { s_liveNodes.fetch_add(1, std::memory_order_relaxed); }
+    ~Node() { s_liveNodes.fetch_sub(1, std::memory_order_relaxed); }
 
     // Lock the node for exclusive access
     std::unique_lock<std::shared_mutex> lock() {

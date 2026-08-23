@@ -142,6 +142,21 @@ public:
 
     /** Returns the evaluated Q-value of the root node after search. */
     float root_q() const;
+
+    /**
+     * @brief Searches for a forced checkmate on a single board where all attacker moves are checks.
+     */
+    static bool search_single_board_forced_mate(
+        Board& board, int boardNum, Stockfish::Color attackerColor,
+        int currentPly, int maxAttackerMoves,
+        Stockfish::Move& outMove, int& outPlyToMate);
+
+    /**
+     * @brief Performs checkmate detection at the root before starting MCTS.
+     */
+    static bool find_root_mate(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate);
     
     /**
      * @brief Extracts PV line starting from a specific child index.

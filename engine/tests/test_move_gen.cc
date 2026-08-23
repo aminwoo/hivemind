@@ -2231,3 +2231,117 @@ TEST_F(EngineTest, BughouseMoveIndependence) {
     EXPECT_EQ(board.count_in_hand(BOARD_B, Stockfish::BLACK, Stockfish::PAWN), 0)
         << "No pieces should be added to hand for non-capture moves";
 }
+
+TEST_F(EngineTest, SingleBoardForcedMateOnPosition4) {
+    Board board;
+    board.set(
+        "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2"
+        "|"
+        "r1bk4/ppp1npNp/2nb3B/3B2B1/3P4/2P5/P1P2PPP/R2QK2R[bpp] b KQ");
+
+    EXPECT_EQ(board.side_to_move(BOARD_A), Stockfish::WHITE);
+    EXPECT_EQ(board.side_to_move(BOARD_B), Stockfish::BLACK);
+
+    JointActionCandidate rootMateAction;
+    int rootMatePly = 0;
+    bool rootFound = Agent::find_root_mate(board, Stockfish::WHITE, true, rootMateAction, rootMatePly);
+    EXPECT_TRUE(rootFound);
+    EXPECT_NE(rootMateAction.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_A, rootMateAction.moveA), "d1h5");
+    EXPECT_EQ(rootMateAction.moveB, Stockfish::MOVE_NONE);
+
+    // Test on starting position (should quickly return false)
+    Board startBoard;
+    JointActionCandidate startMateAction;
+    int startMatePly = 0;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    bool startFound = Agent::find_root_mate(startBoard, Stockfish::WHITE, true, startMateAction, startMatePly);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::cout << "Starting position mate search time: " << ms << " ms, found=" << startFound << std::endl;
+    EXPECT_FALSE(startFound);
+}
+
+TEST_F(EngineTest, ImmediateMateIn1DetectedInAllModesAndTurnConfigurations) {
+    // 1. Capture Mate in 1 on Board A, Board B not on turn (Team White)
+    // Board A has Scholar's mate: 1. Qxf7#
+    // Board B is Black to move (not our turn)
+    {
+        Board board;
+        board.set(
+            "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"
+            "|"
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+
+        // Test in 'go' mode (teamHasTimeAdvantage = false)
+        JointActionCandidate mateGo;
+        int plyGo = 0;
+        bool foundGo = Agent::find_root_mate(board, Stockfish::WHITE, false, mateGo, plyGo);
+        EXPECT_TRUE(foundGo);
+        EXPECT_EQ(board.uci_move(BOARD_A, mateGo.moveA), "h5f7");
+        EXPECT_EQ(mateGo.moveB, Stockfish::MOVE_NONE);
+        EXPECT_EQ(plyGo, 1);
+
+        // Test in 'sit' mode (teamHasTimeAdvantage = true)
+        JointActionCandidate mateSit;
+        int plySit = 0;
+        bool foundSit = Agent::find_root_mate(board, Stockfish::WHITE, true, mateSit, plySit);
+        EXPECT_TRUE(foundSit);
+        EXPECT_EQ(board.uci_move(BOARD_A, mateSit.moveA), "h5f7");
+        EXPECT_EQ(mateSit.moveB, Stockfish::MOVE_NONE);
+        EXPECT_EQ(plySit, 1);
+    }
+
+    // 2. Mate in 1 on Board B for Team White (White on A, Black on B)
+    // Board A is Black to move (not our turn)
+    // Board B is Black to move (our turn for partner) with Fool's mate: 1... Qh4#
+    {
+        Board board;
+        board.set(
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+            "|"
+            "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
+
+        JointActionCandidate mateGo;
+        int plyGo = 0;
+        bool foundGo = Agent::find_root_mate(board, Stockfish::WHITE, false, mateGo, plyGo);
+        EXPECT_TRUE(foundGo);
+        EXPECT_EQ(mateGo.moveA, Stockfish::MOVE_NONE);
+        EXPECT_EQ(board.uci_move(BOARD_B, mateGo.moveB), "d8h4");
+
+        JointActionCandidate mateSit;
+        int plySit = 0;
+        bool foundSit = Agent::find_root_mate(board, Stockfish::WHITE, true, mateSit, plySit);
+        EXPECT_TRUE(foundSit);
+        EXPECT_EQ(mateSit.moveA, Stockfish::MOVE_NONE);
+        EXPECT_EQ(board.uci_move(BOARD_B, mateSit.moveB), "d8h4");
+    }
+
+    // 3. Both boards on turn with non-capture drop mate in 1 on Board A: Q@f7#
+    // Board A is White to move (Q@f7#)
+    // Board B is Black to move (our turn)
+    {
+        Board board;
+        board.set(
+            "r1bqkb1r/ppppp1pp/2n5/8/2B1P3/8/PPPP1PPP/RNBQK1NR[Q] w KQkq - 0 1"
+            "|"
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+
+        // In 'sit' mode (time advantage): (Q@f7#, pass) is legal and selected
+        JointActionCandidate mateSit;
+        int plySit = 0;
+        bool foundSit = Agent::find_root_mate(board, Stockfish::WHITE, true, mateSit, plySit);
+        EXPECT_TRUE(foundSit);
+        EXPECT_EQ(board.uci_move(BOARD_A, mateSit.moveA), "Q@f7");
+        EXPECT_EQ(mateSit.moveB, Stockfish::MOVE_NONE);
+
+        // In 'go' mode (no time advantage): non-capture on A with pass on B is not legal,
+        // so joint action (Q@f7#, legalMoveOnB) is selected and immediately delivers mate
+        JointActionCandidate mateGo;
+        int plyGo = 0;
+        bool foundGo = Agent::find_root_mate(board, Stockfish::WHITE, false, mateGo, plyGo);
+        EXPECT_TRUE(foundGo);
+        EXPECT_EQ(board.uci_move(BOARD_A, mateGo.moveA), "Q@f7");
+        EXPECT_NE(mateGo.moveB, Stockfish::MOVE_NONE);
+    }
+}

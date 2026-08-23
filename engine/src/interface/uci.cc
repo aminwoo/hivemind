@@ -457,7 +457,7 @@ void UCI::loop() {
 
         try {
             if (token == "uci")             send_uci_response();
-            else if (token == "isready")    cout << "readyok" << endl;
+            else if (token == "isready")  { cout << "livenodes " << Node::live_count() << endl; cout << "readyok" << endl; }
             else if (token == "go")         go(is);
             else if (token == "ponderhit")  ponderhit();
             else if (token == "setoption")  setoption(is);
