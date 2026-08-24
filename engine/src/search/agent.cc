@@ -9,6 +9,7 @@
 #include <random>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "environment/joint_action.h"
@@ -112,9 +113,9 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
     }
     
     // Check if best child is proven LOSS (opponent loses = we win via that move)
-    auto children = rootNode->get_children();
-    if (bestChildIdx >= 0 && static_cast<size_t>(bestChildIdx) < children.size()) {
-        Node* bestChild = children[bestChildIdx].get();
+    std::shared_ptr<Node> bestChildOwner = rootNode->get_child(bestChildIdx);
+    if (bestChildOwner) {
+        Node* bestChild = bestChildOwner.get();
         if (bestChild && bestChild->get_node_type() == NodeType::LOSS) {
             if (verbose) {
                 int mateInPly = bestChild->get_end_in_ply();
@@ -805,6 +806,25 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
         transpositionTable->clear();
         transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
+        if (reusedRoot) {
+            // Rebuild the table from the retained graph before workers start.
+            // Raw traversal avoids copying every node's shared_ptr vector;
+            // shared_from_this is needed only once for each table insertion.
+            std::vector<Node*> pending{rootNode.get()};
+            std::unordered_set<Node*> visited;
+            while (!pending.empty()) {
+                Node* node = pending.back();
+                pending.pop_back();
+                if (!node || !visited.insert(node).second) {
+                    continue;
+                }
+                if (node != rootNode.get() && node->get_hash() != 0) {
+                    transpositionTable->insertOrGet(
+                        node->get_hash(), node->shared_from_this());
+                }
+                node->append_child_ptrs(pending);
+            }
+        }
     }
 
     const size_t workerCount = static_cast<size_t>(numThreads) * engines.size();

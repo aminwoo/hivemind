@@ -225,19 +225,26 @@ inline float policy_value_to_float(T value) {
 
 template <typename T>
 inline std::vector<float> get_normalized_probability(
-    const T* policyOutput, const std::vector<Stockfish::Move>& actions,
-    int board_num, Board& board) {
-    const size_t length = actions.size();
-    std::vector<float> logits(length);
-    const Stockfish::Color stm = board.side_to_move(board_num);
-
-    for (size_t i = 0; i < length; i++) {
-        const Stockfish::Move action = actions[i];
-        const int policyIdx = get_fast_policy_index(action, stm);
-        logits[i] = (policyIdx >= 0)
+    const T* policyOutput, const std::vector<int>& policyIndices) {
+    std::vector<float> logits(policyIndices.size());
+    for (size_t i = 0; i < policyIndices.size(); ++i) {
+        const int policyIdx = policyIndices[i];
+        logits[i] = policyIdx >= 0
             ? policy_value_to_float(policyOutput[policyIdx])
             : -std::numeric_limits<float>::infinity();
     }
-
     return normalize_logits(logits);
+}
+
+template <typename T>
+inline std::vector<float> get_normalized_probability(
+    const T* policyOutput, const std::vector<Stockfish::Move>& actions,
+    int board_num, Board& board) {
+    const Stockfish::Color stm = board.side_to_move(board_num);
+    std::vector<int> policyIndices;
+    policyIndices.reserve(actions.size());
+    for (Stockfish::Move action : actions) {
+        policyIndices.push_back(get_fast_policy_index(action, stm));
+    }
+    return get_normalized_probability(policyOutput, policyIndices);
 }

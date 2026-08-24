@@ -143,6 +143,9 @@ bool Node::update_child_node_type_from(
 
         childNodeTypes[childIdx] = childType;
         unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
+        if (childType == NodeType::WIN) {
+            provenWinningChildCount++;
+        }
 
         // Child values are from the child's perspective, so a losing child is
         // an immediately proven winning move for this node.
@@ -397,24 +400,17 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
 
     const size_t limit = std::min(numExpanded, children.size());
 
-    float visitedPolicySum = 0.0f;
-    if (config.enableDynamicFpu && visits > 0) {
-        for (size_t i = 0; i < limit; i++) {
-            if (childVisits[i] + virtualLoss[i] > 0) {
-                visitedPolicySum += childPriors[i];
-            }
-        }
-    }
     const float parentQ = visits > 0 ? (valueSum / static_cast<float>(visits)) : 0.0f;
     const float fpuQ = config.enableDynamicFpu && visits > 0
-        ? std::clamp(parentQ - config.fpuReduction * std::sqrt(std::max(0.0f, visitedPolicySum)), -1.0f, 1.0f)
+        ? std::clamp(
+            parentQ - config.fpuReduction
+                * std::sqrt(std::max(0.0f, visitedPolicySum)),
+            parentQ - 1.0f, parentQ + 1.0f)
         : SearchParams::Q_INIT;
 
-    const bool hasNonLosingAlternative = nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
-        && std::any_of(children.begin(), children.begin() + limit,
-            [](const std::shared_ptr<Node>& child) {
-                return child && child->get_node_type() != NodeType::WIN;
-            });
+    const bool hasNonLosingAlternative =
+        nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
+        && provenWinningChildCount < static_cast<int>(limit);
     std::vector<uint8_t> unavailableChildren;
     std::shared_ptr<Node> pendingEvaluation;
     std::vector<int> gumbelBaselines;
@@ -434,19 +430,18 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
         std::shared_ptr<Node> bestChild = nullptr;
         int selectedIdx = -1;
 
-        // 4. Iterate only over expanded children
-        for (size_t i = 0; i < limit; i++) {
+        auto considerChild = [&](size_t i) -> bool {
             if (!children[i]
                 || (blockedNodes && blockedNodes->contains(children[i].get()))
                 || (!unavailableChildren.empty() && unavailableChildren[i])) {
-                continue;
+                return false;
             }
             if (rootGumbelEnabled && gumbelBaselines[i] < 0) {
-                continue;
+                return false;
             }
             if (hasNonLosingAlternative
                 && children[i]->get_node_type() == NodeType::WIN) {
-                continue;
+                return false;
             }
 
             const int vl_i = virtualLoss[i];
@@ -490,12 +485,40 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
                 ? (gumbelProgress < bestGumbelProgress
                    || (gumbelProgress == bestGumbelProgress
                        && score > bestScore))
-                : score > bestScore;
+                : (score > bestScore
+                   || (score == bestScore
+                       && (selectedIdx < 0
+                           || static_cast<int>(i) < selectedIdx)));
             if (isBetter) {
                 bestScore = score;
                 bestGumbelProgress = gumbelProgress;
                 bestChild = children[i];
                 selectedIdx = static_cast<int>(i);
+            }
+            return true;
+        };
+
+        if (rootGumbelEnabled) {
+            // Sequential-halving scores and visit quotas require considering
+            // every active Gumbel candidate.
+            for (size_t i = 0; i < limit; ++i) {
+                considerChild(i);
+            }
+        } else {
+            // All zero-visit edges share FPU and their U term is monotone in
+            // prior, so only the highest-prior eligible one can win PUCT.
+            for (int childIdx : visitedEdges) {
+                if (childIdx >= 0
+                    && static_cast<size_t>(childIdx) < limit) {
+                    considerChild(static_cast<size_t>(childIdx));
+                }
+            }
+            for (const UnvisitedEdge& edge : unvisitedEdges) {
+                if (edge.childIdx >= 0
+                    && static_cast<size_t>(edge.childIdx) < limit
+                    && considerChild(static_cast<size_t>(edge.childIdx))) {
+                    break;
+                }
             }
         }
 
@@ -522,7 +545,11 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
             }
         }
 
-        virtualLoss[static_cast<size_t>(selectedIdx)]++;
+        const size_t selected = static_cast<size_t>(selectedIdx);
+        if (childVisits[selected] + virtualLoss[selected] == 0) {
+            mark_edge_visited_locked(selected);
+        }
+        virtualLoss[selected]++;
         virtualVisitSum++;
         return {bestChild, selectedIdx, evaluationReserved, nullptr};
     }

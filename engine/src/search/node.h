@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <shared_mutex>
 #include <unordered_set>
 #include <vector>
@@ -59,6 +60,23 @@ private:
     std::vector<int> childVisits;
     std::vector<int> virtualLoss;  // Virtual visits for batch MCTS
     int virtualVisitSum = 0;
+    float visitedPolicySum = 0.0f;
+    struct UnvisitedEdge {
+        float prior;
+        int childIdx;
+    };
+    struct UnvisitedEdgeOrder {
+        bool operator()(const UnvisitedEdge& lhs,
+                        const UnvisitedEdge& rhs) const {
+            if (lhs.prior != rhs.prior) {
+                return lhs.prior > rhs.prior;
+            }
+            return lhs.childIdx < rhs.childIdx;
+        }
+    };
+    std::set<UnvisitedEdge, UnvisitedEdgeOrder> unvisitedEdges;
+    std::vector<int> visitedEdges;
+    std::vector<int> visitedEdgePositions;
     float valueSum = 0.0f;
     std::atomic<int> m_depth{0};
     std::atomic<int> m_visits{0};  // Atomic for lock-free read/write
@@ -73,6 +91,7 @@ private:
     std::atomic<NodeType> nodeType{NodeType::UNSOLVED};  // Proven game-theoretic value
     std::vector<NodeType> childNodeTypes;    // Cached node types of children
     std::atomic<int> unsolvedChildCount{0};  // Number of unsolved children (for solver)
+    int provenWinningChildCount = 0;
     std::atomic<int> endInPly{0};                        // Distance to terminal (for mate distance)
 
     struct RootGumbelEntry {
@@ -104,6 +123,24 @@ private:
         const SearchParams::RuntimeConfig& config);
     void advance_root_gumbel_round_locked(
         const SearchParams::RuntimeConfig& config);
+    void mark_edge_visited_locked(size_t childIdx) {
+        unvisitedEdges.erase({childPriors[childIdx],
+                              static_cast<int>(childIdx)});
+        visitedEdgePositions[childIdx] = static_cast<int>(visitedEdges.size());
+        visitedEdges.push_back(static_cast<int>(childIdx));
+        visitedPolicySum += childPriors[childIdx];
+    }
+    void mark_edge_unvisited_locked(size_t childIdx) {
+        visitedPolicySum -= childPriors[childIdx];
+        const int position = visitedEdgePositions[childIdx];
+        const int lastChildIdx = visitedEdges.back();
+        visitedEdges[position] = lastChildIdx;
+        visitedEdgePositions[static_cast<size_t>(lastChildIdx)] = position;
+        visitedEdges.pop_back();
+        visitedEdgePositions[childIdx] = -1;
+        unvisitedEdges.insert({childPriors[childIdx],
+                               static_cast<int>(childIdx)});
+    }
 
 public:
     struct ChildSelection {
@@ -128,6 +165,9 @@ public:
 
     void update(size_t childIdx, float value) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        if (childVisits[childIdx] + virtualLoss[childIdx] == 0) {
+            mark_edge_visited_locked(childIdx);
+        }
         childVisits[childIdx]++;
         
         if (childVisits[childIdx] == 1) {
@@ -192,10 +232,7 @@ public:
     bool should_expand_new_child(const SearchParams::RuntimeConfig& config) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         const bool allExpandedChildrenLose = !children.empty()
-            && std::all_of(children.begin(), children.end(),
-                [](const std::shared_ptr<Node>& child) {
-                    return child && child->get_node_type() == NodeType::WIN;
-                });
+            && provenWinningChildCount == static_cast<int>(children.size());
         if (candidateGenerator.hasNext() && allExpandedChildrenLose) {
             return true;
         }
@@ -203,11 +240,8 @@ public:
             return candidateGenerator.pendingGumbelCount() > 0
                 && expandedCount < rootGumbelExpansionTarget;
         }
-        for (size_t index = 0; index < childVisits.size(); index++) {
-            const int virtualVisits = virtualLoss[index];
-            if (childVisits[index] + virtualVisits == 0) {
-                return false;
-            }
+        if (!unvisitedEdges.empty()) {
+            return false;
         }
         const float coefficient = m_depth.load(std::memory_order_relaxed) == 0
             ? config.rootPwCoefficient
@@ -293,6 +327,15 @@ public:
         // visits accumulated through other parents.
         childVisits.push_back(existingNode ? 1 : 0);
         virtualLoss.push_back(reserveForSelection ? 1 : 0);
+        visitedEdgePositions.push_back(-1);
+        const int childIdx = expandedCount;
+        if (existingNode || reserveForSelection) {
+            visitedPolicySum += candidate.jointPrior;
+            visitedEdgePositions.back() = static_cast<int>(visitedEdges.size());
+            visitedEdges.push_back(childIdx);
+        } else {
+            unvisitedEdges.insert({candidate.jointPrior, childIdx});
+        }
         if (reserveForSelection) {
             virtualVisitSum++;
         }
@@ -309,10 +352,10 @@ public:
         if (outChildIdx) {
             *outChildIdx = expandedCount - 1;
         }
-        const int childIdx = expandedCount - 1;
+        const int registeredChildIdx = expandedCount - 1;
         std::shared_ptr<Node> parent = weak_from_this().lock();
         guard.unlock();
-        child->register_parent_edge(parent, childIdx);
+        child->register_parent_edge(parent, registeredChildIdx);
         return child;
     }
     
@@ -380,6 +423,11 @@ public:
                           static_cast<size_t>(std::max(0, config.jointPolicyTopK)),
                           config.jointPolicyResidualScale);
         expandedCount = 0;
+        visitedPolicySum = 0.0f;
+        unvisitedEdges.clear();
+        visitedEdges.clear();
+        visitedEdgePositions.clear();
+        provenWinningChildCount = 0;
         initialize_root_gumbel_locked(config);
         
         // Try to expand the first child
@@ -393,6 +441,8 @@ public:
             childPriors.push_back(candidate.jointPrior);
             childVisits.push_back(0);
             virtualLoss.push_back(0);
+            visitedEdgePositions.push_back(-1);
+            unvisitedEdges.insert({candidate.jointPrior, 0});
             children.push_back(child);
             qValues.push_back(SearchParams::Q_INIT);
             childGumbelScores.push_back(candidate.gumbelScore);
@@ -441,6 +491,24 @@ public:
         return children;
     }
 
+    std::shared_ptr<Node> get_child(int childIdx) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        if (childIdx < 0 || static_cast<size_t>(childIdx) >= children.size()) {
+            return nullptr;
+        }
+        return children[childIdx];
+    }
+
+    void append_child_ptrs(std::vector<Node*>& output) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        output.reserve(output.size() + children.size());
+        for (const std::shared_ptr<Node>& child : children) {
+            if (child) {
+                output.push_back(child.get());
+            }
+        }
+    }
+
     void replace_child(int childIdx, const std::shared_ptr<Node>& child) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < children.size()) {
@@ -448,6 +516,9 @@ public:
             if (nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
                 && static_cast<size_t>(childIdx) < childNodeTypes.size()
                 && childNodeTypes[childIdx] != NodeType::UNSOLVED) {
+                if (childNodeTypes[childIdx] == NodeType::WIN) {
+                    provenWinningChildCount--;
+                }
                 childNodeTypes[childIdx] = NodeType::UNSOLVED;
                 unsolvedChildCount.fetch_add(1, std::memory_order_relaxed);
             }
@@ -497,6 +568,9 @@ public:
     void apply_virtual_loss(int childIdx, int amount = 1) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < virtualLoss.size()) {
+            if (amount > 0 && childVisits[childIdx] + virtualLoss[childIdx] == 0) {
+                mark_edge_visited_locked(static_cast<size_t>(childIdx));
+            }
             virtualLoss[childIdx] += amount;
             virtualVisitSum += amount;
         }
@@ -507,6 +581,9 @@ public:
         if (childIdx >= 0 && static_cast<size_t>(childIdx) < virtualLoss.size()) {
             virtualLoss[childIdx] -= amount;
             virtualVisitSum -= amount;
+            if (childVisits[childIdx] + virtualLoss[childIdx] == 0) {
+                mark_edge_unvisited_locked(static_cast<size_t>(childIdx));
+            }
         }
     }
 

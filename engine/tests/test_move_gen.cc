@@ -500,9 +500,8 @@ TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
         TrajectoryEntry(child.get(), sit, -1),
     };
 
-    Board board;
     SearchThread searchThread;
-    searchThread.backup(trajectory, board, 0.5f);
+    searchThread.backup(trajectory, 0.5f);
 
     EXPECT_FLOAT_EQ(parent.get_child_q(0), -0.5f);
 }
@@ -523,9 +522,8 @@ TEST_F(EngineTest, CommonBackupPropagatesProvenLeafState) {
         TrajectoryEntry(&parent, JointActionCandidate(), 0),
         TrajectoryEntry(child.get(), JointActionCandidate(), -1),
     };
-    Board board;
     SearchThread searchThread;
-    searchThread.backup(trajectory, board, 0.25f);
+    searchThread.backup(trajectory, 0.25f);
 
     EXPECT_EQ(parent.get_node_type(), NodeType::WIN);
     EXPECT_EQ(parent.get_end_in_ply(), 4);
@@ -1093,6 +1091,80 @@ TEST(NodeTest, DynamicFpuBoostsUnvisitedChildInWinningParent) {
     EXPECT_TRUE(selection.hasEvaluationReservation);
     node.remove_virtual_loss(selection.childIdx);
     selection.child->release_evaluation_reservation();
+}
+
+TEST(NodeTest, DynamicFpuIsInvariantToParentValueOffset) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableDynamicFpu = true;
+    config.enableGumbelRootSearch = false;
+    config.fpuReduction = 1.0f;
+    config.cpuctInit = 0.0f;
+    config.cpuctBase = 1.0e20f;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2)},
+        {Stockfish::MOVE_NONE}, {0.1f, 0.9f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    // Offset the parent and its visited edge to -1. An absolute [-1, 1]
+    // clamp would flatten the unvisited edge to -1 too and select it by index.
+    node.update(1, -1.0f);
+    Node::ChildSelection selection =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(selection.childIdx, 1);
+    if (selection.hasEvaluationReservation) {
+        selection.child->release_evaluation_reservation();
+    }
+    node.remove_virtual_loss(selection.childIdx);
+}
+
+TEST(NodeTest, OrdinaryPuctFindsBestUnvisitedPriorAfterGumbelExpansion) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = true;
+    config.rootGumbelPoolSize = 8;
+    config.rootGumbelInitialCandidates = 8;
+    config.rootNoiseSeed = 17;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3),
+        Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6),
+        Stockfish::Move(7), Stockfish::Move(8)};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE},
+        {0.130f, 0.129f, 0.128f, 0.127f,
+         0.124f, 0.123f, 0.120f, 0.119f},
+        {1.0f}, false, true, false, config));
+    JointActionCandidate action;
+    while (node.get_num_generated() < actionsA.size()) {
+        ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config),
+                  nullptr);
+    }
+
+    int expectedIdx = -1;
+    float highestPrior = -1.0f;
+    for (size_t index = 0; index < node.get_num_generated(); ++index) {
+        const float prior = node.get_joint_action(static_cast<int>(index)).jointPrior;
+        if (prior > highestPrior) {
+            highestPrior = prior;
+            expectedIdx = static_cast<int>(index);
+        }
+    }
+    ASSERT_NE(expectedIdx, 0);  // The Gumbel pool actually reordered this seed.
+
+    config.enableGumbelRootSearch = false;
+    node.configure_root_search(config);
+    node.update_terminal(0.0f);  // Give the PUCT exploration term a nonzero N.
+    Node::ChildSelection selection =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(selection.childIdx, expectedIdx);
+    if (selection.hasEvaluationReservation) {
+        selection.child->release_evaluation_reservation();
+    }
+    node.remove_virtual_loss(selection.childIdx);
 }
 
 TEST(NodeTest, GumbelRootBalancesCandidatesBeforeSequentialHalving) {

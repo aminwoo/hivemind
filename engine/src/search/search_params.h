@@ -107,7 +107,7 @@ constexpr float CPUCT_BASE = 19652.0f;
 constexpr bool ENABLE_DYNAMIC_FPU = true;
 
 /// Reduction from parent Q-value for unvisited nodes scaled by sqrt of visited policy.
-/// Q_init = clamp(Q_parent - FPU_REDUCTION * sqrt(sum_visited_priors), -1.0, 1.0)
+/// Q_init is clamped to Q_parent +/- 1 so constant value offsets do not saturate it.
 /// Lc0/CrazyAra default: 1.0
 constexpr float FPU_REDUCTION = 1.0f;
 

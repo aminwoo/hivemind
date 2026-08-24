@@ -56,8 +56,16 @@ struct TrajectoryEntry {
 struct LeafContext {
     std::shared_ptr<Node> leaf;
     vector<TrajectoryEntry> trajectory;
+    vector<Stockfish::Move> actionsA;
+    vector<Stockfish::Move> actionsB;
+    vector<uint8_t> capturesA;
+    vector<uint8_t> capturesB;
+    vector<int> policyIndicesA;
+    vector<int> policyIndicesB;
     Stockfish::Color teamToPlay;
     bool sitPlaneActive;
+    bool boardAOnTurn;
+    bool boardBOnTurn;
     bool isTerminal;     // True if this is a terminal node (draw/checkmate)
     bool hasEvaluationReservation;
     float terminalValue; // Value to use for terminal nodes
@@ -65,7 +73,8 @@ struct LeafContext {
     uint64_t leafHash;    // Hash of the leaf position for transposition lookup
     
     LeafContext() : leaf(nullptr), teamToPlay(Stockfish::WHITE), 
-                    sitPlaneActive(false), isTerminal(false), hasEvaluationReservation(false),
+                    sitPlaneActive(false), boardAOnTurn(false), boardBOnTurn(false),
+                    isTerminal(false), hasEvaluationReservation(false),
                     terminalValue(0.0f),
                     isTransposition(false), leafHash(0) {}
     
@@ -121,10 +130,9 @@ private:
     void ensureBufferSize(int batchSize);
     void collect_batch(SearchBatch& batch, Board& board,
                        bool teamHasTimeAdvantage, bool allowReservationWait);
-    void process_batch(SearchBatch& batch, Board& board,
-                       bool teamHasTimeAdvantage,
+    void process_batch(SearchBatch& batch, bool teamHasTimeAdvantage,
                        const Engine::HalfInferenceOutputs& inferenceOutputs);
-    void abort_batch(SearchBatch& batch, Board& board);
+    void abort_batch(SearchBatch& batch);
     CanonicalChildResult canonicalize_child(
         Board& board,
         Node* parent,
@@ -163,8 +171,7 @@ public:
                           const vector<float>& jointFactorsB = {},
                           size_t jointFactorRank = 0,
                           uint64_t positionHash = 0);
-    void backup(vector<TrajectoryEntry>& trajectory, 
-                Board& board, float value);
+    void backup(vector<TrajectoryEntry>& trajectory, float value);
     void cancel_virtual_losses(const vector<TrajectoryEntry>& trajectory);
     
     // Minibatch MCGS - collects SearchParams::BATCH_SIZE leaves, runs batched inference, processes results
