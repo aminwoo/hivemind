@@ -802,28 +802,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     isPondering_.store(options.isPonder, std::memory_order_release);
     currentSearchInfo_.store(&searchInfo, std::memory_order_release);
     
-    // MCGS: Clear and set up transposition table for new search (if enabled)
+    // MCGS: discard nodes outside the signature-verified reused graph, then
+    // re-index that graph so new transpositions merge into retained nodes.
     if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
         transpositionTable->clear();
-        transpositionTable->insertOrGet(board.hash_key(teamHasTimeAdvantage), rootNode);
         if (reusedRoot) {
-            // Rebuild the table from the retained graph before workers start.
-            // Raw traversal avoids copying every node's shared_ptr vector;
-            // shared_from_this is needed only once for each table insertion.
-            std::vector<Node*> pending{rootNode.get()};
-            std::unordered_set<Node*> visited;
-            while (!pending.empty()) {
-                Node* node = pending.back();
-                pending.pop_back();
-                if (!node || !visited.insert(node).second) {
-                    continue;
-                }
-                if (node != rootNode.get() && node->get_hash() != 0) {
-                    transpositionTable->insertOrGet(
-                        node->get_hash(), node->shared_from_this());
-                }
-                node->append_child_ptrs(pending);
-            }
+            reindex_reused_subtree(rootNode);
+        } else {
+            transpositionTable->insertOrGet(positionHash, rootNode);
         }
     }
 
@@ -1658,6 +1644,31 @@ void Agent::setHashSize(size_t sizeMB) {
  */
 std::string Agent::board_signature(Board& board) {
     return board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
+}
+
+void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
+    if (!transpositionTable || !reusedRoot) {
+        return;
+    }
+
+    // The retained root owns the graph while this runs before workers start.
+    // Traverse raw pointers to avoid copying every node's shared_ptr vector;
+    // acquire one owner only when inserting the node into the table.
+    std::vector<Node*> pending = {reusedRoot.get()};
+    std::unordered_set<const Node*> visited;
+    while (!pending.empty()) {
+        Node* node = pending.back();
+        pending.pop_back();
+        if (!node || !visited.insert(node).second) {
+            continue;
+        }
+
+        const uint64_t hash = node->get_hash();
+        if (hash != 0) {
+            transpositionTable->insertOrGet(hash, node->shared_from_this());
+        }
+        node->append_child_ptrs(pending);
+    }
 }
 
 std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,

@@ -42,6 +42,7 @@ struct StateInfo {
   // Copied when making a move
   Key    pawnKey;
   Key    materialKey;
+  Key    pocketKey;  // Pocket-only component of key, maintained incrementally
   Value  nonPawnMaterial[COLOR_NB];
   int    castlingRights;
   int    rule50;
@@ -280,6 +281,7 @@ public:
 
   // Accessing hash keys
   Key key() const;
+  Key board_key() const;
   Key key_after(Move m) const;
   Key material_key() const;
   Key pawn_key() const;
@@ -1156,6 +1158,11 @@ inline int Position::pawns_on_same_color_squares(Color c, Square s) const {
 inline Key Position::key() const {
   return st->rule50 < 14 ? st->key
                          : st->key ^ make_key((st->rule50 - 14) / 8);
+}
+
+inline Key Position::board_key() const {
+  // Strip pockets without reconstructing the on-board Zobrist key.
+  return st->key ^ st->pocketKey;
 }
 
 inline Key Position::pawn_key() const {

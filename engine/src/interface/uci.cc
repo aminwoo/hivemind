@@ -342,7 +342,9 @@ void UCI::setoption(std::istringstream& is) {
             std::cout << "info string TimeAdvantage set to " << value << std::endl;
         }
     } else if (name == "Mode") {
-        // Deprecated alias retained for existing GUI profiles.
+        // Deprecated alias for TimeAdvantage, kept so existing GUI profiles keep
+        // working. "sit" meant the team was up on time and could wait; "go"
+        // meant it was not. Not advertised in the uci handshake.
         if (value == "sit" || value == "go") {
             teamHasTimeAdvantage = value == "sit";
             std::cout << "info string Mode is deprecated; use "

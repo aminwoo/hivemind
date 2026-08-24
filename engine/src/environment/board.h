@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
+#include <array>
 #include <iostream>
 #include <optional>
 #include <vector>
@@ -71,31 +72,11 @@ class Board {
             // rights and the en passant file. Pockets stay excluded. This runs
             // on every move made in the search, so it must not build a string.
             const Stockfish::Position& position = *pos[board_num];
-            uint64_t key = 0;
-
-            Stockfish::Bitboard occupied = position.pieces();
-            while (occupied) {
-                const Stockfish::Square square = Stockfish::pop_lsb(occupied);
-                key ^= Stockfish::Zobrist::boardPsq[position.piece_on(square)][square];
-                if (position.promotedPieces & Stockfish::square_bb(square)) {
-                    key ^= Stockfish::Zobrist::boardPromoted[square];
-                }
-            }
-
-            if (position.side_to_move() == Stockfish::BLACK) {
-                key ^= Stockfish::Zobrist::boardSide;
-            }
-
-            const int castlingMask =
-                  (position.can_castle(Stockfish::WHITE_OO)  ? 1 : 0)
-                | (position.can_castle(Stockfish::WHITE_OOO) ? 2 : 0)
-                | (position.can_castle(Stockfish::BLACK_OO)  ? 4 : 0)
-                | (position.can_castle(Stockfish::BLACK_OOO) ? 8 : 0);
-            key ^= Stockfish::Zobrist::boardCastling[castlingMask];
-
-            if (position.ep_square() != Stockfish::SQ_NONE) {
-                key ^= Stockfish::Zobrist::boardEnPassant[
-                    Stockfish::file_of(position.ep_square())];
+            uint64_t key = position.board_key();
+            Stockfish::Bitboard promoted = position.promotedPieces;
+            while (promoted) {
+                key ^= Stockfish::Zobrist::boardPromoted[
+                    Stockfish::pop_lsb(promoted)];
             }
 
             return key;
@@ -156,6 +137,7 @@ class Board {
         void unmake_moves(Stockfish::Move moveA, Stockfish::Move moveB);
         void pop_move(int board_num);
         bool is_legal_move(int board_num, Stockfish::Move move) const;
+        bool has_any_legal_move(int board_num) const;
         std::vector<Stockfish::Move> legal_moves(int board_num);
         std::vector<std::pair<int, Stockfish::Move>> legal_moves(Stockfish::Color side, bool teamHasTimeAdvantage = false);
 
@@ -337,7 +319,10 @@ class Board {
         }
 
         int repetition_count(int board_num) {
-            const uint64_t currentKey = board_only_key(board_num);
+            if (positionHistory[board_num].empty()) {
+                return 0;
+            }
+            const uint64_t currentKey = positionHistory[board_num].back();
             return static_cast<int>(std::count(
                 positionHistory[board_num].begin(),
                 positionHistory[board_num].end(),
@@ -377,7 +362,11 @@ class Board {
             return Stockfish::SAN::move_to_san(*pos[board_num], move, Stockfish::NOTATION_SAN);
         }
 
-        bool is_checkmate(Stockfish::Color side, bool teamHasTimeAdvantage = false);
+        using LegalMoveCache = std::array<std::optional<bool>, 2>;
+
+        bool is_checkmate(Stockfish::Color side,
+                          bool teamHasTimeAdvantage = false,
+                          LegalMoveCache* legalMoveCache = nullptr);
         
         /**
          * @brief Checks if partner can capture a piece that could block a check.
@@ -440,28 +429,7 @@ class Board {
             }
             
             // Check for 3-fold (or 2-fold in search) repetition.
-            uint64_t currentKey = board_only_key(board_num);
-            const auto& history = positionHistory[board_num];
-            
-            // Count how many times this position has occurred in PREVIOUS positions
-            // (excluding the current position which is the last entry in history)
-            int repetitionCount = 0;
-            
-            // When ply > 0, we're in search - 2-fold repetition is a draw
-            // When ply = 0, we need 3-fold repetition (current + 2 previous = 3 occurrences)
-            int threshold = (ply > 0) ? 1 : 2;
-            
-            // Check all positions except the last one (current position)
-            size_t historySize = history.size();
-            for (size_t i = 0; i + 1 < historySize; ++i) {
-                if (history[i] == currentKey) {
-                    repetitionCount++;
-                    if (repetitionCount >= threshold) {
-                        return true;
-                    }
-                }
-            }
-            
-            return false;
+            const int threshold = ply > 0 ? 2 : 3;
+            return repetition_count(board_num) >= threshold;
         }
 };

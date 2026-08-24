@@ -148,6 +148,29 @@ maximum of 30; these positions are recorded in PGN but excluded from HVM5.
 Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
 every two macro plies. Search budgets are randomized by ±5% per position.
 
+### Team and Time Advantage
+
+Two options tell the engine which half of the four players it is playing, and
+whether that team is ahead on the clocks:
+
+```bash
+# Our team plays White on board A and Black on board B (the default)
+setoption name Team value white
+
+# Our team is ahead on the clocks, so it may sit and double-sit
+setoption name TimeAdvantage value true
+```
+
+`TimeAdvantage` gates the bughouse waiting rules: a team that is up on time may
+pass on a board it is on turn for, and may pass on both. Without it, passing on
+an on-turn board is only legal when the partner board captures. The flag also
+feeds the network as an input plane, so it changes the evaluation as well as the
+legal joint actions — set it to match the real clocks before searching.
+
+> `setoption name Mode value go|sit` is the deprecated spelling of the same
+> setting (`sit` = `TimeAdvantage true`). It is still accepted but no longer
+> advertised.
+
 ### Paired Model Tournament
 
 ```bash
