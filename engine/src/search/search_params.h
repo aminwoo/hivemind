@@ -299,6 +299,13 @@ constexpr uint64_t MATE_SEARCH_NODES_PER_SEARCH_NODE = 10;
 // has had enough work to prove tactical mates such as Qh5.
 constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 50;
 
+/**
+ * A joint proof node can enumerate and apply many board-move combinations,
+ * making it substantially more expensive than one node in the optimized
+ * single-board mate scan. Scale the shared pre-pass allowance accordingly.
+ */
+constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
+
 // =============================================================================
 // Progressive Widening Parameters
 // =============================================================================
