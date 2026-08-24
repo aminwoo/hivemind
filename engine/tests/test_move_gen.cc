@@ -2407,6 +2407,94 @@ TEST_F(EngineTest, SingleBoardForcedMateOnPosition4) {
     EXPECT_FALSE(startFound);
 }
 
+TEST_F(EngineTest, JointForcedMateWithOnlyOneBoardOnTurn) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1");
+
+    ASSERT_EQ(board.side_to_move(BOARD_A), Stockfish::WHITE);
+    ASSERT_EQ(board.side_to_move(BOARD_B), Stockfish::WHITE);
+
+    Stockfish::Move queenCheck = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f2f8") {
+            queenCheck = move;
+            break;
+        }
+    }
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(board.gives_check(BOARD_A, queenCheck));
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, mateAction, matePly));
+    EXPECT_TRUE(mateAction.moveA != Stockfish::MOVE_NONE
+                || mateAction.moveB != Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_A, mateAction.moveA), "f2f8");
+    EXPECT_EQ(mateAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(matePly, 3);
+}
+
+TEST_F(EngineTest, JointForcedMateAccountsForCrossBoardDefense) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "7k/8/8/8/8/8/n7/R6K[] w - - 0 1");
+
+    auto find_move = [&](int boardNum, const std::string& uci) {
+        for (Stockfish::Move move : board.legal_moves(boardNum)) {
+            if (board.uci_move(boardNum, move) == uci) {
+                return move;
+            }
+        }
+        return Stockfish::MOVE_NONE;
+    };
+
+    const Stockfish::Move queenCheck = find_move(BOARD_A, "f2f8");
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    board.make_moves(queenCheck, Stockfish::MOVE_NONE);
+
+    const Stockfish::Move forcedRookCapture = find_move(BOARD_A, "a8f8");
+    const Stockfish::Move partnerKnightCapture = find_move(BOARD_B, "a1a2");
+    ASSERT_NE(forcedRookCapture, Stockfish::MOVE_NONE);
+    ASSERT_NE(partnerKnightCapture, Stockfish::MOVE_NONE);
+    board.make_moves(forcedRookCapture, partnerKnightCapture);
+    EXPECT_EQ(board.count_in_hand(
+        BOARD_A, Stockfish::BLACK, Stockfish::KNIGHT), 1);
+
+    const Stockfish::Move rookCheck = find_move(BOARD_A, "f1f8");
+    ASSERT_NE(rookCheck, Stockfish::MOVE_NONE);
+    board.make_moves(rookCheck, Stockfish::MOVE_NONE);
+    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, false));
+    board.unmake_moves(rookCheck, Stockfish::MOVE_NONE);
+    board.unmake_moves(forcedRookCapture, partnerKnightCapture);
+    board.unmake_moves(queenCheck, Stockfish::MOVE_NONE);
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, mateAction, matePly));
+}
+
+TEST_F(EngineTest, JointForcedMateBudgetExhaustionIsConservative) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] b KQkq - 0 1");
+
+    const uint64_t hashBefore = board.hash_key(false);
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        board, Stockfish::WHITE, false, mateAction, matePly, 1));
+    EXPECT_EQ(board.hash_key(false), hashBefore);
+}
+
 TEST_F(EngineTest, ImmediateMateIn1DetectedInAllModesAndTurnConfigurations) {
     // 1. Capture Mate in 1 on Board A, Board B not on turn (Team White)
     // Board A has Scholar's mate: 1. Qxf7#
