@@ -39,6 +39,13 @@ public:
     static std::shared_ptr<Node> lookup(Agent& agent, uint64_t hash) {
         return agent.transpositionTable->lookup(hash);
     }
+
+    static std::string format_root_aware_uci_score(
+        const std::shared_ptr<Node>& root,
+        const std::shared_ptr<Node>& pvChild,
+        float childQ) {
+        return Agent::format_root_aware_uci_score(root, pvChild, childQ);
+    }
 };
 
 // Fixture for engine initialization
@@ -92,6 +99,28 @@ TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
             }
         }
     }
+}
+
+TEST(NodeTest, ProvenRootDrawOverridesUnvisitedPvChildScore) {
+    auto root = std::make_shared<Node>(Stockfish::BLACK);
+    auto child = std::make_shared<Node>(Stockfish::WHITE);
+    root->mark_as_draw(1);
+
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, child, SearchParams::Q_INIT),
+        "score cp 0");
+}
+
+TEST(NodeTest, ProvenPvChildDrawOverridesItsProvisionalQ) {
+    auto root = std::make_shared<Node>(Stockfish::BLACK);
+    auto child = std::make_shared<Node>(Stockfish::WHITE);
+    child->mark_as_draw(1);
+
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, child, SearchParams::Q_INIT),
+        "score cp 0");
 }
 
 TEST_F(EngineTest, HalfInputRepresentationMatchesFloatConversion) {

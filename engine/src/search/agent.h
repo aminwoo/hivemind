@@ -112,6 +112,12 @@ private:
                           size_t workerCount);
     void wait_for_workers();
     void reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot);
+    static std::string format_root_aware_uci_score(
+        const std::shared_ptr<Node>& root,
+        const std::shared_ptr<Node>& pvChild,
+        float childQ,
+        float centipawnScale = 180.0f,
+        float tangentScale = 1.56f);
 
 public:
     /**

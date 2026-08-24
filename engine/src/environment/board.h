@@ -415,6 +415,20 @@ class Board {
         }
 
         /**
+         * @brief Check for a draw using search depths tracked independently per board.
+         *
+         * A twofold repetition is only terminal when the repeated position was
+         * reached by a move on that board inside the search. In bughouse, a
+         * search ply may advance one board while the other board waits, so a
+         * single combined ply would incorrectly promote an existing twofold on
+         * the waiting board to a draw.
+         */
+        bool is_draw(const std::array<int, 2>& board_search_plies) {
+            return is_draw_on_board(BOARD_A, board_search_plies[BOARD_A])
+                || is_draw_on_board(BOARD_B, board_search_plies[BOARD_B]);
+        }
+
+        /**
          * @brief Check if a specific board is in a draw state.
          * @param board_num The board index.
          * @param ply The current search depth (used for repetition detection)
