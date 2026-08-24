@@ -113,9 +113,9 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
     }
     
     // Check if best child is proven LOSS (opponent loses = we win via that move)
-    auto children = rootNode->get_children();
-    if (bestChildIdx >= 0 && static_cast<size_t>(bestChildIdx) < children.size()) {
-        Node* bestChild = children[bestChildIdx].get();
+    std::shared_ptr<Node> bestChildOwner = rootNode->get_child(bestChildIdx);
+    if (bestChildOwner) {
+        Node* bestChild = bestChildOwner.get();
         if (bestChild && bestChild->get_node_type() == NodeType::LOSS) {
             if (verbose) {
                 int mateInPly = bestChild->get_end_in_ply();
@@ -1651,25 +1651,23 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
         return;
     }
 
-    std::vector<std::shared_ptr<Node>> pending = {reusedRoot};
+    // The retained root owns the graph while this runs before workers start.
+    // Traverse raw pointers to avoid copying every node's shared_ptr vector;
+    // acquire one owner only when inserting the node into the table.
+    std::vector<Node*> pending = {reusedRoot.get()};
     std::unordered_set<const Node*> visited;
     while (!pending.empty()) {
-        std::shared_ptr<Node> node = std::move(pending.back());
+        Node* node = pending.back();
         pending.pop_back();
-        if (!node || !visited.insert(node.get()).second) {
+        if (!node || !visited.insert(node).second) {
             continue;
         }
 
         const uint64_t hash = node->get_hash();
         if (hash != 0) {
-            transpositionTable->insertOrGet(hash, node);
+            transpositionTable->insertOrGet(hash, node->shared_from_this());
         }
-
-        for (const std::shared_ptr<Node>& child : node->get_children()) {
-            if (child) {
-                pending.push_back(child);
-            }
-        }
+        node->append_child_ptrs(pending);
     }
 }
 
