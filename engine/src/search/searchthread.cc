@@ -41,7 +41,7 @@ std::vector<Stockfish::Move> immediate_mates_on_board(
 bool has_unavoidable_waiting_board_mate(Board& board,
                                         Stockfish::Color teamToPlay,
                                         bool teamToPlayHasTimeAdvantage,
-                                        int searchPly) {
+                                        const std::array<int, 2>& boardSearchPlies) {
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamToPlay;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamToPlay;
     if (boardAOnTurn == boardBOnTurn) {
@@ -70,8 +70,12 @@ bool has_unavoidable_waiting_board_mate(Board& board,
         }
 
         bool matePersists = false;
+        std::array<int, 2> replySearchPlies = boardSearchPlies;
+        if (reply != Stockfish::MOVE_NONE) {
+            ++replySearchPlies[activeBoard];
+        }
         if (!board.is_checkmate(~teamToPlay, !teamToPlayHasTimeAdvantage)
-            && !board.is_draw(searchPly + 1)) {
+            && !board.is_draw(replySearchPlies)) {
             for (Stockfish::Move matingMove : matingMoves) {
                 if (!board.is_legal_move(waitingBoard, matingMove)) {
                     continue;
@@ -102,7 +106,7 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
-                                             int searchPly,
+                                             const std::array<int, 2>& boardSearchPlies,
                                              int* endInPly) {
     if (endInPly) {
         *endInPly = 0;
@@ -126,11 +130,13 @@ TerminalOutcome classify_terminal_position(Board& board,
         }
         return TerminalOutcome::LOSS;
     }
-    if (board.is_draw(searchPly)) {
+    if (board.is_draw(boardSearchPlies)) {
         return TerminalOutcome::DRAW;
     }
-    if (searchPly > 0 && has_unavoidable_waiting_board_mate(
-            board, teamToPlay, teamToPlayHasTimeAdvantage, searchPly)) {
+    if ((boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
+        && has_unavoidable_waiting_board_mate(
+            board, teamToPlay, teamToPlayHasTimeAdvantage,
+            boardSearchPlies)) {
         if (endInPly) {
             // One forced reply, then the opponent's mating move. Terminal
             // nodes use distance 1, so this position is three solver plies out.
@@ -139,6 +145,17 @@ TerminalOutcome classify_terminal_position(Board& board,
         return TerminalOutcome::LOSS;
     }
     return TerminalOutcome::NONE;
+}
+
+TerminalOutcome classify_terminal_position(Board& board,
+                                             Stockfish::Color teamToPlay,
+                                             Stockfish::Color rootTeam,
+                                             bool rootTeamHasTimeAdvantage,
+                                             int searchPly,
+                                             int* endInPly) {
+    return classify_terminal_position(
+        board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
+        {searchPly, searchPly}, endInPly);
 }
 
 SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {
@@ -371,13 +388,19 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
         
         // Check for terminal states
-        // Pass the tree depth (trajectory size minus 1) as ply so that 2-fold repetitions
-        // within the search tree are correctly detected as draws.
-        // We subtract 1 because trajectoryBuffer includes the root entry at index 0,
-        // and the root position should use ply=0 (requiring 3-fold repetition, not 2-fold).
-        // Without this, a root position with only 2-fold repetition is incorrectly
-        // treated as a draw on every iteration, preventing the root from ever expanding.
+        // Track search moves independently per board. A combined tree depth is
+        // insufficient in bughouse: one board can move while the other waits,
+        // and an existing twofold on the waiting board is not thereby repeated.
         int searchPly = static_cast<int>(trajectoryBuffer.size()) - 1;
+        std::array<int, 2> boardSearchPlies = {0, 0};
+        for (const TrajectoryEntry& entry : trajectoryBuffer) {
+            if (entry.action.moveA != Stockfish::MOVE_NONE) {
+                ++boardSearchPlies[BOARD_A];
+            }
+            if (entry.action.moveB != Stockfish::MOVE_NONE) {
+                ++boardSearchPlies[BOARD_B];
+            }
+        }
         searchInfo->set_max_depth(searchPly);
         const NodeType solvedType = SearchParams::ENABLE_MCTS_SOLVER
             ? ctx.leaf->get_node_type()
@@ -407,7 +430,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
             board, ctx.teamToPlay, root->get_team_to_play(),
-            teamHasTimeAdvantage, searchPly, &terminalEndInPly);
+            teamHasTimeAdvantage, boardSearchPlies, &terminalEndInPly);
         if (terminalOutcome != TerminalOutcome::NONE) {
             ctx.isTerminal = true;
             if (terminalOutcome == TerminalOutcome::WIN) {

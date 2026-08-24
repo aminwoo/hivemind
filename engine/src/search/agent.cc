@@ -72,11 +72,30 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
             // Root is a LOSS for us = we're mated
             return "score mate -" + to_string(max(1, mateInMoves));
         }
+    } else if (nodeType == NodeType::DRAW) {
+        return "score cp 0";
     } else {
         // Not solved, use centipawn score from Q value (already from root's perspective)
         int cpScore = static_cast<int>(C * std::tan(k * qFromParent));
         return "score cp " + to_string(cpScore);
     }
+}
+
+string Agent::format_root_aware_uci_score(
+    const shared_ptr<Node>& root,
+    const shared_ptr<Node>& pvChild,
+    float childQ,
+    float centipawnScale,
+    float tangentScale) {
+    if (root && root->get_node_type() != NodeType::UNSOLVED) {
+        // A solver proof is authoritative for the position being reported.
+        // In particular, a proven DRAW must score 0 rather than leaking an
+        // unvisited PV child's Q_INIT=-1 through the tangent conversion.
+        return format_uci_score(
+            root.get(), root->Q(), false, centipawnScale, tangentScale);
+    }
+    return format_uci_score(
+        pvChild.get(), childQ, true, centipawnScale, tangentScale);
 }
 
 /**
@@ -1315,7 +1334,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             size_t childIdx = displayIdx;
                             string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
                             float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
-                            string scoreStr = format_uci_score(children[childIdx].get(), childQ, true, C, k);
+                            string scoreStr = format_root_aware_uci_score(
+                                rootNode, children[childIdx], childQ, C, k);
                             
                             cout << "info depth " << depth 
                                  << " " << scoreStr
@@ -1581,7 +1601,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 size_t childIdx = sortedIndices[pvIdx];
                 string pv = extract_pv_from_child(board, static_cast<int>(childIdx), 20);
                 float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
-                string scoreStr = format_uci_score(children[childIdx].get(), childQ, true, C, k);
+                string scoreStr = format_root_aware_uci_score(
+                    rootNode, children[childIdx], childQ, C, k);
                 
                 cout << "info depth " << depth;
                 if (options.multiPV > 1) {

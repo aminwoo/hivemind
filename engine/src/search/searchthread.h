@@ -26,6 +26,13 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
+                                             const std::array<int, 2>& boardSearchPlies,
+                                             int* endInPly = nullptr);
+
+TerminalOutcome classify_terminal_position(Board& board,
+                                             Stockfish::Color teamToPlay,
+                                             Stockfish::Color rootTeam,
+                                             bool rootTeamHasTimeAdvantage,
                                              int searchPly,
                                              int* endInPly = nullptr);
 

@@ -85,6 +85,29 @@ TEST_F(DrawDetectionTest, ThreefoldRepetition) {
     EXPECT_TRUE(board.is_draw(BOARD_A)) << "Should be draw by threefold repetition";
 }
 
+TEST_F(DrawDetectionTest, WaitingBoardTwofoldIsNotSearchDraw) {
+    Board board;
+    board.set_fen(BOARD_B, board.startingFen);
+
+    auto push = [&](const std::string& uci) {
+        std::string moveText = uci;
+        const Stockfish::Move move = Stockfish::UCI::to_move(
+            *board.pos[BOARD_B], moveText);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+        board.push_move(BOARD_B, move);
+    };
+    push("g1f3");
+    push("g8f6");
+    push("f3g1");
+    push("f6g8");
+
+    ASSERT_EQ(board.repetition_count(BOARD_B), 2);
+    EXPECT_FALSE(board.is_draw(std::array<int, 2>{1, 0}))
+        << "A move on board A must not turn board B's existing twofold into a draw";
+    EXPECT_TRUE(board.is_draw(std::array<int, 2>{0, 1}))
+        << "A repetition reached on board B inside the search is a draw";
+}
+
 TEST_F(DrawDetectionTest, FiftyMoveRule) {
     Board board;
     board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 99 100");
