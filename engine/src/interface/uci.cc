@@ -336,11 +336,19 @@ void UCI::setoption(std::istringstream& is) {
         } else if (value == "black") {
             teamSide = Stockfish::BLACK;
         }
+    } else if (name == "TimeAdvantage") {
+        if (value == "true" || value == "false") {
+            teamHasTimeAdvantage = value == "true";
+            std::cout << "info string TimeAdvantage set to " << value << std::endl;
+        }
     } else if (name == "Mode") {
-        if (value == "sit") {
-            teamHasTimeAdvantage = true;
-        } else if (value == "go") {
-            teamHasTimeAdvantage = false;
+        // Deprecated alias retained for existing GUI profiles.
+        if (value == "sit" || value == "go") {
+            teamHasTimeAdvantage = value == "sit";
+            std::cout << "info string Mode is deprecated; use "
+                      << "'setoption name TimeAdvantage value "
+                      << (teamHasTimeAdvantage ? "true" : "false") << "'"
+                      << std::endl;
         }
     }
 }
@@ -379,7 +387,7 @@ void UCI::send_uci_response() {
          << SearchParams::ROOT_GUMBEL_MAX_ROUND_VISITS
          << " min 1 max 100000" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
-    cout << "option name Mode type combo default go var sit var go" << endl;
+    cout << "option name TimeAdvantage type check default false" << endl;
     cout << "info string CUDA engines " << engines.size()
          << " search workers " << engines.size() * SearchParams::NUM_SEARCH_THREADS
          << " (" << SearchParams::NUM_SEARCH_THREADS << " per engine)" << endl;
