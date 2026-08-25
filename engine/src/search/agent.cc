@@ -990,6 +990,75 @@ bool Agent::find_root_mate_impl(
         const JointActionRules rules{boardAOnTurn, boardBOnTurn, teamHasTimeAdvantage,
                                      true, true};
 
+        auto find_shortest_direct_mate = [&](
+            MateSearchBudget& budget,
+            JointActionCandidate& directAction,
+            int& directPly) {
+            for (int maxMateMoves = 2;
+                 maxMateMoves <= SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
+                 ++maxMateMoves) {
+                Stockfish::Move mateMoveA = Stockfish::MOVE_NONE;
+                int plyA = 0;
+                const bool foundA = search_single_board_forced_mate_impl(
+                    board, BOARD_A, teamSide, 1, maxMateMoves,
+                    mateMoveA, plyA, &budget, continuations);
+
+                Stockfish::Move mateMoveB = Stockfish::MOVE_NONE;
+                int plyB = 0;
+                const bool foundB = search_single_board_forced_mate_impl(
+                    board, BOARD_B, ~teamSide, 1, maxMateMoves,
+                    mateMoveB, plyB, &budget, continuations);
+
+                if (foundA && (!foundB || plyA <= plyB)) {
+                    directAction = JointActionCandidate(
+                        mateMoveA, 1.0f, 0,
+                        Stockfish::MOVE_NONE, 1.0f, 0,
+                        rules, board.is_capture(BOARD_A, mateMoveA), false);
+                    directPly = plyA;
+                    return true;
+                }
+                if (foundB) {
+                    directAction = JointActionCandidate(
+                        Stockfish::MOVE_NONE, 1.0f, 0,
+                        mateMoveB, 1.0f, 0,
+                        rules, false, board.is_capture(BOARD_B, mateMoveB));
+                    directPly = plyB;
+                    return true;
+                }
+                if (budget.exhausted) {
+                    break;
+                }
+            }
+            return false;
+        };
+
+        // In an ordinary root scan, find the cheapest direct proof first. It
+        // gives capture-feed search an exact upper bound: only a strictly
+        // shorter feed can replace it. Forced-loss callers share one hard
+        // budget across a defense, so they retain the existing feed-first
+        // ordering and use the direct scan below.
+        const bool scanDirectFirst = hardBudget == nullptr;
+        MateSearchBudget directBudget;
+        directBudget.remainingNodes = nodeBudget;
+        JointActionCandidate bestDirectAction;
+        int bestDirectPly = 0;
+        const bool foundDirectMate = scanDirectFirst
+            && find_shortest_direct_mate(
+                directBudget, bestDirectAction, bestDirectPly);
+        int maxFeedAttackerMoves =
+            SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
+        if (foundDirectMate) {
+            // A feed adds the root capture and the forced reply before the
+            // partner-board mate. For a direct D-ply mate, at most (D-3)/2
+            // attacker moves can produce a strictly shorter feed.
+            maxFeedAttackerMoves = std::max(0, (bestDirectPly - 3) / 2);
+            if (maxFeedAttackerMoves == 0) {
+                outAction = bestDirectAction;
+                outPlyToMate = bestDirectPly;
+                return true;
+            }
+        }
+
         bool foundFeedMate = false;
         JointActionCandidate bestFeedAction;
         int bestFeedPly = 0;
@@ -1005,12 +1074,13 @@ bool Agent::find_root_mate_impl(
         std::array<MateSearchBudget, 2> feedBudgets;
         // Keep the new preparatory scan additive and tightly bounded. The
         // established single-board phase still receives its full budget below,
-        // while feed proofs use at least 20k cheap make/unmake probes. The 20k
-        // floor keeps capture feeds available even for the minimum/very-short
-        // search allocation; split it evenly so each direction receives at
-        // least 10k and neither A-to-B nor B-to-A can starve the other.
+        // while feed proofs retain a dedicated allowance in each board
+        // direction. Keeping the floors independent prevents a branch-heavy
+        // A-to-B proof from starving the mirrored B-to-A search.
         const uint64_t totalFeedBudget =
-            std::max<uint64_t>(20000, nodeBudget / 10);
+            std::max<uint64_t>(
+                2 * SearchParams::MATE_CAPTURE_FEED_MIN_NODE_BUDGET_PER_DIRECTION,
+                nodeBudget / 10);
         feedBudgets[BOARD_A].remainingNodes = totalFeedBudget / 2;
         feedBudgets[BOARD_B].remainingNodes =
             totalFeedBudget - feedBudgets[BOARD_A].remainingNodes;
@@ -1091,23 +1161,49 @@ bool Agent::find_root_mate_impl(
             }
         }
 
-        // Most feed mates start with a check by the newly acquired piece. Try
-        // those first, but retain every capture so longer feed combinations are
-        // still considered if the shared budget permits.
-        std::stable_sort(
-            feedCandidates.begin(), feedCandidates.end(),
-            [](const CaptureFeedCandidate& left,
-               const CaptureFeedCandidate& right) {
-                return left.fedPieceHasCheckingDrop
-                    && !right.fedPieceHasCheckingDrop;
-            });
+        // Most feed mates start with a check by the newly acquired piece. Keep
+        // those first, but alternate board directions within each priority
+        // class. Otherwise every capture on Board A can consume its allowance
+        // before a winning Board-B feed is even attempted (and vice versa after
+        // flipping the boards).
+        std::array<std::array<vector<CaptureFeedCandidate>, 2>, 2>
+            candidatesByPriorityAndBoard;
+        for (const CaptureFeedCandidate& candidate : feedCandidates) {
+            const size_t priority = candidate.fedPieceHasCheckingDrop ? 0 : 1;
+            candidatesByPriorityAndBoard[priority][candidate.feedBoard]
+                .push_back(candidate);
+        }
+        feedCandidates.clear();
+        for (size_t priority = 0; priority < 2; ++priority) {
+            const auto& candidatesA =
+                candidatesByPriorityAndBoard[priority][BOARD_A];
+            const auto& candidatesB =
+                candidatesByPriorityAndBoard[priority][BOARD_B];
+            const size_t count = std::max(candidatesA.size(), candidatesB.size());
+            const bool boardAFirst = candidatesA.size() <= candidatesB.size();
+            for (size_t index = 0; index < count; ++index) {
+                auto append = [&](const auto& candidates) {
+                    if (index < candidates.size()) {
+                        feedCandidates.push_back(candidates[index]);
+                    }
+                };
+                if (boardAFirst) {
+                    append(candidatesA);
+                    append(candidatesB);
+                } else {
+                    append(candidatesB);
+                    append(candidatesA);
+                }
+            }
+        }
 
         auto find_shortest_single_board_mate = [&](
             int boardNum, Stockfish::Color attacker,
             Stockfish::Move& mateMove, int& matePly,
-            MateSearchBudget& feedBudget) {
+            MateSearchBudget& feedBudget,
+            int attackerMoveLimit) {
             for (int maxMateMoves = 1;
-                 maxMateMoves <= SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
+                 maxMateMoves <= attackerMoveLimit;
                  ++maxMateMoves) {
                 mateMove = Stockfish::MOVE_NONE;
                 matePly = 0;
@@ -1124,6 +1220,16 @@ bool Agent::find_root_mate_impl(
         };
 
         for (const CaptureFeedCandidate& candidate : feedCandidates) {
+            int candidateAttackerMoveLimit = maxFeedAttackerMoves;
+            if (foundFeedMate) {
+                candidateAttackerMoveLimit = std::min(
+                    candidateAttackerMoveLimit,
+                    std::max(0, (bestFeedPly - 3) / 2));
+            }
+            if (candidateAttackerMoveLimit == 0) {
+                break;
+            }
+
             MateSearchBudget& feedBudget = hardBudget
                 ? *hardBudget : feedBudgets[candidate.feedBoard];
             if (!feedBudget.consume()) {
@@ -1168,7 +1274,8 @@ bool Agent::find_root_mate_impl(
                 const bool replyMated = !rootLostOrDrawn
                     && find_shortest_single_board_mate(
                         candidate.targetBoard, candidate.targetAttacker,
-                        mateMove, matePly, feedBudget);
+                        mateMove, matePly, feedBudget,
+                        candidateAttackerMoveLimit);
                 board.pop_move(candidate.feedBoard);
 
                 if (!replyMated) {
@@ -1193,60 +1300,36 @@ bool Agent::find_root_mate_impl(
             }
         }
 
-        // Iterative deepening: mate in 1 is already covered by the joint scan
-        // above, so start at two attacker moves. Deepening returns the shortest
-        // forced mate instead of whichever proof the depth-first order reaches
-        // first, and keeps the wasted work bounded when no mate exists. The
-        // budget is shared by every iteration and by both boards.
-        MateSearchBudget localBudget;
-        localBudget.remainingNodes = nodeBudget;
-        MateSearchBudget& budget = hardBudget ? *hardBudget : localBudget;
-        for (int maxMateMoves = 2;
-             maxMateMoves <= SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
-             ++maxMateMoves) {
-            Stockfish::Move mateMoveA = Stockfish::MOVE_NONE;
-            int plyA = 0;
-            const bool foundA = search_single_board_forced_mate_impl(
-                board, BOARD_A, teamSide, 1, maxMateMoves, mateMoveA, plyA,
-                &budget, continuations);
-
-            Stockfish::Move mateMoveB = Stockfish::MOVE_NONE;
-            int plyB = 0;
-            const bool foundB = search_single_board_forced_mate_impl(
-                board, BOARD_B, ~teamSide, 1, maxMateMoves, mateMoveB, plyB,
-                &budget, continuations);
-
-            if (foundA && (!foundB || plyA <= plyB)) {
-                const bool isCapA = board.is_capture(BOARD_A, mateMoveA);
-                const JointActionCandidate directAction(
-                    mateMoveA, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
-                    rules, isCapA, false);
-                if (!foundFeedMate || plyA <= bestFeedPly) {
-                    outAction = directAction;
-                    outPlyToMate = plyA;
-                } else {
-                    outAction = bestFeedAction;
-                    outPlyToMate = bestFeedPly;
-                }
+        if (scanDirectFirst) {
+            if (foundDirectMate
+                && (!foundFeedMate || bestDirectPly <= bestFeedPly)) {
+                outAction = bestDirectAction;
+                outPlyToMate = bestDirectPly;
                 return true;
             }
-            if (foundB) {
-                const bool isCapB = board.is_capture(BOARD_B, mateMoveB);
-                const JointActionCandidate directAction(
-                    Stockfish::MOVE_NONE, 1.0f, 0, mateMoveB, 1.0f, 0,
-                    rules, false, isCapB);
-                if (!foundFeedMate || plyB <= bestFeedPly) {
-                    outAction = directAction;
-                    outPlyToMate = plyB;
-                } else {
-                    outAction = bestFeedAction;
-                    outPlyToMate = bestFeedPly;
-                }
+            if (foundFeedMate) {
+                outAction = bestFeedAction;
+                outPlyToMate = bestFeedPly;
                 return true;
             }
-            if (budget.exhausted) {
-                break;
+            return false;
+        }
+
+        // Forced-loss proofs retain their shared hard budget and feed-first
+        // ordering. Search the direct alternatives with whatever remains, then
+        // choose the shortest proven line.
+        JointActionCandidate directAction;
+        int directPly = 0;
+        if (find_shortest_direct_mate(
+                *hardBudget, directAction, directPly)) {
+            if (!foundFeedMate || directPly <= bestFeedPly) {
+                outAction = directAction;
+                outPlyToMate = directPly;
+            } else {
+                outAction = bestFeedAction;
+                outPlyToMate = bestFeedPly;
             }
+            return true;
         }
         if (foundFeedMate) {
             outAction = bestFeedAction;

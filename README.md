@@ -239,14 +239,23 @@ uv run python src/training/train_loop.py --mode rl \
 ```
 
 HVM5 stores the sparse joint root-visit distribution in addition to both
-marginal policies. RL models use it to train a rank-4 compatibility residual;
-older HVM3/HVM4 chunks remain readable but cannot train that head by themselves.
+marginal policies. The joint compatibility residual is optional; the default RL
+configuration disables it and trains only the two marginal policy heads. Older
+HVM3/HVM4 chunks therefore remain valid training inputs.
 
 With `--replay-dir`, RL preparation adds five archived HVM chunks selected
 deterministically from the newest 5% of that directory, matching CrazyAra's
 replay-memory defaults. Replay games are training-only; validation is made only
 from the current iteration. Adjust this with `--replay-files`,
 `--replay-selection-fraction`, and `--split-seed`.
+
+RL sample shuffling is bounded to one decoded Parquet shard at a time so dense
+policy tensors from completed shards can be released. Generated RL Parquet
+shards contain 4,096 samples by default. On hosts with limited RAM, use
+`--shuffle-buffer-size 1000` to reduce the default 10,000-sample within-shard
+buffer. RL training saves resumable `.tar` checkpoints when validation loss
+improves but defers ONNX conversion until training completes. Resume an
+interrupted run with its latest intermediate checkpoint and `--resume-training`.
 
 The end-to-end supervised script filters all four players, performs a
 deterministic whole-game 98/2 train/validation split, doubles samples by board

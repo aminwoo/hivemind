@@ -15,7 +15,7 @@ from src.training.train_loop import (
     configure_supervised_evaluation,
     project_root,
 )
-from configs.train_config import TrainConfig
+from configs.train_config import TrainConfig, rl_train_config
 from src.training.trainer_agent import (
     TrainerAgentPytorch,
     evaluation_batch_limit,
@@ -104,6 +104,18 @@ def test_rl_defaults_to_bf16_for_crossboard_with_fp32_override():
         is_rl=True,
     )
     assert train_config.mixed_precision == 'fp32'
+
+
+def test_rl_defers_onnx_export_until_training_finishes():
+    assert rl_train_config().export_intermediate_onnx is False
+
+
+def test_rl_uses_marginal_policy_objective_without_joint_head():
+    train_config = rl_train_config()
+
+    assert train_config.policy_loss_factor == 0.7
+    assert train_config.joint_policy_rank == 0
+    assert train_config.joint_policy_loss_factor == 0.0
 
 
 def test_supervised_evaluation_is_lighter_and_less_frequent():

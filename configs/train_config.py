@@ -64,6 +64,9 @@ class TrainConfig:
                                "during training."
     export_weights: bool = True
 
+    info_export_intermediate_onnx: str = "export_intermediate_onnx controls ONNX conversion at each improved checkpoint"
+    export_intermediate_onnx: bool = True
+
     info_export_grad_histograms: str = "export_grad_histograms enables or disable the export of gradient diagrams " \
                                        "during training."
     export_grad_histograms: bool = True
@@ -207,15 +210,16 @@ def rl_train_config():
     tc.use_plys_to_end = True
 
     tc.export_grad_histograms = True
+    tc.export_intermediate_onnx = False
     tc.div_factor = 2
     tc.batch_steps = 100 * tc.div_factor
     tc.batch_size = int(1024 / tc.div_factor)
 
     tc.val_loss_factor = 0.15
-    tc.policy_loss_factor = 0.6
-    tc.joint_policy_rank = 4
+    tc.policy_loss_factor = 0.7
+    tc.joint_policy_rank = 0
     tc.joint_policy_top_k = 8
-    tc.joint_policy_loss_factor = 0.1
+    tc.joint_policy_loss_factor = 0.0
     tc.plys_to_end_loss_factor = 0.01
     tc.wdl_loss_factor = 0.15
 

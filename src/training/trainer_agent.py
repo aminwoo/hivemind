@@ -309,15 +309,18 @@ class TrainerAgentPytorch:
                                     )
                                     print()
                                     logging.info("Saved checkpoint to %s", filepath)
-                                    with torch.no_grad():
-                                        ctx = get_context(self.tc.context, self.tc.device_id)
-                                        dummy_input = torch.zeros(1, data.shape[1], data.shape[2], data.shape[3]).to(
-                                            ctx)
-                                        export_to_onnx(self._model, 1,
-                                                       dummy_input,
-                                                       self.weights_dir, model_prefix,
-                                                       self.tc.use_wdl and self.tc.use_plys_to_end,
-                                                       True)
+                                    if self.tc.export_intermediate_onnx:
+                                        with torch.no_grad():
+                                            ctx = get_context(self.tc.context, self.tc.device_id)
+                                            dummy_input = torch.zeros(
+                                                1, data.shape[1], data.shape[2], data.shape[3]
+                                            ).to(ctx)
+                                            export_to_onnx(
+                                                self._model, 1, dummy_input,
+                                                self.weights_dir, model_prefix,
+                                                self.tc.use_wdl and self.tc.use_plys_to_end,
+                                                True,
+                                            )
                                     self._generated_weight_files.extend(
                                         self.weights_dir.glob(f"{model_prefix}*")
                                     )
@@ -773,12 +776,17 @@ class TrainerAgentPytorch:
                     )
                     print()
                     logging.info("Saved checkpoint to %s", filepath)
-                    with torch.no_grad():
-                        ctx = get_context(self.tc.context, self.tc.device_id)
-                        dummy_input = torch.zeros(1, data.shape[1], data.shape[2], data.shape[3]).to(ctx)
-                        export_to_onnx(self._model, 1, dummy_input,
-                                      self.weights_dir, model_prefix,
-                                      self.tc.use_wdl and self.tc.use_plys_to_end, True)
+                    if self.tc.export_intermediate_onnx:
+                        with torch.no_grad():
+                            ctx = get_context(self.tc.context, self.tc.device_id)
+                            dummy_input = torch.zeros(
+                                1, data.shape[1], data.shape[2], data.shape[3]
+                            ).to(ctx)
+                            export_to_onnx(
+                                self._model, 1, dummy_input,
+                                self.weights_dir, model_prefix,
+                                self.tc.use_wdl and self.tc.use_plys_to_end, True,
+                            )
                     self._generated_weight_files.extend(self.weights_dir.glob(f"{model_prefix}*"))
 
                 self.patience_cnt = 0
