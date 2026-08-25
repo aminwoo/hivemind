@@ -364,9 +364,18 @@ class Board {
 
         using LegalMoveCache = std::array<std::optional<bool>, 2>;
 
+        /**
+         * @param assumePartnerCanBlock Treat every interposable check as
+         *        blockable by the partner instead of looking for the capture
+         *        that would supply the blocker. This can only turn a mate into
+         *        a non-mate, so a proof built on it holds against any real
+         *        partner board - which lets a caller reuse one proof across
+         *        positions that differ only on the partner board.
+         */
         bool is_checkmate(Stockfish::Color side,
                           bool teamHasTimeAdvantage = false,
-                          LegalMoveCache* legalMoveCache = nullptr);
+                          LegalMoveCache* legalMoveCache = nullptr,
+                          bool assumePartnerCanBlock = false);
         
         /**
          * @brief Checks if partner can capture a piece that could block a check.
@@ -374,9 +383,11 @@ class Board {
          * @param board_in_check The board index where the player is in check (0 or 1)
          * @param checked_side The color of the player being checked on that board
          * @param teamHasTimeAdvantage If true, partner may capture in the future even if not their turn
+         * @param assumePartnerCanBlock Skip the search for a supplying capture
+         *        and answer from the check's geometry alone.
          * @return true if partner can provide a blocking piece, false otherwise
          */
-        bool can_partner_provide_blocking_piece(int board_in_check, Stockfish::Color checked_side, bool teamHasTimeAdvantage = false);
+        bool can_partner_provide_blocking_piece(int board_in_check, Stockfish::Color checked_side, bool teamHasTimeAdvantage = false, bool assumePartnerCanBlock = false);
 
         bool is_in_check(int board_num) {
             return pos[board_num]->checkers();

@@ -291,10 +291,30 @@ constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
 // self-play remains governed solely by its scaled budget.
 constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 
-// Capture-feed proofs are searched independently in both board directions.
-// Keep enough probes in each direction for deeper hand-transfer mates without
-// allowing one board's branching factor to starve the mirrored search.
-constexpr uint64_t MATE_CAPTURE_FEED_MIN_NODE_BUDGET_PER_DIRECTION = 250000;
+// Capture-feed proofs are searched independently in both board directions and
+// draw an allowance of their own, sized by the caller's budget. A fixed floor
+// here would override the scaled budget above and tax short searches with the
+// worst case of a long one, so the two directions simply split this share of
+// the caller's allowance evenly - neither can starve the other.
+constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
+
+/**
+ * Share of the move time the whole root pre-pass (mate scan plus forced-loss
+ * scan) may occupy.
+ *
+ * Node budgets cannot enforce this on their own: a joint proof node costs
+ * ~70us against ~1us for a single-board check node, a spread no single node
+ * count covers. Sized so the deepest proof the scan can still finish - a
+ * seven-ply capture feed, ~400ms of a 1500ms move - fits with margin; a proof
+ * that lands returns immediately and hands the rest of the move time back, so
+ * the average cost is far below the cap. Tightening it further wants
+ * refutation-first move ordering in the feed scan.
+ */
+constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 35;
+
+/// Probes between deadline samples. Keeps the clock read well under 1% of the
+/// cheapest probe while still stopping a joint scan within a few milliseconds.
+constexpr uint32_t MATE_SEARCH_TIME_CHECK_INTERVAL = 64;
 
 /**
  * Conversion factors from the search's own budget to mate-search nodes.

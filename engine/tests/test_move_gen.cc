@@ -2961,9 +2961,12 @@ TEST_F(EngineTest, RootMateScanFindsDeepBishopCaptureFeedMate) {
 
     JointActionCandidate mateAction;
     int matePly = 0;
+    // Seven plies deep behind a queen capture, so this one needs the budget of
+    // an ordinary timed search rather than the minimum allocation a few-hundred
+    // node self-play search receives.
     ASSERT_TRUE(Agent::find_root_mate(
         board, Stockfish::BLACK, true,
-        mateAction, matePly, 2000));
+        mateAction, matePly, SearchParams::MATE_SEARCH_NODE_BUDGET));
     ASSERT_NE(mateAction.moveA, Stockfish::MOVE_NONE);
     EXPECT_EQ(board.uci_move(BOARD_A, mateAction.moveA), "h6h5");
     EXPECT_EQ(mateAction.moveB, Stockfish::MOVE_NONE);
@@ -3124,4 +3127,56 @@ TEST_F(EngineTest, RootMateScanStaysBounded) {
         EXPECT_TRUE(mateAction.moveA != Stockfish::MOVE_NONE
                     || mateAction.moveB != Stockfish::MOVE_NONE);
     }
+}
+
+// The pre-pass runs inside the move time, so a node budget is not enough on its
+// own: joint proof nodes cost two orders of magnitude more than single-board
+// ones. This position keeps the joint scan busy for most of a second on its
+// full node budget; the deadline has to cut it short regardless.
+TEST_F(EngineTest, RootMateScanStopsAtItsDeadline) {
+    Board board;
+    board.set(
+        "4rk2/1pp2ppp/1pp2b2/8/1PP3B1/7P/P1P2PPP/4R1K1[] b - - 0 1"
+        "|"
+        "r2qnrk1/pp3ppp/2np2Bb/3NpPb1/3n1p2/3BpN1P/PPPB1PPP/R2Q1RK1"
+        "[QRNNqrbn] b - - 0 1");
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    const auto start = std::chrono::steady_clock::now();
+    const bool found = Agent::find_root_mate(
+        board, Stockfish::BLACK, false, mateAction, matePly,
+        SearchParams::MATE_SEARCH_NODE_BUDGET,
+        start + std::chrono::milliseconds(20));
+    const double elapsedMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+
+    EXPECT_FALSE(found);
+    EXPECT_LT(elapsedMs, 200.0);
+}
+
+// The capture-feed allowance is derived from the caller's budget instead of a
+// fixed floor, so a caller that scaled its budget down to a short search is not
+// billed for the worst case of a long one.
+TEST_F(EngineTest, RootMateScanFeedProbesRespectCallerBudget) {
+    Board board;
+    board.set(
+        "r4r2/1ppbn1pk/p3p2q/3pRn1B/5pP1/1BPP4/P1PB1PPP/1R4K1[QNp] b - - 0 1"
+        "|"
+        "rnbN1b1r/pppk1Ppp/4pp2/4p3/4B3/8/PPPn1PPP/R3K1NR[QNPqb] w - - 0 1");
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    const auto start = std::chrono::steady_clock::now();
+    const bool found = Agent::find_root_mate(
+        board, Stockfish::BLACK, true, mateAction, matePly,
+        SearchParams::MATE_SEARCH_MIN_NODE_BUDGET);
+    const double elapsedMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+
+    // The same position is proven under a full budget by
+    // RootMateScanFindsDeepBishopCaptureFeedMate; at the minimum allocation it
+    // must give up quickly rather than run the feed scan to a fixed floor.
+    EXPECT_FALSE(found);
+    EXPECT_LT(elapsedMs, 50.0);
 }

@@ -22,19 +22,29 @@ enum class TerminalOutcome : uint8_t {
     DRAW,
 };
 
+/**
+ * @param partnerBoardAgnostic Classify without reading the waiting board:
+ *        assume every interposable check can be blocked with a piece from the
+ *        partner, and skip the waiting-board mate. Both only withdraw terminal
+ *        verdicts, so a proof built on this model also holds for any other
+ *        state of the waiting board - which lets a caller reuse one proof
+ *        across positions that differ only there.
+ */
 TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
                                              const std::array<int, 2>& boardSearchPlies,
-                                             int* endInPly = nullptr);
+                                             int* endInPly = nullptr,
+                                             bool partnerBoardAgnostic = false);
 
 TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
                                              int searchPly,
-                                             int* endInPly = nullptr);
+                                             int* endInPly = nullptr,
+                                             bool partnerBoardAgnostic = false);
 
 /**
  * @brief Entry in an MCTS selection trajectory.
