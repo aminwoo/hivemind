@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 # Add project root to path for imports
@@ -198,6 +199,43 @@ def test_streaming_flip_swaps_joint_action_components(monkeypatch):
     assert torch.equal(samples[1][6], joint_b[0])
     assert torch.equal(samples[1][7], joint_a[0])
     assert torch.equal(samples[1][8], joint_probability[0])
+
+
+def test_streaming_shuffle_buffer_is_drained_at_shard_boundary(monkeypatch):
+    """Buffered tensor views must not keep earlier decoded shards alive."""
+    def load_shard(path):
+        marker = 1.0 if path == "first.parquet" else 2.0
+        x = torch.full((3, NUM_BUGHOUSE_CHANNELS, 8, 8), marker)
+        return (
+            x,
+            torch.zeros(3),
+            torch.zeros(3, 2),
+            torch.zeros(3, 2),
+            torch.zeros(3, dtype=torch.long),
+            torch.zeros(3),
+        )
+
+    monkeypatch.setattr(
+        data_loaders_module,
+        "load_rl_parquet_shard",
+        load_shard,
+    )
+    dataset = StreamingRLDataset(
+        ["first.parquet", "second.parquet"],
+        shuffle_files=False,
+        shuffle_buffer_size=100,
+        shuffle_samples=True,
+    )
+
+    markers = [sample[0][0, 0, 0].item() for sample in dataset]
+
+    assert markers[:3] == [1.0, 1.0, 1.0]
+    assert markers[3:] == [2.0, 2.0, 2.0]
+
+
+def test_streaming_shuffle_buffer_size_must_be_positive():
+    with pytest.raises(ValueError, match="shuffle_buffer_size must be positive"):
+        StreamingRLDataset([], shuffle_buffer_size=0)
 
 
 def test_with_real_data():

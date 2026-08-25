@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from src.preprocessing.convert_selfplay_data import (
+    DEFAULT_RL_SAMPLES_PER_SHARD,
     DEFAULT_RL_VALIDATION_FRACTION,
     HEADER,
     NB_INPUT_VALUES,
@@ -159,6 +160,10 @@ def test_split_conversion_rejects_output_containing_source(tmp_path):
 
 def test_default_validation_fraction_is_ten_percent():
     assert DEFAULT_RL_VALIDATION_FRACTION == 0.10
+
+
+def test_default_rl_shards_are_bounded_for_dense_policy_memory():
+    assert DEFAULT_RL_SAMPLES_PER_SHARD == 4096
 
 
 def test_select_replay_files_uses_all_when_replay_files_is_none_or_all(tmp_path):

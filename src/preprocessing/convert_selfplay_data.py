@@ -33,6 +33,7 @@ DEFAULT_RL_VALIDATION_FRACTION = 0.10
 DEFAULT_REPLAY_FILES = 25
 DEFAULT_REPLAY_SELECTION_FRACTION = 0.05
 DEFAULT_Q_VALUE_RATIO = 0.0
+DEFAULT_RL_SAMPLES_PER_SHARD = 4096
 
 
 def read_exact(stream, size: int) -> bytes:
@@ -253,7 +254,7 @@ def convert_to_split_parquet(
     output_dir: str | Path,
     validation_fraction: float = DEFAULT_RL_VALIDATION_FRACTION,
     split_seed: int = 42,
-    samples_per_shard: int = 16384,
+    samples_per_shard: int = DEFAULT_RL_SAMPLES_PER_SHARD,
     replay_input_dir: str | Path | None = None,
     replay_files: int = DEFAULT_REPLAY_FILES,
     replay_selection_fraction: float = DEFAULT_REPLAY_SELECTION_FRACTION,

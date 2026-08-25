@@ -318,6 +318,8 @@ class StreamingRLDataset(torch.utils.data.IterableDataset):
         """
         self.parquet_files = parquet_files
         self.shuffle_files = shuffle_files
+        if shuffle_buffer_size <= 0:
+            raise ValueError("shuffle_buffer_size must be positive")
         self.shuffle_buffer_size = shuffle_buffer_size
         self.augment_flip = augment_flip
         self.shuffle_samples = shuffle_samples
@@ -328,10 +330,10 @@ class StreamingRLDataset(torch.utils.data.IterableDataset):
         if self.shuffle_files:
             import random
             random.shuffle(files)
-        
-        buffer = []
-        
-        for pf in files:
+
+        def iter_shard(pf):
+            """Keep decoded shard tensors scoped to one exhausted generator."""
+            buffer = []
             shard = (
                 load_rl_parquet_shard(pf, include_joint_policy=True)
                 if self.include_joint_policy
@@ -386,13 +388,17 @@ class StreamingRLDataset(torch.utils.data.IterableDataset):
                     for sample in buffer[:len(buffer)//2]:
                         yield sample
                     buffer = buffer[len(buffer)//2:]
-        
-        # Yield remaining samples in buffer
-        if buffer:
-            import random
-            random.shuffle(buffer)
-            for sample in buffer:
-                yield sample
+
+            if buffer:
+                import random
+                random.shuffle(buffer)
+                yield from buffer
+
+        # Samples are tensor views backed by the complete decoded shard. The
+        # nested generator must be exhausted before the next file is decoded;
+        # otherwise its locals can pin every dense tensor from the prior shard.
+        for pf in files:
+            yield from iter_shard(pf)
 
 
 class CombinedRLDataset(torch.utils.data.IterableDataset):
