@@ -224,6 +224,14 @@ void Node::configure_root_search(
         return;
     }
 
+    const std::vector<float> promotedPriors =
+        candidateGenerator.reprepareJointPolicyPool(
+            static_cast<size_t>(std::max(0, config.rootJointPolicyTopK)),
+            config.jointPolicyResidualScale);
+    if (promotedPriors.size() == childPriors.size()) {
+        childPriors = promotedPriors;
+    }
+
     rootGumbelEnabled = config.enableGumbelRootSearch;
     rootGumbelValueScale = config.rootGumbelValueScale;
     rootGumbelRoundQuota = 1;

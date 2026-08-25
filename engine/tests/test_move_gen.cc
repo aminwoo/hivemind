@@ -40,6 +40,24 @@ public:
         return agent.transpositionTable->lookup(hash);
     }
 
+    static bool find_root_mate_and_retain(
+        Agent& agent, Board& board, Stockfish::Color teamSide,
+        bool teamHasTimeAdvantage, JointActionCandidate& action,
+        int& plyToMate) {
+        return Agent::find_root_mate_impl(
+            board, teamSide, teamHasTimeAdvantage, action, plyToMate,
+            SearchParams::MATE_SEARCH_NODE_BUDGET,
+            &agent.mateContinuations_);
+    }
+
+    static bool reuse_mate_continuation(
+        const Agent& agent, Board& board, Stockfish::Color teamSide,
+        bool teamHasTimeAdvantage, JointActionCandidate& action,
+        int& plyToMate) {
+        return agent.try_reuse_mate_continuation(
+            board, teamSide, teamHasTimeAdvantage, action, plyToMate);
+    }
+
     static std::string format_root_aware_uci_score(
         const std::shared_ptr<Node>& root,
         const std::shared_ptr<Node>& pvChild,
@@ -974,6 +992,133 @@ TEST(JointCandidateGeneratorTest, JointFactorsRescorePrefixAndPreserveFallback) 
             static_cast<uint32_t>(candidate.moveB));
     }
     EXPECT_EQ(generated.size(), 4U);
+}
+
+TEST(JointCandidateGeneratorTest, JointPoolMergesWithHigherPriorityFallback) {
+    JointCandidateGenerator generator;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2),
+        Stockfish::Move(3), Stockfish::Move(4)};
+    const std::vector<Stockfish::Move> actionsB = {
+        Stockfish::Move(5), Stockfish::Move(6), Stockfish::Move(7)};
+    const std::vector<float> priorsA = {0.4f, 0.3f, 0.2f, 0.1f};
+    const std::vector<float> priorsB = {0.7f, 0.2f, 0.1f};
+    const std::vector<float> factorsA(actionsA.size(), 0.0f);
+    const std::vector<float> factorsB(actionsB.size(), 0.0f);
+    generator.initialize(
+        actionsA, actionsB, priorsA, priorsB,
+        false, true, true, {}, {}, factorsA, factorsB, 1, 2, 1.0f);
+
+    const JointActionCandidate first = generator.getNext();
+    EXPECT_EQ(first.moveA, actionsA[0]);
+    EXPECT_EQ(first.moveB, actionsB[0]);
+    EXPECT_FLOAT_EQ(first.expansionPriority, 0.28f);
+
+    const JointActionCandidate second = generator.getNext();
+    EXPECT_EQ(second.moveA, actionsA[1]);
+    EXPECT_EQ(second.moveB, actionsB[0]);
+    EXPECT_FLOAT_EQ(second.expansionPriority, 0.21f);
+
+    // This pair is outside the learned top-2 x top-2 pool, but its
+    // factorized prior exceeds every remaining learned-pool candidate.
+    const JointActionCandidate fallback = generator.peekNext();
+    EXPECT_EQ(fallback.moveA, actionsA[2]);
+    EXPECT_EQ(fallback.moveB, actionsB[0]);
+    EXPECT_FLOAT_EQ(fallback.expansionPriority, 0.14f);
+    const JointActionCandidate third = generator.getNext();
+    EXPECT_EQ(third.moveA, fallback.moveA);
+    EXPECT_EQ(third.moveB, fallback.moveB);
+
+    std::set<std::pair<uint32_t, uint32_t>> generated = {{
+        static_cast<uint32_t>(first.moveA),
+        static_cast<uint32_t>(first.moveB)}, {
+        static_cast<uint32_t>(second.moveA),
+        static_cast<uint32_t>(second.moveB)}, {
+        static_cast<uint32_t>(third.moveA),
+        static_cast<uint32_t>(third.moveB)}};
+    while (generator.hasNext()) {
+        const JointActionCandidate candidate = generator.getNext();
+        generated.emplace(
+            static_cast<uint32_t>(candidate.moveA),
+            static_cast<uint32_t>(candidate.moveB));
+    }
+    EXPECT_EQ(generated.size(), actionsA.size() * actionsB.size());
+}
+
+TEST(JointCandidateGeneratorTest, RepreparingLargerPoolPreservesExpandedIndices) {
+    JointCandidateGenerator generator;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
+    const std::vector<Stockfish::Move> actionsB = {
+        Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6)};
+    const std::vector<float> priors = {0.6f, 0.3f, 0.1f};
+    const std::vector<float> factorsA = {0.0f, 0.0f, 10.0f};
+    const std::vector<float> factorsB = {0.0f, 0.0f, 1.0f};
+    generator.initialize(
+        actionsA, actionsB, priors, priors,
+        false, true, true, {}, {}, factorsA, factorsB, 1, 1, 1.0f);
+
+    const JointActionCandidate first = generator.getNext();
+    ASSERT_EQ(first.moveA, actionsA[0]);
+    ASSERT_EQ(first.moveB, actionsB[0]);
+    const std::vector<float> promotedPriors =
+        generator.reprepareJointPolicyPool(3, 1.0f);
+
+    ASSERT_EQ(promotedPriors.size(), 1U);
+    EXPECT_FLOAT_EQ(
+        promotedPriors[0], generator.getGenerated(0).jointPrior);
+    EXPECT_NE(promotedPriors[0], first.jointPrior);
+    const JointActionCandidate promotedNext = generator.peekNext();
+    EXPECT_EQ(promotedNext.moveA, actionsA[2]);
+    EXPECT_EQ(promotedNext.moveB, actionsB[2]);
+
+    std::set<std::pair<uint32_t, uint32_t>> generated = {{
+        static_cast<uint32_t>(first.moveA),
+        static_cast<uint32_t>(first.moveB)}};
+    const JointActionCandidate second = generator.getNext();
+    generated.emplace(
+        static_cast<uint32_t>(second.moveA),
+        static_cast<uint32_t>(second.moveB));
+    generator.reprepareJointPolicyPool(3, 1.0f);
+    while (generator.hasNext()) {
+        const JointActionCandidate candidate = generator.getNext();
+        generated.emplace(
+            static_cast<uint32_t>(candidate.moveA),
+            static_cast<uint32_t>(candidate.moveB));
+    }
+    EXPECT_EQ(generated.size(), 9U);
+}
+
+TEST(NodeTest, ReusedRootRebuildsJointPolicyPool) {
+    Node node(Stockfish::WHITE);
+    node.set_depth(1);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = false;
+    config.jointPolicyTopK = 1;
+    config.rootJointPolicyTopK = 3;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
+    const std::vector<Stockfish::Move> actionsB = {
+        Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6)};
+    const std::vector<float> priors = {0.6f, 0.3f, 0.1f};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, actionsB, priors, priors, false, true, true, config,
+        {}, {}, {0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, 1.0f}, 1));
+    const JointActionCandidate originalChild = node.get_joint_action(0);
+    ASSERT_EQ(originalChild.moveA, actionsA[0]);
+    ASSERT_EQ(originalChild.moveB, actionsB[0]);
+
+    node.set_depth(0);
+    node.configure_root_search(config);
+
+    const JointActionCandidate rescoredChild = node.get_joint_action(0);
+    EXPECT_EQ(rescoredChild.moveA, originalChild.moveA);
+    EXPECT_EQ(rescoredChild.moveB, originalChild.moveB);
+    EXPECT_NE(rescoredChild.jointPrior, originalChild.jointPrior);
+    const JointActionCandidate promotedNext = node.peek_next_joint_action();
+    EXPECT_EQ(promotedNext.moveA, actionsA[2]);
+    EXPECT_EQ(promotedNext.moveB, actionsB[2]);
 }
 
 TEST(NodeTest, RootProgressiveWideningExploresMoreCandidates) {
@@ -1934,6 +2079,85 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     EXPECT_EQ(reused->get_end_in_ply(), 3);
 }
 
+TEST_F(EngineTest, RootMateProofRetainsEveryDefenderContinuation) {
+    Board board;
+    board.set(
+        "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2"
+        "|"
+        "r1bk4/ppp1npNp/2nb3B/3B2B1/3P4/2P5/P1P2PPP/R2QK2R[bpp] b KQ");
+
+    Agent agent;
+    JointActionCandidate rootAction;
+    int rootPlyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_and_retain(
+        agent, board, Stockfish::WHITE, true,
+        rootAction, rootPlyToMate));
+    ASSERT_EQ(board.uci_move(BOARD_A, rootAction.moveA), "d1h5");
+    ASSERT_EQ(rootAction.moveB, Stockfish::MOVE_NONE);
+    ASSERT_EQ(rootPlyToMate, 9);
+
+    Board afterRoot(board);
+    afterRoot.make_moves(rootAction.moveA, rootAction.moveB);
+    const std::vector<Stockfish::Move> defenderReplies =
+        afterRoot.legal_moves(BOARD_A);
+    ASSERT_FALSE(defenderReplies.empty());
+
+    for (Stockfish::Move reply : defenderReplies) {
+        Board continuation(afterRoot);
+        continuation.push_move(BOARD_A, reply);
+
+        JointActionCandidate cachedAction;
+        int cachedPlyToMate = 0;
+        ASSERT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+            agent, continuation, Stockfish::WHITE, true,
+            cachedAction, cachedPlyToMate))
+            << "missing continuation after "
+            << afterRoot.uci_move(BOARD_A, reply);
+        EXPECT_GT(cachedPlyToMate, 0);
+        EXPECT_LE(cachedPlyToMate, rootPlyToMate - 2);
+        EXPECT_NE(cachedAction.moveA, Stockfish::MOVE_NONE);
+        EXPECT_EQ(cachedAction.moveB, Stockfish::MOVE_NONE);
+        EXPECT_TRUE(continuation.is_legal_move(
+            BOARD_A, cachedAction.moveA));
+    }
+}
+
+TEST_F(EngineTest, RootMateContinuationRejectsPartnerBoardChange) {
+    Board board;
+    board.set(
+        "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2"
+        "|"
+        "r1bk4/ppp1npNp/2nb3B/3B2B1/3P4/2P5/P1P2PPP/R2QK2R[bpp] b KQ");
+
+    Agent agent;
+    JointActionCandidate rootAction;
+    int rootPlyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_and_retain(
+        agent, board, Stockfish::WHITE, true,
+        rootAction, rootPlyToMate));
+
+    board.make_moves(rootAction.moveA, rootAction.moveB);
+    const std::vector<Stockfish::Move> defenderReplies =
+        board.legal_moves(BOARD_A);
+    ASSERT_FALSE(defenderReplies.empty());
+    board.push_move(BOARD_A, defenderReplies.front());
+
+    JointActionCandidate cachedAction;
+    int cachedPlyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, board, Stockfish::WHITE, true,
+        cachedAction, cachedPlyToMate));
+
+    const std::vector<Stockfish::Move> partnerMoves =
+        board.legal_moves(BOARD_B);
+    ASSERT_FALSE(partnerMoves.empty());
+    board.push_move(BOARD_B, partnerMoves.front());
+
+    EXPECT_FALSE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, board, Stockfish::WHITE, true,
+        cachedAction, cachedPlyToMate));
+}
+
 TEST_F(EngineTest, ReusedTreeIsReindexedIntoTranspositionTable) {
     SearchParams::RuntimeConfig config;
     auto root = std::make_shared<Node>(Stockfish::WHITE, 101);
@@ -2631,6 +2855,186 @@ TEST_F(EngineTest, SingleBoardForcedMateFoundOnBoardB) {
     EXPECT_EQ(mateAction.moveA, Stockfish::MOVE_NONE);
     EXPECT_EQ(board.uci_move(BOARD_B, mateAction.moveB), "d8h4");
     EXPECT_EQ(matePly, 9);
+}
+
+// A quiet capture can be the first move of a mate on the partner board. Both
+// queen captures send a black knight to Board B, enabling
+// N@f2+ Bxf2 Nxf2# after Black's forced intervening move on Board A.
+TEST_F(EngineTest, RootMateScanFindsCrossBoardCaptureFeedMate) {
+    Board board;
+    board.set(
+        "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Qn/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1"
+        "|"
+        "r4q1k/ppp2p1p/2P2Nnp/4p3/8/2N1Bq~1b/PPPPB2P/R1BKR2n~[NPPPpbb] b - - 0 1");
+    const std::string originalFenA = board.fen(BOARD_A);
+    const std::string originalFenB = board.fen(BOARD_B);
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, mateAction, matePly, 2000));
+    ASSERT_NE(mateAction.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(mateAction.moveB, Stockfish::MOVE_NONE);
+    const std::string feedMove = board.uci_move(BOARD_A, mateAction.moveA);
+    EXPECT_EQ(feedMove, "g4h4");
+    EXPECT_EQ(matePly, 5);
+
+    // Probing every capture and reply must leave the caller's board untouched.
+    EXPECT_EQ(board.fen(BOARD_A), originalFenA);
+    EXPECT_EQ(board.fen(BOARD_B), originalFenB);
+
+    // With h4 empty, the equivalent Qxh5 knight feed must also be recognized.
+    Board alternate;
+    alternate.set(
+        "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Q1/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1"
+        "|"
+        "r4q1k/ppp2p1p/2P2Nnp/4p3/8/2N1Bq~1b/PPPPB2P/R1BKR2n~[NPPPpbb] b - - 0 1");
+    JointActionCandidate alternateMate;
+    int alternateMatePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        alternate, Stockfish::WHITE, true,
+        alternateMate, alternateMatePly, 2000));
+    ASSERT_NE(alternateMate.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(alternate.uci_move(BOARD_A, alternateMate.moveA), "g4h5");
+    EXPECT_EQ(alternateMate.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(alternateMatePly, 5);
+
+    // Swapping the physical boards changes the team id from White to Black,
+    // but must not change the proof or let A-to-B candidates starve B-to-A.
+    Board swapped;
+    swapped.set(
+        "r4q1k/ppp2p1p/2P2Nnp/4p3/8/2N1Bq~1b/PPPPB2P/R1BKR2n~[NPPPpbb] b - - 0 1"
+        "|"
+        "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Qn/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1");
+    JointActionCandidate swappedMate;
+    int swappedMatePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        swapped, Stockfish::BLACK, true, swappedMate, swappedMatePly, 2000));
+    EXPECT_EQ(swappedMate.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(swappedMate.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(swapped.uci_move(BOARD_B, swappedMate.moveB), "g4h4");
+    EXPECT_EQ(swappedMatePly, 5);
+}
+
+// A proven capture-feed mate must not make the prepass return before checking
+// for a shorter mate that is already available on either board.
+TEST_F(EngineTest, RootMateScanPrefersShortestDirectMateOverCaptureFeed) {
+    Board queenDropOnA;
+    queenDropOnA.set(
+        "r1bq1b1r/ppp1k1pp/3npp2/4N1B1/3Q4/2N2N2/PPP2KPP/R6R[NQqbnPPP] w - - 0 1"
+        "|"
+        "r1b1k2r/ppp2ppp/2p1p3/6B1/B2nn3/2P1P3/P4PPP/R1B1K2R[pPP] b kq - 0 1");
+    JointActionCandidate mateOnA;
+    int matePlyOnA = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        queenDropOnA, Stockfish::WHITE, true,
+        mateOnA, matePlyOnA, 15000));
+    ASSERT_NE(mateOnA.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(queenDropOnA.uci_move(BOARD_A, mateOnA.moveA), "Q@f7")
+        << "reported ply " << matePlyOnA;
+    EXPECT_EQ(mateOnA.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(matePlyOnA, 5);
+
+    Board queenDropOnB;
+    queenDropOnB.set(
+        "r2q1rk1/ppp1bpBp/3p4/3B4/3pP3/1B1P4/PPP2PPP/R2b1RK1[NNNnnp] b - - 0 1"
+        "|"
+        "r2q1r1k/p1pb1pnp/2pbp2N/3n4/3Pp2P/2B1P3/PPP2PP1/R2QK2R[Qp] w KQ - 0 1");
+    JointActionCandidate mateOnB;
+    int matePlyOnB = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        queenDropOnB, Stockfish::BLACK, true,
+        mateOnB, matePlyOnB, 15000));
+    EXPECT_EQ(mateOnB.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(mateOnB.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(queenDropOnB.uci_move(BOARD_B, mateOnB.moveB), "Q@g8")
+        << "reported ply " << matePlyOnB;
+    EXPECT_EQ(matePlyOnB, 3);
+}
+
+TEST_F(EngineTest, RootForcedLossScanProvesEveryDefenseAndSelectsDelay) {
+    Board board;
+    board.set(
+        "rQ2k2r/p1B1qppp/b1p1pn2/3p4/3P4/2PbPNB1/PR2NPPP/3Q1K1R[Npn] b - - 0 1"
+        "|"
+        "r1b2k1r/pp3ppp/3p4/1N1Pq3/6n1/B5P1/P1P2PPP/3R1RK1[BPPbnpp] b - - 0 1");
+    const std::string originalFenA = board.fen(BOARD_A);
+    const std::string originalFenB = board.fen(BOARD_B);
+
+    JointActionCandidate delayingAction;
+    int lossPly = 0;
+    ASSERT_TRUE(Agent::find_root_forced_loss(
+        board, Stockfish::BLACK, false,
+        delayingAction, lossPly, 40000));
+    EXPECT_NE(delayingAction.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(delayingAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_TRUE(board.is_legal_move(BOARD_A, delayingAction.moveA));
+    EXPECT_GT(lossPly, 0);
+    EXPECT_EQ(board.fen(BOARD_A), originalFenA);
+    EXPECT_EQ(board.fen(BOARD_B), originalFenB);
+
+    JointActionCandidate unprovenAction;
+    int unprovenPly = 0;
+    EXPECT_FALSE(Agent::find_root_forced_loss(
+        board, Stockfish::BLACK, false,
+        unprovenAction, unprovenPly, 1));
+    EXPECT_EQ(board.fen(BOARD_A), originalFenA);
+    EXPECT_EQ(board.fen(BOARD_B), originalFenB);
+
+    Board safePosition;
+    JointActionCandidate falseLossAction;
+    int falseLossPly = 0;
+    EXPECT_FALSE(Agent::find_root_forced_loss(
+        safePosition, Stockfish::WHITE, true,
+        falseLossAction, falseLossPly, 2000));
+}
+
+TEST_F(EngineTest, RootMateScanFindsDownTimeCaptureFeedMateInOne) {
+    const std::string targetFen =
+        "7k/8/8/8/8/8/2PPB3/2BKR3[] b - - 0 1";
+
+    Board board;
+    board.set(
+        "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Qn/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1"
+        "|" + targetFen);
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, false, mateAction, matePly, 2000));
+    ASSERT_NE(mateAction.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(mateAction.moveB, Stockfish::MOVE_NONE);
+    const std::string feedMove = board.uci_move(BOARD_A, mateAction.moveA);
+    EXPECT_TRUE(feedMove == "g4h4" || feedMove == "g4h5") << feedMove;
+    EXPECT_EQ(matePly, 3);
+
+    Board swapped;
+    swapped.set(
+        targetFen + "|"
+        "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Qn/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1");
+    JointActionCandidate swappedMate;
+    int swappedMatePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        swapped, Stockfish::BLACK, false,
+        swappedMate, swappedMatePly, 2000));
+    EXPECT_EQ(swappedMate.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(swappedMate.moveB, Stockfish::MOVE_NONE);
+    const std::string swappedFeed =
+        swapped.uci_move(BOARD_B, swappedMate.moveB);
+    EXPECT_TRUE(swappedFeed == "g4h4" || swappedFeed == "g4h5")
+        << swappedFeed;
+    EXPECT_EQ(swappedMatePly, 3);
+
+    // The same knight feed is not a forced win when the time-ahead opponent
+    // can answer by mating the board on which the capture was made.
+    Board losingCapture;
+    losingCapture.set(
+        "3qk3/8/8/8/8/5P2/n2PP2P/R2BKB2[] w - - 0 1"
+        "|" + targetFen);
+    JointActionCandidate rejectedAction;
+    int rejectedPly = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        losingCapture, Stockfish::WHITE, false,
+        rejectedAction, rejectedPly, 2000));
 }
 
 // Regression: our own team being mated on Board A must never be reported as a

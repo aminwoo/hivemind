@@ -66,6 +66,15 @@ private:
         std::string signature;
     };
 
+    struct MateContinuation {
+        uint64_t positionHash = 0;
+        std::string signature;
+        Stockfish::Color teamSide = Stockfish::WHITE;
+        bool teamHasTimeAdvantage = true;
+        JointActionCandidate action;
+        int plyToMate = 0;
+    };
+
     std::vector<SearchThread*> searchThreads;
     std::vector<std::thread> workerPool_;
     std::atomic<bool> running;                            
@@ -94,6 +103,10 @@ private:
     // Tree reuse support (CrazyAra-style). Retain every generated opponent
     // response below the selected move, not only the predicted response.
     std::vector<RetainedRootCandidate> nextRootCandidates_;
+    // Exact positions and winning moves emitted by the bounded mate solver.
+    // Unlike the synthetic one-edge search tree used for UCI reporting, these
+    // retain every defender branch that the proof recursively verified.
+    std::vector<MateContinuation> mateContinuations_;
     uint64_t lastSearchHash_ = 0;            // Hash of last search position
     
     // Garbage collection thread for async tree cleanup
@@ -112,6 +125,9 @@ private:
                           size_t workerCount);
     void wait_for_workers();
     void reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot);
+    bool try_reuse_mate_continuation(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate) const;
     static std::string format_root_aware_uci_score(
         const std::shared_ptr<Node>& root,
         const std::shared_ptr<Node>& pvChild,
@@ -189,6 +205,17 @@ public:
      * @brief Performs checkmate detection at the root before starting MCTS.
      */
     static bool find_root_mate(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET);
+
+    /**
+     * @brief Proves that every legal root action permits a forced opponent mate.
+     *
+     * Returns the action that delays terminal loss longest. Exhausting the
+     * bounded probe budget is reported conservatively as "not proven".
+     */
+    static bool find_root_forced_loss(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET);
@@ -289,5 +316,20 @@ public:
      * generated opponent response beneath it.
      */
     void store_next_root_candidates(Board& board, bool teamHasTimeAdvantage);
+
+private:
+    static bool search_single_board_forced_mate_impl(
+        Board& board, int boardNum, Stockfish::Color attackerColor,
+        int currentPly, int maxAttackerMoves,
+        Stockfish::Move& outMove, int& outPlyToMate,
+        MateSearchBudget* budget,
+        std::vector<MateContinuation>* continuations);
+    static bool find_root_mate_impl(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget,
+        std::vector<MateContinuation>* continuations,
+        MateSearchBudget* hardBudget = nullptr,
+        bool includeCaptureFeeds = true);
     
 };
