@@ -41,7 +41,7 @@ std::vector<Stockfish::Move> immediate_mates_on_board(
 bool has_unavoidable_waiting_board_mate(Board& board,
                                         Stockfish::Color teamToPlay,
                                         bool teamToPlayHasTimeAdvantage,
-                                        int searchPly) {
+                                        const std::array<int, 2>& boardSearchPlies) {
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamToPlay;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamToPlay;
     if (boardAOnTurn == boardBOnTurn) {
@@ -70,8 +70,12 @@ bool has_unavoidable_waiting_board_mate(Board& board,
         }
 
         bool matePersists = false;
+        std::array<int, 2> replySearchPlies = boardSearchPlies;
+        if (reply != Stockfish::MOVE_NONE) {
+            ++replySearchPlies[activeBoard];
+        }
         if (!board.is_checkmate(~teamToPlay, !teamToPlayHasTimeAdvantage)
-            && !board.is_draw(searchPly + 1)) {
+            && !board.is_draw(replySearchPlies)) {
             for (Stockfish::Move matingMove : matingMoves) {
                 if (!board.is_legal_move(waitingBoard, matingMove)) {
                     continue;
@@ -102,7 +106,7 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
-                                             int searchPly,
+                                             const std::array<int, 2>& boardSearchPlies,
                                              int* endInPly) {
     if (endInPly) {
         *endInPly = 0;
@@ -126,11 +130,13 @@ TerminalOutcome classify_terminal_position(Board& board,
         }
         return TerminalOutcome::LOSS;
     }
-    if (board.is_draw(searchPly)) {
+    if (board.is_draw(boardSearchPlies)) {
         return TerminalOutcome::DRAW;
     }
-    if (searchPly > 0 && has_unavoidable_waiting_board_mate(
-            board, teamToPlay, teamToPlayHasTimeAdvantage, searchPly)) {
+    if ((boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
+        && has_unavoidable_waiting_board_mate(
+            board, teamToPlay, teamToPlayHasTimeAdvantage,
+            boardSearchPlies)) {
         if (endInPly) {
             // One forced reply, then the opponent's mating move. Terminal
             // nodes use distance 1, so this position is three solver plies out.
@@ -139,6 +145,17 @@ TerminalOutcome classify_terminal_position(Board& board,
         return TerminalOutcome::LOSS;
     }
     return TerminalOutcome::NONE;
+}
+
+TerminalOutcome classify_terminal_position(Board& board,
+                                             Stockfish::Color teamToPlay,
+                                             Stockfish::Color rootTeam,
+                                             bool rootTeamHasTimeAdvantage,
+                                             int searchPly,
+                                             int* endInPly) {
+    return classify_terminal_position(
+        board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
+        {searchPly, searchPly}, endInPly);
 }
 
 SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {
@@ -197,8 +214,8 @@ void SearchThread::set_runtime_config(const SearchParams::RuntimeConfig& config)
     runtimeConfig = config;
 }
 
-void SearchThread::backup(vector<TrajectoryEntry>& trajectory, 
-                          Board& board, float valueToBackup) {
+void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
+                          float valueToBackup) {
     // Process nodes in reverse order (from leaf to root)
     NodeType childType = trajectory.empty()
         ? NodeType::UNSOLVED
@@ -371,13 +388,19 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
         
         // Check for terminal states
-        // Pass the tree depth (trajectory size minus 1) as ply so that 2-fold repetitions
-        // within the search tree are correctly detected as draws.
-        // We subtract 1 because trajectoryBuffer includes the root entry at index 0,
-        // and the root position should use ply=0 (requiring 3-fold repetition, not 2-fold).
-        // Without this, a root position with only 2-fold repetition is incorrectly
-        // treated as a draw on every iteration, preventing the root from ever expanding.
+        // Track search moves independently per board. A combined tree depth is
+        // insufficient in bughouse: one board can move while the other waits,
+        // and an existing twofold on the waiting board is not thereby repeated.
         int searchPly = static_cast<int>(trajectoryBuffer.size()) - 1;
+        std::array<int, 2> boardSearchPlies = {0, 0};
+        for (const TrajectoryEntry& entry : trajectoryBuffer) {
+            if (entry.action.moveA != Stockfish::MOVE_NONE) {
+                ++boardSearchPlies[BOARD_A];
+            }
+            if (entry.action.moveB != Stockfish::MOVE_NONE) {
+                ++boardSearchPlies[BOARD_B];
+            }
+        }
         searchInfo->set_max_depth(searchPly);
         const NodeType solvedType = SearchParams::ENABLE_MCTS_SOLVER
             ? ctx.leaf->get_node_type()
@@ -407,7 +430,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
             board, ctx.teamToPlay, root->get_team_to_play(),
-            teamHasTimeAdvantage, searchPly, &terminalEndInPly);
+            teamHasTimeAdvantage, boardSearchPlies, &terminalEndInPly);
         if (terminalOutcome != TerminalOutcome::NONE) {
             ctx.isTerminal = true;
             if (terminalOutcome == TerminalOutcome::WIN) {
@@ -451,6 +474,34 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             : !teamHasTimeAdvantage;
         ctx.leafHash = board.hash_key(leafTeamHasTimeAdvantage);
 
+        ctx.boardAOnTurn = board.side_to_move(BOARD_A) == ctx.teamToPlay;
+        ctx.boardBOnTurn = board.side_to_move(BOARD_B) == ~ctx.teamToPlay;
+        auto prepare_actions = [&](int boardNumber, bool onTurn,
+                                   vector<Stockfish::Move>& actions,
+                                   vector<uint8_t>& captures,
+                                   vector<int>& policyIndices) {
+            if (onTurn) {
+                actions = board.legal_moves(boardNumber);
+                std::erase_if(actions, [&](Stockfish::Move move) {
+                    return !is_policy_move_representable(
+                        board, boardNumber, move);
+                });
+            }
+            actions.push_back(Stockfish::MOVE_NONE);
+            captures.reserve(actions.size());
+            policyIndices.reserve(actions.size());
+            const Stockfish::Color side = board.side_to_move(boardNumber);
+            for (Stockfish::Move move : actions) {
+                captures.push_back(move != Stockfish::MOVE_NONE
+                    && board.is_capture(boardNumber, move) ? 1 : 0);
+                policyIndices.push_back(get_fast_policy_index(move, side));
+            }
+        };
+        prepare_actions(BOARD_A, ctx.boardAOnTurn, ctx.actionsA,
+                        ctx.capturesA, ctx.policyIndicesA);
+        prepare_actions(BOARD_B, ctx.boardBOnTurn, ctx.actionsB,
+                        ctx.capturesB, ctx.policyIndicesB);
+
         // Convert board to planes for this batch slot
         board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(), 
                         ctx.teamToPlay, ctx.sitPlaneActive);
@@ -482,7 +533,6 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
 
 void SearchThread::process_batch(
     SearchBatch& batch,
-    Board& board,
     bool teamHasTimeAdvantage,
     const Engine::HalfInferenceOutputs& inferenceOutputs) {
     vector<LeafContext>& batchContexts = batch.contexts;
@@ -492,21 +542,14 @@ void SearchThread::process_batch(
             if (ctx.hasEvaluationReservation) {
                 ctx.leaf->release_evaluation_reservation();
             }
-            backup(ctx.trajectory, board, ctx.terminalValue);
+            backup(ctx.trajectory, ctx.terminalValue);
         } else {
             if (SearchParams::ENABLE_MCTS_SOLVER
                 && ctx.leaf->get_node_type() != NodeType::UNSOLVED) {
                 ctx.leaf->release_evaluation_reservation();
-                backup(ctx.trajectory, board, 0.0f);
+                backup(ctx.trajectory, 0.0f);
                 inferenceIdx++;
                 continue;
-            }
-
-            for (const TrajectoryEntry& entry : ctx.trajectory) {
-                const JointActionCandidate& action = entry.action;
-                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
-                    board.make_moves(action.moveA, action.moveB);
-                }
             }
 
             // Non-terminal node - process NN output and expand
@@ -532,35 +575,10 @@ void SearchThread::process_batch(
                     + inferenceIdx * jointFactorRank * jointVocabularySize
                 : nullptr;
 
-            Board& leafBoard = board;
-            
             // Compute whether the team at this leaf has time advantage
             // Time advantage alternates: if root team has it, opponent team doesn't
             Stockfish::Color rootTeam = root->get_team_to_play();
             bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == rootTeam) ? teamHasTimeAdvantage : !teamHasTimeAdvantage;
-            
-            // Get legal moves for each board
-            vector<Stockfish::Move> actionsA;
-            vector<Stockfish::Move> actionsB;
-            actionsA.reserve(64);
-            actionsB.reserve(64);
-            
-            // Track which boards are on turn for the team
-            bool boardAOnTurn = (leafBoard.side_to_move(BOARD_A) == ctx.teamToPlay);
-            bool boardBOnTurn = (leafBoard.side_to_move(BOARD_B) == ~ctx.teamToPlay);
-            
-            if (boardAOnTurn) {
-                actionsA = leafBoard.legal_moves(BOARD_A);
-                std::erase_if(actionsA, [&leafBoard](Stockfish::Move move) {
-                    return !is_policy_move_representable(leafBoard, BOARD_A, move);
-                });
-            }
-            if (boardBOnTurn) {
-                actionsB = leafBoard.legal_moves(BOARD_B);
-                std::erase_if(actionsB, [&leafBoard](Stockfish::Move move) {
-                    return !is_policy_move_representable(leafBoard, BOARD_B, move);
-                });
-            }
             
             vector<float> priorsA;
             vector<float> priorsB;
@@ -571,55 +589,37 @@ void SearchThread::process_batch(
             // Without a time advantage and with both boards on turn, a pass on one
             // board is only legal when the other board captures.
             
-            if (actionsA.empty()) {
+            if (ctx.actionsA.size() == 1) {
                 // Not on turn or no legal moves - MOVE_NONE is only option
-                actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA.push_back(1.0f);
             } else {
                 // On turn with legal moves - can also pass (MOVE_NONE)
-                actionsA.push_back(Stockfish::MOVE_NONE);
                 priorsA = get_normalized_probability(
-                    batchPiA, actionsA, BOARD_A, leafBoard);
+                    batchPiA, ctx.policyIndicesA);
             }
             
-            if (actionsB.empty()) {
+            if (ctx.actionsB.size() == 1) {
                 // Not on turn or no legal moves - MOVE_NONE is only option
-                actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB.push_back(1.0f);
             } else {
                 // On turn with legal moves - can also pass (MOVE_NONE)
-                actionsB.push_back(Stockfish::MOVE_NONE);
                 priorsB = get_normalized_probability(
-                    batchPiB, actionsB, BOARD_B, leafBoard);
+                    batchPiB, ctx.policyIndicesB);
             }
 
-            auto capture_flags = [&leafBoard](const vector<Stockfish::Move>& actions,
-                                              int boardNumber) {
-                vector<uint8_t> captures;
-                captures.reserve(actions.size());
-                for (Stockfish::Move move : actions) {
-                    captures.push_back(move != Stockfish::MOVE_NONE
-                        && leafBoard.is_capture(boardNumber, move) ? 1 : 0);
-                }
-                return captures;
-            };
-            const vector<uint8_t> capturesA = capture_flags(actionsA, BOARD_A);
-            const vector<uint8_t> capturesB = capture_flags(actionsB, BOARD_B);
-
-            auto action_factors = [&leafBoard, jointFactorRank,
-                                   jointVocabularySize](
-                const vector<Stockfish::Move>& actions, int boardNumber,
+            auto action_factors = [jointFactorRank, jointVocabularySize](
+                const vector<Stockfish::Move>& actions,
+                const vector<int>& policyIndices,
                 const __half* factors) {
                 vector<float> result;
                 if (!factors || jointFactorRank == 0) {
                     return result;
                 }
                 result.reserve(actions.size() * jointFactorRank);
-                const Stockfish::Color side = leafBoard.side_to_move(boardNumber);
-                for (Stockfish::Move move : actions) {
-                    const size_t policyIndex = move == Stockfish::MOVE_NONE
+                for (size_t index = 0; index < actions.size(); ++index) {
+                    const size_t policyIndex = actions[index] == Stockfish::MOVE_NONE
                         ? NB_POLICY_VALUES()
-                        : static_cast<size_t>(get_fast_policy_index(move, side));
+                        : static_cast<size_t>(policyIndices[index]);
                     for (size_t factor = 0; factor < jointFactorRank; ++factor) {
                         result.push_back(__half2float(
                             factors[factor * jointVocabularySize + policyIndex]));
@@ -628,16 +628,18 @@ void SearchThread::process_batch(
                 return result;
             };
             const vector<float> jointFactorsA = action_factors(
-                actionsA, BOARD_A, batchJointFactorsA);
+                ctx.actionsA, ctx.policyIndicesA, batchJointFactorsA);
             const vector<float> jointFactorsB = action_factors(
-                actionsB, BOARD_B, batchJointFactorsB);
+                ctx.actionsB, ctx.policyIndicesB, batchJointFactorsB);
 
             // Expand leaf node and register in transposition table (MCGS)
             // Use leafTeamHasTimeAdvantage for the team making the move at this leaf.
             // The generator creates joint actions that THIS team will play.
-            expand_leaf_node(ctx.leaf.get(), actionsA, actionsB, priorsA, priorsB,
-                             leafTeamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
-                             capturesA, capturesB, jointFactorsA, jointFactorsB,
+            expand_leaf_node(ctx.leaf.get(), ctx.actionsA, ctx.actionsB,
+                             priorsA, priorsB, leafTeamHasTimeAdvantage,
+                             ctx.boardAOnTurn, ctx.boardBOnTurn,
+                             ctx.capturesA, ctx.capturesB,
+                             jointFactorsA, jointFactorsB,
                              jointFactorRank, ctx.leafHash);
             ctx.leaf->release_evaluation_reservation();
                 
@@ -694,14 +696,7 @@ void SearchThread::process_batch(
             }
             neuralValue = std::clamp(neuralValue, -1.0f, 1.0f);
 
-            backup(ctx.trajectory, leafBoard, neuralValue);
-
-            for (auto it = ctx.trajectory.rbegin(); it != ctx.trajectory.rend(); ++it) {
-                const JointActionCandidate& action = it->action;
-                if (action.moveA != Stockfish::MOVE_NONE || action.moveB != Stockfish::MOVE_NONE) {
-                    board.unmake_moves(action.moveA, action.moveB);
-                }
-            }
+            backup(ctx.trajectory, neuralValue);
 
             inferenceIdx++;
         }
@@ -714,14 +709,14 @@ void SearchThread::process_batch(
     batch.validInferenceCount = 0;
 }
 
-void SearchThread::abort_batch(SearchBatch& batch, Board& board) {
+void SearchThread::abort_batch(SearchBatch& batch) {
     int completedTerminals = 0;
     for (LeafContext& ctx : batch.contexts) {
         if (ctx.hasEvaluationReservation) {
             ctx.leaf->release_evaluation_reservation();
         }
         if (ctx.isTerminal) {
-            backup(ctx.trajectory, board, ctx.terminalValue);
+            backup(ctx.trajectory, ctx.terminalValue);
             completedTerminals++;
         } else {
             cancel_virtual_losses(ctx.trajectory);
@@ -742,12 +737,12 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
         SearchBatch& initialBatch = batches[0];
         collect_batch(initialBatch, board, teamHasTimeAdvantage, true);
         if (initialBatch.validInferenceCount == 0) {
-            process_batch(initialBatch, board, teamHasTimeAdvantage, {});
+            process_batch(initialBatch, teamHasTimeAdvantage, {});
             return;
         }
         if (!engine->enqueueInferenceHalf(
                 initialBatch.observations, inferenceWorkerIndex)) {
-            abort_batch(initialBatch, board);
+            abort_batch(initialBatch);
             throw std::runtime_error("Batch inference submission failed");
         }
         pendingBatchIndex = 0;
@@ -764,20 +759,20 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
     if (!engine->synchronizeInferenceHalf(
             inferenceOutputs, inferenceWorkerIndex)) {
         pendingBatchIndex = -1;
-        abort_batch(completedBatch, board);
-        abort_batch(lookaheadBatch, board);
+        abort_batch(completedBatch);
+        abort_batch(lookaheadBatch);
         throw std::runtime_error("Batch inference completion failed");
     }
     pendingBatchIndex = -1;
-    process_batch(completedBatch, board, teamHasTimeAdvantage, inferenceOutputs);
+    process_batch(completedBatch, teamHasTimeAdvantage, inferenceOutputs);
 
     if (lookaheadBatch.validInferenceCount == 0) {
-        process_batch(lookaheadBatch, board, teamHasTimeAdvantage, {});
+        process_batch(lookaheadBatch, teamHasTimeAdvantage, {});
         return;
     }
     if (!engine->enqueueInferenceHalf(
             lookaheadBatch.observations, inferenceWorkerIndex)) {
-        abort_batch(lookaheadBatch, board);
+        abort_batch(lookaheadBatch);
         throw std::runtime_error("Batch inference submission failed");
     }
     pendingBatchIndex = lookaheadBatchIndex;
@@ -795,10 +790,10 @@ void SearchThread::finish_pending_iteration(Board& board, Engine* engine,
     Engine::HalfInferenceOutputs inferenceOutputs;
     if (!engine->synchronizeInferenceHalf(
             inferenceOutputs, inferenceWorkerIndex)) {
-        abort_batch(completedBatch, board);
+        abort_batch(completedBatch);
         throw std::runtime_error("Batch inference completion failed");
     }
-    process_batch(completedBatch, board, teamHasTimeAdvantage, inferenceOutputs);
+    process_batch(completedBatch, teamHasTimeAdvantage, inferenceOutputs);
 }
 
 void SearchThread::discard_pending_iteration(Board& board, Engine* engine) {
@@ -811,7 +806,7 @@ void SearchThread::discard_pending_iteration(Board& board, Engine* engine) {
     SearchBatch& completedBatch = batches[completedBatchIndex];
     Engine::HalfInferenceOutputs dummyOutputs;
     engine->synchronizeInferenceHalf(dummyOutputs, inferenceWorkerIndex);
-    abort_batch(completedBatch, board);
+    abort_batch(completedBatch);
 }
 
 SearchThread::CanonicalChildResult SearchThread::canonicalize_child(

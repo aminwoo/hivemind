@@ -107,7 +107,7 @@ constexpr float CPUCT_BASE = 19652.0f;
 constexpr bool ENABLE_DYNAMIC_FPU = true;
 
 /// Reduction from parent Q-value for unvisited nodes scaled by sqrt of visited policy.
-/// Q_init = clamp(Q_parent - FPU_REDUCTION * sqrt(sum_visited_priors), -1.0, 1.0)
+/// Q_init is clamped to Q_parent +/- 1 so constant value offsets do not saturate it.
 /// Lc0/CrazyAra default: 1.0
 constexpr float FPU_REDUCTION = 1.0f;
 
@@ -304,6 +304,13 @@ constexpr uint64_t MATE_SEARCH_NODES_PER_SEARCH_NODE = 10;
 // short searches from falling through to MCTS before the single-board solver
 // has had enough work to prove tactical mates such as Qh5.
 constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 50;
+
+/**
+ * A joint proof node can enumerate and apply many board-move combinations,
+ * making it substantially more expensive than one node in the optimized
+ * single-board mate scan. Scale the shared pre-pass allowance accordingly.
+ */
+constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
 
 // =============================================================================
 // Progressive Widening Parameters

@@ -49,6 +49,30 @@ struct JointActionRules {
     bool boardBCanMove = false;
 };
 
+inline bool is_joint_action_legal(const JointActionRules& rules,
+                                  Stockfish::Move moveA,
+                                  Stockfish::Move moveB,
+                                  bool moveAIsCapture,
+                                  bool moveBIsCapture) {
+    const bool sitsOnA = moveA == Stockfish::MOVE_NONE;
+    const bool sitsOnB = moveB == Stockfish::MOVE_NONE;
+    if (sitsOnA && sitsOnB) {
+        return is_double_sit_legal(
+            rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn);
+    }
+    if (sitsOnA && rules.boardACanMove) {
+        return is_single_pass_legal(
+            rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn,
+            moveBIsCapture);
+    }
+    if (sitsOnB && rules.boardBCanMove) {
+        return is_single_pass_legal(
+            rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn,
+            moveAIsCapture);
+    }
+    return true;
+}
+
 // Hash function for pair<size_t, size_t> used in visited set
 struct PairHash {
     size_t operator()(const std::pair<size_t, size_t>& p) const {
@@ -90,23 +114,10 @@ struct JointActionCandidate {
           priorA(pA), priorB(pB),
           idxA(iA), idxB(iB) {
 
-        const bool sitsOnA = mA == Stockfish::MOVE_NONE;
-        const bool sitsOnB = mB == Stockfish::MOVE_NONE;
-        bool isInvalidSit = false;
-        if (sitsOnA && sitsOnB) {
-            isInvalidSit = !is_double_sit_legal(
-                rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn);
-        } else if (sitsOnA && rules.boardACanMove) {
-            isInvalidSit = !is_single_pass_legal(
-                rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn,
-                moveBIsCapture);
-        } else if (sitsOnB && rules.boardBCanMove) {
-            isInvalidSit = !is_single_pass_legal(
-                rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn,
-                moveAIsCapture);
-        }
-
-        jointPrior = isInvalidSit ? -1.0f : pA * pB;
+        jointPrior = is_joint_action_legal(
+            rules, mA, mB, moveAIsCapture, moveBIsCapture)
+            ? pA * pB
+            : -1.0f;
         expansionPriority = jointPrior;
         gumbelScore = std::log(std::max(jointPrior, 1.0e-30f));
     }

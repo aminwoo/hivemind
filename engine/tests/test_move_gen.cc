@@ -57,6 +57,13 @@ public:
         return agent.try_reuse_mate_continuation(
             board, teamSide, teamHasTimeAdvantage, action, plyToMate);
     }
+
+    static std::string format_root_aware_uci_score(
+        const std::shared_ptr<Node>& root,
+        const std::shared_ptr<Node>& pvChild,
+        float childQ) {
+        return Agent::format_root_aware_uci_score(root, pvChild, childQ);
+    }
 };
 
 // Fixture for engine initialization
@@ -110,6 +117,28 @@ TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
             }
         }
     }
+}
+
+TEST(NodeTest, ProvenRootDrawOverridesUnvisitedPvChildScore) {
+    auto root = std::make_shared<Node>(Stockfish::BLACK);
+    auto child = std::make_shared<Node>(Stockfish::WHITE);
+    root->mark_as_draw(1);
+
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, child, SearchParams::Q_INIT),
+        "score cp 0");
+}
+
+TEST(NodeTest, ProvenPvChildDrawOverridesItsProvisionalQ) {
+    auto root = std::make_shared<Node>(Stockfish::BLACK);
+    auto child = std::make_shared<Node>(Stockfish::WHITE);
+    child->mark_as_draw(1);
+
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, child, SearchParams::Q_INIT),
+        "score cp 0");
 }
 
 TEST_F(EngineTest, HalfInputRepresentationMatchesFloatConversion) {
@@ -557,9 +586,8 @@ TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
         TrajectoryEntry(child.get(), sit, -1),
     };
 
-    Board board;
     SearchThread searchThread;
-    searchThread.backup(trajectory, board, 0.5f);
+    searchThread.backup(trajectory, 0.5f);
 
     EXPECT_FLOAT_EQ(parent.get_child_q(0), -0.5f);
 }
@@ -580,9 +608,8 @@ TEST_F(EngineTest, CommonBackupPropagatesProvenLeafState) {
         TrajectoryEntry(&parent, JointActionCandidate(), 0),
         TrajectoryEntry(child.get(), JointActionCandidate(), -1),
     };
-    Board board;
     SearchThread searchThread;
-    searchThread.backup(trajectory, board, 0.25f);
+    searchThread.backup(trajectory, 0.25f);
 
     EXPECT_EQ(parent.get_node_type(), NodeType::WIN);
     EXPECT_EQ(parent.get_end_in_ply(), 4);
@@ -1277,6 +1304,80 @@ TEST(NodeTest, DynamicFpuBoostsUnvisitedChildInWinningParent) {
     EXPECT_TRUE(selection.hasEvaluationReservation);
     node.remove_virtual_loss(selection.childIdx);
     selection.child->release_evaluation_reservation();
+}
+
+TEST(NodeTest, DynamicFpuIsInvariantToParentValueOffset) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableDynamicFpu = true;
+    config.enableGumbelRootSearch = false;
+    config.fpuReduction = 1.0f;
+    config.cpuctInit = 0.0f;
+    config.cpuctBase = 1.0e20f;
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2)},
+        {Stockfish::MOVE_NONE}, {0.1f, 0.9f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+
+    // Offset the parent and its visited edge to -1. An absolute [-1, 1]
+    // clamp would flatten the unvisited edge to -1 too and select it by index.
+    node.update(1, -1.0f);
+    Node::ChildSelection selection =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(selection.childIdx, 1);
+    if (selection.hasEvaluationReservation) {
+        selection.child->release_evaluation_reservation();
+    }
+    node.remove_virtual_loss(selection.childIdx);
+}
+
+TEST(NodeTest, OrdinaryPuctFindsBestUnvisitedPriorAfterGumbelExpansion) {
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    config.enableGumbelRootSearch = true;
+    config.rootGumbelPoolSize = 8;
+    config.rootGumbelInitialCandidates = 8;
+    config.rootNoiseSeed = 17;
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3),
+        Stockfish::Move(4), Stockfish::Move(5), Stockfish::Move(6),
+        Stockfish::Move(7), Stockfish::Move(8)};
+
+    ASSERT_TRUE(node.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE},
+        {0.130f, 0.129f, 0.128f, 0.127f,
+         0.124f, 0.123f, 0.120f, 0.119f},
+        {1.0f}, false, true, false, config));
+    JointActionCandidate action;
+    while (node.get_num_generated() < actionsA.size()) {
+        ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config),
+                  nullptr);
+    }
+
+    int expectedIdx = -1;
+    float highestPrior = -1.0f;
+    for (size_t index = 0; index < node.get_num_generated(); ++index) {
+        const float prior = node.get_joint_action(static_cast<int>(index)).jointPrior;
+        if (prior > highestPrior) {
+            highestPrior = prior;
+            expectedIdx = static_cast<int>(index);
+        }
+    }
+    ASSERT_NE(expectedIdx, 0);  // The Gumbel pool actually reordered this seed.
+
+    config.enableGumbelRootSearch = false;
+    node.configure_root_search(config);
+    node.update_terminal(0.0f);  // Give the PUCT exploration term a nonzero N.
+    Node::ChildSelection selection =
+        node.select_child_and_apply_virtual_loss(config);
+    EXPECT_EQ(selection.childIdx, expectedIdx);
+    if (selection.hasEvaluationReservation) {
+        selection.child->release_evaluation_reservation();
+    }
+    node.remove_virtual_loss(selection.childIdx);
 }
 
 TEST(NodeTest, GumbelRootBalancesCandidatesBeforeSequentialHalving) {
@@ -2557,6 +2658,94 @@ TEST_F(EngineTest, SingleBoardForcedMateOnPosition4) {
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     std::cout << "Starting position mate search time: " << ms << " ms, found=" << startFound << std::endl;
     EXPECT_FALSE(startFound);
+}
+
+TEST_F(EngineTest, JointForcedMateWithOnlyOneBoardOnTurn) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1");
+
+    ASSERT_EQ(board.side_to_move(BOARD_A), Stockfish::WHITE);
+    ASSERT_EQ(board.side_to_move(BOARD_B), Stockfish::WHITE);
+
+    Stockfish::Move queenCheck = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f2f8") {
+            queenCheck = move;
+            break;
+        }
+    }
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(board.gives_check(BOARD_A, queenCheck));
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, mateAction, matePly));
+    EXPECT_TRUE(mateAction.moveA != Stockfish::MOVE_NONE
+                || mateAction.moveB != Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_A, mateAction.moveA), "f2f8");
+    EXPECT_EQ(mateAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(matePly, 3);
+}
+
+TEST_F(EngineTest, JointForcedMateAccountsForCrossBoardDefense) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "7k/8/8/8/8/8/n7/R6K[] w - - 0 1");
+
+    auto find_move = [&](int boardNum, const std::string& uci) {
+        for (Stockfish::Move move : board.legal_moves(boardNum)) {
+            if (board.uci_move(boardNum, move) == uci) {
+                return move;
+            }
+        }
+        return Stockfish::MOVE_NONE;
+    };
+
+    const Stockfish::Move queenCheck = find_move(BOARD_A, "f2f8");
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    board.make_moves(queenCheck, Stockfish::MOVE_NONE);
+
+    const Stockfish::Move forcedRookCapture = find_move(BOARD_A, "a8f8");
+    const Stockfish::Move partnerKnightCapture = find_move(BOARD_B, "a1a2");
+    ASSERT_NE(forcedRookCapture, Stockfish::MOVE_NONE);
+    ASSERT_NE(partnerKnightCapture, Stockfish::MOVE_NONE);
+    board.make_moves(forcedRookCapture, partnerKnightCapture);
+    EXPECT_EQ(board.count_in_hand(
+        BOARD_A, Stockfish::BLACK, Stockfish::KNIGHT), 1);
+
+    const Stockfish::Move rookCheck = find_move(BOARD_A, "f1f8");
+    ASSERT_NE(rookCheck, Stockfish::MOVE_NONE);
+    board.make_moves(rookCheck, Stockfish::MOVE_NONE);
+    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, false));
+    board.unmake_moves(rookCheck, Stockfish::MOVE_NONE);
+    board.unmake_moves(forcedRookCapture, partnerKnightCapture);
+    board.unmake_moves(queenCheck, Stockfish::MOVE_NONE);
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, mateAction, matePly));
+}
+
+TEST_F(EngineTest, JointForcedMateBudgetExhaustionIsConservative) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] b KQkq - 0 1");
+
+    const uint64_t hashBefore = board.hash_key(false);
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        board, Stockfish::WHITE, false, mateAction, matePly, 1));
+    EXPECT_EQ(board.hash_key(false), hashBefore);
 }
 
 TEST_F(EngineTest, ImmediateMateIn1DetectedInAllModesAndTurnConfigurations) {
