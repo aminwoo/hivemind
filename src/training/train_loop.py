@@ -17,6 +17,7 @@ from src.preprocessing.convert_selfplay_data import (
     DEFAULT_Q_VALUE_RATIO,
     DEFAULT_REPLAY_FILES,
     DEFAULT_REPLAY_SELECTION_FRACTION,
+    DEFAULT_RL_SAMPLES_PER_SHARD,
     DEFAULT_RL_VALIDATION_FRACTION,
     convert_to_split_parquet,
 )
@@ -331,7 +332,8 @@ def train_supervised(
 def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
              augment_flip: bool = True, architecture: str = "risev33",
              batch_size: int = None, precision: str = None,
-             iteration_label: str = None):
+             iteration_label: str = None, shuffle_buffer_size: int = 10000,
+             resume_training: bool = False):
     """
     Run RL training on self-play data.
     
@@ -341,10 +343,15 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
         checkpoint_path: Optional path to load model weights from
         augment_flip: If True, use board flip augmentation to double training data
         iteration_label: Optional label for iteration (e.g. "9" or "it09")
+        shuffle_buffer_size: Samples retained for shuffling within each shard
+        resume_training: Restore optimizer and progress from an interrupted run
     """
     import glob
     from pathlib import Path as PathLib
     
+    if shuffle_buffer_size <= 0:
+        raise ValueError("shuffle_buffer_size must be positive")
+
     tc = rl_train_config()
     configure_batch_size(tc, architecture, batch_size)
     configure_precision(tc, architecture, precision, is_rl=True)
@@ -433,12 +440,13 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
     if augment_flip:
         print(f"Training data will be doubled through board flip augmentation")
     print(f"Training samples: {n_train}")
+    print(f"Training shuffle buffer: {shuffle_buffer_size} samples per shard")
     
     # Create streaming training dataset from all training files
     train_dataset = StreamingRLDataset(
         parquet_files,
         shuffle_files=True,
-        shuffle_buffer_size=10000,
+        shuffle_buffer_size=shuffle_buffer_size,
         augment_flip=augment_flip,
         include_joint_policy=tc.joint_policy_rank > 0,
     )
@@ -461,6 +469,8 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
     model = create_model(args)
     
     # Optionally load checkpoint
+    checkpoint = None
+    resume_iteration = None
     if checkpoint_path:
         print(f"Loading checkpoint from {checkpoint_path}")
         # Stage on CPU so a CUDA-saved checkpoint cannot create a second,
@@ -479,13 +489,33 @@ def train_rl(rl_data_dir: str, val_data_dir: str, checkpoint_path: str = None,
                 "Checkpoint is incompatible with this architecture: "
                 f"missing={non_joint_missing}, unexpected={unexpected}"
             )
-        del checkpoint
+        if resume_training:
+            resume_iteration, tc.k_steps_initial = _checkpoint_progress(
+                checkpoint
+            )
+            if resume_iteration >= tc.total_it:
+                raise ValueError(
+                    f"Checkpoint iteration {resume_iteration} has already "
+                    f"reached this run's {tc.total_it} iterations"
+                )
+        else:
+            del checkpoint
+            checkpoint = None
         print("Checkpoint loaded successfully")
+    elif resume_training:
+        raise ValueError("resume_training requires checkpoint_path")
     
     # Train with streaming RL data loader
     trainer = TrainerAgentPytorch(model, val_loader, tc, to, use_rtpt=True, 
                                   is_rl=True, rl_train_loader=train_loader)
-    trainer.train()
+    if resume_training:
+        restore_torch_state(trainer._model, trainer.optimizer, checkpoint)
+        del checkpoint
+        print(
+            f"Resuming interrupted RL run at iteration {resume_iteration} "
+            f"and evaluation step {tc.k_steps_initial}"
+        )
+    trainer.train(cur_it=resume_iteration)
 
     # Determine model prefix using Option 1 naming convention: hivemind-rl-it{N}-{arch}-loss{val_loss}-p{policy_acc}
     val_loss = trainer.val_loss_best if trainer.val_loss_best is not None else 0.0
@@ -532,6 +562,15 @@ if __name__ == '__main__':
         ),
     )
     parser.add_argument(
+        '--shuffle-buffer-size',
+        type=int,
+        default=10000,
+        help=(
+            'Samples retained for within-shard RL shuffling '
+            '(default: 10000; lower values reduce host RAM usage)'
+        ),
+    )
+    parser.add_argument(
         '--precision',
         choices=('fp32', 'bf16'),
         default=None,
@@ -546,6 +585,11 @@ if __name__ == '__main__':
                         help='Preconverted RL validation Parquet directory (requires --rl-data-dir)')
     parser.add_argument('--checkpoint', type=str, default=None,
                         help='Path to checkpoint to resume training from')
+    parser.add_argument(
+        '--resume-training',
+        action='store_true',
+        help='Restore optimizer and progress from an interrupted RL checkpoint',
+    )
     parser.add_argument('--selfplay-dir', type=str,
                         default=str(project_root / 'engine/selfplay_games'),
                         help='Self-play output directory, or its training_data directory, containing HVM chunks')
@@ -563,6 +607,15 @@ if __name__ == '__main__':
     )
     parser.add_argument('--rl-output-dir', type=str, default=None,
                         help='Generated train/validation Parquet directory (default: <selfplay-dir>/rl_data)')
+    parser.add_argument(
+        '--samples-per-shard',
+        type=int,
+        default=DEFAULT_RL_SAMPLES_PER_SHARD,
+        help=(
+            'Samples per generated RL Parquet shard '
+            f'(default: {DEFAULT_RL_SAMPLES_PER_SHARD}; lower values reduce host RAM usage)'
+        ),
+    )
     parser.add_argument(
         '--validation-fraction',
         type=float,
@@ -609,6 +662,9 @@ if __name__ == '__main__':
                 architecture=args.architecture,
                 batch_size=args.batch_size,
                 precision=args.precision,
+                iteration_label=args.iteration,
+                shuffle_buffer_size=args.shuffle_buffer_size,
+                resume_training=args.resume_training,
             )
         else:
             selfplay_path = Path(args.selfplay_dir).expanduser().resolve()
@@ -642,6 +698,7 @@ if __name__ == '__main__':
                 replay_files=replay_files,
                 replay_selection_fraction=args.replay_selection_fraction,
                 q_value_ratio=args.q_value_ratio,
+                samples_per_shard=args.samples_per_shard,
             )
             # Auto-detect iteration label from selfplay_path if not explicitly provided
             iter_label = args.iteration
@@ -660,4 +717,6 @@ if __name__ == '__main__':
                 batch_size=args.batch_size,
                 precision=args.precision,
                 iteration_label=iter_label,
+                shuffle_buffer_size=args.shuffle_buffer_size,
+                resume_training=args.resume_training,
             )
