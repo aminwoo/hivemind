@@ -18,7 +18,7 @@ class BughouseBoard(object):
         fen = self.fen()
         ret.boards[0].set_fen(fen[0])
         ret.boards[1].set_fen(fen[1])
-        ret.times = self.times.copy()
+        ret.times = [board_times.copy() for board_times in self.times]
         return ret
 
     def result(self):
