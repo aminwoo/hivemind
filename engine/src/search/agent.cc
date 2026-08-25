@@ -1225,29 +1225,24 @@ bool Agent::find_root_mate_impl(
             }
         }
 
-        auto find_shortest_single_board_mate = [&](
+        // One probe at a fixed depth. The deepening runs across the whole
+        // candidate list below rather than inside a single candidate, so a
+        // candidate can never spend its direction's whole budget on a deep
+        // refutation before its neighbours have been tried at all.
+        auto probe_single_board_mate = [&](
             int boardNum, Stockfish::Color attacker,
             Stockfish::Move& mateMove, int& matePly,
             MateSearchBudget& feedBudget,
             int attackerMoveLimit,
             bool partnerBoardAgnostic = false) {
-            for (int maxMateMoves = 1;
-                 maxMateMoves <= attackerMoveLimit;
-                 ++maxMateMoves) {
-                mateMove = Stockfish::MOVE_NONE;
-                matePly = 0;
-                if (search_single_board_forced_mate_impl(
-                        board, boardNum, attacker, 1, maxMateMoves,
-                        mateMove, matePly, &feedBudget,
-                        partnerBoardAgnostic ? nullptr : continuations,
-                        partnerBoardAgnostic)) {
-                    return true;
-                }
-                if (feedBudget.exhausted) {
-                    return false;
-                }
-            }
-            return false;
+            mateMove = Stockfish::MOVE_NONE;
+            matePly = 0;
+            return attackerMoveLimit > 0
+                && search_single_board_forced_mate_impl(
+                    board, boardNum, attacker, 1, attackerMoveLimit,
+                    mateMove, matePly, &feedBudget,
+                    partnerBoardAgnostic ? nullptr : continuations,
+                    partnerBoardAgnostic);
         };
 
         // Once the capture and the reply are made, the target board is the
@@ -1267,153 +1262,159 @@ bool Agent::find_root_mate_impl(
             Stockfish::PAWN, Stockfish::KNIGHT, Stockfish::BISHOP,
             Stockfish::ROOK, Stockfish::QUEEN};
 
-        for (const CaptureFeedCandidate& candidate : feedCandidates) {
-            int candidateAttackerMoveLimit = maxFeedAttackerMoves;
-            if (foundFeedMate) {
-                candidateAttackerMoveLimit = std::min(
-                    candidateAttackerMoveLimit,
-                    std::max(0, (bestFeedPly - 3) / 2));
-            }
-            if (candidateAttackerMoveLimit == 0) {
+        // Sweep every candidate at one attacker-move limit before deepening,
+        // so the shortest feed is found first and no candidate is searched
+        // deeper than the best proof so far can be beaten by.
+        for (int feedAttackerMoveLimit = 1;
+             feedAttackerMoveLimit <= maxFeedAttackerMoves;
+             ++feedAttackerMoveLimit) {
+            // A feed costs the root capture and the forced reply on top of the
+            // mate itself, so once one is proven only a strictly shorter mate
+            // can replace it - and that caps how deep the sweep ever goes.
+            if (foundFeedMate
+                && feedAttackerMoveLimit
+                       > std::max(0, (bestFeedPly - 3) / 2)) {
                 break;
             }
 
-            MateSearchBudget& feedBudget = hardBudget
-                ? *hardBudget : feedBudgets[candidate.feedBoard];
-            if (!feedBudget.consume()) {
-                continue;
-            }
-            board.push_move(candidate.feedBoard, candidate.move);
-
-            // A capture can itself end the game (including bughouse stalemate).
-            if (board.is_checkmate(~teamSide, false)) {
-                board.pop_move(candidate.feedBoard);
-                const JointActionCandidate feedAction = candidate.feedBoard == BOARD_A
-                    ? JointActionCandidate(candidate.move, 1.0f, 0,
-                                           Stockfish::MOVE_NONE, 1.0f, 0,
-                                           rules, true, false)
-                    : JointActionCandidate(Stockfish::MOVE_NONE, 1.0f, 0,
-                                           candidate.move, 1.0f, 0,
-                                           rules, false, true);
-                retain_shortest_feed(feedAction, 1);
-                continue;
-            }
-
-            // Since we started with both boards on turn and sat on the target
-            // board, the opponent has no time advantage and must make exactly
-            // one move on the capture board. A feed is proven only if the mate
-            // on the partner board survives every such reply, including any
-            // defensive piece that reply captures and transfers.
-            const vector<Stockfish::Move> opponentReplies =
-                board.legal_moves(candidate.feedBoard);
-            bool allRepliesMated = !opponentReplies.empty();
-            int deepestMatePly = 1;
-
-            // Every reply is played on the feed board, which the mate proof on
-            // the target board reads only through the terminal classifier's
-            // partner-board terms. Proving the mate once in the
-            // partner-board-agnostic model therefore settles every remaining
-            // reply of the same class, turning hundreds of identical proofs
-            // into one per pair of transferred piece types. The generalisation
-            // is only claimed for replies that leave the feed board quiet - a
-            // check or a stalemate there is read by the classifier even in that
-            // model - and the exact proof stays the fallback everywhere else.
-            FeedReplyClassRow& candidateClasses =
-                replyClasses[candidate.feedBoard][candidate.fedPiece];
-            const Stockfish::Color targetDefender = ~candidate.targetAttacker;
-
-            for (Stockfish::Move reply : opponentReplies) {
+            for (const CaptureFeedCandidate& candidate : feedCandidates) {
+                MateSearchBudget& feedBudget = hardBudget
+                    ? *hardBudget : feedBudgets[candidate.feedBoard];
                 if (!feedBudget.consume()) {
-                    allRepliesMated = false;
-                    break;
+                    continue;
+                }
+                board.push_move(candidate.feedBoard, candidate.move);
+
+                // A capture can itself end the game (including bughouse stalemate).
+                if (board.is_checkmate(~teamSide, false)) {
+                    board.pop_move(candidate.feedBoard);
+                    const JointActionCandidate feedAction = candidate.feedBoard == BOARD_A
+                        ? JointActionCandidate(candidate.move, 1.0f, 0,
+                                               Stockfish::MOVE_NONE, 1.0f, 0,
+                                               rules, true, false)
+                        : JointActionCandidate(Stockfish::MOVE_NONE, 1.0f, 0,
+                                               candidate.move, 1.0f, 0,
+                                               rules, false, true);
+                    retain_shortest_feed(feedAction, 1);
+                    continue;
                 }
 
-                std::array<int, Stockfish::PIECE_TYPE_NB> defenderHand{};
-                for (Stockfish::PieceType pt : HAND_PIECE_TYPES) {
-                    defenderHand[pt] = board.count_in_hand(
-                        candidate.targetBoard, targetDefender, pt);
-                }
+                // Since we started with both boards on turn and sat on the target
+                // board, the opponent has no time advantage and must make exactly
+                // one move on the capture board. A feed is proven only if the mate
+                // on the partner board survives every such reply, including any
+                // defensive piece that reply captures and transfers.
+                const vector<Stockfish::Move> opponentReplies =
+                    board.legal_moves(candidate.feedBoard);
+                bool allRepliesMated = !opponentReplies.empty();
+                int deepestMatePly = 1;
 
-                board.push_move(candidate.feedBoard, reply);
+                // Every reply is played on the feed board, which the mate proof on
+                // the target board reads only through the terminal classifier's
+                // partner-board terms. Proving the mate once in the
+                // partner-board-agnostic model therefore settles every remaining
+                // reply of the same class, turning hundreds of identical proofs
+                // into one per pair of transferred piece types. The generalisation
+                // is only claimed for replies that leave the feed board quiet - a
+                // check or a stalemate there is read by the classifier even in that
+                // model - and the exact proof stays the fallback everywhere else.
+                FeedReplyClassRow& candidateClasses =
+                    replyClasses[candidate.feedBoard][candidate.fedPiece];
+                const Stockfish::Color targetDefender = ~candidate.targetAttacker;
 
-                Stockfish::PieceType fedToDefender = Stockfish::NO_PIECE_TYPE;
-                for (Stockfish::PieceType pt : HAND_PIECE_TYPES) {
-                    if (board.count_in_hand(
-                            candidate.targetBoard, targetDefender, pt)
-                        > defenderHand[pt]) {
-                        fedToDefender = pt;
+                for (Stockfish::Move reply : opponentReplies) {
+                    if (!feedBudget.consume()) {
+                        allRepliesMated = false;
                         break;
                     }
-                }
 
-                Stockfish::Move mateMove = Stockfish::MOVE_NONE;
-                int matePly = 0;
-                bool replyMated = false;
-                const bool rootLostOrDrawn =
-                    board.is_checkmate(teamSide, true) || board.is_draw();
-                if (!rootLostOrDrawn) {
-                    const bool quietFeedBoard =
-                        !board.is_in_check(candidate.feedBoard)
-                        && board.has_any_legal_move(candidate.feedBoard);
-                    FeedReplyClass& replyClass = candidateClasses[fedToDefender];
-                    // A stored proof only answers a candidate whose move limit
-                    // still admits it, and a stored failure only settles limits
-                    // no deeper than the one it was recorded at.
-                    const bool proofFits = replyClass.matePly >= 0
-                        && (replyClass.matePly + 1) / 2
-                               <= candidateAttackerMoveLimit;
+                    std::array<int, Stockfish::PIECE_TYPE_NB> defenderHand{};
+                    for (Stockfish::PieceType pt : HAND_PIECE_TYPES) {
+                        defenderHand[pt] = board.count_in_hand(
+                            candidate.targetBoard, targetDefender, pt);
+                    }
 
-                    if (quietFeedBoard && proofFits) {
-                        replyMated = true;
-                        matePly = replyClass.matePly;
-                    } else {
-                        replyMated = find_shortest_single_board_mate(
-                            candidate.targetBoard, candidate.targetAttacker,
-                            mateMove, matePly, feedBudget,
-                            candidateAttackerMoveLimit);
-                        // Only look for the reusable proof once a reply has
-                        // been answered exactly. Refuted candidates - the
-                        // common case - then cost exactly what they did before.
-                        if (replyMated && quietFeedBoard
-                            && replyClass.matePly < 0
-                            && candidateAttackerMoveLimit
-                                   > replyClass.refutedAtLimit) {
-                            Stockfish::Move classMove = Stockfish::MOVE_NONE;
-                            int classProofPly = 0;
-                            if (find_shortest_single_board_mate(
-                                    candidate.targetBoard,
-                                    candidate.targetAttacker,
-                                    classMove, classProofPly, feedBudget,
-                                    candidateAttackerMoveLimit, true)) {
-                                replyClass.matePly = classProofPly;
-                            } else {
-                                replyClass.refutedAtLimit =
-                                    candidateAttackerMoveLimit;
+                    board.push_move(candidate.feedBoard, reply);
+
+                    Stockfish::PieceType fedToDefender = Stockfish::NO_PIECE_TYPE;
+                    for (Stockfish::PieceType pt : HAND_PIECE_TYPES) {
+                        if (board.count_in_hand(
+                                candidate.targetBoard, targetDefender, pt)
+                            > defenderHand[pt]) {
+                            fedToDefender = pt;
+                            break;
+                        }
+                    }
+
+                    Stockfish::Move mateMove = Stockfish::MOVE_NONE;
+                    int matePly = 0;
+                    bool replyMated = false;
+                    const bool rootLostOrDrawn =
+                        board.is_checkmate(teamSide, true) || board.is_draw();
+                    if (!rootLostOrDrawn) {
+                        const bool quietFeedBoard =
+                            !board.is_in_check(candidate.feedBoard)
+                            && board.has_any_legal_move(candidate.feedBoard);
+                        FeedReplyClass& replyClass = candidateClasses[fedToDefender];
+                        // A stored proof only answers a candidate whose move limit
+                        // still admits it, and a stored failure only settles limits
+                        // no deeper than the one it was recorded at.
+                        const bool proofFits = replyClass.matePly >= 0
+                            && (replyClass.matePly + 1) / 2
+                                   <= feedAttackerMoveLimit;
+
+                        if (quietFeedBoard && proofFits) {
+                            replyMated = true;
+                            matePly = replyClass.matePly;
+                        } else {
+                            replyMated = probe_single_board_mate(
+                                candidate.targetBoard, candidate.targetAttacker,
+                                mateMove, matePly, feedBudget,
+                                feedAttackerMoveLimit);
+                            // Only look for the reusable proof once a reply has
+                            // been answered exactly. Refuted candidates - the
+                            // common case - then cost exactly what they did before.
+                            if (replyMated && quietFeedBoard
+                                && replyClass.matePly < 0
+                                && feedAttackerMoveLimit
+                                       > replyClass.refutedAtLimit) {
+                                Stockfish::Move classMove = Stockfish::MOVE_NONE;
+                                int classProofPly = 0;
+                                if (probe_single_board_mate(
+                                        candidate.targetBoard,
+                                        candidate.targetAttacker,
+                                        classMove, classProofPly, feedBudget,
+                                        feedAttackerMoveLimit, true)) {
+                                    replyClass.matePly = classProofPly;
+                                } else {
+                                    replyClass.refutedAtLimit =
+                                        feedAttackerMoveLimit;
+                                }
                             }
                         }
                     }
+                    board.pop_move(candidate.feedBoard);
+
+                    if (!replyMated) {
+                        allRepliesMated = false;
+                        break;
+                    }
+                    deepestMatePly = std::max(deepestMatePly, matePly);
                 }
                 board.pop_move(candidate.feedBoard);
 
-                if (!replyMated) {
-                    allRepliesMated = false;
-                    break;
+                if (allRepliesMated) {
+                    const JointActionCandidate feedAction = candidate.feedBoard == BOARD_A
+                        ? JointActionCandidate(candidate.move, 1.0f, 0,
+                                               Stockfish::MOVE_NONE, 1.0f, 0,
+                                               rules, true, false)
+                        : JointActionCandidate(Stockfish::MOVE_NONE, 1.0f, 0,
+                                               candidate.move, 1.0f, 0,
+                                               rules, false, true);
+                    // Root capture, forced opponent reply, then the mate on the
+                    // target board.
+                    retain_shortest_feed(feedAction, deepestMatePly + 2);
                 }
-                deepestMatePly = std::max(deepestMatePly, matePly);
-            }
-            board.pop_move(candidate.feedBoard);
-
-            if (allRepliesMated) {
-                const JointActionCandidate feedAction = candidate.feedBoard == BOARD_A
-                    ? JointActionCandidate(candidate.move, 1.0f, 0,
-                                           Stockfish::MOVE_NONE, 1.0f, 0,
-                                           rules, true, false)
-                    : JointActionCandidate(Stockfish::MOVE_NONE, 1.0f, 0,
-                                           candidate.move, 1.0f, 0,
-                                           rules, false, true);
-                // Root capture, forced opponent reply, then the mate on the
-                // target board.
-                retain_shortest_feed(feedAction, deepestMatePly + 2);
             }
         }
 

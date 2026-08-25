@@ -304,13 +304,12 @@ constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
  *
  * Node budgets cannot enforce this on their own: a joint proof node costs
  * ~70us against ~1us for a single-board check node, a spread no single node
- * count covers. Sized so the deepest proof the scan can still finish - a
- * seven-ply capture feed, ~400ms of a 1500ms move - fits with margin; a proof
+ * count covers. Sized so the slowest proof the scan still completes - a
+ * seven-ply capture feed, ~210ms of a 1500ms move - fits with margin; a proof
  * that lands returns immediately and hands the rest of the move time back, so
- * the average cost is far below the cap. Tightening it further wants
- * refutation-first move ordering in the feed scan.
+ * the average cost is far below the cap.
  */
-constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 35;
+constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
 
 /// Probes between deadline samples. Keeps the clock read well under 1% of the
 /// cheapest probe while still stopping a joint scan within a few milliseconds.
