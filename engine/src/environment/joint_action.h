@@ -7,6 +7,7 @@
 #include <limits>
 #include <queue>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <functional>
 #include <numeric>
@@ -145,6 +146,7 @@ private:
     // Track visited (i,j) pairs to avoid duplicates - O(1) lookup
     std::unordered_set<std::pair<size_t, size_t>, PairHash> visited;
     std::unordered_set<std::pair<size_t, size_t>, PairHash> jointPoolKeys;
+    std::unordered_set<std::pair<size_t, size_t>, PairHash> generatedCandidateKeys;
     
     // Cache of already-generated candidates (for random access)
     std::vector<JointActionCandidate> generatedCandidates;
@@ -156,6 +158,7 @@ private:
     // before the lazy fallback resumes.
     std::vector<JointActionCandidate> gumbelCandidates;
     size_t nextGumbelCandidate = 0;
+    size_t jointFactorRank = 0;
     
     // Turn, time and pass context used to reject illegal joint actions
     JointActionRules rules;
@@ -171,7 +174,7 @@ private:
         }
         visited.insert(key);
 
-        if (jointPoolKeys.contains(key)) {
+        if (jointPoolKeys.contains(key) || generatedCandidateKeys.contains(key)) {
             pushCandidate(idxA + 1, idxB);
             pushCandidate(idxA, idxB + 1);
             return;
@@ -206,23 +209,63 @@ private:
         return best;
     }
 
-    JointActionCandidate popPolicyCandidate() {
-        if (nextJointPolicyCandidate < jointPolicyCandidates.size()) {
+    JointActionCandidate popBestUnperturbedCandidate() {
+        const bool hasPolicyCandidate =
+            nextJointPolicyCandidate < jointPolicyCandidates.size();
+        if (hasPolicyCandidate &&
+            (heap.empty() ||
+             jointPolicyCandidates[nextJointPolicyCandidate].expansionPriority
+                 >= heap.top().expansionPriority)) {
             return jointPolicyCandidates[nextJointPolicyCandidate++];
         }
         return popFactorizedCandidate();
     }
 
-    void prepareJointPolicyPool(size_t topK, size_t rank, float residualScale) {
-        if (rank == 0 || topK == 0 ||
-            sortedJointFactorsA.size() != sortedActionsA.size() * rank ||
-            sortedJointFactorsB.size() != sortedActionsB.size() * rank) {
+    void rebuildCandidateFrontier(size_t topK, float residualScale) {
+        while (!heap.empty()) heap.pop();
+        visited.clear();
+        jointPoolKeys.clear();
+        generatedCandidateKeys.clear();
+        jointPolicyCandidates.clear();
+        nextJointPolicyCandidate = 0;
+        gumbelCandidates.clear();
+        nextGumbelCandidate = 0;
+
+        std::unordered_map<std::pair<size_t, size_t>, size_t, PairHash>
+            generatedIndices;
+        generatedIndices.reserve(generatedCandidates.size());
+        for (size_t index = 0; index < generatedCandidates.size(); ++index) {
+            JointActionCandidate& candidate = generatedCandidates[index];
+            const auto key = std::make_pair(candidate.idxA, candidate.idxB);
+            generatedCandidateKeys.emplace(key);
+            generatedIndices.emplace(key, index);
+
+            // Promotion may enlarge or shrink the learned pool. Restore every
+            // expanded edge's factorized prior before applying the new pool so
+            // old root scores cannot leak across configurations.
+            candidate.jointPrior =
+                sortedPriorsA[candidate.idxA] * sortedPriorsB[candidate.idxB];
+            candidate.expansionPriority = candidate.jointPrior;
+            candidate.gumbelScore = std::log(
+                std::max(candidate.jointPrior, 1.0e-30f));
+        }
+
+        const bool hasJointFactors = jointFactorRank > 0 && topK > 0
+            && sortedJointFactorsA.size()
+                == sortedActionsA.size() * jointFactorRank
+            && sortedJointFactorsB.size()
+                == sortedActionsB.size() * jointFactorRank;
+        if (!hasJointFactors) {
+            pushCandidate(0, 0);
             return;
         }
 
         const size_t countA = std::min(topK, sortedActionsA.size());
         const size_t countB = std::min(topK, sortedActionsB.size());
+        std::vector<JointActionCandidate> scoredCandidates;
         std::vector<float> logits;
+        scoredCandidates.reserve(countA * countB);
+        logits.reserve(countA * countB);
         float originalMass = 0.0f;
         for (size_t indexA = 0; indexA < countA; ++indexA) {
             for (size_t indexB = 0; indexB < countB; ++indexB) {
@@ -235,12 +278,12 @@ private:
                     continue;
                 }
                 float compatibility = 0.0f;
-                for (size_t factor = 0; factor < rank; ++factor) {
+                for (size_t factor = 0; factor < jointFactorRank; ++factor) {
                     compatibility +=
-                        sortedJointFactorsA[indexA * rank + factor]
-                        * sortedJointFactorsB[indexB * rank + factor];
+                        sortedJointFactorsA[indexA * jointFactorRank + factor]
+                        * sortedJointFactorsB[indexB * jointFactorRank + factor];
                 }
-                compatibility /= std::sqrt(static_cast<float>(rank));
+                compatibility /= std::sqrt(static_cast<float>(jointFactorRank));
                 if (!std::isfinite(compatibility)) {
                     compatibility = 0.0f;
                 }
@@ -250,10 +293,11 @@ private:
                     + residualScale * compatibility);
                 originalMass += candidate.jointPrior;
                 jointPoolKeys.emplace(indexA, indexB);
-                jointPolicyCandidates.push_back(candidate);
+                scoredCandidates.push_back(candidate);
             }
         }
-        if (jointPolicyCandidates.empty()) {
+        if (scoredCandidates.empty()) {
+            pushCandidate(0, 0);
             return;
         }
 
@@ -263,12 +307,19 @@ private:
             logit = std::exp(logit - maximum);
             normalizer += logit;
         }
-        for (size_t index = 0; index < jointPolicyCandidates.size(); ++index) {
-            JointActionCandidate& candidate = jointPolicyCandidates[index];
+        for (size_t index = 0; index < scoredCandidates.size(); ++index) {
+            JointActionCandidate& candidate = scoredCandidates[index];
             candidate.jointPrior = originalMass * logits[index] / normalizer;
             candidate.expansionPriority = candidate.jointPrior;
             candidate.gumbelScore = std::log(
                 std::max(candidate.jointPrior, 1.0e-30f));
+            const auto generated = generatedIndices.find(
+                std::make_pair(candidate.idxA, candidate.idxB));
+            if (generated != generatedIndices.end()) {
+                generatedCandidates[generated->second] = candidate;
+            } else {
+                jointPolicyCandidates.push_back(candidate);
+            }
         }
         std::sort(
             jointPolicyCandidates.begin(), jointPolicyCandidates.end(),
@@ -277,8 +328,6 @@ private:
                 return left.expansionPriority > right.expansionPriority;
             });
 
-        while (!heap.empty()) heap.pop();
-        visited.clear();
         pushCandidate(0, 0);
     }
 
@@ -337,10 +386,12 @@ public:
         visited.clear();
         generatedCandidates.clear();
         jointPoolKeys.clear();
+        generatedCandidateKeys.clear();
         jointPolicyCandidates.clear();
         nextJointPolicyCandidate = 0;
         gumbelCandidates.clear();
         nextGumbelCandidate = 0;
+        this->jointFactorRank = 0;
         
         // Use explicit on-turn status (not inferred from action count,
         // since a board can be on-turn but stalemated with no legal moves)
@@ -408,17 +459,24 @@ public:
             }
         }
         
-        // Initialize heap with the best pair (0, 0)
-        // If (0, 0) is invalid (e.g., double pass), also try (1, 0) and (0, 1)
-        pushCandidate(0, 0);
-        
-        // If (0, 0) was invalid and not pushed, ensure we have alternatives
-        if (heap.empty()) {
-            pushCandidate(1, 0);
-            pushCandidate(0, 1);
+        this->jointFactorRank = jointFactorRank;
+        rebuildCandidateFrontier(jointPolicyTopK, jointResidualScale);
+    }
+
+    /**
+     * Rebuild the unexpanded policy ordering when a retained node becomes the
+     * root. Expanded action indices remain stable; their priors are rescored in
+     * place and returned for the owning Node's edge arrays.
+     */
+    std::vector<float> reprepareJointPolicyPool(
+        size_t topK, float residualScale) {
+        rebuildCandidateFrontier(topK, residualScale);
+        std::vector<float> generatedPriors;
+        generatedPriors.reserve(generatedCandidates.size());
+        for (const JointActionCandidate& candidate : generatedCandidates) {
+            generatedPriors.push_back(candidate.jointPrior);
         }
-        prepareJointPolicyPool(
-            jointPolicyTopK, jointFactorRank, jointResidualScale);
+        return generatedPriors;
     }
 
     /**
@@ -448,7 +506,7 @@ public:
         while (pool.size() < poolSize &&
                (nextJointPolicyCandidate < jointPolicyCandidates.size() ||
                 !heap.empty())) {
-            pool.push_back(popPolicyCandidate());
+            pool.push_back(popBestUnperturbedCandidate());
         }
 
         std::mt19937_64 randomEngine(seed);
@@ -486,24 +544,27 @@ public:
      * @brief Peek at the next best candidate without consuming it.
      * 
      * Returns the next candidate that would be returned by getNext(),
-     * but doesn't modify any state. This is a true peek operation.
-     * Note: For efficiency, this only checks the top of heap. If the top
-     * has zero jointPrior (invalid), returns empty candidate - the caller
-     * should handle this by falling through to getNext() which properly skips.
+     * but doesn't modify any state. Gumbel candidates retain root precedence;
+     * otherwise the learned and factorized frontiers compete by priority.
      */
     JointActionCandidate peekNext() const {
         if (nextGumbelCandidate < gumbelCandidates.size()) {
             return gumbelCandidates[nextGumbelCandidate];
         }
-        if (nextJointPolicyCandidate < jointPolicyCandidates.size()) {
-            return jointPolicyCandidates[nextJointPolicyCandidate];
-        }
-        if (heap.empty()) {
+        const bool hasPolicyCandidate =
+            nextJointPolicyCandidate < jointPolicyCandidates.size();
+        if (!hasPolicyCandidate && heap.empty()) {
             return JointActionCandidate();
         }
+
+        if (hasPolicyCandidate &&
+            (heap.empty() ||
+             jointPolicyCandidates[nextJointPolicyCandidate].expansionPriority
+                 >= heap.top().expansionPriority)) {
+            return jointPolicyCandidates[nextJointPolicyCandidate];
+        }
         
-        // Return the top candidate - caller should check jointPrior
-        // We can't skip invalid candidates here without modifying state
+        // Invalid factorized candidates never enter the heap.
         return heap.top();
     }
 
@@ -522,11 +583,12 @@ public:
         if (nextGumbelCandidate < gumbelCandidates.size()) {
             best = gumbelCandidates[nextGumbelCandidate++];
         } else {
-            best = popPolicyCandidate();
+            best = popBestUnperturbedCandidate();
         }
         
         // Cache for random access
         generatedCandidates.push_back(best);
+        generatedCandidateKeys.emplace(best.idxA, best.idxB);
         
         return best;
     }

@@ -377,7 +377,10 @@ public:
                           teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn,
                           capturesA, capturesB, jointFactorsA, jointFactorsB,
                           jointFactorRank,
-                          static_cast<size_t>(std::max(0, config.jointPolicyTopK)),
+                          static_cast<size_t>(std::max(
+                              0, m_depth.load(std::memory_order_relaxed) == 0
+                                  ? config.rootJointPolicyTopK
+                                  : config.jointPolicyTopK)),
                           config.jointPolicyResidualScale);
         expandedCount = 0;
         initialize_root_gumbel_locked(config);

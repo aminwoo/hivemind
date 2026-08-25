@@ -285,6 +285,12 @@ constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 100000;
 /// Floor for the scaled budget, so even a very short search still gets a scan.
 constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
 
+// A universal loss proof must cover every legal defense. Timed UCI searches
+// reserve this many cheap probes so a short allocation does not split the
+// ordinary mate budget into unusably small per-defense slices. Node-limited
+// self-play remains governed solely by its scaled budget.
+constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
+
 /**
  * Conversion factors from the search's own budget to mate-search nodes.
  *
@@ -334,6 +340,9 @@ constexpr int ROOT_GUMBEL_MAX_ROUND_VISITS = 2;
 /// Number of marginal candidates per board rescored by an optional joint head.
 constexpr int JOINT_POLICY_TOP_K = 8;
 
+/// Larger learned joint pool used once per root, including promoted reused roots.
+constexpr int ROOT_JOINT_POLICY_TOP_K = 32;
+
 /// Scale applied to the learned residual compatibility score.
 constexpr float JOINT_POLICY_RESIDUAL_SCALE = 1.0f;
 
@@ -364,6 +373,7 @@ struct RuntimeConfig {
     float rootGumbelValueScale = ROOT_GUMBEL_VALUE_SCALE;
     int rootGumbelMaxRoundVisits = ROOT_GUMBEL_MAX_ROUND_VISITS;
     int jointPolicyTopK = JOINT_POLICY_TOP_K;
+    int rootJointPolicyTopK = ROOT_JOINT_POLICY_TOP_K;
     float jointPolicyResidualScale = JOINT_POLICY_RESIDUAL_SCALE;
 };
 
