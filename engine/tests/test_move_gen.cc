@@ -2952,6 +2952,24 @@ TEST_F(EngineTest, RootMateScanPrefersShortestDirectMateOverCaptureFeed) {
     EXPECT_EQ(matePlyOnB, 3);
 }
 
+TEST_F(EngineTest, RootMateScanFindsDeepBishopCaptureFeedMate) {
+    Board board;
+    board.set(
+        "r4r2/1ppbn1pk/p3p2q/3pRn1B/5pP1/1BPP4/P1PB1PPP/1R4K1[QNp] b - - 0 1"
+        "|"
+        "rnbN1b1r/pppk1Ppp/4pp2/4p3/4B3/8/PPPn1PPP/R3K1NR[QNPqb] w - - 0 1");
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::BLACK, true,
+        mateAction, matePly, 2000));
+    ASSERT_NE(mateAction.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_A, mateAction.moveA), "h6h5");
+    EXPECT_EQ(mateAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(matePly, 7);
+}
+
 TEST_F(EngineTest, RootForcedLossScanProvesEveryDefenseAndSelectsDelay) {
     Board board;
     board.set(

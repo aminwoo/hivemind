@@ -291,6 +291,11 @@ constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
 // self-play remains governed solely by its scaled budget.
 constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 
+// Capture-feed proofs are searched independently in both board directions.
+// Keep enough probes in each direction for deeper hand-transfer mates without
+// allowing one board's branching factor to starve the mirrored search.
+constexpr uint64_t MATE_CAPTURE_FEED_MIN_NODE_BUDGET_PER_DIRECTION = 250000;
+
 /**
  * Conversion factors from the search's own budget to mate-search nodes.
  *
