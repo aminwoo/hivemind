@@ -204,7 +204,8 @@ std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color
 // 2. The partner cannot capture any piece that could be used to block the check
 bool Board::is_checkmate(Stockfish::Color side,
                          bool teamHasTimeAdvantage,
-                         LegalMoveCache* legalMoveCache) {
+                         LegalMoveCache* legalMoveCache,
+                         bool assumePartnerCanBlock) {
     const bool isOnTurnOnA = pos[BOARD_A]->side_to_move() == side;
     const bool isOnTurnOnB = pos[BOARD_B]->side_to_move() == ~side;
 
@@ -220,7 +221,8 @@ bool Board::is_checkmate(Stockfish::Color side,
     // Check Board A (where 'side' plays)
     if (isOnTurnOnA && pos[BOARD_A]->checkers() && !has_legal_move(BOARD_A)) {
         // No legal moves - but can partner provide a blocking piece?
-        if (!can_partner_provide_blocking_piece(BOARD_A, side, teamHasTimeAdvantage)) {
+        if (!can_partner_provide_blocking_piece(
+                BOARD_A, side, teamHasTimeAdvantage, assumePartnerCanBlock)) {
             return true;
         }
     }
@@ -228,7 +230,8 @@ bool Board::is_checkmate(Stockfish::Color side,
     // Check Board B (where partner of 'side' plays, so opponent color is ~side)
     if (isOnTurnOnB && pos[BOARD_B]->checkers() && !has_legal_move(BOARD_B)) {
         // No legal moves - but can partner provide a blocking piece?
-        if (!can_partner_provide_blocking_piece(BOARD_B, ~side, teamHasTimeAdvantage)) {
+        if (!can_partner_provide_blocking_piece(
+                BOARD_B, ~side, teamHasTimeAdvantage, assumePartnerCanBlock)) {
             return true;
         }
     }
@@ -251,7 +254,7 @@ bool Board::is_checkmate(Stockfish::Color side,
 // board_in_check: the board index where the player is in check (0 or 1)
 // checked_side: the color of the player being checked on that board
 // teamHasTimeAdvantage: if true, partner may be able to capture in the future even if not their turn
-bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Color checked_side, bool teamHasTimeAdvantage) {
+bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Color checked_side, bool teamHasTimeAdvantage, bool assumePartnerCanBlock) {
     int partner_board = (board_in_check == BOARD_A) ? BOARD_B : BOARD_A;
     Stockfish::Color partner_side = ~checked_side;  // Partner plays opposite color
     
@@ -260,7 +263,7 @@ bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Co
     
     // If it's not partner's turn and we don't have time advantage, they can't help
     // But if we have time advantage, they might capture something in the future
-    if (!is_partner_turn && !teamHasTimeAdvantage) {
+    if (!is_partner_turn && !teamHasTimeAdvantage && !assumePartnerCanBlock) {
         return false;
     }
     
@@ -326,6 +329,14 @@ bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Co
         }
         return false;
     };
+
+    // Every test up to here reads the checked board's geometry alone, so this
+    // is the point where the answer would start to depend on the partner
+    // board. A caller that asked for the blockable-by-assumption model stops
+    // here with "yes".
+    if (assumePartnerCanBlock) {
+        return true;
+    }
 
     if (is_partner_turn) {
         return has_useful_capture(*this);

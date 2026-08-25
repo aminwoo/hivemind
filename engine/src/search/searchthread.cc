@@ -107,7 +107,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
                                              const std::array<int, 2>& boardSearchPlies,
-                                             int* endInPly) {
+                                             int* endInPly,
+                                             bool partnerBoardAgnostic) {
     if (endInPly) {
         *endInPly = 0;
     }
@@ -117,14 +118,16 @@ TerminalOutcome classify_terminal_position(Board& board,
     Board::LegalMoveCache legalMoveCache;
 
     if (board.is_checkmate(
-            ~teamToPlay, !teamToPlayHasTimeAdvantage, &legalMoveCache)) {
+            ~teamToPlay, !teamToPlayHasTimeAdvantage, &legalMoveCache,
+            partnerBoardAgnostic)) {
         if (endInPly) {
             *endInPly = 1;
         }
         return TerminalOutcome::WIN;
     }
     if (board.is_checkmate(
-            teamToPlay, teamToPlayHasTimeAdvantage, &legalMoveCache)) {
+            teamToPlay, teamToPlayHasTimeAdvantage, &legalMoveCache,
+            partnerBoardAgnostic)) {
         if (endInPly) {
             *endInPly = 1;
         }
@@ -133,7 +136,8 @@ TerminalOutcome classify_terminal_position(Board& board,
     if (board.is_draw(boardSearchPlies)) {
         return TerminalOutcome::DRAW;
     }
-    if ((boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
+    if (!partnerBoardAgnostic
+        && (boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
         && has_unavoidable_waiting_board_mate(
             board, teamToPlay, teamToPlayHasTimeAdvantage,
             boardSearchPlies)) {
@@ -152,10 +156,11 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color rootTeam,
                                              bool rootTeamHasTimeAdvantage,
                                              int searchPly,
-                                             int* endInPly) {
+                                             int* endInPly,
+                                             bool partnerBoardAgnostic) {
     return classify_terminal_position(
         board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
-        {searchPly, searchPly}, endInPly);
+        {searchPly, searchPly}, endInPly, partnerBoardAgnostic);
 }
 
 SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <mutex>
@@ -167,15 +168,24 @@ public:
     float root_q() const;
 
     /**
-     * @brief Node budget for the root forced-mate search.
+     * @brief Node and time budget for the root forced-mate search.
      *
-     * The search runs synchronously before MCTS and does not consult the move
-     * time, so it carries its own cap. Running out is reported as "not proven",
-     * never as a proof.
+     * The search runs synchronously before MCTS, so it carries a cap of its
+     * own. Running out is reported as "not proven", never as a proof.
+     *
+     * A node count alone cannot bound it in absolute time: a joint proof node
+     * enumerates board-move combinations and costs two orders of magnitude
+     * more than a node of the single-board check scan. Timed searches
+     * therefore also set a deadline, sampled every few probes so the clock
+     * read stays negligible next to the work it guards.
      */
     struct MateSearchBudget {
+        using Clock = std::chrono::steady_clock;
+
         uint64_t remainingNodes = SearchParams::MATE_SEARCH_NODE_BUDGET;
         bool exhausted = false;
+        Clock::time_point deadline{};
+        uint32_t probesSinceTimeCheck = 0;
 
         bool consume() {
             if (exhausted) {
@@ -185,8 +195,22 @@ public:
                 exhausted = true;
                 return false;
             }
+            if (deadline != Clock::time_point{}
+                && ++probesSinceTimeCheck
+                       >= SearchParams::MATE_SEARCH_TIME_CHECK_INTERVAL) {
+                probesSinceTimeCheck = 0;
+                if (Clock::now() >= deadline) {
+                    exhausted = true;
+                    return false;
+                }
+            }
             --remainingNodes;
             return true;
+        }
+
+        /// Stop condition for loops that do not consume node probes.
+        bool out_of_time() const {
+            return deadline != Clock::time_point{} && Clock::now() >= deadline;
         }
     };
 
@@ -199,7 +223,8 @@ public:
         Board& board, int boardNum, Stockfish::Color attackerColor,
         int currentPly, int maxAttackerMoves,
         Stockfish::Move& outMove, int& outPlyToMate,
-        MateSearchBudget* budget = nullptr);
+        MateSearchBudget* budget = nullptr,
+        bool partnerBoardAgnostic = false);
 
     /**
      * @brief Performs checkmate detection at the root before starting MCTS.
@@ -207,7 +232,8 @@ public:
     static bool find_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         JointActionCandidate& outAction, int& outPlyToMate,
-        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET);
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.
@@ -218,7 +244,8 @@ public:
     static bool find_root_forced_loss(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         JointActionCandidate& outAction, int& outPlyToMate,
-        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET);
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
     
     /**
      * @brief Extracts PV line starting from a specific child index.
@@ -323,13 +350,15 @@ private:
         int currentPly, int maxAttackerMoves,
         Stockfish::Move& outMove, int& outPlyToMate,
         MateSearchBudget* budget,
-        std::vector<MateContinuation>* continuations);
+        std::vector<MateContinuation>* continuations,
+        bool partnerBoardAgnostic = false);
     static bool find_root_mate_impl(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget,
         std::vector<MateContinuation>* continuations,
         MateSearchBudget* hardBudget = nullptr,
-        bool includeCaptureFeeds = true);
+        bool includeCaptureFeeds = true,
+        MateSearchBudget::Clock::time_point deadline = {});
     
 };
