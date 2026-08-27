@@ -3358,8 +3358,8 @@ TEST_F(EngineTest, RootMateScanFindsQuietStalemateWin) {
     board.pop_move(BOARD_A);
 }
 
-// The root scan runs synchronously before MCTS, so it must stay bounded even
-// with an exposed king and a full hand on both boards.
+// The root scan runs on the calling CPU thread alongside MCTS, so it must stay
+// bounded even with an exposed king and a full hand on both boards.
 TEST_F(EngineTest, RootMateScanStaysBounded) {
     Board board;
     board.set(

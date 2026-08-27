@@ -1854,6 +1854,103 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         return result;
     }
 
+    // Determine effective move time
+    int moveTimeMs = options.moveTimeMs;
+    size_t targetNodes = options.targetNodes;
+
+    // Compute position hash for tree reuse
+    uint64_t positionHash = board.search_hash_key(
+        teamSide, teamHasTimeAdvantage);
+    const std::string positionSignature = board_signature(board);
+
+    // Try to reuse tree from previous search (if enabled)
+    std::shared_ptr<Node> reusedRoot = nullptr;
+    if (SearchParams::ENABLE_TREE_REUSE) {
+        reusedRoot = try_reuse_tree(positionHash, teamSide, positionSignature);
+    }
+
+    if (reusedRoot) {
+        // Reuse the existing subtree
+        rootNode = reusedRoot;
+        rootNode->set_hash(positionHash);
+        rootNode->set_depth(0);
+
+        if (options.verbose) {
+            cout << "info string Tree reuse: " << rootNode->get_visits()
+                 << " visits recovered" << endl;
+        }
+    } else {
+        // Create new root node
+        rootNode = make_shared<Node>(teamSide, positionHash);
+    }
+    rootNode->configure_root_search(options.search);
+
+    // Start the clock where run_search began, not after the concurrent root
+    // scans below: they are part of this move's thinking time, and resetting
+    // the clock afterward would let a slow scan overrun the allotted move time.
+    SearchInfo searchInfo(searchStart, moveTimeMs);
+    isPondering_.store(options.isPonder, std::memory_order_release);
+    currentSearchInfo_.store(&searchInfo, std::memory_order_release);
+
+    // MCGS: discard nodes outside the signature-verified reused graph, then
+    // re-index that graph so new transpositions merge into retained nodes.
+    if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
+        transpositionTable->clear();
+        if (reusedRoot) {
+            reindex_reused_subtree(rootNode);
+        } else {
+            transpositionTable->insertOrGet(positionHash, rootNode);
+        }
+    }
+
+    const size_t workerCount = static_cast<size_t>(numThreads) * engines.size();
+    ensure_worker_pool(workerCount);
+
+    // Set up active search threads with shared root node, search info, and transposition table
+    for (size_t i = 0; i < workerCount; ++i) {
+        SearchThread* st = searchThreads[i];
+        st->set_root_node(rootNode);
+        st->set_search_info(&searchInfo);
+        st->set_runtime_config(options.search);
+        st->set_inference_worker_index(i / engines.size());
+        st->set_transposition_table(
+            options.search.enableMCGS && options.search.enableTranspositions
+                ? transpositionTable.get()
+                : nullptr);
+    }
+
+    const bool runRootScan = options.search.enableRootMateSearch
+        && !options.background;
+
+    // The scan makes and unmakes moves while proving. Give it a private board
+    // before dispatching workers so they only ever copy the untouched caller's
+    // board, and so a failed copy cannot leave workers holding stack pointers.
+    std::unique_ptr<Board> scanBoard;
+    if (runRootScan) {
+        scanBoard = std::make_unique<Board>(board);
+    }
+
+    // The root scans below run on this thread, concurrently with the workers,
+    // so they cost one worker's share of the CPU rather than the whole GPU's
+    // idle time. Serialising them ahead of MCTS left every inference engine
+    // doing nothing for the length of the scan - on a tactical suite that is
+    // effectively the entire move.
+    const size_t scanWorkerCount = runRootScan && workerCount > 1
+        ? workerCount - 1
+        : workerCount;
+    dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
+                     targetNodes, moveTimeMs, scanWorkerCount);
+
+    // A scan that proves a mate replaces the root with a synthetic one-edge
+    // tree, which the workers are concurrently reading through rootNode. Stop
+    // and join them before that happens. The same cleanup is required if a
+    // scan throws because the workers hold pointers to this call's stack.
+    const auto halt_workers_after_scan = [&] {
+        running = false;
+        wait_for_workers();
+        currentSearchInfo_.store(nullptr, std::memory_order_release);
+    };
+
     // Reuse an exact reply-indexed certificate from the previous forced-mate
     // proof before running the bounded root scan again. A changed partner
     // board, pocket, side to move, team, or TimeAdvantage value cannot match.
@@ -1872,8 +1969,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // decides, once per search whichever way it exits.
     bool rootScanRecorded = false;
     const auto record_root_scan = [&](bool proved) {
-        if (rootScanRecorded || options.background
-            || !options.search.enableRootMateSearch) {
+        if (rootScanRecorded || !runRootScan) {
             return;
         }
         rootScanRecorded = true;
@@ -1887,25 +1983,31 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // The root scans answer "what do I play here", which a background search is
     // not asked; they would also replace the real tree with a synthetic
     // one-edge proof that no later position could adopt.
-    const bool cachedRootMate = options.search.enableRootMateSearch
-        && !options.background
-        && try_reuse_mate_continuation(
-            board, teamSide, teamHasTimeAdvantage,
-            rootMateAction, rootMatePly);
-    const bool scannedRootMate = options.search.enableRootMateSearch
-        && !options.background
-        && !cachedRootMate
-        && find_root_mate_impl(
-            board, teamSide, teamHasTimeAdvantage,
-            rootMateAction, rootMatePly,
-            rootMateBudget, &mateContinuations_, nullptr, true,
-            rootScanDeadline);
+    bool cachedRootMate = false;
+    bool scannedRootMate = false;
+    try {
+        cachedRootMate = runRootScan
+            && try_reuse_mate_continuation(
+                *scanBoard, teamSide, teamHasTimeAdvantage,
+                rootMateAction, rootMatePly);
+        scannedRootMate = runRootScan
+            && !cachedRootMate
+            && find_root_mate_impl(
+                *scanBoard, teamSide, teamHasTimeAdvantage,
+                rootMateAction, rootMatePly,
+                rootMateBudget, &mateContinuations_, nullptr, true,
+                rootScanDeadline);
+    } catch (...) {
+        halt_workers_after_scan();
+        throw;
+    }
     if (cachedRootMate || scannedRootMate) {
+        halt_workers_after_scan();
         record_root_scan(true);
         result = rootMateAction;
-        uint64_t positionHash = board.search_hash_key(
+        const uint64_t provenPositionHash = board.search_hash_key(
             teamSide, teamHasTimeAdvantage);
-        rootNode = make_shared<Node>(teamSide, positionHash);
+        rootNode = make_shared<Node>(teamSide, provenPositionHash);
         rootNode->set_depth(0);
 
         std::vector<Stockfish::Move> rootActionsA = {result.moveA};
@@ -1965,17 +2067,24 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             rootMateBudget,
             SearchParams::FORCED_LOSS_MIN_TIMED_NODE_BUDGET)
         : rootMateBudget;
-    const bool scannedRootLoss = options.search.enableRootMateSearch
-        && !options.background
-        && find_root_forced_loss(
-            board, teamSide, teamHasTimeAdvantage,
-            rootLossAction, rootLossPly, rootLossBudget, rootScanDeadline);
+    bool scannedRootLoss = false;
+    try {
+        scannedRootLoss = runRootScan
+            && find_root_forced_loss(
+                *scanBoard, teamSide, teamHasTimeAdvantage,
+                rootLossAction, rootLossPly, rootLossBudget,
+                rootScanDeadline);
+    } catch (...) {
+        halt_workers_after_scan();
+        throw;
+    }
     record_root_scan(scannedRootLoss);
     if (scannedRootLoss) {
+        halt_workers_after_scan();
         result = rootLossAction;
-        const uint64_t positionHash = board.search_hash_key(
+        const uint64_t provenPositionHash = board.search_hash_key(
             teamSide, teamHasTimeAdvantage);
-        rootNode = make_shared<Node>(teamSide, positionHash);
+        rootNode = make_shared<Node>(teamSide, provenPositionHash);
         rootNode->set_depth(0);
 
         std::vector<Stockfish::Move> rootActionsA = {result.moveA};
@@ -2028,73 +2137,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         return result;
     }
 
-    // Determine effective move time
-    int moveTimeMs = options.moveTimeMs;
-    size_t targetNodes = options.targetNodes;
-
-    // Compute position hash for tree reuse
-    uint64_t positionHash = board.search_hash_key(
-        teamSide, teamHasTimeAdvantage);
-    const std::string positionSignature = board_signature(board);
-    
-    // Try to reuse tree from previous search (if enabled)
-    std::shared_ptr<Node> reusedRoot = nullptr;
-    if (SearchParams::ENABLE_TREE_REUSE) {
-        reusedRoot = try_reuse_tree(positionHash, teamSide, positionSignature);
-    }
-    
-    if (reusedRoot) {
-        // Reuse the existing subtree
-        rootNode = reusedRoot;
-        rootNode->set_hash(positionHash);
-        rootNode->set_depth(0);
-        
-        if (options.verbose) {
-            cout << "info string Tree reuse: " << rootNode->get_visits() 
-                 << " visits recovered" << endl;
-        }
-    } else {
-        // Create new root node
-        rootNode = make_shared<Node>(teamSide, positionHash);
-    }
-    rootNode->configure_root_search(options.search);
-    
-    // Start the clock where run_search began, not here: the root scans above
-    // are part of this move's thinking time, and timing them from here would
-    // let a slow scan overrun the allotted move time by its own duration.
-    SearchInfo searchInfo(searchStart, moveTimeMs);
-    isPondering_.store(options.isPonder, std::memory_order_release);
-    currentSearchInfo_.store(&searchInfo, std::memory_order_release);
-    
-    // MCGS: discard nodes outside the signature-verified reused graph, then
-    // re-index that graph so new transpositions merge into retained nodes.
-    if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
-        transpositionTable->clear();
-        if (reusedRoot) {
-            reindex_reused_subtree(rootNode);
-        } else {
-            transpositionTable->insertOrGet(positionHash, rootNode);
-        }
-    }
-
-    const size_t workerCount = static_cast<size_t>(numThreads) * engines.size();
-    ensure_worker_pool(workerCount);
-
-    // Set up active search threads with shared root node, search info, and transposition table
-    for (size_t i = 0; i < workerCount; ++i) {
-        SearchThread* st = searchThreads[i];
-        st->set_root_node(rootNode);
-        st->set_search_info(&searchInfo);
-        st->set_runtime_config(options.search);
-        st->set_inference_worker_index(i / engines.size());
-        st->set_transposition_table(
-            options.search.enableMCGS && options.search.enableTranspositions
-                ? transpositionTable.get()
-                : nullptr);
-    }
-    
-    dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
-                     targetNodes, moveTimeMs, workerCount);
 
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension

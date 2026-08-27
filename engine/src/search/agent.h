@@ -210,8 +210,9 @@ public:
     /**
      * @brief Node and time budget for the root forced-mate search.
      *
-     * The search runs synchronously before MCTS, so it carries a cap of its
-     * own. Running out is reported as "not proven", never as a proof.
+     * The search runs on the calling CPU thread alongside MCTS workers, so it
+     * carries a cap of its own. Running out is reported as "not proven", never
+     * as a proof.
      *
      * A node count alone cannot bound it in absolute time: a joint proof node
      * enumerates board-move combinations and costs two orders of magnitude
