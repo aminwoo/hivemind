@@ -1619,7 +1619,7 @@ TEST_F(EngineTest, ReservedCanonicalExpansionRestoresBoardAndEdgeState) {
 
     const JointActionCandidate action = root->peek_next_joint_action();
     board.make_moves(action.moveA, action.moveB);
-    const uint64_t childHash = board.hash_key(true);
+    const uint64_t childHash = board.search_hash_key(Stockfish::BLACK, true);
     board.unmake_moves(action.moveA, action.moveB);
 
     auto canonical = std::make_shared<Node>(Stockfish::BLACK, childHash);
@@ -1659,7 +1659,7 @@ TEST_F(EngineTest, InitialGeneratedChildUsesCanonicalTransposition) {
     const JointActionCandidate action = root->get_joint_action(0);
 
     board.make_moves(action.moveA, action.moveB);
-    const uint64_t childHash = board.hash_key(true);
+    const uint64_t childHash = board.search_hash_key(Stockfish::BLACK, true);
     board.unmake_moves(action.moveA, action.moveB);
 
     auto canonical = std::make_shared<Node>(Stockfish::BLACK, childHash);
@@ -1676,7 +1676,7 @@ TEST_F(EngineTest, InitialGeneratedChildUsesCanonicalTransposition) {
     EXPECT_TRUE(selection.hasEvaluationReservation);
     EXPECT_EQ(selection.pendingEvaluation, nullptr);
     EXPECT_EQ(root->get_children()[0], canonical);
-    EXPECT_EQ(board.hash_key(true), childHash);
+    EXPECT_EQ(board.search_hash_key(Stockfish::BLACK, true), childHash);
     EXPECT_EQ(table.getHits(), 1U);
 
     root->remove_virtual_loss(0);
@@ -1699,7 +1699,7 @@ TEST_F(EngineTest, BlockedCanonicalLeafIsExcludedAndReservationIsReleased) {
     const JointActionCandidate action = root->get_joint_action(0);
 
     board.make_moves(action.moveA, action.moveB);
-    const uint64_t childHash = board.hash_key(true);
+    const uint64_t childHash = board.search_hash_key(Stockfish::BLACK, true);
     board.unmake_moves(action.moveA, action.moveB);
 
     auto canonical = std::make_shared<Node>(Stockfish::BLACK, childHash);
@@ -2022,7 +2022,8 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     Board board;
     constexpr bool teamHasTimeAdvantage = false;
     auto root = std::make_shared<Node>(
-        Stockfish::WHITE, board.hash_key(teamHasTimeAdvantage));
+        Stockfish::WHITE,
+        board.search_hash_key(Stockfish::WHITE, teamHasTimeAdvantage));
 
     const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
     ASSERT_NE(ownMove, Stockfish::MOVE_NONE);
@@ -2071,12 +2072,121 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
         nonPrincipalReply.moveA, nonPrincipalReply.moveB);
 
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
-        actualPosition.hash_key(teamHasTimeAdvantage), Stockfish::WHITE,
+        actualPosition.search_hash_key(
+            Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
         Agent::board_signature(actualPosition));
     EXPECT_EQ(reused, replyNodes[1]);
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
     EXPECT_EQ(reused->get_end_in_ply(), 3);
+}
+
+TEST_F(EngineTest, TreeReuseIndexesPositionsThreeJointPliesDeep) {
+    // Ponder retains one predicted reply. A partner-board exchange while we
+    // think - opponent moves, partner answers, opponent moves again - lands
+    // three joint plies down, which is where reuse has to still find a node.
+    Board board;
+    constexpr bool teamHasTimeAdvantage = false;
+    const SearchParams::RuntimeConfig config{};
+    auto root = std::make_shared<Node>(
+        Stockfish::WHITE,
+        board.search_hash_key(Stockfish::WHITE, teamHasTimeAdvantage));
+
+    // Our move, the root edge that store_next_root_candidates walks below.
+    const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
+    ASSERT_NE(ownMove, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {ownMove}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        teamHasTimeAdvantage, true, false, config));
+    Board afterOwnMove(board);
+    afterOwnMove.make_moves(ownMove, Stockfish::MOVE_NONE);
+
+    // Level 0: the opponents answer on our board and open the partner board.
+    const std::shared_ptr<Node> opponentNode = root->get_children().front();
+    const Stockfish::Move replyA = find_move(afterOwnMove, BOARD_A, "e7e5");
+    const Stockfish::Move replyB = find_move(afterOwnMove, BOARD_B, "d2d4");
+    ASSERT_NE(replyA, Stockfish::MOVE_NONE);
+    ASSERT_NE(replyB, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(opponentNode->try_init_and_expand(
+        {replyA}, {replyB}, {1.0f}, {1.0f},
+        !teamHasTimeAdvantage, true, true, config));
+    const std::shared_ptr<Node> replyNode = opponentNode->get_children().front();
+    Board afterReply(afterOwnMove);
+    afterReply.make_moves(opponentNode->get_joint_action(0).moveA,
+                          opponentNode->get_joint_action(0).moveB);
+
+    // Level 1: our team moves again, our partner included.
+    const Stockfish::Move ourA = find_move(afterReply, BOARD_A, "g1f3");
+    const Stockfish::Move partnerB = find_move(afterReply, BOARD_B, "d7d5");
+    ASSERT_NE(ourA, Stockfish::MOVE_NONE);
+    ASSERT_NE(partnerB, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(replyNode->try_init_and_expand(
+        {ourA}, {partnerB}, {1.0f}, {1.0f},
+        teamHasTimeAdvantage, true, true, config));
+    replyNode->update(0, 0.0f);
+    const std::shared_ptr<Node> ourNode = replyNode->get_children().front();
+    Board afterOurs(afterReply);
+    afterOurs.make_moves(replyNode->get_joint_action(0).moveA,
+                         replyNode->get_joint_action(0).moveB);
+
+    // Level 2: the opponents move once more on both boards.
+    const Stockfish::Move deepA = find_move(afterOurs, BOARD_A, "b8c6");
+    const Stockfish::Move deepB = find_move(afterOurs, BOARD_B, "c1f4");
+    ASSERT_NE(deepA, Stockfish::MOVE_NONE);
+    ASSERT_NE(deepB, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(ourNode->try_init_and_expand(
+        {deepA}, {deepB}, {1.0f}, {1.0f},
+        !teamHasTimeAdvantage, true, true, config));
+    ourNode->update(0, 0.0f);
+    const std::shared_ptr<Node> deepNode = ourNode->get_children().front();
+    Board deepPosition(afterOurs);
+    deepPosition.make_moves(ourNode->get_joint_action(0).moveA,
+                            ourNode->get_joint_action(0).moveB);
+
+    Agent agent;
+    AgentTreeReuseTestPeer::set_root(agent, root);
+    agent.store_next_root_candidates(board, teamHasTimeAdvantage);
+    // Levels 0, 1 and 3. Level 2 has the opposing team on move, so no search
+    // can ever be rooted there and it is not worth an index entry.
+    EXPECT_EQ(AgentTreeReuseTestPeer::retained_candidate_count(agent), 3U);
+    ASSERT_EQ(deepNode->get_team_to_play(), Stockfish::WHITE);
+
+    const std::shared_ptr<Node> reused = agent.try_reuse_tree(
+        deepPosition.search_hash_key(
+            Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
+        Agent::board_signature(deepPosition));
+    EXPECT_EQ(reused, deepNode);
+}
+
+TEST_F(EngineTest, TreeReuseRejectsUnrelatedPositionAtSameDepth) {
+    Board board;
+    constexpr bool teamHasTimeAdvantage = false;
+    const SearchParams::RuntimeConfig config{};
+    auto root = std::make_shared<Node>(
+        Stockfish::WHITE,
+        board.search_hash_key(Stockfish::WHITE, teamHasTimeAdvantage));
+
+    const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
+    ASSERT_NE(ownMove, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {ownMove}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        teamHasTimeAdvantage, true, false, config));
+
+    Agent agent;
+    AgentTreeReuseTestPeer::set_root(agent, root);
+    agent.store_next_root_candidates(board, teamHasTimeAdvantage);
+
+    // A position the retained walk never reached must not be adopted.
+    Board elsewhere(board);
+    const Stockfish::Move otherMove = find_move(elsewhere, BOARD_A, "d2d4");
+    ASSERT_NE(otherMove, Stockfish::MOVE_NONE);
+    elsewhere.make_moves(otherMove, Stockfish::MOVE_NONE);
+
+    EXPECT_EQ(agent.try_reuse_tree(
+                  elsewhere.search_hash_key(
+                      Stockfish::BLACK, !teamHasTimeAdvantage), Stockfish::BLACK,
+                  Agent::board_signature(elsewhere)),
+              nullptr);
 }
 
 TEST_F(EngineTest, RootMateProofRetainsEveryDefenderContinuation) {
@@ -2423,20 +2533,165 @@ TEST_F(EngineTest, CombinedHashIncludesRepetitionContext) {
     EXPECT_NE(historical.hash_key(false), fresh.hash_key(false));
 }
 
-TEST_F(EngineTest, RepetitionPrefixHashRoundTripsWithSearchMoves) {
+TEST_F(EngineTest, RepetitionHistoryRoundTripsWithSearchMoves) {
     Board board;
     const uint64_t initialHash = board.hash_key(false);
-    const size_t initialPrefixCount = board.positionHistoryPrefixes[BOARD_A].size();
+    const size_t initialHistoryCount = board.positionHistory[BOARD_A].size();
     Stockfish::Move move = find_move(board, BOARD_A, "g1f3");
     ASSERT_NE(move, Stockfish::MOVE_NONE);
 
     board.make_moves(move, Stockfish::MOVE_NONE);
-    EXPECT_EQ(board.positionHistoryPrefixes[BOARD_A].size(), initialPrefixCount + 1);
+    EXPECT_EQ(board.positionHistory[BOARD_A].size(), initialHistoryCount + 1);
     EXPECT_NE(board.hash_key(false), initialHash);
 
     board.unmake_moves(move, Stockfish::MOVE_NONE);
-    EXPECT_EQ(board.positionHistoryPrefixes[BOARD_A].size(), initialPrefixCount);
+    EXPECT_EQ(board.positionHistory[BOARD_A].size(), initialHistoryCount);
     EXPECT_EQ(board.hash_key(false), initialHash);
+}
+
+TEST_F(EngineTest, CombinedHashMergesInterleavedCrossBoardOrders) {
+    // The sound merge class: each board saw the same moves in the same order,
+    // only the interleaving between the boards differs. Same last move, same
+    // positions stood on, same repetition future - one node.
+    auto play = [](Board& board, int boardNum,
+                   std::initializer_list<const char*> ucis) {
+        for (const char* uci : ucis) {
+            Stockfish::Move move = find_move(board, boardNum, uci);
+            ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+            board.push_move(boardNum, move);
+        }
+    };
+
+    Board boardFirst;
+    play(boardFirst, BOARD_A, {"g1f3", "b8c6"});
+    play(boardFirst, BOARD_B, {"e2e4", "e7e5"});
+
+    Board interleaved;
+    play(interleaved, BOARD_B, {"e2e4"});
+    play(interleaved, BOARD_A, {"g1f3"});
+    play(interleaved, BOARD_B, {"e7e5"});
+    play(interleaved, BOARD_A, {"b8c6"});
+
+    EXPECT_EQ(boardFirst.hash_key(false), interleaved.hash_key(false));
+    EXPECT_EQ(boardFirst.hash_key(true), interleaved.hash_key(true));
+}
+
+TEST_F(EngineTest, CombinedHashSeparatesPositionsReachedByDifferentLastMove) {
+    // Same placement, different move just played. The network reads the last
+    // move as two input planes, so a shared node would serve one path an
+    // evaluation computed for the other.
+    auto play = [](Board& board, std::initializer_list<const char*> ucis) {
+        for (const char* uci : ucis) {
+            Stockfish::Move move = find_move(board, BOARD_A, uci);
+            ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+            board.push_move(BOARD_A, move);
+        }
+    };
+
+    Board endsWithKnightMove;
+    play(endsWithKnightMove, {"g1f3", "b8c6", "b1c3", "g8f6"});
+    Board endsWithOtherKnightMove;
+    play(endsWithOtherKnightMove, {"b1c3", "g8f6", "g1f3", "b8c6"});
+
+    ASSERT_EQ(endsWithKnightMove.board_only_key(BOARD_A),
+              endsWithOtherKnightMove.board_only_key(BOARD_A));
+    ASSERT_NE(endsWithKnightMove.last_move(BOARD_A),
+              endsWithOtherKnightMove.last_move(BOARD_A));
+    EXPECT_NE(endsWithKnightMove.hash_key(false),
+              endsWithOtherKnightMove.hash_key(false));
+}
+
+TEST_F(EngineTest, CombinedHashSeparatesDifferentRepetitionMaps) {
+    // The current placement and last move agree, but the intermediate
+    // positions visited by the two move orders do not. Merging would make a
+    // later repetition transition depend on which parent reached the node.
+    auto play = [](Board& board, std::initializer_list<const char*> ucis) {
+        for (const char* uci : ucis) {
+            Stockfish::Move move = find_move(board, BOARD_A, uci);
+            ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+            board.push_move(BOARD_A, move);
+        }
+    };
+
+    Board kingsideKnightFirst;
+    play(kingsideKnightFirst, {"g1f3", "b8c6", "b1c3", "g8f6"});
+    Board queensideKnightFirst;
+    play(queensideKnightFirst, {"b1c3", "b8c6", "g1f3", "g8f6"});
+
+    ASSERT_EQ(kingsideKnightFirst.last_move(BOARD_A),
+              queensideKnightFirst.last_move(BOARD_A));
+    ASSERT_EQ(kingsideKnightFirst.rule50_count(BOARD_A),
+              queensideKnightFirst.rule50_count(BOARD_A));
+    EXPECT_NE(kingsideKnightFirst.hash_key(false),
+              queensideKnightFirst.hash_key(false));
+    EXPECT_NE(kingsideKnightFirst.hash_key(true),
+              queensideKnightFirst.hash_key(true));
+}
+
+TEST_F(EngineTest, CombinedHashSeparatesDifferentRepetitionStatus) {
+    // Same placement, same last move, same fifty-move counter - but one has
+    // stood here before. The network reads that as an input plane, so these
+    // are two nodes.
+    auto play = [](Board& board, std::initializer_list<const char*> ucis) {
+        for (const char* uci : ucis) {
+            Stockfish::Move move = find_move(board, BOARD_A, uci);
+            ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+            board.push_move(BOARD_A, move);
+        }
+    };
+
+    Board secondVisit;
+    play(secondVisit, {"g1f3", "b8c6", "f3g1", "c6b8", "g1f3"});
+    Board firstVisit;
+    play(firstVisit, {"b1c3", "b8c6", "c3b1", "c6b8", "g1f3"});
+
+    ASSERT_EQ(secondVisit.board_only_key(BOARD_A),
+              firstVisit.board_only_key(BOARD_A));
+    ASSERT_EQ(secondVisit.last_move(BOARD_A), firstVisit.last_move(BOARD_A));
+    ASSERT_EQ(secondVisit.rule50_count(BOARD_A), firstVisit.rule50_count(BOARD_A));
+    ASSERT_EQ(secondVisit.repetition_status(BOARD_A), 1);
+    ASSERT_EQ(firstVisit.repetition_status(BOARD_A), 0);
+    EXPECT_NE(secondVisit.hash_key(false), firstVisit.hash_key(false));
+}
+
+TEST_F(EngineTest, RepetitionHashSeparatesDifferentFutureDrawContexts) {
+    // Both paths stand on the start position for the second time, with the
+    // same current repetition status. Only one has visited Nf3 before. They
+    // must not share a graph node because playing Nf3 has different repetition
+    // semantics below the two states.
+    auto play = [](Board& board, std::initializer_list<const char*> ucis) {
+        for (const char* uci : ucis) {
+            Stockfish::Move move = find_move(board, BOARD_A, uci);
+            ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+            board.push_move(BOARD_A, move);
+        }
+    };
+
+    Board loopedThroughNf3;
+    play(loopedThroughNf3, {"g1f3", "b8c6", "f3g1", "c6b8"});
+    Board loopedThroughNc3;
+    play(loopedThroughNc3, {"b1c3", "b8c6", "c3b1", "c6b8"});
+
+    ASSERT_EQ(loopedThroughNf3.repetition_count(BOARD_A), 2);
+    ASSERT_EQ(loopedThroughNc3.repetition_count(BOARD_A), 2);
+    EXPECT_NE(loopedThroughNf3.hash_key(false), loopedThroughNc3.hash_key(false));
+
+    const std::array<int, 2> inSearch{1, 1};
+    play(loopedThroughNf3, {"g1f3"});
+    play(loopedThroughNc3, {"g1f3"});
+    EXPECT_TRUE(loopedThroughNf3.is_repetition_draw(inSearch));
+    EXPECT_FALSE(loopedThroughNc3.is_repetition_draw(inSearch));
+    EXPECT_TRUE(loopedThroughNf3.is_draw(inSearch));
+    EXPECT_FALSE(loopedThroughNc3.is_draw(inSearch));
+}
+
+TEST_F(EngineTest, FiftyMoveDrawStaysProvableBecauseTheCounterIsInTheKey) {
+    Board board;
+    board.set_fen(BOARD_A, "4k3/8/8/8/8/8/8/4K3 w - - 100 200");
+    const std::array<int, 2> inSearch{1, 1};
+
+    EXPECT_TRUE(board.is_draw_on_board(BOARD_A, 1));
+    EXPECT_FALSE(board.is_repetition_draw(inSearch));
 }
 
 TEST_F(EngineTest, CombinedHashIncludesTransferredPocketPieces) {

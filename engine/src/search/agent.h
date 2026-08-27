@@ -5,7 +5,9 @@
 #include <condition_variable>
 #include <exception>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include "search/node.h"
 #include "nn/engine.h"
@@ -31,6 +33,10 @@ struct SearchOptions {
     int multiPV = 1;             // Number of principal variations to output
     bool isPonder = false;       // Ponder mode: think continuously until ponderhit or stop
     bool enablePonder = true;    // Output ponder move with bestmove
+    // Permanent-brain search: prints nothing, skips the root scans, runs until
+    // stopped or until its own node/time cap, and retains its entire root
+    // subtree for reuse rather than a subtree below a move it is about to play.
+    bool background = false;
     
     SearchParams::RuntimeConfig search;
     
@@ -99,16 +105,42 @@ private:
     int numThreads;                                          // Search threads per engine
     SearchParams::RuntimeConfig lastRuntimeConfig_;
     std::atomic<bool> isPondering_{false};                   // Whether current search is in ponder mode
+    // Latched by set_is_running(false). The permanent brain has no clock of its
+    // own, so it needs a stop signal that survives dispatch_workers setting
+    // `running` back to true.
+    std::atomic<bool> stopRequested_{false};
     std::atomic<SearchInfo*> currentSearchInfo_{nullptr};    // Active search info pointer
     
     // Tree reuse support (CrazyAra-style). Retain every generated opponent
     // response below the selected move, not only the predicted response.
-    std::vector<RetainedRootCandidate> nextRootCandidates_;
+    // Keyed by position hash so any retained position is a single lookup, not
+    // a scan of the two or three predicted ones.
+    std::unordered_map<uint64_t, RetainedRootCandidate> nextRootCandidates_;
     // Exact positions and winning moves emitted by the bounded mate solver.
     // Unlike the synthetic one-edge search tree used for UCI reporting, these
     // retain every defender branch that the proof recursively verified.
     std::vector<MateContinuation> mateContinuations_;
     uint64_t lastSearchHash_ = 0;            // Hash of last search position
+
+    /**
+     * Root pre-pass accounting.
+     *
+     * The mate and forced-loss scans run inside the move time, bounded by
+     * MATE_SEARCH_MAX_TIME_PERCENT, and return immediately once they prove
+     * something. Whether that trade is worth it is a property of a whole
+     * session, not of one move: the cost is the share of the clock the scans
+     * spend, the benefit is the share of moves they decide outright. Both are
+     * accumulated here and reported so the trade can be read off real games at
+     * real time controls rather than argued from the budget it was tuned at.
+     */
+    struct RootScanStats {
+        uint64_t searches = 0;
+        uint64_t proofs = 0;
+        uint64_t scanNanos = 0;
+        uint64_t thinkNanos = 0;
+    };
+    RootScanStats rootScanStats_;
+    std::string root_scan_summary() const;
     
     // Garbage collection thread for async tree cleanup
     GCThread gcThread_;
@@ -126,6 +158,14 @@ private:
                           size_t workerCount);
     void wait_for_workers();
     void reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot);
+    void retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
+                                 Board& board,
+                                 bool teamHasTimeAdvantage);
+    void retain_reuse_level(const std::shared_ptr<Node>& node,
+                            Board& board,
+                            bool teamHasTimeAdvantage,
+                            int depth,
+                            int level);
     bool try_reuse_mate_continuation(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         JointActionCandidate& outAction, int& outPlyToMate) const;
@@ -318,8 +358,8 @@ public:
     /**
      * @brief Exact positional identity of a board (both FENs, pockets included).
      *
-     * Used alongside the history-sensitive search hash when adopting a retained
-     * subtree, protecting against collisions and stale pocket contents.
+     * Used alongside the search hash when adopting a retained subtree,
+     * protecting against collisions and stale pocket contents.
      */
     static std::string board_signature(Board& board);
 
@@ -343,6 +383,24 @@ public:
      * generated opponent response beneath it.
      */
     void store_next_root_candidates(Board& board, bool teamHasTimeAdvantage);
+
+    /**
+     * @brief Keeps searching between moves, from the position our own move creates.
+     *
+     * Runs a silent, unbounded search rooted at the position that follows
+     * playedAction, so that work accrues under every opponent reply instead of
+     * only the one ponder would have guessed. Returns when the next position,
+     * go, or stop arrives, or when the background caps are reached. Exceptions
+     * are contained here: a bestmove has already been emitted for this move.
+     *
+     * @param board The position the just-finished search was rooted at.
+     * @param playedAction The joint action that search chose.
+     */
+    void run_permanent_brain(Board& board, const std::vector<Engine*>& engines,
+                             Stockfish::Color teamSide,
+                             bool teamHasTimeAdvantage,
+                             const JointActionCandidate& playedAction,
+                             const SearchOptions& options);
 
 private:
     static bool search_single_board_forced_mate_impl(

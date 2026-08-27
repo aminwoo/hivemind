@@ -199,7 +199,17 @@ void UCI::go(std::istringstream& is) {
     // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
         try {
-            agent->run_search(board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+            const JointActionCandidate played = agent->run_search(
+                board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+            if (!opts.isPonder) {
+                // Nothing else runs between moves. Keep thinking from the
+                // position our own move creates, so whichever reply the four
+                // asynchronous players produce lands on a subtree that already
+                // has work in it. Returns on the next position, go, or stop.
+                agent->run_permanent_brain(
+                    board, enginePtrs, teamSide, teamHasTimeAdvantage, played,
+                    opts);
+            }
         } catch (const std::exception& error) {
             std::cerr << "Search failed: " << error.what() << std::endl;
             std::cout << "info string search failed: " << error.what() << std::endl;
@@ -282,6 +292,11 @@ void UCI::setoption(std::istringstream& is) {
         int permille = std::clamp(std::stoi(value), 0, 1000);
         searchConfig.drawContempt = static_cast<float>(permille) / 1000.0f;
         std::cout << "info string DrawContemptPermille set to " << permille << std::endl;
+    } else if (name == "MovesLeftDiscountPermille") {
+        const int permille = std::clamp(std::stoi(value), 0, 1000);
+        searchConfig.movesLeftDiscount = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string MovesLeftDiscountPermille set to " << permille
+                  << std::endl;
     } else if (name == "PWCoefficientPermille") {
         int permille = std::clamp(std::stoi(value), 1, 10000);
         searchConfig.pwCoefficient = static_cast<float>(permille) / 1000.0f;
@@ -364,6 +379,9 @@ void UCI::send_uci_response() {
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
     cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
+    cout << "option name MovesLeftDiscountPermille type spin default "
+         << static_cast<int>(SearchParams::MOVES_LEFT_DISCOUNT * 1000.0f)
+         << " min 0 max 1000" << endl;
     cout << "option name PWCoefficientPermille type spin default "
          << static_cast<int>(SearchParams::PW_COEFFICIENT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default "

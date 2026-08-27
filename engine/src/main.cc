@@ -78,6 +78,12 @@ string model_path_argument(int argc, char** argv) {
     return {};
 }
 
+bool parse_bool_argument(const string& value) {
+    if (value == "true" || value == "1" || value == "on") return true;
+    if (value == "false" || value == "0" || value == "off") return false;
+    throw invalid_argument("Expected true/false, got: " + value);
+}
+
 }  // namespace
 
 void printUsage(const char* progName) {
@@ -103,6 +109,11 @@ void printUsage(const char* progName) {
     cout << "    --output <dir> --seed <n> --max-macro-plies <n>" << endl;
     cout << "    --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
     cout << "    --contender-pw-coefficient <x> --baseline-pw-coefficient <x>" << endl;
+    cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
+    cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
+    cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
+    cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
+    cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -268,15 +279,46 @@ int main(int argc, char* argv[]) {
                 }
                 else if (option == "--contender-batch-size") config.contenderBatchSize = stoi(value);
                 else if (option == "--baseline-batch-size") config.baselineBatchSize = stoi(value);
+                else if (option == "--contender-threads") config.contenderThreads = stoi(value);
+                else if (option == "--baseline-threads") config.baselineThreads = stoi(value);
                 else if (option == "--contender") contenderPath = value;
                 else if (option == "--baseline") baselinePath = value;
                 else if (option == "--output") config.outputDirectory = value;
+                else if (option == "--positions") config.positionsFile = value;
                 else if (option == "--seed") config.seed = stoull(value);
                 else if (option == "--max-macro-plies") config.maxMacroPlies = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
-                else if (option == "--contender-pw-coefficient") config.contenderPwCoefficient = stof(value);
-                else if (option == "--baseline-pw-coefficient") config.baselinePwCoefficient = stof(value);
+                else if (option == "--contender-pw-coefficient") {
+                    config.contenderPwCoefficient = stof(value);
+                    config.contenderRootPwCoefficient = config.contenderPwCoefficient;
+                }
+                else if (option == "--baseline-pw-coefficient") {
+                    config.baselinePwCoefficient = stof(value);
+                    config.baselineRootPwCoefficient = config.baselinePwCoefficient;
+                }
+                else if (option == "--contender-root-pw-coefficient") config.contenderRootPwCoefficient = stof(value);
+                else if (option == "--baseline-root-pw-coefficient") config.baselineRootPwCoefficient = stof(value);
+                else if (option == "--contender-mcgs") config.contenderMcgs = parse_bool_argument(value);
+                else if (option == "--baseline-mcgs") config.baselineMcgs = parse_bool_argument(value);
+                else if (option == "--contender-transpositions") config.contenderTranspositions = parse_bool_argument(value);
+                else if (option == "--baseline-transpositions") config.baselineTranspositions = parse_bool_argument(value);
+                else if (option == "--contender-root-mate-search") config.contenderRootMateSearch = parse_bool_argument(value);
+                else if (option == "--baseline-root-mate-search") config.baselineRootMateSearch = parse_bool_argument(value);
+                else if (option == "--contender-wdl-eval") config.contenderWdlEval = parse_bool_argument(value);
+                else if (option == "--baseline-wdl-eval") config.baselineWdlEval = parse_bool_argument(value);
+                else if (option == "--contender-wdl-weight") config.contenderWdlWeight = stof(value);
+                else if (option == "--baseline-wdl-weight") config.baselineWdlWeight = stof(value);
+                else if (option == "--contender-moves-left-discount") config.contenderMovesLeftDiscount = stof(value);
+                else if (option == "--baseline-moves-left-discount") config.baselineMovesLeftDiscount = stof(value);
+                else if (option == "--contender-q-value-weight") config.contenderQValueWeight = stof(value);
+                else if (option == "--baseline-q-value-weight") config.baselineQValueWeight = stof(value);
+                else if (option == "--contender-q-veto-delta") config.contenderQVetoDelta = stof(value);
+                else if (option == "--baseline-q-veto-delta") config.baselineQVetoDelta = stof(value);
+                else if (option == "--sprt-elo0") config.sprtElo0 = stod(value);
+                else if (option == "--sprt-elo1") config.sprtElo1 = stod(value);
+                else if (option == "--sprt-alpha") config.sprtAlpha = stod(value);
+                else if (option == "--sprt-beta") config.sprtBeta = stod(value);
                 else throw invalid_argument("Unknown tournament option: " + option);
             }
         } catch (const exception& error) {
@@ -302,6 +344,10 @@ int main(int argc, char* argv[]) {
             cerr << "Failed to load baseline model" << endl;
             return EXIT_FAILURE;
         }
+        config.contenderModelSignature = computeFileSignature(
+            contenderPath.string(), "hivemind-tournament-model");
+        config.baselineModelSignature = computeFileSignature(
+            baselinePath.string(), "hivemind-tournament-model");
         try {
             return run_tournament(
                 contender, baseline,

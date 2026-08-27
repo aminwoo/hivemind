@@ -124,8 +124,23 @@ constexpr bool ENABLE_WDL_EVAL = true;
 /// Weight of WDL expected value vs direct scalar value (1.0 = pure WDL, 0.0 = pure scalar)
 constexpr float WDL_VALUE_WEIGHT = 0.25f;
 
-/// Discount factor per 100 plies remaining to favor faster wins and delayed losses
-constexpr float MOVES_LEFT_DISCOUNT = 0.005f;
+/**
+ * Discount factor per 100 plies remaining, favouring faster wins and delayed
+ * losses: neuralValue is scaled by (1 - MOVES_LEFT_DISCOUNT * plies/100).
+ *
+ * The magnitude has to be large enough to break a near-tie between two moves
+ * the value head rates alike, which is the only situation where a moves-left
+ * signal is worth anything. At 0.005 the largest possible swing was 0.5% of the
+ * value, so the head could not move a decision at all - it was wired up but
+ * disconnected. At 0.05 a mate in ten plies beats one in sixty by ~0.02 of
+ * value, comparable to the Q gaps MCTS actually decides on, without letting
+ * distance-to-end override the evaluation itself. Bughouse is a mating race, so
+ * this is the variant where finishing sooner is worth the most.
+ *
+ * Strength-affecting and unvalidated: sweep MovesLeftDiscountPermille in a
+ * paired tournament before trusting the default.
+ */
+constexpr float MOVES_LEFT_DISCOUNT = 0.05f;
 
 // =============================================================================
 // Draw Contempt Parameters
@@ -192,6 +207,45 @@ constexpr float Q_VALUE_WEIGHT = 1.0f;
  * UCI position reconstruction discards repetition history.
  */
 constexpr bool ENABLE_TREE_REUSE = true;
+
+/**
+ * How many joint plies below the retained subtree root are indexed for reuse.
+ *
+ * Bughouse needs the width. Our partner and both opponents keep moving while we
+ * think, and a partner-board exchange - opponent moves, partner answers,
+ * opponent moves again - is three joint plies, not the single predicted reply
+ * that ponder retains.
+ *
+ * Every joint ply flips the team to move, and a search is only ever rooted at a
+ * position where our own team is on move, so only the odd levels (plus the
+ * subtree root itself, which is where the permanent brain starts) can ever be
+ * adopted. Three therefore buys two usable levels; two would buy one.
+ */
+constexpr int TREE_REUSE_MAX_JOINT_PLIES = 3;
+
+/// Hard cap on retained reuse candidates. Each one costs two FEN strings to
+/// record, so the walk stops widening rather than delaying the next search.
+constexpr size_t TREE_REUSE_MAX_CANDIDATES = 4096;
+
+/// Bound the synchronous graph walk performed before workers restart. Nodes
+/// beyond this cap remain reusable through ordinary edges; they simply are not
+/// pre-seeded into the transposition table for this move.
+constexpr size_t TREE_REUSE_REINDEX_MAX_NODES = 100000;
+
+/**
+ * Permanent brain: keep searching between moves instead of sitting idle.
+ *
+ * Ponder only fires when the GUI sends "go ponder" for the exact predicted
+ * joint action, which with four asynchronous players almost never happens.
+ * The permanent brain instead searches the position our own move creates, on
+ * the engine's own initiative, spreading the work over every opponent reply
+ * rather than betting on one. It stops at the next position, go, or stop.
+ */
+constexpr bool ENABLE_PERMANENT_BRAIN = true;
+
+/// Safety rails on the background search, which has no clock of its own.
+constexpr int PERMANENT_BRAIN_MAX_NODES = 500000;
+constexpr double PERMANENT_BRAIN_MAX_MS = 60000.0;
 
 // =============================================================================
 // Early Stopping and Time Management Parameters
@@ -382,6 +436,7 @@ struct RuntimeConfig {
     float cpuctBase = CPUCT_BASE;
     bool enableMCGS = ENABLE_MCGS;
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
+    bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     float drawContempt = DRAW_CONTEMPT;
     bool enableDynamicFpu = ENABLE_DYNAMIC_FPU;
     float fpuReduction = FPU_REDUCTION;

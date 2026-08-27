@@ -45,5 +45,28 @@ For a fixed-time batch-size comparison, use the same network on both sides:
 	--seed 1
 ```
 
+For multi-parameter strength sweeps, the resumable runner forms the Cartesian
+product of repeated `--axis` values. It supports batch size, worker count,
+MCGS/transpositions, root mate search, progressive widening, WDL weight,
+moves-left discount, and Q selection:
+
+```bash
+./scripts/run_strength_sweep.py \
+    --engine ./build-ninja/hivemind.bin \
+    --model "$NETWORK" \
+    --games 400 --nodes 800 \
+    --axis batch-size=8,16,32 \
+    --axis threads=1,2,4 \
+    --sprt-elo0 0 --sprt-elo1 8 \
+    --positions tournament_positions.tsv \
+    --output tournament_results/batch-workers --resume
+```
+
+The optional positions file is tab-separated: `dual FEN`, `white|black` team
+to play, and `true|false` time advantage. Comment lines begin with `#`. Each
+position is used for a complete color-swapped pair. Sequential stopping is
+evaluated only after both games in a pair; `summary.json` also records measured
+full-search NPS for each contestant and every effective search parameter.
+
 cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"
