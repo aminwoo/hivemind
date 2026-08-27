@@ -452,6 +452,9 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                 ctx.terminalValue = ctx.teamToPlay == root->get_team_to_play()
                     ? -runtimeConfig.drawContempt
                     : runtimeConfig.drawContempt;
+                // The node key contains the complete clamped repetition map,
+                // so a repetition terminal now holds for every path sharing
+                // this node and can safely participate in solver propagation.
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
                     ctx.leaf->mark_as_draw(1);
                 }
@@ -477,7 +480,8 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == root->get_team_to_play())
             ? teamHasTimeAdvantage
             : !teamHasTimeAdvantage;
-        ctx.leafHash = board.hash_key(leafTeamHasTimeAdvantage);
+        ctx.leafHash = board.search_hash_key(
+            ctx.teamToPlay, leafTeamHasTimeAdvantage);
 
         ctx.boardAOnTurn = board.side_to_move(BOARD_A) == ctx.teamToPlay;
         ctx.boardBOnTurn = board.side_to_move(BOARD_B) == ~ctx.teamToPlay;
@@ -834,22 +838,27 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
         child->get_team_to_play() == root->get_team_to_play()
         ? teamHasTimeAdvantage
         : !teamHasTimeAdvantage;
-    const uint64_t childHash = board.hash_key(childTeamHasTimeAdvantage);
+    const uint64_t childHash = board.search_hash_key(
+        child->get_team_to_play(), childTeamHasTimeAdvantage);
     child->set_hash(childHash);
 
     shared_ptr<Node> canonicalNode = transpositionTable->insertOrGet(
         childHash, child);
+    // The overwhelmingly common case is a new node. Avoid scanning the whole
+    // trajectory unless the table actually supplied a different candidate.
+    if (canonicalNode == child) {
+        return {child->is_expanded(), nullptr};
+    }
     const bool isAncestor = std::any_of(
         trajectoryBuffer.begin(), trajectoryBuffer.end(),
         [&canonicalNode](const TrajectoryEntry& entry) {
             return entry.node == canonicalNode.get();
         });
-    // The board hash does not encode which team is to play, so two nodes at the
-    // same position but opposite team can collide. Merging them would hand this
-    // trajectory the other team's joint actions.
+    // Retain the guard as corruption/collision defence even though team is now
+    // encoded in the search hash.
     const bool teamMismatch =
         canonicalNode->get_team_to_play() != child->get_team_to_play();
-    if (canonicalNode == child || isAncestor || teamMismatch) {
+    if (isAncestor || teamMismatch) {
         return {child->is_expanded(), nullptr};
     }
 

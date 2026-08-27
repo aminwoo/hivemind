@@ -9,6 +9,7 @@
 #include <array>
 #include <iostream>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 #include <functional>
 
@@ -31,8 +32,9 @@ class Board {
         
         /// History of repetition keys for on-board positions.
         std::vector<uint64_t> positionHistory[2];
-        std::vector<uint64_t> positionHistoryPrefixes[2];
         std::vector<Stockfish::Move> moveHistory[2];
+        std::unordered_map<uint64_t, uint32_t> repetitionCounts[2];
+        uint64_t repetitionFingerprint[2] = {0, 0};
 
         Board();
         Board(const Board& board);
@@ -43,21 +45,34 @@ class Board {
         * @return long unsigned int Combined hash of the positions.
         */
         unsigned long hash_key(bool teamHasTimeAdvantage = false) {
+            // The move that just landed is part of the network's input planes
+            // (set_plane_last_move_board), so two positions that differ only in
+            // how they were reached evaluate differently and cannot share a
+            // node - the node caches one evaluation for every path through it.
             auto k0 = mix_hash(pos[0]->key(), static_cast<uint64_t>(rule50_count(0)));
+            k0 = mix_hash(k0, static_cast<uint64_t>(last_move(0)));
             auto k1 = mix_hash(pos[1]->key(), static_cast<uint64_t>(rule50_count(1)));
+            k1 = mix_hash(k1, static_cast<uint64_t>(last_move(1)));
             // Combines the two keys using a hash_combine technique.
             auto combined = k0 ^ (k1 + 0x9e3779b97f4a7c15UL + (k0 << 6) + (k0 >> 2));
-            auto repetitionContext = history_key(0);
-            repetitionContext ^= history_key(1)
-                + 0x9e3779b97f4a7c15ULL
-                + (repetitionContext << 6)
-                + (repetitionContext >> 2);
-            combined ^= repetitionContext
-                + 0x9e3779b97f4a7c15ULL
-                + (combined << 6)
-                + (combined >> 2);
+            // Repetition is path-dependent. Hashing only the current position's
+            // count is insufficient: two paths can agree now but disagree on
+            // whether a later position is a draw. The commutative fingerprints
+            // encode every position's occurrence class (1, 2, or 3+) while
+            // remaining independent of the order in which those positions were
+            // visited. That makes future repetition transitions node-local.
+            combined = mix_hash(combined, repetitionFingerprint[0]);
+            combined = mix_hash(combined, repetitionFingerprint[1]);
             // XOR in time advantage key if team is up on time
             return teamHasTimeAdvantage ? (combined ^ Stockfish::Zobrist::timeAdvantage) : combined;
+        }
+
+        /** Hash used for search nodes; team-to-play is part of node semantics. */
+        unsigned long search_hash_key(Stockfish::Color teamToPlay,
+                                      bool teamHasTimeAdvantage = false) {
+            return mix_hash(hash_key(teamHasTimeAdvantage),
+                            0x5445414d00000000ULL
+                                | static_cast<uint64_t>(teamToPlay));
         }
 
         /**
@@ -87,12 +102,11 @@ class Board {
          * @param board_num The board index.
          */
         void record_position(int board_num) {
-            const uint64_t positionKey = board_only_key(board_num);
-            positionHistory[board_num].push_back(positionKey);
-            const uint64_t prefix = positionHistoryPrefixes[board_num].empty()
-                ? HISTORY_HASH_SEED
-                : positionHistoryPrefixes[board_num].back();
-            positionHistoryPrefixes[board_num].push_back(mix_hash(prefix, positionKey));
+            const uint64_t key = board_only_key(board_num);
+            uint32_t& count = repetitionCounts[board_num][key];
+            update_repetition_fingerprint(board_num, key, count, count + 1);
+            ++count;
+            positionHistory[board_num].push_back(key);
         }
 
         /**
@@ -101,8 +115,17 @@ class Board {
          */
         void unrecord_position(int board_num) {
             if (!positionHistory[board_num].empty()) {
+                const uint64_t key = positionHistory[board_num].back();
+                auto countIt = repetitionCounts[board_num].find(key);
+                if (countIt != repetitionCounts[board_num].end()) {
+                    const uint32_t oldCount = countIt->second;
+                    update_repetition_fingerprint(
+                        board_num, key, oldCount, oldCount - 1);
+                    if (--countIt->second == 0) {
+                        repetitionCounts[board_num].erase(countIt);
+                    }
+                }
                 positionHistory[board_num].pop_back();
-                positionHistoryPrefixes[board_num].pop_back();
             }
         }
 
@@ -112,10 +135,9 @@ class Board {
          */
         void clear_position_history(int board_num) {
             positionHistory[board_num].clear();
-            positionHistoryPrefixes[board_num].clear();
+            repetitionCounts[board_num].clear();
+            repetitionFingerprint[board_num] = 0;
         }
-
-        static constexpr uint64_t HISTORY_HASH_SEED = 0xcbf29ce484222325ULL;
 
         static uint64_t mix_hash(uint64_t key, uint64_t value) {
             value += 0x9e3779b97f4a7c15ULL;
@@ -124,11 +146,29 @@ class Board {
             return key ^ (value ^ (value >> 31));
         }
 
-        uint64_t history_key(int board_num) const {
-            const uint64_t prefix = positionHistoryPrefixes[board_num].empty()
-                ? HISTORY_HASH_SEED
-                : positionHistoryPrefixes[board_num].back();
-            return mix_hash(prefix, positionHistory[board_num].size());
+        static uint64_t repetition_entry_hash(uint64_t key, uint32_t count) {
+            const uint64_t clamped = std::min<uint32_t>(count, 3);
+            return mix_hash(
+                0x7265706574697469ULL,
+                key ^ (clamped * 0x9e3779b97f4a7c15ULL));
+        }
+
+        void update_repetition_fingerprint(int board_num, uint64_t key,
+                                           uint32_t oldCount,
+                                           uint32_t newCount) {
+            const uint32_t oldClass = std::min<uint32_t>(oldCount, 3);
+            const uint32_t newClass = std::min<uint32_t>(newCount, 3);
+            if (oldClass == newClass) {
+                return;
+            }
+            if (oldClass != 0) {
+                repetitionFingerprint[board_num] ^=
+                    repetition_entry_hash(key, oldClass);
+            }
+            if (newClass != 0) {
+                repetitionFingerprint[board_num] ^=
+                    repetition_entry_hash(key, newClass);
+            }
         }
 
         void set(std::string fen); 
@@ -175,7 +215,6 @@ class Board {
          */
         void set_fen(int board_num, std::string fen) {
             states[board_num] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-            states[board_num]->emplace_back();
             pos[board_num]->set(Stockfish::variants.find("bughouse")->second, fen, false, &states[board_num]->back(), Stockfish::Threads.main());
             // Reset position history for this board
             clear_position_history(board_num);
@@ -323,10 +362,23 @@ class Board {
                 return 0;
             }
             const uint64_t currentKey = positionHistory[board_num].back();
-            return static_cast<int>(std::count(
-                positionHistory[board_num].begin(),
-                positionHistory[board_num].end(),
-                currentKey));
+            const auto countIt = repetitionCounts[board_num].find(currentKey);
+            return countIt == repetitionCounts[board_num].end()
+                ? 0
+                : static_cast<int>(countIt->second);
+        }
+
+        /**
+         * @brief Repetition status of a board, clamped to the three classes the
+         *        search can actually tell apart: first occurrence, second, and
+         *        third-or-later. Those are the only distinctions the input
+         *        planes and the draw rules make, so splitting any finer would
+         *        separate nodes that behave identically.
+         * @param board_num The board index.
+         * @return int 0, 1 or 2.
+         */
+        int repetition_status(int board_num) {
+            return std::clamp(repetition_count(board_num) - 1, 0, 2);
         }
 
         /**
@@ -437,6 +489,23 @@ class Board {
         bool is_draw(const std::array<int, 2>& board_search_plies) {
             return is_draw_on_board(BOARD_A, board_search_plies[BOARD_A])
                 || is_draw_on_board(BOARD_B, board_search_plies[BOARD_B]);
+        }
+
+        /**
+         * @brief Whether a draw here rests on repetition rather than the
+         *        fifty-move counter. Useful for diagnostics and tests; both
+         *        causes are encoded in the graph-safe node key.
+         */
+        bool is_repetition_draw(const std::array<int, 2>& board_search_plies) {
+            for (int board_num : {BOARD_A, BOARD_B}) {
+                const int threshold =
+                    board_search_plies[board_num] > 0 ? 2 : 3;
+                if (pos[board_num]->rule50_count() < 100
+                    && repetition_count(board_num) >= threshold) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**

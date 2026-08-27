@@ -73,7 +73,52 @@ inline bool is_joint_action_legal(const JointActionRules& rules,
     return true;
 }
 
-// Hash function for pair<size_t, size_t> used in visited set
+/**
+ * @brief Compact set of (idxA, idxB) index pairs.
+ *
+ * Three of these live in every node, so the representation matters more than
+ * the asymptotics. A node-based hash set spends ~48 bytes and one allocation
+ * per element to store what is really two small indices into the sorted action
+ * lists; packing them into one sorted vector of 32-bit keys spends 4 bytes and
+ * no allocation at all. The sets hold tens of entries, so a binary search and a
+ * memmove beat hashing outright, and the keys share one cache line instead of
+ * being scattered across the heap.
+ *
+ * The packing gives each index 16 bits. A board cannot generate anywhere near
+ * 65536 moves, and callers bound both indices by the action list sizes before
+ * they ever get here.
+ */
+class IndexPairSet {
+public:
+    bool contains(size_t idxA, size_t idxB) const {
+        return std::binary_search(keys_.begin(), keys_.end(), pack(idxA, idxB));
+    }
+
+    /// @return true when the pair was not already present.
+    bool insert(size_t idxA, size_t idxB) {
+        const uint32_t key = pack(idxA, idxB);
+        const auto at = std::lower_bound(keys_.begin(), keys_.end(), key);
+        if (at != keys_.end() && *at == key) {
+            return false;
+        }
+        keys_.insert(at, key);
+        return true;
+    }
+
+    void clear() { keys_.clear(); }
+    size_t size() const { return keys_.size(); }
+
+private:
+    static uint32_t pack(size_t idxA, size_t idxB) {
+        return (static_cast<uint32_t>(idxA) << 16)
+             | (static_cast<uint32_t>(idxB) & 0xFFFFu);
+    }
+
+    std::vector<uint32_t> keys_;
+};
+
+// Hash function for pair<size_t, size_t>, still used by the transient
+// generated-index map that rebuildCandidateFrontier builds and discards.
 struct PairHash {
     size_t operator()(const std::pair<size_t, size_t>& p) const {
         // Combine hashes using bit mixing for better distribution
@@ -154,10 +199,10 @@ private:
     // Max-heap for lazy generation
     std::priority_queue<JointActionCandidate> heap;
     
-    // Track visited (i,j) pairs to avoid duplicates - O(1) lookup
-    std::unordered_set<std::pair<size_t, size_t>, PairHash> visited;
-    std::unordered_set<std::pair<size_t, size_t>, PairHash> jointPoolKeys;
-    std::unordered_set<std::pair<size_t, size_t>, PairHash> generatedCandidateKeys;
+    // Track visited (i,j) pairs to avoid duplicates
+    IndexPairSet visited;
+    IndexPairSet jointPoolKeys;
+    IndexPairSet generatedCandidateKeys;
     
     // Cache of already-generated candidates (for random access)
     std::vector<JointActionCandidate> generatedCandidates;
@@ -179,13 +224,12 @@ private:
             return;
         }
         
-        auto key = std::make_pair(idxA, idxB);
-        if (visited.find(key) != visited.end()) {
+        if (!visited.insert(idxA, idxB)) {
             return;
         }
-        visited.insert(key);
 
-        if (jointPoolKeys.contains(key) || generatedCandidateKeys.contains(key)) {
+        if (jointPoolKeys.contains(idxA, idxB)
+            || generatedCandidateKeys.contains(idxA, idxB)) {
             pushCandidate(idxA + 1, idxB);
             pushCandidate(idxA, idxB + 1);
             return;
@@ -248,7 +292,7 @@ private:
         for (size_t index = 0; index < generatedCandidates.size(); ++index) {
             JointActionCandidate& candidate = generatedCandidates[index];
             const auto key = std::make_pair(candidate.idxA, candidate.idxB);
-            generatedCandidateKeys.emplace(key);
+            generatedCandidateKeys.insert(candidate.idxA, candidate.idxB);
             generatedIndices.emplace(key, index);
 
             // Promotion may enlarge or shrink the learned pool. Restore every
@@ -303,7 +347,7 @@ private:
                     std::log(std::max(candidate.jointPrior, 1.0e-30f))
                     + residualScale * compatibility);
                 originalMass += candidate.jointPrior;
-                jointPoolKeys.emplace(indexA, indexB);
+                jointPoolKeys.insert(indexA, indexB);
                 scoredCandidates.push_back(candidate);
             }
         }
@@ -599,7 +643,7 @@ public:
         
         // Cache for random access
         generatedCandidates.push_back(best);
-        generatedCandidateKeys.emplace(best.idxA, best.idxB);
+        generatedCandidateKeys.insert(best.idxA, best.idxB);
         
         return best;
     }

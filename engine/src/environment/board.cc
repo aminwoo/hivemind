@@ -31,7 +31,6 @@ void Board::set(std::string fen) {
     line = trim(line); 
 
     states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    states[0]->emplace_back();
     pos[0]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[0]->back(), Stockfish::Threads.main());
     clear_position_history(0);
     record_position(0);
@@ -41,7 +40,6 @@ void Board::set(std::string fen) {
     line = trim(line);
     
     states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    states[1]->emplace_back();
     pos[1]->set(Stockfish::variants.find("bughouse")->second, line, false, &states[1]->back(), Stockfish::Threads.main());
     clear_position_history(1);
     record_position(1);
@@ -54,11 +52,9 @@ Board::Board() {
     pos[1] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
 
     states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    states[0]->emplace_back();
     pos[0]->set(Stockfish::variants.find("bughouse")->second, startingFen, false, &states[0]->back(), Stockfish::Threads.main());
 
     states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    states[1]->emplace_back();
     pos[1]->set(Stockfish::variants.find("bughouse")->second, startingFen, false, &states[1]->back(), Stockfish::Threads.main());
     
     // Initialize position history with starting positions
@@ -71,15 +67,12 @@ Board::Board(const Board& board) {
     pos[0] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
     pos[1] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
 
+    // A copied search board only needs the current Position state: all moves
+    // made on the copy are undone back to this root, never into the source's
+    // StateInfo chain. Rebuilding that entire deque was pure allocation/copy
+    // overhead in the hottest setup path.
     states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    for (int i = 1; i < (int)board.states[0]->size(); i++) {
-        states[0]->emplace_back((*board.states[0])[i]);
-    }
-
     states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    for (int i = 1; i < (int)board.states[1]->size(); i++) {
-        states[1]->emplace_back((*board.states[1])[i]);
-    }
 
     pos[0]->set(Stockfish::variants.find("bughouse")->second, board.pos[0]->fen(false, true), false, &states[0]->back(), Stockfish::Threads.main());
     pos[1]->set(Stockfish::variants.find("bughouse")->second, board.pos[1]->fen(false, true), false, &states[1]->back(), Stockfish::Threads.main());
@@ -87,8 +80,10 @@ Board::Board(const Board& board) {
     // Copy position history
     positionHistory[0] = board.positionHistory[0];
     positionHistory[1] = board.positionHistory[1];
-    positionHistoryPrefixes[0] = board.positionHistoryPrefixes[0];
-    positionHistoryPrefixes[1] = board.positionHistoryPrefixes[1];
+    repetitionCounts[0] = board.repetitionCounts[0];
+    repetitionCounts[1] = board.repetitionCounts[1];
+    repetitionFingerprint[0] = board.repetitionFingerprint[0];
+    repetitionFingerprint[1] = board.repetitionFingerprint[1];
     moveHistory[0] = board.moveHistory[0];
     moveHistory[1] = board.moveHistory[1];
 }

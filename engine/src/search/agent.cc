@@ -485,7 +485,7 @@ bool Agent::search_single_board_forced_mate_impl(
             : JointActionCandidate(
                 Stockfish::MOVE_NONE, 1.0f, 0, move, 1.0f, 0,
                 rules, false, isCapture);
-        const uint64_t positionHash = board.hash_key(true);
+        const uint64_t positionHash = board.search_hash_key(attackerTeam, true);
         const std::string signature = board_signature(board);
 
         auto existing = std::find_if(
@@ -761,7 +761,7 @@ JointMateProof search_joint_forced_mate(
         ? attackingTeamHasTimeAdvantage
         : !attackingTeamHasTimeAdvantage;
     const JointMateCacheKey cacheKey{
-        board.hash_key(teamToPlayHasTimeAdvantage),
+        board.search_hash_key(teamToPlay, teamToPlayHasTimeAdvantage),
         static_cast<uint16_t>(std::max(0, attackerMovesRemaining)),
         static_cast<uint8_t>(teamToPlay)};
     if (const auto found = cache.find(cacheKey); found != cache.end()) {
@@ -1768,7 +1768,8 @@ void Agent::reset_search_state() {
 bool Agent::try_reuse_mate_continuation(
     Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
     JointActionCandidate& outAction, int& outPlyToMate) const {
-    const uint64_t positionHash = board.hash_key(teamHasTimeAdvantage);
+    const uint64_t positionHash = board.search_hash_key(
+        teamSide, teamHasTimeAdvantage);
     const std::string signature = board_signature(board);
 
     for (const MateContinuation& continuation : mateContinuations_) {
@@ -1804,7 +1805,17 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     std::unique_lock searchLock(searchMutex_);
     const auto searchStart = chrono::steady_clock::now();
     JointActionCandidate result;
-    lastRuntimeConfig_ = options.search;
+    if (options.background) {
+        // The caller already emitted a bestmove for this move; a stop that
+        // landed in between cancels the background search rather than starting
+        // one that nothing is waiting on.
+        if (stopRequested_.load(std::memory_order_acquire)) {
+            return result;
+        }
+    } else {
+        stopRequested_.store(false, std::memory_order_release);
+        lastRuntimeConfig_ = options.search;
+    }
     if (engines.empty()) {
         cerr << "Cannot search without an inference engine" << endl;
         return result;
@@ -1815,9 +1826,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     const bool canWait = is_double_sit_legal(
         teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
 
+    // Nothing retained from an earlier move can be adopted from a position with
+    // no move to make, and leaving stale candidates behind would let the
+    // permanent brain start from one.
+    const auto drop_retained_candidates = [this, &options] {
+        if (!options.background) {
+            nextRootCandidates_.clear();
+        }
+    };
+
     if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)
         || board.is_checkmate(teamSide, teamHasTimeAdvantage)
         || board.is_draw()) {
+        drop_retained_candidates();
         if (options.verbose) {
             cout << "bestmove (none)" << endl;
         }
@@ -1826,6 +1847,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     // A team with no real board move may still have the legal wait action.
     if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty() && !canWait) {
+        drop_retained_candidates();
         if (options.verbose) {
             cout << "bestmove (none)" << endl;
         }
@@ -1846,11 +1868,32 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                   1, options.moveTimeMs
                          * SearchParams::MATE_SEARCH_MAX_TIME_PERCENT / 100))
             : MateSearchBudget::Clock::time_point{};
-    const bool cachedRootMate = SearchParams::ENABLE_MATE_EARLY_EXIT
+    // Charge the pre-pass for the clock it spends and credit it for the moves it
+    // decides, once per search whichever way it exits.
+    bool rootScanRecorded = false;
+    const auto record_root_scan = [&](bool proved) {
+        if (rootScanRecorded || options.background
+            || !options.search.enableRootMateSearch) {
+            return;
+        }
+        rootScanRecorded = true;
+        ++rootScanStats_.searches;
+        rootScanStats_.proofs += proved ? 1 : 0;
+        rootScanStats_.scanNanos += static_cast<uint64_t>(
+            chrono::duration_cast<chrono::nanoseconds>(
+                chrono::steady_clock::now() - searchStart).count());
+    };
+
+    // The root scans answer "what do I play here", which a background search is
+    // not asked; they would also replace the real tree with a synthetic
+    // one-edge proof that no later position could adopt.
+    const bool cachedRootMate = options.search.enableRootMateSearch
+        && !options.background
         && try_reuse_mate_continuation(
             board, teamSide, teamHasTimeAdvantage,
             rootMateAction, rootMatePly);
-    const bool scannedRootMate = SearchParams::ENABLE_MATE_EARLY_EXIT
+    const bool scannedRootMate = options.search.enableRootMateSearch
+        && !options.background
         && !cachedRootMate
         && find_root_mate_impl(
             board, teamSide, teamHasTimeAdvantage,
@@ -1858,8 +1901,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             rootMateBudget, &mateContinuations_, nullptr, true,
             rootScanDeadline);
     if (cachedRootMate || scannedRootMate) {
+        record_root_scan(true);
         result = rootMateAction;
-        uint64_t positionHash = board.hash_key(teamHasTimeAdvantage);
+        uint64_t positionHash = board.search_hash_key(
+            teamSide, teamHasTimeAdvantage);
         rootNode = make_shared<Node>(teamSide, positionHash);
         rootNode->set_depth(0);
 
@@ -1893,12 +1938,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             lastSearchHash_ = positionHash;
         }
 
+        rootScanStats_.thinkNanos += static_cast<uint64_t>(
+            chrono::duration_cast<chrono::nanoseconds>(
+                chrono::steady_clock::now() - searchStart).count());
         if (options.verbose) {
             string bestMoveStr = extract_best_move(board);
             const int mateScore = (rootMatePly + 1) / 2;
             cout << "info depth " << rootMatePly << " score mate " << mateScore
                  << " nodes 1 nps 1000 time 0 pv " << bestMoveStr << endl;
             cout << "bestmove " << bestMoveStr << endl;
+            if (const string scanSummary = root_scan_summary();
+                !scanSummary.empty()) {
+                cout << scanSummary << endl;
+            }
         }
         return result;
     }
@@ -1913,13 +1965,16 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             rootMateBudget,
             SearchParams::FORCED_LOSS_MIN_TIMED_NODE_BUDGET)
         : rootMateBudget;
-    const bool scannedRootLoss = SearchParams::ENABLE_MATE_EARLY_EXIT
+    const bool scannedRootLoss = options.search.enableRootMateSearch
+        && !options.background
         && find_root_forced_loss(
             board, teamSide, teamHasTimeAdvantage,
             rootLossAction, rootLossPly, rootLossBudget, rootScanDeadline);
+    record_root_scan(scannedRootLoss);
     if (scannedRootLoss) {
         result = rootLossAction;
-        const uint64_t positionHash = board.hash_key(teamHasTimeAdvantage);
+        const uint64_t positionHash = board.search_hash_key(
+            teamSide, teamHasTimeAdvantage);
         rootNode = make_shared<Node>(teamSide, positionHash);
         rootNode->set_depth(0);
 
@@ -1955,6 +2010,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             lastSearchHash_ = positionHash;
         }
 
+        rootScanStats_.thinkNanos += static_cast<uint64_t>(
+            chrono::duration_cast<chrono::nanoseconds>(
+                chrono::steady_clock::now() - searchStart).count());
         if (options.verbose) {
             const string bestMoveStr = extract_best_move(board);
             const int mateScore = (rootLossPly + 1) / 2;
@@ -1962,6 +2020,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                  << mateScore << " nodes 1 nps 1000 time 0 pv "
                  << bestMoveStr << endl;
             cout << "bestmove " << bestMoveStr << endl;
+            if (const string scanSummary = root_scan_summary();
+                !scanSummary.empty()) {
+                cout << scanSummary << endl;
+            }
         }
         return result;
     }
@@ -1971,7 +2033,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     size_t targetNodes = options.targetNodes;
 
     // Compute position hash for tree reuse
-    uint64_t positionHash = board.hash_key(teamHasTimeAdvantage);
+    uint64_t positionHash = board.search_hash_key(
+        teamSide, teamHasTimeAdvantage);
     const std::string positionSignature = board_signature(board);
     
     // Try to reuse tree from previous search (if enabled)
@@ -2323,6 +2386,18 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 running = false;
                 break;
             }
+            // A background search runs until the next command, so its stop
+            // signal is the latch rather than `running`, and its own caps keep
+            // an idle GUI from growing the tree without bound.
+            if (options.background
+                && (stopRequested_.load(std::memory_order_relaxed)
+                    || searchInfo.get_nodes_searched()
+                           >= SearchParams::PERMANENT_BRAIN_MAX_NODES
+                    || searchInfo.elapsed()
+                           >= SearchParams::PERMANENT_BRAIN_MAX_MS)) {
+                running = false;
+                break;
+            }
             const int completedNodes = searchInfo.get_nodes_searched();
             if (!isPondering_.load(std::memory_order_relaxed)
                 && static_cast<size_t>(completedNodes) >= targetNodes) {
@@ -2393,12 +2468,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
     }
     
-    // Store next-root candidates for tree reuse
-    if (SearchParams::ENABLE_TREE_REUSE) {
-        store_next_root_candidates(board, teamHasTimeAdvantage);
-        lastSearchHash_ = board.hash_key(teamHasTimeAdvantage);
+    if (!options.background) {
+        rootScanStats_.thinkNanos += static_cast<uint64_t>(
+            chrono::duration_cast<chrono::nanoseconds>(
+                chrono::steady_clock::now() - searchStart).count());
     }
-    
+
     // Output UCI info if verbose
     if (options.verbose) {
         double elapsedMs = searchInfo.elapsed();
@@ -2501,9 +2576,79 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         } else {
             cout << "bestmove " << bestMoveStr << endl;
         }
+        if (const string scanSummary = root_scan_summary();
+                !scanSummary.empty()) {
+                cout << scanSummary << endl;
+            }
     }
-    
+
+    // Index the retained subtree only after bestmove is on the wire: the walk
+    // records a board signature per position, which is not work to spend
+    // inside the move time.
+    if (SearchParams::ENABLE_TREE_REUSE) {
+        if (options.background) {
+            // No move is played from a background root - the position we are
+            // next asked about lies below it - so retain the root itself.
+            nextRootCandidates_.clear();
+            retain_reuse_candidates(rootNode, board, teamHasTimeAdvantage);
+        } else {
+            store_next_root_candidates(board, teamHasTimeAdvantage);
+        }
+        lastSearchHash_ = board.search_hash_key(
+            teamSide, teamHasTimeAdvantage);
+    }
+
     return result;
+}
+
+void Agent::run_permanent_brain(Board& board, const vector<Engine*>& engines,
+                                Stockfish::Color teamSide,
+                                bool teamHasTimeAdvantage,
+                                const JointActionCandidate& playedAction,
+                                const SearchOptions& options) {
+    if (!SearchParams::ENABLE_PERMANENT_BRAIN
+        || !SearchParams::ENABLE_TREE_REUSE
+        || engines.empty()
+        || stopRequested_.load(std::memory_order_acquire)) {
+        return;
+    }
+    {
+        // An empty candidate set means the finished search produced no usable
+        // root, so there is no position to carry on from either.
+        std::unique_lock searchLock(searchMutex_);
+        if (nextRootCandidates_.empty()) {
+            return;
+        }
+    }
+
+    Board nextBoard(board);
+    nextBoard.make_moves(playedAction.moveA, playedAction.moveB);
+
+    SearchOptions backgroundOptions;
+    backgroundOptions.search = options.search;
+    backgroundOptions.search.rootDirichletAlpha = 0.0f;
+    backgroundOptions.search.rootDirichletEpsilon = 0.0f;
+    backgroundOptions.background = true;
+    backgroundOptions.verbose = false;
+    backgroundOptions.enablePonder = false;
+    // Ponder mode is what makes the workers ignore the clock; the background
+    // caps in the wait loop are what actually bound this search.
+    backgroundOptions.isPonder = true;
+    backgroundOptions.moveTimeMs = 0;
+    backgroundOptions.targetNodes = 0;
+
+    // The opponents are to move at that position, so the search runs from their
+    // side of the table. Every node values itself from the perspective of its
+    // own team to play, which is exactly how the subtree reads once our next
+    // root adopts it.
+    try {
+        run_search(nextBoard, engines, ~teamSide, !teamHasTimeAdvantage,
+                   backgroundOptions);
+    } catch (const std::exception& error) {
+        cout << "info string permanent brain stopped: " << error.what() << endl;
+    } catch (...) {
+        cout << "info string permanent brain stopped" << endl;
+    }
 }
 
 vector<RootEdgeStats> Agent::root_edge_stats() const {
@@ -2797,6 +2942,10 @@ string Agent::extract_pv_from_child(Board& board, int childIdx, int maxDepth) {
 
 void Agent::set_is_running(bool value) {
     if (!value) {
+        // Latched, not just mirrored into `running`: a background search that
+        // has not dispatched yet would otherwise set `running` back to true
+        // after this and never see the stop.
+        stopRequested_.store(true, std::memory_order_release);
         isPondering_.store(false, std::memory_order_release);
     }
     running = value;
@@ -2845,6 +2994,24 @@ void Agent::setHashSize(size_t sizeMB) {
  * against the selected move and every generated opponent response retained
  * from the previous search.
  */
+std::string Agent::root_scan_summary() const {
+    if (rootScanStats_.searches == 0) {
+        return {};
+    }
+    const double scanMs = static_cast<double>(rootScanStats_.scanNanos) / 1e6;
+    const double thinkMs = static_cast<double>(rootScanStats_.thinkNanos) / 1e6;
+    std::ostringstream out;
+    out << "info string root scan: " << rootScanStats_.proofs << "/"
+        << rootScanStats_.searches << " searches decided ("
+        << std::fixed << std::setprecision(1)
+        << (100.0 * static_cast<double>(rootScanStats_.proofs)
+            / static_cast<double>(rootScanStats_.searches))
+        << "%), " << std::setprecision(0) << scanMs << "ms of " << thinkMs
+        << "ms thinking (" << std::setprecision(1)
+        << (thinkMs > 0.0 ? 100.0 * scanMs / thinkMs : 0.0) << "%)";
+    return out.str();
+}
+
 std::string Agent::board_signature(Board& board) {
     return board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
 }
@@ -2859,7 +3026,8 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
     // acquire one owner only when inserting the node into the table.
     std::vector<Node*> pending = {reusedRoot.get()};
     std::unordered_set<const Node*> visited;
-    while (!pending.empty()) {
+    while (!pending.empty()
+           && visited.size() < SearchParams::TREE_REUSE_REINDEX_MAX_NODES) {
         Node* node = pending.back();
         pending.pop_back();
         if (!node || !visited.insert(node).second) {
@@ -2877,17 +3045,18 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
 std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
                                             Stockfish::Color teamSide,
                                             const std::string& signature) {
-    // The signature must match exactly: retained edges were generated against
-    // that board, and a stale pocket would make reused drops illegal.
+    // The hash locates the candidate; the signature is what admits it. Retained
+    // edges were generated against that exact board, and a stale pocket would
+    // make reused drops illegal.
     std::shared_ptr<Node> reused;
-    for (const RetainedRootCandidate& candidate : nextRootCandidates_) {
+    auto entry = nextRootCandidates_.find(positionHash);
+    if (entry != nextRootCandidates_.end()) {
+        const RetainedRootCandidate& candidate = entry->second;
         if (candidate.node
-            && candidate.positionHash == positionHash
             && candidate.node->get_team_to_play() == teamSide
             && !candidate.signature.empty()
             && candidate.signature == signature) {
             reused = candidate.node;
-            break;
         }
     }
 
@@ -2902,11 +3071,12 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
 
 /**
  * @brief Store next-root candidates for tree reuse.
- * 
- * After search completes, retain the selected child and every generated
- * opponent response beneath it. A solver-proven loss for the opponent covers
- * all legal replies, so retaining only the principal reply throws away most of
- * the proof and can make a later search report a longer mate.
+ *
+ * After search completes, retain the subtree below the selected move and index
+ * every position within TREE_REUSE_MAX_JOINT_PLIES of it. Indexing only the
+ * predicted reply is far too narrow for bughouse: the partner board moves while
+ * we think, so the position we are next asked about is usually some other node
+ * a ply or two down.
  */
 void Agent::store_next_root_candidates(Board& board,
                                        bool teamHasTimeAdvantage) {
@@ -2944,38 +3114,105 @@ void Agent::store_next_root_candidates(Board& board,
     const JointActionCandidate ownAction = rootNode->get_joint_action(bestIdx);
     Board ownNextBoard(board);
     ownNextBoard.make_moves(ownAction.moveA, ownAction.moveB);
-    const std::shared_ptr<Node>& ownNextRoot = children[bestIdx];
-    nextRootCandidates_.push_back({
-        ownNextRoot,
-        ownNextBoard.hash_key(!teamHasTimeAdvantage),
-        board_signature(ownNextBoard)});
+    retain_reuse_candidates(
+        children[bestIdx], ownNextBoard, !teamHasTimeAdvantage);
+}
 
-    if (!ownNextRoot->is_expanded()) {
+/**
+ * @brief Index a retained subtree by position hash, out to a bounded depth.
+ *
+ * Records each position's hash and its exact board signature. Only the hash is
+ * looked up on the next search; the signature is verified on a hit.
+ *
+ * The walk goes level by level rather than branch by branch so that a budget
+ * that runs out has already covered the likeliest positions instead of one deep
+ * line of them. Re-descending to reach each level costs make/unmake and nothing
+ * else: a position already indexed is skipped before its signature is built.
+ *
+ * @param board Position of subtreeRoot; restored before returning.
+ * @param teamHasTimeAdvantage Time advantage from the side of subtreeRoot's
+ *        team, which alternates with the team to move as the walk descends.
+ */
+void Agent::retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
+                                    Board& board,
+                                    bool teamHasTimeAdvantage) {
+    for (int level = 0;
+         level <= SearchParams::TREE_REUSE_MAX_JOINT_PLIES;
+         ++level) {
+        // Each joint ply flips the team to move, and a search is only ever
+        // rooted where our own team is on move. Even levels below the subtree
+        // root hold the other team, so indexing them would spend the budget on
+        // positions no lookup can match. The root itself is exempt: that is
+        // where the permanent brain starts.
+        if (level > 0 && level % 2 == 0) {
+            continue;
+        }
+
+        const size_t before = nextRootCandidates_.size();
+        retain_reuse_level(
+            subtreeRoot, board, teamHasTimeAdvantage, 0, level);
+        if (nextRootCandidates_.size()
+                >= SearchParams::TREE_REUSE_MAX_CANDIDATES
+            || (level > 0 && nextRootCandidates_.size() == before)) {
+            break;
+        }
+    }
+}
+
+/** Records every node exactly `level` joint plies below `node`. */
+void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
+                               Board& board,
+                               bool teamHasTimeAdvantage,
+                               int depth,
+                               int level) {
+    if (!node
+        || nextRootCandidates_.size()
+               >= SearchParams::TREE_REUSE_MAX_CANDIDATES) {
         return;
     }
 
-    auto grandchildren = ownNextRoot->get_children();
-    if (grandchildren.empty()) {
+    if (depth == level) {
+        const uint64_t positionHash = board.search_hash_key(
+            node->get_team_to_play(), teamHasTimeAdvantage);
+        // Shallower levels run first, so a transposition already indexed keeps
+        // the shallower node, whose signature is already built.
+        if (!nextRootCandidates_.contains(positionHash)) {
+            nextRootCandidates_.emplace(
+                positionHash,
+                RetainedRootCandidate{
+                    node, positionHash, board_signature(board)});
+        }
         return;
     }
 
-    nextRootCandidates_.reserve(1 + grandchildren.size());
-    Board opponentsNextBoard(ownNextBoard);
-    for (size_t index = 0; index < grandchildren.size(); ++index) {
-        if (!grandchildren[index]) {
+    if (!node->is_expanded()) {
+        return;
+    }
+
+    const auto children = node->get_children();
+    const auto visits = node->get_child_visits();
+    for (size_t index = 0; index < children.size(); ++index) {
+        if (!children[index]) {
+            continue;
+        }
+        // The first ply is kept whole. A solver-proven loss for the side to
+        // move covers every legal reply, so dropping the unvisited ones throws
+        // most of the proof away and can make a later search report a longer
+        // mate. Deeper down, an unvisited node holds nothing worth walking to.
+        if (depth > 0
+            && (index >= visits.size() || visits[index] <= 0)) {
             continue;
         }
 
         const JointActionCandidate reply =
-            ownNextRoot->get_joint_action(static_cast<int>(index));
-        opponentsNextBoard.make_moves(reply.moveA, reply.moveB);
-        const uint64_t replyHash =
-            opponentsNextBoard.hash_key(teamHasTimeAdvantage);
-        const std::string replySignature =
-            board_signature(opponentsNextBoard);
-
-        nextRootCandidates_.push_back({
-            grandchildren[index], replyHash, replySignature});
-        opponentsNextBoard.unmake_moves(reply.moveA, reply.moveB);
+            node->get_joint_action(static_cast<int>(index));
+        board.make_moves(reply.moveA, reply.moveB);
+        retain_reuse_level(
+            children[index], board, !teamHasTimeAdvantage, depth + 1, level);
+        board.unmake_moves(reply.moveA, reply.moveB);
+        if (nextRootCandidates_.size()
+                >= SearchParams::TREE_REUSE_MAX_CANDIDATES) {
+            return;
+        }
     }
 }

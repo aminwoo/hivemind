@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 
 #include "tools/tournament.h"
 
@@ -8,6 +10,8 @@ TEST(TournamentConfigTest, SelectsPwCoefficientByNetwork) {
     TournamentConfig config;
     config.contenderPwCoefficient = 1.5f;
     config.baselinePwCoefficient = 0.75f;
+    config.contenderRootPwCoefficient = 1.5f;
+    config.baselineRootPwCoefficient = 0.75f;
 
     EXPECT_FLOAT_EQ(config.pwCoefficientFor(true), 1.5f);
     EXPECT_FLOAT_EQ(config.pwCoefficientFor(false), 0.75f);
@@ -15,6 +19,65 @@ TEST(TournamentConfigTest, SelectsPwCoefficientByNetwork) {
     EXPECT_FLOAT_EQ(config.searchConfigFor(true).rootPwCoefficient, 1.5f);
     EXPECT_FLOAT_EQ(config.searchConfigFor(false).pwCoefficient, 0.75f);
     EXPECT_FLOAT_EQ(config.searchConfigFor(false).rootPwCoefficient, 0.75f);
+}
+
+TEST(TournamentConfigTest, SelectsAllStrengthParametersByContestant) {
+    TournamentConfig config;
+    config.contenderMcgs = false;
+    config.baselineRootMateSearch = false;
+    config.contenderWdlWeight = 0.25f;
+    config.baselineMovesLeftDiscount = 0.9f;
+    config.contenderQValueWeight = 0.6f;
+    config.baselineQVetoDelta = 0.15f;
+
+    const auto contender = config.searchConfigFor(true);
+    const auto baseline = config.searchConfigFor(false);
+    EXPECT_FALSE(contender.enableMCGS);
+    EXPECT_TRUE(baseline.enableMCGS);
+    EXPECT_TRUE(contender.enableRootMateSearch);
+    EXPECT_FALSE(baseline.enableRootMateSearch);
+    EXPECT_FLOAT_EQ(contender.wdlValueWeight, 0.25f);
+    EXPECT_FLOAT_EQ(baseline.movesLeftDiscount, 0.9f);
+    EXPECT_FLOAT_EQ(contender.qValueWeight, 0.6f);
+    EXPECT_FLOAT_EQ(baseline.qVetoDelta, 0.15f);
+}
+
+TEST(TournamentConfigTest, LoadsPairedRealPositions) {
+    const auto path = std::filesystem::temp_directory_path()
+        / "hivemind-tournament-positions.tsv";
+    {
+        std::ofstream stream(path);
+        stream << "# dual fen, team, time advantage\n"
+               << "8/8/8/8/8/8/8/K6k w - - 0 1|"
+                  "8/8/8/8/8/8/8/K6k b - - 0 1\tblack\ttrue\n";
+    }
+    const auto positions = load_tournament_positions(path);
+    std::filesystem::remove(path);
+    ASSERT_EQ(positions.size(), 1U);
+    EXPECT_EQ(positions[0].teamToPlay, Stockfish::BLACK);
+    EXPECT_TRUE(positions[0].teamHasTimeAdvantage);
+    EXPECT_NE(positions[0].dualFen.find('|'), std::string::npos);
+}
+
+TEST(TournamentResultTest, PairedSprtAcceptsEitherHypothesis) {
+    std::vector<double> wins(200, 1.0);
+    const SprtState strong = evaluate_paired_sprt(
+        wins, 0.0, 10.0, 0.05, 0.05);
+    EXPECT_EQ(strong.decision, SprtState::Decision::ACCEPT_H1);
+    EXPECT_GE(strong.logLikelihoodRatio, strong.upperBoundary);
+
+    std::vector<double> losses(200, 0.0);
+    const SprtState weak = evaluate_paired_sprt(
+        losses, 0.0, 10.0, 0.05, 0.05);
+    EXPECT_EQ(weak.decision, SprtState::Decision::ACCEPT_H0);
+    EXPECT_LE(weak.logLikelihoodRatio, weak.lowerBoundary);
+}
+
+TEST(TournamentResultTest, ReportsMeasuredFullSearchNps) {
+    TournamentPerformance performance;
+    performance.nodes = 2500;
+    performance.nanoseconds = 500000000;
+    EXPECT_DOUBLE_EQ(performance.nps(), 5000.0);
 }
 
 TEST(TournamentResultTest, ComputesScoreAndElo) {
