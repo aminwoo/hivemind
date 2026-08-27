@@ -3087,6 +3087,30 @@ TEST_F(EngineTest, ImmediateMateIn1DetectedInAllModesAndTurnConfigurations) {
     }
 }
 
+// Regression for Chess.com match 182144901205/182144901207. White has just
+// mated on Board A, but its down-time partner still has to move on Board B.
+// Captures such as Qxd2 would feed Black a bishop for B@d8, so the engine must
+// return a quiet mate-preserving move instead of treating the root as already
+// terminal and emitting bestmove (none).
+TEST_F(EngineTest, DownTimeTeamMustPreserveMateBeforeRootIsTerminal) {
+    Board board;
+    board.set(
+        "r1k1Q3/ppp3pp/3Pp1np/b2p4/8/2P1P3/PP1Q1PPP/R3K1R1[P] b Q - 0 27|"
+        "r4knr/p1p3pp/2p1Pp2/6B1/1b1qp1b1/2N5/PPPBPPBP/R1BK3R[NNNqrbnnp] b - - 3 17");
+
+    ASSERT_TRUE(board.is_checkmate(Stockfish::BLACK, true));
+    ASSERT_FALSE(board.legal_moves(Stockfish::WHITE, false).empty());
+
+    JointActionCandidate mateAction;
+    int matePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, false, mateAction, matePly));
+    EXPECT_EQ(mateAction.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(mateAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_FALSE(board.is_capture(BOARD_B, mateAction.moveB));
+    EXPECT_EQ(matePly, 1);
+}
+
 // Regression: is_checkmate() identifies a team by the color it plays on Board A,
 // so a mate delivered on Board B must be tested with the attacker's own team id.
 // Using ~attackerColor there searched for a mate against our own team, which both

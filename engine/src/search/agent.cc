@@ -1835,7 +1835,21 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
     };
 
-    if (board.is_checkmate(~teamSide, !teamHasTimeAdvantage)
+    const bool teamHasPlayableMove =
+        (boardAOnTurn && !board.legal_moves(BOARD_A).empty())
+        || (boardBOnTurn && !board.legal_moves(BOARD_B).empty());
+    const bool opponentIsMated =
+        board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+
+    // A mate on the other team is not necessarily terminal at this root. If
+    // we are down on time (or both boards are on turn), we still owe a move;
+    // a capture can hand the checked player a blocking piece and undo the
+    // mate. Let the root mate scan choose an action that preserves it instead
+    // of returning MOVE_NONE before any joint action is considered.
+    const bool mustPlayDespiteOpponentMate =
+        opponentIsMated && !canWait && teamHasPlayableMove;
+
+    if ((opponentIsMated && !mustPlayDespiteOpponentMate)
         || board.is_checkmate(teamSide, teamHasTimeAdvantage)
         || board.is_draw()) {
         drop_retained_candidates();
@@ -1846,7 +1860,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
 
     // A team with no real board move may still have the legal wait action.
-    if (board.legal_moves(teamSide, teamHasTimeAdvantage).empty() && !canWait) {
+    if (!teamHasPlayableMove && !canWait) {
         drop_retained_candidates();
         if (options.verbose) {
             cout << "bestmove (none)" << endl;
