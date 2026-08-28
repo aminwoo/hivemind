@@ -55,15 +55,6 @@ struct SearchOptions {
 struct RootEdgeStats {
     JointActionCandidate action;
     int visits = 0;
-    float q = 0.0f;
-};
-
-struct SearchRunStats {
-    int nodes = 0;
-    int depth = 0;
-    int elapsedMs = 0;
-    int sameBatchCollisions = 0;
-    int reservationCollisions = 0;
 };
 
 /**
@@ -149,7 +140,6 @@ private:
         uint64_t thinkNanos = 0;
     };
     RootScanStats rootScanStats_;
-    SearchRunStats lastSearchStats_;
     std::string root_scan_summary() const;
     
     // Garbage collection thread for async tree cleanup
@@ -213,12 +203,6 @@ public:
 
     /** Returns an immutable snapshot of the expanded root edges after search. */
     std::vector<RootEdgeStats> root_edge_stats() const;
-
-    /** Returns counters captured when the most recent search finished. */
-    SearchRunStats last_search_stats() const;
-
-    /** Returns the solver state of the current root. */
-    NodeType root_type() const;
 
     /** Returns the evaluated Q-value of the root node after search. */
     float root_q() const;

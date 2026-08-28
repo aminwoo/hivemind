@@ -1804,7 +1804,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                         const SearchOptions& options) {
     std::unique_lock searchLock(searchMutex_);
     const auto searchStart = chrono::steady_clock::now();
-    lastSearchStats_ = {};
     JointActionCandidate result;
     if (options.background) {
         // The caller already emitted a bestmove for this move; a stop that
@@ -2058,13 +2057,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootScanStats_.thinkNanos += static_cast<uint64_t>(
             chrono::duration_cast<chrono::nanoseconds>(
                 chrono::steady_clock::now() - searchStart).count());
-        lastSearchStats_ = {
-            1,
-            rootMatePly,
-            static_cast<int>(searchInfo.elapsed()),
-            searchInfo.get_same_batch_collisions(),
-            searchInfo.get_reservation_collisions(),
-        };
         if (options.verbose) {
             string bestMoveStr = extract_best_move(board);
             const int mateScore = (rootMatePly + 1) / 2;
@@ -2144,13 +2136,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootScanStats_.thinkNanos += static_cast<uint64_t>(
             chrono::duration_cast<chrono::nanoseconds>(
                 chrono::steady_clock::now() - searchStart).count());
-        lastSearchStats_ = {
-            1,
-            rootLossPly,
-            static_cast<int>(searchInfo.elapsed()),
-            searchInfo.get_same_batch_collisions(),
-            searchInfo.get_reservation_collisions(),
-        };
         if (options.verbose) {
             const string bestMoveStr = extract_best_move(board);
             const int mateScore = (rootLossPly + 1) / 2;
@@ -2507,14 +2492,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             + std::to_string(targetNodes) + " completed nodes");
     }
 
-    lastSearchStats_ = {
-        searchInfo.get_nodes_searched(),
-        searchInfo.get_max_depth(),
-        static_cast<int>(searchInfo.elapsed()),
-        searchInfo.get_same_batch_collisions(),
-        searchInfo.get_reservation_collisions(),
-    };
-
     // Extract best joint action by selecting the most visited child
     if (rootNode && rootNode->is_expanded()) {
         auto visits = rootNode->get_child_visits();
@@ -2750,21 +2727,9 @@ vector<RootEdgeStats> Agent::root_edge_stats() const {
     const size_t edgeCount = min(visits.size(), rootNode->get_num_generated());
     stats.reserve(edgeCount);
     for (size_t index = 0; index < edgeCount; ++index) {
-        stats.push_back({
-            rootNode->get_joint_action(static_cast<int>(index)),
-            visits[index],
-            rootNode->get_child_q(static_cast<int>(index)),
-        });
+        stats.push_back({rootNode->get_joint_action(static_cast<int>(index)), visits[index]});
     }
     return stats;
-}
-
-SearchRunStats Agent::last_search_stats() const {
-    return lastSearchStats_;
-}
-
-NodeType Agent::root_type() const {
-    return rootNode ? rootNode->get_node_type() : NodeType::UNSOLVED;
 }
 
 float Agent::root_q() const {
