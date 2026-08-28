@@ -277,6 +277,31 @@ void SearchThread::cancel_virtual_losses(const vector<TrajectoryEntry>& trajecto
  * This collects leaves based on the engine's batch size, runs batched neural network inference,
  * then expands and backs up all leaves. This better utilizes GPU parallelism.
  */
+/**
+ * @brief Blocks on another worker's in-flight evaluation, bounded by the clock.
+ *
+ * A shared tree makes these waits common - and far more so once several GPUs
+ * feed one tree, where workers meet on the same frontier constantly. The loop
+ * that checks the move time sits one level above this call, so an unbounded
+ * wait here runs straight through the end of the move: the wait carries the
+ * deadline itself. A timed-out wait is reported as false and abandons the
+ * batch; the worker then re-checks the clock and stops.
+ *
+ * @return true if the evaluation completed, false if the move time ran out.
+ */
+bool SearchThread::wait_for_pending_evaluation(Node& node) {
+    const int moveTime = searchInfo ? searchInfo->get_move_time() : 0;
+    if (moveTime <= 0) {
+        // Node-limited and pondering searches have no deadline to enforce.
+        node.wait_for_evaluation_completion();
+        return true;
+    }
+    return node.wait_for_evaluation_completion_until([this] {
+        return searchInfo->elapsed()
+            >= searchInfo->get_effective_move_time();
+    });
+}
+
 void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                                  bool teamHasTimeAdvantage,
                                  bool allowReservationWait) {
@@ -347,7 +372,9 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                 && selection.exhaustedSubtree.get() == root;
             if (rootExhausted && batchContexts.empty() && allowReservationWait
                 && pendingToWaitFor) {
-                pendingToWaitFor->wait_for_evaluation_completion();
+                if (!wait_for_pending_evaluation(*pendingToWaitFor)) {
+                    break;
+                }
                 blockedNodes.clear();
                 selectionAttempts = 0;
                 pendingToWaitFor.reset();
@@ -359,7 +386,9 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             if (batchContexts.empty()
                 && selectionAttempts == maxSelectionAttempts
                 && allowReservationWait && pendingToWaitFor) {
-                pendingToWaitFor->wait_for_evaluation_completion();
+                if (!wait_for_pending_evaluation(*pendingToWaitFor)) {
+                    break;
+                }
                 blockedNodes.clear();
                 selectionAttempts = 0;
                 pendingToWaitFor.reset();

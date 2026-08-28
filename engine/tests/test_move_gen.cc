@@ -1999,6 +1999,24 @@ TEST(PonderModeTest, EffectiveMoveTimePublishesExtensionsLockFree) {
     EXPECT_FALSE(info.try_extend_time(2.0f, 1));
 }
 
+TEST(PonderModeTest, HardLimitCapsTimeExtensions) {
+    SearchInfo info(std::chrono::steady_clock::now(), 1000);
+    info.set_hard_limit(1000);
+
+    // The whole allocation is already granted, so there is nothing to extend
+    // into and the search may not run past the requested move time.
+    EXPECT_FALSE(info.try_extend_time(1.5f, 2));
+    EXPECT_EQ(info.get_effective_move_time(), 1000);
+    EXPECT_EQ(info.get_extension_count(), 0);
+
+    // A ceiling above the move time still allows an extension, truncated to it.
+    SearchInfo headroom(std::chrono::steady_clock::now(), 1000);
+    headroom.set_hard_limit(1200);
+    ASSERT_TRUE(headroom.try_extend_time(2.0f, 2));
+    EXPECT_EQ(headroom.get_effective_move_time(), 1200);
+    EXPECT_FALSE(headroom.try_extend_time(2.0f, 2));
+}
+
 TEST(PonderModeTest, SearchOptionsPonderFlags) {
     SearchOptions normalOpts = SearchOptions::uci(1000, 1, false);
     EXPECT_FALSE(normalOpts.isPonder);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -9,6 +10,7 @@
 #include <random>
 #include <set>
 #include <shared_mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -621,6 +623,26 @@ public:
 
     void wait_for_evaluation_completion() const {
         evaluationPending.wait(true, std::memory_order_acquire);
+    }
+
+    /**
+     * @brief Waits for a pending evaluation, giving up when the caller expires.
+     *
+     * `isExpired` is polled while waiting and returning true abandons the wait
+     * (reported as false). std::atomic::wait has no timed form, so the bounded
+     * variant polls; the interval is orders of magnitude below one inference,
+     * which is what the wait is covering.
+     */
+    template <typename ExpiredFn>
+    bool wait_for_evaluation_completion_until(ExpiredFn isExpired) const {
+        constexpr auto POLL_INTERVAL = std::chrono::microseconds(100);
+        while (evaluationPending.load(std::memory_order_acquire)) {
+            if (isExpired()) {
+                return false;
+            }
+            std::this_thread::sleep_for(POLL_INTERVAL);
+        }
+        return true;
     }
 
     void set_value(float value) {
