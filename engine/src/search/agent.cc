@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -926,13 +927,28 @@ bool Agent::find_root_mate_impl(
     deadlineOnly.deadline = deadline;
     const auto out_of_time = [&] { return deadlineOnly.out_of_time(); };
 
-    // 1. Fast 1-ply immediate mate scan across all joint combinations
+    // 1. Fast 1-ply immediate mate scan across all joint combinations.
+    // With both boards on turn the scan walks a joint move space that is cheap
+    // per probe but large, so a caller without a hard node budget still needs
+    // the wall clock to stop it - otherwise the whole pre-pass can run far past
+    // the move time it was supposed to fit inside.
+    MateSearchBudget immediateDeadlineBudget;
+    immediateDeadlineBudget.remainingNodes =
+        std::numeric_limits<uint64_t>::max();
+    immediateDeadlineBudget.deadline = deadline;
+    MateSearchBudget* immediateBudget = hardBudget
+        ? hardBudget
+        : (deadline != MateSearchBudget::Clock::time_point{}
+               ? &immediateDeadlineBudget
+               : nullptr);
     if (find_immediate_root_mate(
-            board, teamSide, teamHasTimeAdvantage, outAction, hardBudget)) {
+            board, teamSide, teamHasTimeAdvantage, outAction,
+            immediateBudget)) {
         outPlyToMate = 1;
         return true;
     }
-    if (hardBudget && hardBudget->exhausted) {
+    if ((hardBudget && hardBudget->exhausted)
+        || immediateDeadlineBudget.exhausted) {
         return false;
     }
 
@@ -1903,6 +1919,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // scans below: they are part of this move's thinking time, and resetting
     // the clock afterward would let a slow scan overrun the allotted move time.
     SearchInfo searchInfo(searchStart, moveTimeMs);
+    // The requested move time is the entire allocation for this move, so the
+    // instability and eval-drop extensions below re-spend time within it
+    // rather than adding to it.
+    searchInfo.set_hard_limit(moveTimeMs);
     isPondering_.store(options.isPonder, std::memory_order_release);
     currentSearchInfo_.store(&searchInfo, std::memory_order_release);
 

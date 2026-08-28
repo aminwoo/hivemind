@@ -145,6 +145,9 @@ private:
     
     // Allocate/reallocate buffers for given batch size
     void ensureBufferSize(int batchSize);
+    /** Waits on a pending evaluation, bounded by the move deadline. */
+    bool wait_for_pending_evaluation(Node& node);
+
     void collect_batch(SearchBatch& batch, Board& board,
                        bool teamHasTimeAdvantage, bool allowReservationWait);
     void process_batch(SearchBatch& batch, bool teamHasTimeAdvantage,

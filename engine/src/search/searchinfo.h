@@ -25,6 +25,7 @@ struct SearchInfo {
     float overallNPS_ = 0.0f;          // Running average of nodes per second
     int timeExtensionCount_ = 0;       // Number of time extensions applied
     std::atomic<int> effectiveMoveTime_{0};  // Current move time (may be extended)
+    std::atomic<int> hardLimitMs_{0};  // Extensions may never cross this (0 = none)
     bool inGame_ = false;              // Whether this is a timed game
 
     // Constructor initializes the start time and move time.
@@ -158,6 +159,22 @@ struct SearchInfo {
     }
     
     /**
+     * @brief Set an absolute ceiling that time extensions may not cross.
+     *
+     * A UCI `go movetime` is the whole allocation for the move, not a target
+     * to overshoot, so a search given one caps its extensions at it. Zero
+     * leaves extensions unbounded.
+     */
+    void set_hard_limit(int hardLimitMs) {
+        hardLimitMs_.store(hardLimitMs, std::memory_order_relaxed);
+    }
+
+    /** Returns the extension ceiling, or 0 when extensions are unbounded. */
+    int get_hard_limit() const {
+        return hardLimitMs_.load(std::memory_order_relaxed);
+    }
+
+    /**
      * @brief Try to extend the move time.
      * @param factor Multiplication factor for remaining time
      * @param maxExtensions Maximum number of extensions allowed
@@ -177,6 +194,13 @@ struct SearchInfo {
         }
         
         int extension = static_cast<int>(remaining * (factor - 1.0f));
+        const int hardLimit = hardLimitMs_.load(std::memory_order_relaxed);
+        if (hardLimit > 0) {
+            extension = std::min(extension, hardLimit - effectiveMoveTime);
+        }
+        if (extension <= 0) {
+            return false;
+        }
         effectiveMoveTime_.store(
             effectiveMoveTime + extension, std::memory_order_relaxed);
         timeExtensionCount_++;
