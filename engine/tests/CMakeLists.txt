@@ -15,6 +15,7 @@ add_executable(
   test_mate_detection.cc
   test_onnx_utils.cc
   test_tournament.cc
+  test_node_concurrency.cc
 )
 target_link_libraries(hivemind_tests PRIVATE hivemind_lib gtest_main)
 

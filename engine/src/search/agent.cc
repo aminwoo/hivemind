@@ -2620,11 +2620,21 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             cout << endl;
         }
 
+        if (rootNode) {
+            cout << "info string root width " << rootNode->get_num_generated()
+                 << " generated, " << rootNode->get_visited_edge_count()
+                 << " scanned per selection" << endl;
+        }
         cout << "info string rejected selection attempts "
                << searchInfo.get_collisions()
                << " (same batch " << searchInfo.get_same_batch_collisions()
              << ", pending evaluation " << searchInfo.get_reservation_collisions()
-               << ")" << endl;
+               << ") per 1000 nodes "
+               << (nodes > 0
+                       ? 1000.0 * searchInfo.get_collisions()
+                           / static_cast<double>(nodes)
+                       : 0.0)
+               << endl;
         string bestMoveStr = extract_best_move(board);
         string ponderMoveStr = options.enablePonder ? extract_ponder_move(board) : "";
         if (!ponderMoveStr.empty()) {

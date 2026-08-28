@@ -228,8 +228,10 @@ void Node::configure_root_search(
         candidateGenerator.reprepareJointPolicyPool(
             static_cast<size_t>(std::max(0, config.rootJointPolicyTopK)),
             config.jointPolicyResidualScale);
-    if (promotedPriors.size() == childPriors.size()) {
-        childPriors = promotedPriors;
+    if (promotedPriors.size() == edges.size()) {
+        for (size_t index = 0; index < edges.size(); ++index) {
+            edges[index].prior = promotedPriors[index];
+        }
     }
 
     rootGumbelEnabled = config.enableGumbelRootSearch;
@@ -260,7 +262,7 @@ void Node::configure_root_search(
         const float gumbel = static_cast<float>(
             -std::log(-std::log(sample)));
         childGumbelScores[index] = std::log(
-            std::max(childPriors[index], 1.0e-30f)) + gumbel;
+            std::max(edges[index].prior, 1.0e-30f)) + gumbel;
     }
     std::sort(rankedChildren.begin(), rankedChildren.end(),
               [this](int lhs, int rhs) {
@@ -276,7 +278,7 @@ void Node::configure_root_search(
     for (size_t rank = 0; rank < tournamentCount; ++rank) {
         const int childIdx = rankedChildren[rank];
         if (rank < initialCount) {
-            rootGumbelActive.push_back({childIdx, childVisits[childIdx]});
+            rootGumbelActive.push_back({childIdx, edges[childIdx].visits});
         } else {
             rootGumbelWaiting.push_back(childIdx);
         }
@@ -292,10 +294,10 @@ void Node::replenish_root_gumbel_locked(
     while (remaining > 0 && !rootGumbelWaiting.empty()) {
         const int childIdx = rootGumbelWaiting.front();
         rootGumbelWaiting.erase(rootGumbelWaiting.begin());
-        if (childIdx >= 0 && static_cast<size_t>(childIdx) < childVisits.size()
+        if (childIdx >= 0 && static_cast<size_t>(childIdx) < edges.size()
             && children[childIdx]
             && children[childIdx]->get_node_type() != NodeType::WIN) {
-            rootGumbelActive.push_back({childIdx, childVisits[childIdx]});
+            rootGumbelActive.push_back({childIdx, edges[childIdx].visits});
             --remaining;
         }
     }
@@ -335,7 +337,7 @@ void Node::advance_root_gumbel_round_locked(
     const bool roundComplete = std::all_of(
         rootGumbelActive.begin(), rootGumbelActive.end(),
         [this](const RootGumbelEntry& entry) {
-            return childVisits[entry.childIdx] - entry.baselineVisits
+            return edges[entry.childIdx].visits - entry.baselineVisits
                 >= rootGumbelRoundQuota;
         });
     if (!roundComplete) {
@@ -348,7 +350,9 @@ void Node::advance_root_gumbel_round_locked(
         if (type == NodeType::LOSS) {
             return std::numeric_limits<float>::infinity();
         }
-        const float q = type == NodeType::DRAW ? 0.0f : qValues[childIdx];
+        const float q = type == NodeType::DRAW
+            ? 0.0f
+            : edges[childIdx].q.load(std::memory_order_relaxed);
         return childGumbelScores[childIdx]
             + config.rootGumbelValueScale * q;
     };
@@ -361,7 +365,7 @@ void Node::advance_root_gumbel_round_locked(
                   });
         rootGumbelActive.resize((rootGumbelActive.size() + 1) / 2);
         for (RootGumbelEntry& entry : rootGumbelActive) {
-            entry.baselineVisits = childVisits[entry.childIdx];
+            entry.baselineVisits = edges[entry.childIdx].visits;
         }
         rootGumbelRoundQuota = std::min(
             std::max(1, config.rootGumbelMaxRoundVisits),
@@ -370,7 +374,7 @@ void Node::advance_root_gumbel_round_locked(
     }
 
     rootGumbelActive.front().baselineVisits =
-        childVisits[rootGumbelActive.front().childIdx];
+        edges[rootGumbelActive.front().childIdx].visits;
     rootGumbelRoundQuota = 1;
     replenish_root_gumbel_locked(config);
     if (rootGumbelActive.size() == 1
@@ -383,7 +387,26 @@ void Node::advance_root_gumbel_round_locked(
 Node::ChildSelection Node::select_child_and_apply_virtual_loss(
     const SearchParams::RuntimeConfig& config,
     const std::unordered_set<const Node*>* blockedNodes) {
-    std::unique_lock<std::shared_mutex> guard(nodeMutex);
+    // Gumbel root search advances its own scheduling state inside selection, so
+    // that path keeps the exclusive lock. rootGumbelEnabled is fixed for the
+    // duration of a search - configure_root_search runs before any worker is
+    // dispatched - so reading it before locking is safe.
+    const bool gumbelSelection = rootGumbelEnabled;
+    std::shared_lock<std::shared_mutex> sharedGuard(nodeMutex, std::defer_lock);
+    std::unique_lock<std::shared_mutex> exclusiveGuard(nodeMutex,
+                                                       std::defer_lock);
+    if (gumbelSelection) {
+        exclusiveGuard.lock();
+    } else {
+        sharedGuard.lock();
+    }
+    const auto unlockNode = [&] {
+        if (gumbelSelection) {
+            exclusiveGuard.unlock();
+        } else {
+            sharedGuard.unlock();
+        }
+    };
     
     // 1. Initial validation
     size_t numExpanded = static_cast<size_t>(expandedCount);
@@ -452,23 +475,33 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
                 return false;
             }
 
-            const int vl_i = virtualLoss[i];
-            const uint32_t n_i = static_cast<uint32_t>(childVisits[i]);
+            // Relaxed throughout: this scan runs under a shared lock and only
+            // needs each field to be individually untorn. A neighbouring edge
+            // moving under it just means the next iteration reconsiders, which
+            // is what virtual loss already accounts for.
+            const EdgeStats& edge = edges[i];
+            const int vl_i = edge.virtualLoss.load(std::memory_order_relaxed);
+            const uint32_t n_i = static_cast<uint32_t>(
+                edge.visits.load(std::memory_order_relaxed));
             const uint32_t n_effective = n_i + static_cast<uint32_t>(vl_i);
             
             float q_i;
             if (n_effective == 0) {
                 q_i = fpuQ;
             } else if (vl_i == 0) {
-                q_i = qValues[i];
+                q_i = edge.q.load(std::memory_order_relaxed);
             } else {
                 const SearchParams::VirtualStyle style = SearchParams::get_virtual_style(n_i);
                 if (style == SearchParams::VirtualStyle::VIRTUAL_LOSS) {
-                    q_i = (childValueSum[i] - static_cast<float>(vl_i)) / static_cast<float>(n_effective);
+                    q_i = (edge.valueSum.load(std::memory_order_relaxed)
+                           - static_cast<float>(vl_i))
+                        / static_cast<float>(n_effective);
                 } else if (style == SearchParams::VirtualStyle::VIRTUAL_OFFSET) {
-                    q_i = qValues[i] - static_cast<float>(vl_i) * static_cast<float>(SearchParams::VIRTUAL_OFFSET_STRENGTH);
+                    q_i = edge.q.load(std::memory_order_relaxed)
+                        - static_cast<float>(vl_i)
+                        * static_cast<float>(SearchParams::VIRTUAL_OFFSET_STRENGTH);
                 } else {
-                    q_i = qValues[i];
+                    q_i = edge.q.load(std::memory_order_relaxed);
                 }
             }
 
@@ -484,7 +517,7 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
                 gumbelProgress = static_cast<int>(n_effective)
                     - gumbelBaselines[i];
             } else {
-                const float u_i = explorationBase * childPriors[i]
+                const float u_i = explorationBase * edge.prior
                     / (1.0f + static_cast<float>(n_effective));
                 score = q_i + u_i;
             }
@@ -554,11 +587,39 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
         }
 
         const size_t selected = static_cast<size_t>(selectedIdx);
-        if (childVisits[selected] + virtualLoss[selected] == 0) {
-            mark_edge_visited_locked(selected);
+        {
+            EdgeStats& selectedEdge = edges[selected];
+            const bool firstTouch =
+                selectedEdge.visits.load(std::memory_order_relaxed)
+                    + selectedEdge.virtualLoss.load(std::memory_order_relaxed)
+                        == 0;
+            if (!firstTouch || gumbelSelection) {
+                if (firstTouch) {
+                    mark_edge_visited_locked(selected);
+                }
+                selectedEdge.virtualLoss.fetch_add(
+                    1, std::memory_order_relaxed);
+                virtualVisitSum.fetch_add(1, std::memory_order_relaxed);
+                return {bestChild, selectedIdx, evaluationReserved, nullptr};
+            }
         }
-        virtualLoss[selected]++;
-        virtualVisitSum++;
+        // Rare: this edge is being touched for the first time, which moves it
+        // between the unvisited and visited containers. Re-check under the
+        // exclusive lock, since another worker may have claimed it meanwhile.
+        // The edge reference is re-taken because the vector may have grown.
+        unlockNode();
+        {
+            std::unique_lock<std::shared_mutex> exclusive(nodeMutex);
+            EdgeStats& selectedEdge = edges[selected];
+            if (visitedEdgePositions[selected] < 0
+                && selectedEdge.visits.load(std::memory_order_relaxed)
+                    + selectedEdge.virtualLoss.load(std::memory_order_relaxed)
+                        == 0) {
+                mark_edge_visited_locked(selected);
+            }
+            selectedEdge.virtualLoss.fetch_add(1, std::memory_order_relaxed);
+            virtualVisitSum.fetch_add(1, std::memory_order_relaxed);
+        }
         return {bestChild, selectedIdx, evaluationReserved, nullptr};
     }
 }
