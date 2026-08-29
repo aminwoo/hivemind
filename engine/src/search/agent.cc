@@ -914,7 +914,8 @@ bool Agent::find_root_mate_impl(
     std::vector<MateContinuation>* continuations,
     MateSearchBudget* hardBudget,
     bool includeCaptureFeeds,
-    MateSearchBudget::Clock::time_point deadline) {
+    MateSearchBudget::Clock::time_point deadline,
+    bool includeImmediateMate) {
     // Every budget this scan creates shares one wall-clock stop, so the whole
     // pre-pass honours the caller's deadline no matter which branch it takes.
     // A caller that supplied its own budget already carries the deadline.
@@ -932,24 +933,26 @@ bool Agent::find_root_mate_impl(
     // per probe but large, so a caller without a hard node budget still needs
     // the wall clock to stop it - otherwise the whole pre-pass can run far past
     // the move time it was supposed to fit inside.
-    MateSearchBudget immediateDeadlineBudget;
-    immediateDeadlineBudget.remainingNodes =
-        std::numeric_limits<uint64_t>::max();
-    immediateDeadlineBudget.deadline = deadline;
-    MateSearchBudget* immediateBudget = hardBudget
-        ? hardBudget
-        : (deadline != MateSearchBudget::Clock::time_point{}
-               ? &immediateDeadlineBudget
-               : nullptr);
-    if (find_immediate_root_mate(
-            board, teamSide, teamHasTimeAdvantage, outAction,
-            immediateBudget)) {
-        outPlyToMate = 1;
-        return true;
-    }
-    if ((hardBudget && hardBudget->exhausted)
-        || immediateDeadlineBudget.exhausted) {
-        return false;
+    if (includeImmediateMate) {
+        MateSearchBudget immediateDeadlineBudget;
+        immediateDeadlineBudget.remainingNodes =
+            std::numeric_limits<uint64_t>::max();
+        immediateDeadlineBudget.deadline = deadline;
+        MateSearchBudget* immediateBudget = hardBudget
+            ? hardBudget
+            : (deadline != MateSearchBudget::Clock::time_point{}
+                   ? &immediateDeadlineBudget
+                   : nullptr);
+        if (find_immediate_root_mate(
+                board, teamSide, teamHasTimeAdvantage, outAction,
+                immediateBudget)) {
+            outPlyToMate = 1;
+            return true;
+        }
+        if ((hardBudget && hardBudget->exhausted)
+            || immediateDeadlineBudget.exhausted) {
+            return false;
+        }
     }
 
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
@@ -1964,24 +1967,25 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         scanBoard = std::make_unique<Board>(board);
     }
 
-    // The root scans below run on this thread, concurrently with the workers,
-    // so they cost one worker's share of the CPU rather than the whole GPU's
-    // idle time. Serialising them ahead of MCTS left every inference engine
-    // doing nothing for the length of the scan - on a tactical suite that is
-    // effectively the entire move.
+    // Deeper root scans run on this thread concurrently with the workers, so
+    // they cost one worker's share of the CPU rather than leaving the GPU idle.
+    // A tiny mate-in-one preflight is the exception: once a neural batch has
+    // started it cannot be cancelled, so dispatching it first would make an
+    // immediate mate wait for inference to finish.
     const size_t scanWorkerCount = runRootScan && workerCount > 1
         ? workerCount - 1
         : workerCount;
-    dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
-                     targetNodes, moveTimeMs, scanWorkerCount);
+    bool workersDispatched = false;
 
     // A scan that proves a mate replaces the root with a synthetic one-edge
     // tree, which the workers are concurrently reading through rootNode. Stop
     // and join them before that happens. The same cleanup is required if a
     // scan throws because the workers hold pointers to this call's stack.
     const auto halt_workers_after_scan = [&] {
-        running = false;
-        wait_for_workers();
+        if (workersDispatched) {
+            running = false;
+            wait_for_workers();
+        }
         currentSearchInfo_.store(nullptr, std::memory_order_release);
     };
 
@@ -2018,24 +2022,54 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // not asked; they would also replace the real tree with a synthetic
     // one-edge proof that no later position could adopt.
     bool cachedRootMate = false;
+    bool immediateRootMate = false;
+    bool immediateScanComplete = false;
     bool scannedRootMate = false;
     try {
         cachedRootMate = runRootScan
             && try_reuse_mate_continuation(
                 *scanBoard, teamSide, teamHasTimeAdvantage,
                 rootMateAction, rootMatePly);
+
+        if (runRootScan && !cachedRootMate) {
+            MateSearchBudget immediateBudget;
+            immediateBudget.remainingNodes = std::min(
+                rootMateBudget,
+                SearchParams::IMMEDIATE_MATE_PREFLIGHT_NODE_BUDGET);
+            const auto immediateDeadline = chrono::steady_clock::now()
+                + chrono::milliseconds(
+                    SearchParams::IMMEDIATE_MATE_PREFLIGHT_MAX_MS);
+            immediateBudget.deadline = rootScanDeadline
+                    != MateSearchBudget::Clock::time_point{}
+                ? std::min(rootScanDeadline, immediateDeadline)
+                : immediateDeadline;
+            immediateRootMate = find_immediate_root_mate(
+                *scanBoard, teamSide, teamHasTimeAdvantage,
+                rootMateAction, &immediateBudget);
+            immediateScanComplete = !immediateBudget.exhausted;
+            if (immediateRootMate) {
+                rootMatePly = 1;
+            }
+        }
+
+        if (!cachedRootMate && !immediateRootMate) {
+            dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
+                             targetNodes, moveTimeMs, scanWorkerCount);
+            workersDispatched = true;
+        }
         scannedRootMate = runRootScan
             && !cachedRootMate
+            && !immediateRootMate
             && find_root_mate_impl(
                 *scanBoard, teamSide, teamHasTimeAdvantage,
                 rootMateAction, rootMatePly,
                 rootMateBudget, &mateContinuations_, nullptr, true,
-                rootScanDeadline);
+                rootScanDeadline, !immediateScanComplete);
     } catch (...) {
         halt_workers_after_scan();
         throw;
     }
-    if (cachedRootMate || scannedRootMate) {
+    if (cachedRootMate || immediateRootMate || scannedRootMate) {
         halt_workers_after_scan();
         record_root_scan(true);
         result = rootMateAction;

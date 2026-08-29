@@ -418,6 +418,7 @@ private:
         std::vector<MateContinuation>* continuations,
         MateSearchBudget* hardBudget = nullptr,
         bool includeCaptureFeeds = true,
-        MateSearchBudget::Clock::time_point deadline = {});
+        MateSearchBudget::Clock::time_point deadline = {},
+        bool includeImmediateMate = true);
     
 };

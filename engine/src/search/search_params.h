@@ -365,6 +365,17 @@ constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
  */
 constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
 
+/**
+ * Tiny synchronous mate-in-one probe performed before neural workers start.
+ *
+ * Once a TensorRT batch has been dispatched it cannot be cancelled. Starting
+ * MCTS first therefore makes even an immediately proven mate wait for that
+ * batch to finish. Keep this probe deliberately small; if it does not finish,
+ * the regular bounded root scan continues concurrently with MCTS.
+ */
+constexpr uint64_t IMMEDIATE_MATE_PREFLIGHT_NODE_BUDGET = 2000;
+constexpr int IMMEDIATE_MATE_PREFLIGHT_MAX_MS = 5;
+
 /// Probes between deadline samples. Keeps the clock read well under 1% of the
 /// cheapest probe while still stopping a joint scan within a few milliseconds.
 constexpr uint32_t MATE_SEARCH_TIME_CHECK_INTERVAL = 64;
