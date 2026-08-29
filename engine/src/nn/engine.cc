@@ -293,21 +293,6 @@ bool Engine::saveEngineToFile(const std::string& engineFile) {
 
 bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
     std::cout << "Building TensorRT engine from ONNX: " << onnxFile << std::endl;
-    static std::atomic_uint64_t conversionId{0};
-    const std::filesystem::path convertedOnnx =
-        std::filesystem::temp_directory_path() /
-        ("hivemind-fp16-" + std::to_string(getpid()) + "-" +
-         std::to_string(conversionId.fetch_add(1)) + ".onnx");
-    struct ConvertedOnnxCleanup {
-        std::filesystem::path path;
-        ~ConvertedOnnxCleanup() {
-            std::error_code error;
-            std::filesystem::remove(path, error);
-        }
-    } cleanup{convertedOnnx};
-    if (!convertOnnxToFp16(onnxFile, convertedOnnx)) {
-        return false;
-    }
 
     preloadTensorRTBuilderResources();
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(m_logger));
@@ -316,45 +301,96 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
                   << "so TensorRT resource libraries are on LD_LIBRARY_PATH." << std::endl;
         return false;
     }
-    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(
-        builder->createNetworkV2(0U));
-    if (!network) {
-        std::cerr << "Failed to create TensorRT network definition" << std::endl;
-        return false;
-    }
-    auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, m_logger));
-    if (!parser) {
-        std::cerr << "Failed to create TensorRT ONNX parser" << std::endl;
-        return false;
-    }
 
-    if (!parser->parseFromFile(convertedOnnx.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
-        return false;
-    }
+    std::unique_ptr<nvinfer1::INetworkDefinition> network;
+    std::unique_ptr<nvonnxparser::IParser> parser;
+    auto parseModel = [&](const std::filesystem::path& path) {
+        parser.reset();
+        network.reset(builder->createNetworkV2(0U));
+        if (!network) {
+            std::cerr << "Failed to create TensorRT network definition" << std::endl;
+            return false;
+        }
+        parser.reset(nvonnxparser::createParser(*network, m_logger));
+        if (!parser) {
+            std::cerr << "Failed to create TensorRT ONNX parser" << std::endl;
+            return false;
+        }
+        return parser->parseFromFile(
+            path.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING));
+    };
 
-    size_t fp16TensorCount = 0;
-    for (int layerIndex = 0; layerIndex < network->getNbLayers(); ++layerIndex) {
-        nvinfer1::ILayer* layer = network->getLayer(layerIndex);
-        for (int outputIndex = 0; outputIndex < layer->getNbOutputs(); ++outputIndex) {
-            nvinfer1::ITensor* output = layer->getOutput(outputIndex);
-            if (!output) {
-                continue;
+    // A network is usable as-is only when every tensor is already FP16; a single
+    // FP32 tensor means the model still has to go through the FP16 converter.
+    auto networkIsFp16 = [&](bool reportFp32) {
+        size_t fp16TensorCount = 0;
+        auto inspect = [&](nvinfer1::ITensor* tensor, const char* origin) {
+            if (!tensor) {
+                return true;
             }
-            if (output->getType() == nvinfer1::DataType::kHALF) {
+            if (tensor->getType() == nvinfer1::DataType::kHALF) {
                 fp16TensorCount++;
-            } else if (output->getType() == nvinfer1::DataType::kFLOAT) {
-                std::cerr << "Refusing to build a non-FP16 TensorRT plan: internal tensor "
-                          << output->getName() << " from layer " << layer->getName()
-                          << " is FP32 after automatic conversion."
-                          << std::endl;
+            } else if (tensor->getType() == nvinfer1::DataType::kFLOAT) {
+                if (reportFp32) {
+                    std::cerr << "Refusing to build a non-FP16 TensorRT plan: tensor "
+                              << tensor->getName() << " from " << origin
+                              << " is FP32 after automatic conversion." << std::endl;
+                }
+                return false;
+            }
+            return true;
+        };
+
+        for (int inputIndex = 0; inputIndex < network->getNbInputs(); ++inputIndex) {
+            if (!inspect(network->getInput(inputIndex), "the network inputs")) {
                 return false;
             }
         }
-    }
-    if (fp16TensorCount == 0) {
-        std::cerr << "Refusing to build a TensorRT plan without FP16 internal tensors"
-                  << std::endl;
-        return false;
+        for (int outputIndex = 0; outputIndex < network->getNbOutputs(); ++outputIndex) {
+            if (!inspect(network->getOutput(outputIndex), "the network outputs")) {
+                return false;
+            }
+        }
+        for (int layerIndex = 0; layerIndex < network->getNbLayers(); ++layerIndex) {
+            nvinfer1::ILayer* layer = network->getLayer(layerIndex);
+            for (int outputIndex = 0; outputIndex < layer->getNbOutputs(); ++outputIndex) {
+                if (!inspect(layer->getOutput(outputIndex), layer->getName())) {
+                    return false;
+                }
+            }
+        }
+
+        if (fp16TensorCount == 0) {
+            if (reportFp32) {
+                std::cerr << "Refusing to build a TensorRT plan without FP16 internal tensors"
+                          << std::endl;
+            }
+            return false;
+        }
+        return true;
+    };
+
+    if (parseModel(onnxFile) && networkIsFp16(false)) {
+        std::cout << "ONNX model is already FP16; skipping conversion" << std::endl;
+    } else {
+        static std::atomic_uint64_t conversionId{0};
+        const std::filesystem::path convertedOnnx =
+            std::filesystem::temp_directory_path() /
+            ("hivemind-fp16-" + std::to_string(getpid()) + "-" +
+             std::to_string(conversionId.fetch_add(1)) + ".onnx");
+        struct ConvertedOnnxCleanup {
+            std::filesystem::path path;
+            ~ConvertedOnnxCleanup() {
+                std::error_code error;
+                std::filesystem::remove(path, error);
+            }
+        } cleanup{convertedOnnx};
+        if (!convertOnnxToFp16(onnxFile, convertedOnnx)) {
+            return false;
+        }
+        if (!parseModel(convertedOnnx) || !networkIsFp16(true)) {
+            return false;
+        }
     }
 
     auto config = std::unique_ptr<nvinfer1::IBuilderConfig>(builder->createBuilderConfig());
