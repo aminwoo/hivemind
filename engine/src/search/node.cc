@@ -176,7 +176,7 @@ bool Node::update_child_node_type_from(
                 }
             }
 
-            if (allWins) {
+            if (allWins && allowLossProof) {
                 endInPly.store(longestPly + 1, std::memory_order_relaxed);
                 nodeType.store(NodeType::LOSS, std::memory_order_release);
                 becameSolved = true;
@@ -217,8 +217,14 @@ void Node::initialize_root_gumbel_locked(
 }
 
 void Node::configure_root_search(
-    const SearchParams::RuntimeConfig& config) {
+    const SearchParams::RuntimeConfig& config,
+    bool allowProvenLoss) {
     std::unique_lock<std::shared_mutex> guard(nodeMutex);
+    // A side that is behind on time must keep producing its best available
+    // move even after the solver proves that every root action loses. Child
+    // proofs remain active, so the search still avoids losing continuations
+    // while any unresolved alternative exists.
+    allowLossProof = allowProvenLoss;
     if (!m_is_expanded.load(std::memory_order_relaxed)) {
         rootGumbelEnabled = config.enableGumbelRootSearch;
         return;

@@ -1859,6 +1859,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         || (boardBOnTurn && !board.legal_moves(BOARD_B).empty());
     const bool opponentIsMated =
         board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+    const bool teamIsMated =
+        board.is_checkmate(teamSide, teamHasTimeAdvantage);
 
     // A mate on the other team is not necessarily terminal at this root. If
     // we are down on time (or both boards are on turn), we still owe a move;
@@ -1868,8 +1870,17 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     const bool mustPlayDespiteOpponentMate =
         opponentIsMated && !canWait && teamHasPlayableMove;
 
+    // The server, not this combined-board search, decides when a live game has
+    // actually stopped. If our partner board is already mated but this
+    // team still has a legal move elsewhere, search that move instead of
+    // abandoning the seat with bestmove (none). The root classifier makes the
+    // matching one-ply best-effort exception so the neural policy can rank the
+    // available moves before ordinary terminal handling resumes below it.
+    const bool mustPlayDespiteTeamMate =
+        !teamHasTimeAdvantage && teamIsMated && teamHasPlayableMove;
+
     if ((opponentIsMated && !mustPlayDespiteOpponentMate)
-        || board.is_checkmate(teamSide, teamHasTimeAdvantage)
+        || (teamIsMated && !mustPlayDespiteTeamMate)
         || board.is_draw()) {
         drop_retained_candidates();
         if (options.verbose) {
@@ -1901,6 +1912,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     if (SearchParams::ENABLE_TREE_REUSE) {
         reusedRoot = try_reuse_tree(positionHash, teamSide, positionSignature);
     }
+    if (reusedRoot && !teamHasTimeAdvantage
+        && reusedRoot->get_node_type() == NodeType::LOSS) {
+        // A retained node may already have been solved as a loss while it was
+        // below an earlier root. Reusing its solved state would stop this
+        // down-time search before it can compare the available moves.
+        reusedRoot.reset();
+    }
 
     if (reusedRoot) {
         // Reuse the existing subtree
@@ -1916,7 +1934,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // Create new root node
         rootNode = make_shared<Node>(teamSide, positionHash);
     }
-    rootNode->configure_root_search(options.search);
+    rootNode->configure_root_search(
+        options.search, teamHasTimeAdvantage);
 
     // Start the clock where run_search began, not after the concurrent root
     // scans below: they are part of this move's thinking time, and resetting
@@ -2125,9 +2144,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         return result;
     }
 
-    // Winning proofs need one successful action; losing proofs must quantify
-    // every legal defense. Keep that reverse proof separately bounded and
-    // return "not proven" on exhaustion so MCTS remains the fallback.
+    // When down on time, a forced-loss proof must not choose the move. Selecting
+    // the longest mate line abandons good play on the other board; let MCTS use
+    // the remaining budget to rank the legal actions normally. The time-ahead
+    // path retains the bounded reverse proof because it can still use waiting
+    // as part of the game-theoretic defense.
     JointActionCandidate rootLossAction;
     int rootLossPly = 0;
     const uint64_t rootLossBudget = options.moveTimeMs > 0
@@ -2138,6 +2159,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     bool scannedRootLoss = false;
     try {
         scannedRootLoss = runRootScan
+            && teamHasTimeAdvantage
             && find_root_forced_loss(
                 *scanBoard, teamSide, teamHasTimeAdvantage,
                 rootLossAction, rootLossPly, rootLossBudget,

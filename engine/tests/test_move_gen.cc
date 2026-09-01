@@ -647,6 +647,25 @@ TEST_F(EngineTest, CheckmatePrecedesFiftyMoveDraw) {
               TerminalOutcome::LOSS);
 }
 
+TEST_F(EngineTest, MatedRootCanRankMovesOnItsPlayablePartnerBoard) {
+    Board board;
+    board.set(
+        "4k3/8/8/8/8/8/5PPP/4r1K1[] w - - 0 1|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] b KQkq - 0 1");
+
+    ASSERT_TRUE(board.is_checkmate(Stockfish::WHITE, false));
+    ASSERT_TRUE(board.legal_moves(BOARD_A).empty());
+    ASSERT_FALSE(board.legal_moves(BOARD_B).empty());
+
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::WHITE, Stockfish::WHITE, false, 0),
+              TerminalOutcome::LOSS);
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::WHITE, Stockfish::WHITE, false, 0,
+                  nullptr, false, true),
+              TerminalOutcome::NONE);
+}
+
 TEST_F(EngineTest, ClassifiesUnavoidableWaitingBoardMateAsLoss) {
     Board board;
     board.set(
@@ -1819,6 +1838,74 @@ TEST(MctsSolverTest, PropagatesDrawAfterAllMovesAreSolved) {
 
     EXPECT_TRUE(parent.update_child_node_type(0, child->get_node_type()));
     EXPECT_EQ(parent.get_node_type(), NodeType::DRAW);
+}
+
+TEST(MctsSolverTest, ProvenLossKeepsBestSearchedMoveInsteadOfDelayingMate) {
+    Node parent(Stockfish::WHITE);
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+
+    JointActionCandidate secondAction;
+    int secondIndex = -1;
+    ASSERT_NE(parent.expand_next_joint_child(
+        nullptr, 0, secondAction, config, &secondIndex), nullptr);
+    ASSERT_EQ(secondIndex, 1);
+
+    for (int visit = 0; visit < 10; ++visit) {
+        parent.update(0, -0.5f);
+    }
+    parent.update(secondIndex, -0.5f);
+
+    const auto children = parent.get_children();
+    children[0]->mark_as_win(1);
+    children[secondIndex]->mark_as_win(9);
+    parent.init_child_node_types();
+    parent.update_child_node_type(0, NodeType::WIN);
+    parent.update_child_node_type(secondIndex, NodeType::WIN);
+    ASSERT_EQ(parent.get_node_type(), NodeType::LOSS);
+
+    // The old loss policy selected child 1 solely because its mate was longer.
+    // A live seat should retain the move the actual search preferred.
+    EXPECT_EQ(parent.get_best_move_idx_with_q_weight(), 0);
+}
+
+TEST(MctsSolverTest, DownTimeRootRemainsSearchableAfterProvenLoss) {
+    Node parent(Stockfish::WHITE);
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+    parent.configure_root_search(config, false);
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+
+    JointActionCandidate secondAction;
+    int secondIndex = -1;
+    ASSERT_NE(parent.expand_next_joint_child(
+        nullptr, 0, secondAction, config, &secondIndex), nullptr);
+    ASSERT_EQ(secondIndex, 1);
+
+    const auto children = parent.get_children();
+    children[0]->mark_as_win(1);
+    children[secondIndex]->mark_as_win(3);
+    parent.init_child_node_types();
+    EXPECT_FALSE(parent.update_child_node_type(0, NodeType::WIN));
+    EXPECT_FALSE(parent.update_child_node_type(secondIndex, NodeType::WIN));
+    EXPECT_EQ(parent.get_node_type(), NodeType::UNSOLVED);
+
+    Node::ChildSelection selection =
+        parent.select_child_and_apply_virtual_loss(config);
+    ASSERT_NE(selection.child, nullptr);
+    if (selection.hasEvaluationReservation) {
+        selection.child->release_evaluation_reservation();
+    }
+    parent.remove_virtual_loss(selection.childIdx);
 }
 
 TEST(MctsSolverTest, ReverseProofReachesEveryTranspositionParent) {
@@ -3476,4 +3563,42 @@ TEST_F(EngineTest, RootMateScanFeedProbesRespectCallerBudget) {
     // must give up quickly rather than run the feed scan to a fixed floor.
     EXPECT_FALSE(found);
     EXPECT_LT(elapsedMs, 50.0);
+}
+
+// RequireMoveOn exists for clients that drive a single seat: the joint action
+// they play must contain a real move on their own board.
+TEST(RequiredMoveBoard, RejectsOptionalPassesOnTheRequiredBoard) {
+    const Stockfish::Move moveA = Stockfish::make_move(
+        Stockfish::SQ_E2, Stockfish::SQ_E4);
+    const Stockfish::Move moveB = Stockfish::make_move(
+        Stockfish::SQ_E7, Stockfish::SQ_E5);
+
+    // Both boards on turn with a time advantage, so every pass is a choice.
+    const JointActionRules rules{true, true, true, true, true};
+
+    g_requiredMoveBoard = REQUIRE_MOVE_NONE;
+    EXPECT_TRUE(is_joint_action_legal(
+        rules, Stockfish::MOVE_NONE, moveB, false, false));
+
+    g_requiredMoveBoard = REQUIRE_MOVE_BOARD_A;
+    EXPECT_FALSE(is_joint_action_legal(
+        rules, Stockfish::MOVE_NONE, moveB, false, false));
+    EXPECT_FALSE(is_joint_action_legal(
+        rules, Stockfish::MOVE_NONE, Stockfish::MOVE_NONE, false, false));
+    EXPECT_TRUE(is_joint_action_legal(
+        rules, moveA, Stockfish::MOVE_NONE, false, false));
+    EXPECT_TRUE(is_joint_action_legal(rules, moveA, moveB, false, false));
+
+    // A forced pass has to stay legal, or the team is left with no action.
+    const JointActionRules boardAStuck{false, true, true, false, true};
+    EXPECT_TRUE(is_joint_action_legal(
+        boardAStuck, Stockfish::MOVE_NONE, moveB, false, false));
+
+    g_requiredMoveBoard = REQUIRE_MOVE_BOARD_B;
+    EXPECT_FALSE(is_joint_action_legal(
+        rules, moveA, Stockfish::MOVE_NONE, false, false));
+    EXPECT_TRUE(is_joint_action_legal(
+        rules, Stockfish::MOVE_NONE, moveB, false, false));
+
+    g_requiredMoveBoard = REQUIRE_MOVE_NONE;
 }

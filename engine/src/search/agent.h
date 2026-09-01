@@ -125,13 +125,12 @@ private:
     /**
      * Root pre-pass accounting.
      *
-     * The mate and forced-loss scans run inside the move time, bounded by
-     * MATE_SEARCH_MAX_TIME_PERCENT, and return immediately once they prove
-     * something. Whether that trade is worth it is a property of a whole
-     * session, not of one move: the cost is the share of the clock the scans
-     * spend, the benefit is the share of moves they decide outright. Both are
-     * accumulated here and reported so the trade can be read off real games at
-     * real time controls rather than argued from the budget it was tuned at.
+     * The winning-mate scan runs inside the move time, bounded by
+     * MATE_SEARCH_MAX_TIME_PERCENT, and returns immediately once it proves a
+     * winning action. A down-time team deliberately skips the loss proof: even
+     * in a game-theoretic loss, each seat should keep playing its strongest
+     * move. The cost and hit rate are accumulated here so the trade can be read
+     * off real games at real time controls.
      */
     struct RootScanStats {
         uint64_t searches = 0;

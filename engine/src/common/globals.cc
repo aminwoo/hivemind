@@ -6,6 +6,9 @@
 // Global log level (default: no debug output)
 LogLevel g_logLevel = LOG_NONE;
 
+// Board the team must move on (default: neither, so passing stays legal)
+RequiredMoveBoard g_requiredMoveBoard = REQUIRE_MOVE_NONE;
+
 std::unordered_map<std::string, int> POLICY_INDEX;
 int POLICY_TABLE_NORMAL[2][64][64][2];
 int POLICY_TABLE_DROP[2][64][8];
@@ -17,6 +20,15 @@ LogLevel parseLogLevel(const std::string& str) {
     if (lower == "debug") return LOG_DEBUG;
     if (lower == "info") return LOG_INFO;
     return LOG_NONE;  // Default
+}
+
+RequiredMoveBoard parseRequiredMoveBoard(const std::string& str) {
+    std::string lower = str;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    if (lower == "a" || lower == "1") return REQUIRE_MOVE_BOARD_A;
+    if (lower == "b" || lower == "2") return REQUIRE_MOVE_BOARD_B;
+    return REQUIRE_MOVE_NONE;  // Default
 }
 
 static inline std::string fast_square_name(int sq) {

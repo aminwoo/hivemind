@@ -29,6 +29,10 @@ enum class TerminalOutcome : uint8_t {
  *        verdicts, so a proof built on this model also holds for any other
  *        state of the waiting board - which lets a caller reuse one proof
  *        across positions that differ only there.
+ * @param allowMatedTeamToMove At a live down-time root, defer a LOSS when the
+ *        nominally mated team still has a legal move on its partner board. This
+ *        permits one neural expansion to rank that seat's moves; descendants
+ *        use normal terminal adjudication.
  */
 TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
@@ -36,7 +40,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              bool rootTeamHasTimeAdvantage,
                                              const std::array<int, 2>& boardSearchPlies,
                                              int* endInPly = nullptr,
-                                             bool partnerBoardAgnostic = false);
+                                             bool partnerBoardAgnostic = false,
+                                             bool allowMatedTeamToMove = false);
 
 TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
@@ -44,7 +49,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              bool rootTeamHasTimeAdvantage,
                                              int searchPly,
                                              int* endInPly = nullptr,
-                                             bool partnerBoardAgnostic = false);
+                                             bool partnerBoardAgnostic = false,
+                                             bool allowMatedTeamToMove = false);
 
 /**
  * @brief Entry in an MCTS selection trajectory.

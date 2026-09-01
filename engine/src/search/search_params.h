@@ -339,10 +339,10 @@ constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 100000;
 /// Floor for the scaled budget, so even a very short search still gets a scan.
 constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
 
-// A universal loss proof must cover every legal defense. Timed UCI searches
-// reserve this many cheap probes so a short allocation does not split the
-// ordinary mate budget into unusably small per-defense slices. Node-limited
-// self-play remains governed solely by its scaled budget.
+// A universal loss proof must cover every legal defense. Timed searches for
+// the time-ahead team reserve enough cheap probes that this optional reverse
+// proof is still useful; the down-time team deliberately skips it and lets
+// MCTS choose the strongest live-board move instead.
 constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 
 // Capture-feed proofs are searched independently in both board directions and
@@ -353,8 +353,8 @@ constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
 
 /**
- * Share of the move time the whole root pre-pass (mate scan plus forced-loss
- * scan) may occupy.
+ * Share of the move time the root proof pre-pass may occupy. Down-time roots
+ * run only the winning scan; time-ahead roots may also run the loss scan.
  *
  * Node budgets cannot enforce this on their own: a joint proof node costs
  * ~70us against ~1us for a single-board check node, a spread no single node

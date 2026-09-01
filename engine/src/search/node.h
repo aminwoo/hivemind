@@ -158,6 +158,7 @@ private:
     std::vector<NodeType> childNodeTypes;    // Cached node types of children
     std::atomic<int> unsolvedChildCount{0};  // Number of unsolved children (for solver)
     int provenWinningChildCount = 0;
+    bool allowLossProof = true;
     std::atomic<int> endInPly{0};                        // Distance to terminal (for mate distance)
 
     struct RootGumbelEntry {
@@ -731,7 +732,9 @@ public:
     /**
      * @brief Configure a newly created or reused node as this search's root.
      */
-    void configure_root_search(const SearchParams::RuntimeConfig& config);
+    void configure_root_search(
+        const SearchParams::RuntimeConfig& config,
+        bool allowProvenLoss = true);
     
     // =========================================================================
     // MCTS Solver Methods
@@ -863,18 +866,10 @@ public:
             if (bestIdx >= 0) return bestIdx;
         }
         
-        if (nodeType == NodeType::LOSS) {
-            // Find the child with longest ply (delay mate)
-            int bestIdx = 0;
-            int longestPly = 0;
-            for (size_t i = 0; i < children.size(); i++) {
-                if (children[i] && children[i]->get_end_in_ply() > longestPly) {
-                    longestPly = children[i]->get_end_in_ply();
-                    bestIdx = static_cast<int>(i);
-                }
-            }
-            return bestIdx;
-        }
+        // A proven loss does not make mate distance a useful move-quality
+        // signal for a live bughouse seat. Keep using the searched visits and
+        // Q values below, so a dead partner board cannot make this board throw
+        // away its strongest move merely to delay the combined mate score.
 
         if (rootGumbelEnabled && !rootGumbelActive.empty()) {
             int bestIdx = -1;

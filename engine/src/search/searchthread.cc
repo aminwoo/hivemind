@@ -108,7 +108,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              bool rootTeamHasTimeAdvantage,
                                              const std::array<int, 2>& boardSearchPlies,
                                              int* endInPly,
-                                             bool partnerBoardAgnostic) {
+                                             bool partnerBoardAgnostic,
+                                             bool allowMatedTeamToMove) {
     if (endInPly) {
         *endInPly = 0;
     }
@@ -125,9 +126,18 @@ TerminalOutcome classify_terminal_position(Board& board,
         }
         return TerminalOutcome::WIN;
     }
-    if (board.is_checkmate(
-            teamToPlay, teamToPlayHasTimeAdvantage, &legalMoveCache,
-            partnerBoardAgnostic)) {
+    const bool teamToPlayIsMated = board.is_checkmate(
+        teamToPlay, teamToPlayHasTimeAdvantage, &legalMoveCache,
+        partnerBoardAgnostic);
+    bool matedTeamCanStillMove = false;
+    if (teamToPlayIsMated && allowMatedTeamToMove) {
+        matedTeamCanStillMove =
+            (board.side_to_move(BOARD_A) == teamToPlay
+             && board.has_any_legal_move(BOARD_A))
+            || (board.side_to_move(BOARD_B) == ~teamToPlay
+                && board.has_any_legal_move(BOARD_B));
+    }
+    if (teamToPlayIsMated && !matedTeamCanStillMove) {
         if (endInPly) {
             *endInPly = 1;
         }
@@ -157,10 +167,12 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              bool rootTeamHasTimeAdvantage,
                                              int searchPly,
                                              int* endInPly,
-                                             bool partnerBoardAgnostic) {
+                                             bool partnerBoardAgnostic,
+                                             bool allowMatedTeamToMove) {
     return classify_terminal_position(
         board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
-        {searchPly, searchPly}, endInPly, partnerBoardAgnostic);
+        {searchPly, searchPly}, endInPly, partnerBoardAgnostic,
+        allowMatedTeamToMove);
 }
 
 SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {
@@ -464,7 +476,8 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
             board, ctx.teamToPlay, root->get_team_to_play(),
-            teamHasTimeAdvantage, boardSearchPlies, &terminalEndInPly);
+            teamHasTimeAdvantage, boardSearchPlies, &terminalEndInPly,
+            false, searchPly == 0 && !teamHasTimeAdvantage);
         if (terminalOutcome != TerminalOutcome::NONE) {
             ctx.isTerminal = true;
             if (terminalOutcome == TerminalOutcome::WIN) {

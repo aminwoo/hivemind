@@ -351,6 +351,13 @@ void UCI::setoption(std::istringstream& is) {
         } else if (value == "black") {
             teamSide = Stockfish::BLACK;
         }
+    } else if (name == "RequireMoveOn") {
+        g_requiredMoveBoard = parseRequiredMoveBoard(value);
+        std::cout << "info string RequireMoveOn set to "
+                  << (g_requiredMoveBoard == REQUIRE_MOVE_BOARD_A ? "A"
+                      : g_requiredMoveBoard == REQUIRE_MOVE_BOARD_B ? "B"
+                      : "none")
+                  << std::endl;
     } else if (name == "TimeAdvantage") {
         if (value == "true" || value == "false") {
             teamHasTimeAdvantage = value == "true";
@@ -408,6 +415,7 @@ void UCI::send_uci_response() {
          << " min 1 max 100000" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name TimeAdvantage type check default false" << endl;
+    cout << "option name RequireMoveOn type combo default none var none var A var B" << endl;
     cout << "info string CUDA engines " << engines.size()
          << " search workers " << engines.size() * SearchParams::NUM_SEARCH_THREADS
          << " (" << SearchParams::NUM_SEARCH_THREADS << " per engine)" << endl;

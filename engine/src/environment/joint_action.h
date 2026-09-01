@@ -12,6 +12,7 @@
 #include <functional>
 #include <numeric>
 #include "Fairy-Stockfish/src/types.h"
+#include "common/globals.h"
 #include "search/search_params.h"
 
 inline bool is_double_sit_legal(bool teamHasTimeAdvantage,
@@ -56,6 +57,19 @@ inline bool is_joint_action_legal(const JointActionRules& rules,
                                   bool moveBIsCapture) {
     const bool sitsOnA = moveA == Stockfish::MOVE_NONE;
     const bool sitsOnB = moveB == Stockfish::MOVE_NONE;
+
+    // A client driving a single seat needs a move for that seat, so drop the
+    // actions that pass there while a move is available. A forced pass (not on
+    // turn, or on turn with no legal move) still has to stay legal, or the team
+    // would be left with no action at all.
+    if (sitsOnA && rules.boardACanMove
+        && g_requiredMoveBoard == REQUIRE_MOVE_BOARD_A) {
+        return false;
+    }
+    if (sitsOnB && rules.boardBCanMove
+        && g_requiredMoveBoard == REQUIRE_MOVE_BOARD_B) {
+        return false;
+    }
     if (sitsOnA && sitsOnB) {
         return is_double_sit_legal(
             rules.teamHasTimeAdvantage, rules.boardAOnTurn, rules.boardBOnTurn);
