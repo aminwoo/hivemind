@@ -74,7 +74,12 @@ void preloadTensorRTBuilderResources() {
     std::call_once(preloadOnce, []() {
         namespace fs = std::filesystem;
         std::error_code errorCode;
-        const fs::path libraryDir(TENSORRT_LIBRARY_DIR);
+        const char* configuredLibraryDir =
+            std::getenv("HIVEMIND_TENSORRT_LIBRARY_DIR");
+        const fs::path libraryDir(
+            configuredLibraryDir && *configuredLibraryDir
+                ? configuredLibraryDir
+                : TENSORRT_LIBRARY_DIR);
         if (!fs::exists(libraryDir, errorCode)) {
             std::cerr << "TensorRT library directory not found: " << libraryDir << std::endl;
             return;
@@ -133,7 +138,12 @@ bool runFp16Converter(const std::string& python,
         return false;
     }
     if (child == 0) {
-        execlp(python.c_str(), python.c_str(), HIVEMIND_FP16_CONVERTER_SCRIPT,
+        const char* configuredConverter =
+            std::getenv("HIVEMIND_FP16_CONVERTER_SCRIPT");
+        const char* converter = configuredConverter && *configuredConverter
+            ? configuredConverter
+            : HIVEMIND_FP16_CONVERTER_SCRIPT;
+        execlp(python.c_str(), python.c_str(), converter,
                input.c_str(), output.c_str(), static_cast<char*>(nullptr));
         _exit(127);
     }

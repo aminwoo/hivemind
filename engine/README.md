@@ -70,3 +70,18 @@ full-search NPS for each contestant and every effective search parameter.
 
 cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"
+
+## Ubuntu release bundle
+
+Build a generic x86-64 Ubuntu zip containing the engine, an ONNX network, and
+the local TensorRT runtime and builder libraries:
+
+```bash
+./scripts/package_ubuntu_release.sh \
+    --model /path/to/model.onnx \
+    --name hivemind-v2.1.0-ubuntu-x86_64
+```
+
+Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
+not need to install CUDA or TensorRT. The first launch builds a TensorRT plan
+for their GPU and caches it beside the bundled model.
