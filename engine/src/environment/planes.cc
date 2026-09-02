@@ -1,5 +1,6 @@
 #include "environment/planes.h"
 #include <algorithm>
+#include <cstring>
 #include <type_traits>
 
 namespace {
@@ -260,6 +261,9 @@ void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide
     board_to_planes_impl(board, inputPlanes, teamSide, hasTimeAdvantage);
 }
 
+#if defined(HIVEMIND_BACKEND_TENSORRT)
 void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage) {
     board_to_planes_impl(board, inputPlanes, teamSide, hasTimeAdvantage);
 }
+#endif
+

@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-#include <cuda_runtime_api.h>
+#include "nn/backend_compat.h"
 
 #include "environment/joint_action.h"
 #include "common/utils.h"
@@ -182,7 +182,7 @@ SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) 
 SearchThread::~SearchThread() {
     for (SearchBatch& batch : batches) {
         if (batch.observations) {
-            cudaFreeHost(batch.observations);
+            hm::free_pinned(batch.observations);
         }
     }
 }
@@ -195,15 +195,15 @@ void SearchThread::ensureBufferSize(int batchSize) {
 
     for (SearchBatch& batch : batches) {
         if (batch.observations) {
-            cudaFreeHost(batch.observations);
+            hm::free_pinned(batch.observations);
             batch.observations = nullptr;
         }
-        cudaError_t result = cudaMallocHost(
+        const bool result = hm::alloc_pinned(
             reinterpret_cast<void**>(&batch.observations),
             batchSize * NB_INPUT_VALUES() * sizeof(__half));
-        if (result != cudaSuccess) {
+        if (!result) {
             throw std::runtime_error(
-                std::string("cudaMallocHost failed: ") + cudaGetErrorString(result));
+                std::string("observation buffer allocation failed: ") + hm::alloc_error());
         }
         batch.contexts.reserve(batchSize);
     }

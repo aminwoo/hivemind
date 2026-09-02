@@ -4,8 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 
-#include <cuda_fp16.h>
-#include <cuda_runtime_api.h>
+#include "nn/backend_compat.h"
 
 #include "environment/board.h"
 #include "environment/constants.h"
@@ -16,9 +15,8 @@ void benchmark_inference(Engine& engine, int iterations) {
     const int batchSize = engine.getBatchSize();
     const size_t inputElements = batchSize * NB_INPUT_VALUES();
     __half* obs = nullptr;
-    if (cudaMallocHost(
-            reinterpret_cast<void**>(&obs), inputElements * sizeof(__half))
-        != cudaSuccess) {
+    if (!hm::alloc_pinned(
+            reinterpret_cast<void**>(&obs), inputElements * sizeof(__half))) {
         cerr << "Failed to allocate pinned inference benchmark input" << endl;
         return;
     }
@@ -53,7 +51,7 @@ void benchmark_inference(Engine& engine, int iterations) {
     cout << "Positions per second: " << inferences_per_sec * batchSize << endl;
     cout << "===========================" << endl;
     
-    cudaFreeHost(obs);
+    hm::free_pinned(obs);
 }
 
 static long long perft(Board& board, int depth) {

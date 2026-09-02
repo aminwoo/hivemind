@@ -13,7 +13,7 @@
 #include "Fairy-Stockfish/src/piece.h"
 #include "Fairy-Stockfish/src/types.h"
 #include <iostream>
-#include <cuda_runtime.h>
+#include "nn/backend_compat.h"
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -117,13 +117,18 @@ void printUsage(const char* progName) {
 }
 
 int main(int argc, char* argv[]) {
-    int deviceCount = 0;
+    // How many Engine instances to build: one per CUDA device, or a single
+    // host engine on the portable backend.
+    int deviceCount = 1;
+#if defined(HIVEMIND_BACKEND_TENSORRT)
+    deviceCount = 0;
     cudaError_t error_id = cudaGetDeviceCount(&deviceCount);
     if (error_id != cudaSuccess) {
         std::cerr << "cudaGetDeviceCount failed: " 
                   << cudaGetErrorString(error_id) << std::endl;
         return EXIT_FAILURE;
     }
+#endif
 
     // Parse --log argument first (can appear anywhere)
     for (int i = 1; i < argc; i++) {

@@ -5,7 +5,7 @@
 #include <numeric>   
 #include <algorithm>  
 #include <type_traits>
-#include <cuda_fp16.h>
+#include "nn/backend_compat.h"
 #include "Fairy-Stockfish/src/types.h"
 #include "environment/board.h"
 #include "environment/constants.h"
