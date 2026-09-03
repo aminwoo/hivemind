@@ -13,11 +13,7 @@
 class DrawDetectionTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        Stockfish::pieceMap.init();
-        Stockfish::variants.init();
-        Stockfish::Bitboards::init();
-        Stockfish::Position::init();
-        Stockfish::Threads.set(1);
+        init_fairy_stockfish();
         init_policy_index();
     }
 };

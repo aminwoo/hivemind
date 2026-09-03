@@ -309,6 +309,11 @@ void UCI::setoption(std::istringstream& is) {
         int permille = std::clamp(std::stoi(value), 1, 1000);
         searchConfig.pwExponent = static_cast<float>(permille) / 1000.0f;
         std::cout << "info string PWExponentPermille set to " << permille << std::endl;
+    } else if (name == "MateProbe") {
+        if (value == "true" || value == "false") {
+            searchConfig.enableMateProbe = value == "true";
+            std::cout << "info string MateProbe set to " << value << std::endl;
+        }
     } else if (name == "Transpositions") {
         if (value == "true" || value == "false") {
             searchConfig.enableTranspositions = value == "true";
@@ -395,6 +400,8 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::ROOT_PW_COEFFICIENT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name PWExponentPermille type spin default "
          << static_cast<int>(SearchParams::PW_EXPONENT * 1000.0f) << " min 1 max 1000" << endl;
+    cout << "option name MateProbe type check default "
+         << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
     cout << "option name Transpositions type check default "
         << (SearchParams::ENABLE_TRANSPOSITIONS ? "true" : "false") << endl;
     cout << "option name GumbelRootSearch type check default "

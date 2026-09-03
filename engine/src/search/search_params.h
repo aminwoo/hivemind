@@ -352,6 +352,16 @@ constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 // the caller's allowance evenly - neither can starve the other.
 constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
 
+// Wall clock the Fairy-Stockfish mate probe may use when the search has no move
+// time to carve a pre-pass window out of, as in analysis. Timed searches hand
+// it whatever is left of MATE_SEARCH_MAX_TIME_PERCENT instead.
+constexpr int MATE_PROBE_UNTIMED_BUDGET_MS = 500;
+
+// The probe answers with a searched mate score rather than an exact proof, and
+// it is the one part of the pre-pass that can be switched off without giving up
+// the check-only scans, so it gets its own flag.
+constexpr bool ENABLE_MATE_PROBE = true;
+
 /**
  * Share of the move time the root proof pre-pass may occupy. Both clock states
  * run the winning scan and the bounded loss scan.
@@ -448,6 +458,7 @@ struct RuntimeConfig {
     bool enableMCGS = ENABLE_MCGS;
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
+    bool enableMateProbe = ENABLE_MATE_PROBE;
     float drawContempt = DRAW_CONTEMPT;
     bool enableDynamicFpu = ENABLE_DYNAMIC_FPU;
     float fpuReduction = FPU_REDUCTION;

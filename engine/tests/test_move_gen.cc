@@ -78,15 +78,24 @@ public:
     }
 };
 
+// Fairy-Stockfish takes its word size and popcount implementation from macros
+// that upstream passes from its own Makefile. This build derives them in
+// types.h instead, and losing them is silent: move generation keeps working,
+// on the 32-bit magic bitboard path with a table-driven popcount.
+TEST(BuildConfig, MoveGenerationIsBuiltForTheHostWordSize) {
+#if defined(__x86_64__) || defined(__aarch64__)
+    EXPECT_TRUE(Stockfish::Is64Bit);
+#endif
+#if defined(__POPCNT__)
+    EXPECT_TRUE(Stockfish::HasPopCnt);
+#endif
+}
+
 // Fixture for engine initialization
 class EngineTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        Stockfish::pieceMap.init();
-        Stockfish::variants.init();
-        Stockfish::Bitboards::init();
-        Stockfish::Position::init();
-        Stockfish::Threads.set(1);
+        init_fairy_stockfish();
         init_policy_index();
     }
 };

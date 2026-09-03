@@ -70,6 +70,28 @@
 #  define IS_64BIT
 #endif
 
+// Upstream passes these on the command line from its Makefile's ARCH. This
+// build is driven by CMake, so derive them from the target the compiler was
+// actually pointed at instead - otherwise a 64-bit build silently takes the
+// 32-bit magic bitboard path and computes popcount() from a 16-bit lookup
+// table, in movegen that the whole search runs on.
+#if !defined(IS_64BIT) && (defined(__x86_64__) || defined(__aarch64__) \
+    || (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 8))
+#  define IS_64BIT
+#endif
+
+#if !defined(USE_POPCNT) && defined(__POPCNT__)
+#  define USE_POPCNT
+#endif
+
+// PEXT is opt-in, not implied by __BMI2__. It measured slower than the magic
+// multiply on the machines this engine runs on - its attack tables are larger
+// and cache worse - and it is far slower on Zen 1 and Zen 2, where it is
+// microcoded. Benchmark before turning HIVEMIND_USE_PEXT on.
+#if !defined(USE_PEXT) && defined(HIVEMIND_ENABLE_PEXT)
+#  define USE_PEXT
+#endif
+
 #if defined(USE_POPCNT) && (defined(__INTEL_COMPILER) || defined(_MSC_VER))
 #  include <nmmintrin.h> // Intel and Microsoft header for _mm_popcnt_u64()
 #endif
@@ -819,3 +841,5 @@ constexpr Key make_key(uint64_t seed) {
 } // namespace Stockfish
 
 #endif // #ifndef TYPES_H_INCLUDED
+
+#include "tune.h" // Global visibility to tuning setup

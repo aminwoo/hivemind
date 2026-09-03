@@ -1,11 +1,24 @@
 add_library(Fairy-Stockfish
+    ./src/bitbase.cpp
     ./src/bitboard.cpp
+    ./src/endgame.cpp
+    ./src/evaluate.cpp
+    ./src/material.cpp
     ./src/misc.cpp
     ./src/movegen.cpp
+    ./src/movepick.cpp
     ./src/parser.cpp
+    ./src/pawns.cpp
     ./src/piece.cpp
     ./src/position.cpp
+    ./src/psqt.cpp
     ./src/stubs.cpp
+    ./src/search.cpp
     ./src/thread.cpp
+    ./src/timeman.cpp
+    ./src/tt.cpp
+    ./src/tune.cpp
+    ./src/uci.cpp
+    ./src/ucioption.cpp
     ./src/variant.cpp
 )

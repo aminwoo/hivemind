@@ -49,6 +49,16 @@ RequiredMoveBoard parseRequiredMoveBoard(const std::string& str);
  */
 LogLevel parseLogLevel(const std::string& str);
 
+/**
+ * @brief Initialise the Fairy-Stockfish globals this engine depends on, once.
+ *
+ * Order matters and is upstream's: the option map has to exist before any
+ * Stockfish thread starts, because Thread::idle_loop() reads Options["Threads"]
+ * as its first action, and the piece tables have to be filled before a search
+ * evaluates anything. Safe to call from any entry point; later calls are no-ops.
+ */
+void init_fairy_stockfish();
+
 // Policy index mapping
 extern std::unordered_map<std::string, int> POLICY_INDEX;
 extern int POLICY_TABLE_NORMAL[2][64][64][2];

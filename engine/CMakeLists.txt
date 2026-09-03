@@ -13,6 +13,7 @@ option(HIVEMIND_FAST_BUILD "Favor faster local builds over maximum runtime optim
 option(HIVEMIND_USE_UNITY_BUILD "Enable unity builds for project targets" ON)
 option(HIVEMIND_USE_CCACHE "Use ccache when available" ON)
 option(HIVEMIND_NATIVE_ARCH "Optimize for the build machine's CPU" ON)
+option(HIVEMIND_USE_PEXT "Use BMI2 PEXT for sliding attacks (benchmark first; slower on most CPUs tested)" OFF)
 
 # Set C++ version and optimization level
 set(CMAKE_CXX_STANDARD 23)
@@ -28,6 +29,9 @@ endif()
 
 # Fast local builds trade some runtime optimization for much shorter compile/link times.
 set(HIVEMIND_COMMON_FLAGS "-Wall -DNDEBUG -DNNUE_EMBEDDING_OFF")
+if(HIVEMIND_USE_PEXT)
+    string(APPEND HIVEMIND_COMMON_FLAGS " -DHIVEMIND_ENABLE_PEXT")
+endif()
 if(HIVEMIND_NATIVE_ARCH)
     string(APPEND HIVEMIND_COMMON_FLAGS " -march=native")
 endif()
@@ -50,6 +54,7 @@ set(LIB_SOURCES
     src/nn/engine.cc
     src/nn/onnx_utils.cc
     src/search/agent.cc
+    src/search/mate_probe.cc
     src/search/node.cc
     src/search/searchthread.cc
     src/interface/uci.cc

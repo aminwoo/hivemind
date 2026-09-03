@@ -12,11 +12,7 @@
 class MateDetectionTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        Stockfish::pieceMap.init();
-        Stockfish::variants.init();
-        Stockfish::Bitboards::init();
-        Stockfish::Position::init();
-        Stockfish::Threads.set(1);
+        init_fairy_stockfish();
         init_policy_index();
     }
 };
@@ -917,7 +913,9 @@ TEST_F(MateDetectionTest, ReportedQueenDropE8IsMateInOne) {
         "r1bk1b1r/ppp1p1pp/8/6Nn/B7/2Nn4/PP1B1PPP/5K1R/PPNBRQpbbbq w - - 0 2|"
         "r2qr1k1/p1p1ppP1/2p3nQ/3p2Pp/3P3n/2N1PP2/PPPp3P/R2K2R1/pP w - - 1 2");
 
-    Stockfish::Move qDropE8 = Stockfish::UCI::to_move(*board.pos[BOARD_A], "Q@e8");
+    std::string qDropE8Uci = "Q@e8";
+    Stockfish::Move qDropE8 =
+        Stockfish::UCI::to_move(*board.pos[BOARD_A], qDropE8Uci);
     ASSERT_NE(qDropE8, Stockfish::MOVE_NONE);
 
     board.push_move(BOARD_A, qDropE8);

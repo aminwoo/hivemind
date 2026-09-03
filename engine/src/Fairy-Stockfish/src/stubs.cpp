@@ -1,78 +1,100 @@
-#include "stubs.h"
-#include "types.h"
+/*
+  Stand-ins for the Fairy-Stockfish subsystems this build leaves out.
+
+  hivemind links Fairy-Stockfish for bughouse move generation, evaluation and a
+  bounded mate search. Four of the upstream subsystems cannot be reached from
+  that: NNUE never loads a network (Eval::useNNUE stays false because nothing
+  calls Eval::NNUE::init with a file), Syzygy never has a path so probing stays
+  behind a zero cardinality, and the xboard state machine and its bughouse
+  partner protocol only run under `Protocol xboard`, which hivemind never sets.
+
+  Their call sites are all guarded, so the definitions below exist to satisfy
+  the linker rather than to run. Anything that does reach one is a bug in the
+  guard, so they fail loudly instead of returning a plausible value.
+*/
+
+#include <cassert>
+#include <istream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include "evaluate.h"
+#include "partner.h"
 #include "position.h"
-#include "movegen.h"
-#include <cctype>
+#include "types.h"
+#include "search.h"
+#include "xboard.h"
+#include "syzygy/tbprobe.h"
 
 namespace Stockfish {
 
-Value PieceValue[PHASE_NB][PIECE_NB] = {
-    { VALUE_ZERO, PawnValueMg, KnightValueMg, BishopValueMg, RookValueMg, QueenValueMg },
-    { VALUE_ZERO, PawnValueEg, KnightValueEg, BishopValueEg, RookValueEg, QueenValueEg }
-};
+namespace Eval::NNUE {
 
-Value CapturePieceValue[PHASE_NB][PIECE_NB] = {
-    { VALUE_ZERO, PawnValueMg, KnightValueMg, BishopValueMg, RookValueMg, QueenValueMg },
-    { VALUE_ZERO, PawnValueEg, KnightValueEg, BishopValueEg, RookValueEg, QueenValueEg }
-};
-
-namespace UCI {
-
-std::string move(const Position& pos, Move m) {
-    Square from = from_sq(m);
-    Square to = to_sq(m);
-
-    if (m == MOVE_NONE)
-        return "(none)";
-
-    if (m == MOVE_NULL)
-        return "0000";
-
-    if (is_gating(m) && gating_square(m) == to)
-        from = to_sq(m), to = from_sq(m);
-    else if (type_of(m) == CASTLING && !pos.is_chess960())
-    {
-        to = make_square(to > from ? pos.castling_kingside_file() : pos.castling_queenside_file(), rank_of(from));
-        // If the castling move is ambiguous with a normal king move, switch to 960 notation
-        if (pos.pseudo_legal(make_move(from, to)))
-            to = to_sq(m);
-    }
-
-    std::string moveStr = (type_of(m) == DROP ? std::string{pos.piece_to_char()[dropped_piece_type(m)]} + '@'
-                                              : UCI::square(pos, from)) + UCI::square(pos, to);
-
-    if (type_of(m) == PROMOTION)
-        moveStr += pos.piece_to_char()[make_piece(BLACK, promotion_type(m))];
-    else if (type_of(m) == PIECE_PROMOTION)
-        moveStr += '+';
-    else if (type_of(m) == PIECE_DEMOTION)
-        moveStr += '-';
-    else if (is_gating(m))
-    {
-        moveStr += pos.piece_to_char()[make_piece(BLACK, gating_type(m))];
-        if (gating_square(m) != from)
-            moveStr += UCI::square(pos, gating_square(m));
-    }
-
-    return moveStr;
+// init() and verify() live in evaluate.cpp, which is compiled: they look for a
+// network file, find none, and leave useNNUE false. Only what a loaded network
+// would have provided is stubbed here.
+Value evaluate(const Position&, bool) {
+    assert(false && "NNUE evaluation is not built in");
+    return VALUE_ZERO;
 }
 
-Move to_move(const Position& pos, std::string str) {
-    if (str.length() == 5)
-    {
-        if (str[4] == '=')
-            str.pop_back();
-        else if (str[1] != '@')
-            str[4] = char(tolower(str[4]));
+std::string trace(Position&) { return {}; }
+
+bool load_eval(std::string, std::istream&) { return false; }
+bool save_eval(std::ostream&) { return false; }
+bool save_eval(const std::optional<std::string>&) { return false; }
+
+}  // namespace Eval::NNUE
+
+namespace Tablebases {
+
+// Zero cardinality is what keeps every probe site in the search from running,
+// so init() has nothing to set up and the probes below are unreachable.
+int MaxCardinality = 0;
+
+void init(const std::string&) {}
+
+WDLScore probe_wdl(Position&, ProbeState* result) {
+    if (result) {
+        *result = FAIL;
     }
-
-    for (const auto& m : MoveList<LEGAL>(pos))
-        if (str == UCI::move(pos, m) || (is_pass(m) && str == UCI::square(pos, from_sq(m)) + UCI::square(pos, to_sq(m))))
-            return m;
-
-    return MOVE_NONE;
+    return WDLDraw;
 }
 
-} // namespace UCI
+int probe_dtz(Position&, ProbeState* result) {
+    if (result) {
+        *result = FAIL;
+    }
+    return 0;
+}
 
-} // namespace Stockfish
+bool root_probe(Position&, Search::RootMoves&) { return false; }
+bool root_probe_wdl(Position&, Search::RootMoves&) { return false; }
+
+}  // namespace Tablebases
+
+namespace XBoard {
+
+StateMachine* stateMachine = nullptr;
+
+void StateMachine::ponder() { assert(false && "xboard is not built in"); }
+void StateMachine::do_move(Move) { assert(false && "xboard is not built in"); }
+void StateMachine::process_command(std::string, std::istringstream&) {
+    assert(false && "xboard is not built in");
+}
+
+}  // namespace XBoard
+
+// UCI::loop() offers Stockfish's own `bench` command. hivemind drives its own
+// UCI loop and never calls it, so the benchmark position list is not built in.
+std::vector<std::string> setup_bench(const Position&, std::istream&) { return {}; }
+
+PartnerHandler Partner;
+
+template<PartnerType> void PartnerHandler::ptell(const std::string&) {}
+template void PartnerHandler::ptell<HUMAN>(const std::string&);
+template void PartnerHandler::ptell<FAIRY>(const std::string&);
+template void PartnerHandler::ptell<ALL_PARTNERS>(const std::string&);
+
+}  // namespace Stockfish
