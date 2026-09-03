@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cuda_fp16.h>
+#include "nn/backend_compat.h"
 
 #include "environment/board.h"
 #include "common/utils.h"
@@ -19,4 +19,8 @@
  */
 void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);
 
+#if defined(HIVEMIND_BACKEND_TENSORRT)
+// Distinct overload only when __half is a real half type; on the portable
+// backend it aliases float and this would redeclare the function above.
 void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);
+#endif

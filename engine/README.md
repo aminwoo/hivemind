@@ -1,3 +1,52 @@
+## Inference backends
+
+The engine builds against either of two backends, selected with
+`-DHIVEMIND_BACKEND=`:
+
+| | `tensorrt` (default) | `onnxruntime` |
+|---|---|---|
+| Requires | CUDA 13+, TensorRT 10.14+, NVIDIA GPU | ONNX Runtime |
+| Platforms | Linux + NVIDIA | Linux / macOS / Windows |
+| Precision | FP16 | FP32 |
+| Redistributable size | ~2 GB | ~28 MB |
+
+The TensorRT path is the default and is unchanged — existing build commands
+behave exactly as before. The ONNX Runtime path is opt-in and exists so the
+engine can be built and shipped without CUDA at all.
+
+### Building the portable backend
+
+```bash
+python3 tools/fetch_onnxruntime.py          # ~11 MB, into third_party/
+cmake -S engine -B engine/build-ort -G Ninja \
+    -DHIVEMIND_BACKEND=onnxruntime -DCMAKE_BUILD_TYPE=Release
+cmake --build engine/build-ort -j "$(nproc)"
+```
+
+CMake finds the runtime in `third_party/onnxruntime`; pass
+`-DONNXRuntime_ROOT=<dir>` to use one installed elsewhere.
+
+**Convert the network to FP32 first.** ONNX Runtime's CPU provider has no
+native FP16 kernels and falls back to per-node casts, which is orders of
+magnitude slower — slow enough to look like a hang. The engine refuses an FP16
+network on this backend and points at the converter:
+
+```bash
+python3 engine/scripts/convert_onnx_fp32.py models/hivemind.onnx models/hivemind-fp32.onnx
+./engine/build-ort/hivemind.bin --model models/hivemind-fp32.onnx
+```
+
+The file roughly doubles (27 MB -> 54 MB); that is the cost of portability.
+
+### Building the TensorRT backend
+
+Unchanged from before:
+
+```bash
+cmake --preset ninja-fast \
+    -DTensorRT_DIR=/path/to/TensorRT -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+```
+
 cmake --preset ninja-fast -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-fast -j "$(nproc)"
 ./build-ninja/hivemind \

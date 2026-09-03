@@ -219,3 +219,5 @@ src/training/weights/
 src/training/logs
 src/traininglogs/
 data/
+# Vendored inference runtimes fetched by tools/fetch_onnxruntime.py
+third_party/
