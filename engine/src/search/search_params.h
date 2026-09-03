@@ -334,7 +334,11 @@ constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 5;
  * position then goes to MCTS as usual, where the in-tree solver can still prove
  * the mate.
  */
-constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 100000;
+// Safety net, not the operating limit: MATE_SEARCH_MAX_TIME_PERCENT is what
+// bounds the pre-pass, and this used to bind first and stop a scan with time
+// still on its clock. A root forced-loss proof needing ~4M probes - a
+// cross-board feed mate - fits inside a 10s move and was cut off at 100k.
+constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 10000000;
 
 /// Floor for the scaled budget, so even a very short search still gets a scan.
 constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
@@ -402,7 +406,10 @@ constexpr uint64_t MATE_SEARCH_NODES_PER_SEARCH_NODE = 10;
 // Give a 1-second UCI search the full root-mate budget.  This prevents
 // short searches from falling through to MCTS before the single-board solver
 // has had enough work to prove tactical mates such as Qh5.
-constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 50;
+// Roughly what the scan gets through in a millisecond. At 50 it under-read
+// throughput by ~40x, so the time-scaled budget was far smaller than the
+// window it was scaling.
+constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 2000;
 
 /**
  * A joint proof node can enumerate and apply many board-move combinations,
