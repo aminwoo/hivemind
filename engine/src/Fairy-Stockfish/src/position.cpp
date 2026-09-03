@@ -28,7 +28,9 @@
 #include "movegen.h"
 #include "position.h"
 #include "thread.h"
-#include "stubs.h"
+#include "tt.h"
+#include "uci.h"
+#include "syzygy/tbprobe.h"
 
 using std::string;
 

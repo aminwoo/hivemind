@@ -17,6 +17,7 @@
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
 #include "Fairy-Stockfish/src/types.h"
+#include "Fairy-Stockfish/src/uci.h"
 
 /**
  * @brief Represents a chess board with dual perspectives.

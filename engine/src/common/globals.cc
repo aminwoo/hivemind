@@ -2,6 +2,41 @@
 #include "environment/constants.h"
 #include <string>
 #include <algorithm>
+#include <mutex>
+
+#include "Fairy-Stockfish/src/bitboard.h"
+#include "Fairy-Stockfish/src/position.h"
+#include "Fairy-Stockfish/src/piece.h"
+#include "Fairy-Stockfish/src/psqt.h"
+#include "Fairy-Stockfish/src/search.h"
+#include "Fairy-Stockfish/src/thread.h"
+#include "Fairy-Stockfish/src/tt.h"
+#include "Fairy-Stockfish/src/tune.h"
+#include "Fairy-Stockfish/src/uci.h"
+#include "Fairy-Stockfish/src/variant.h"
+
+void init_fairy_stockfish() {
+    static std::once_flag initialised;
+    std::call_once(initialised, [] {
+        Stockfish::pieceMap.init();
+        Stockfish::variants.init();
+        Stockfish::UCI::init(Stockfish::Options);
+        Stockfish::Tune::init();
+        Stockfish::PSQT::init(Stockfish::variants.find("bughouse")->second);
+        Stockfish::Bitboards::init();
+        Stockfish::Position::init();
+        Stockfish::Bitbases::init();
+        // Endgames::init() is deliberately skipped: it builds its probe
+        // positions through Position::set(code, ...), which resolves the
+        // "fairy" variant this build no longer ships. Material::probe() falls
+        // back to the generic evaluation when the endgame maps are empty, and
+        // no specialised endgame is reachable from a bughouse position anyway.
+        // One idle main thread, plus the single worker the mate probe drives.
+        Stockfish::Threads.set(2);
+        Stockfish::TT.resize(size_t(Stockfish::Options["Hash"]));
+        Stockfish::Search::clear();
+    });
+}
 
 // Global log level (default: no debug output)
 LogLevel g_logLevel = LOG_NONE;

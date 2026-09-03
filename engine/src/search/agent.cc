@@ -1,4 +1,5 @@
 #include "search/agent.h"
+#include "search/mate_probe.h"
 
 #include <algorithm>
 #include <array>
@@ -1129,6 +1130,89 @@ string format_mate_proof_pv(
         lineBoard, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
         boardSearchPlies, formatted);
     return formatted;
+}
+
+/**
+ * @brief Ask Fairy-Stockfish for a single-board mate the check-only scan missed.
+ *
+ * find_root_mate_impl() searches attacker moves that give check, so a mate that
+ * needs a quiet preparing move is invisible to it at any budget. The probe has
+ * no such restriction and shares the model: its bughouse variant lets the
+ * defender block with a piece its partner supplies, the same assumption the
+ * partner-agnostic proofs here already make.
+ *
+ * Restricted to a time-ahead root, and to a board this team is actually on turn
+ * on. Being ahead on time is what denies the opponent the option of sitting
+ * instead of answering on that board, which is the single-board position the
+ * probe searches; the partner board sits, as it must when it is not on turn.
+ *
+ * The probe's own line is kept as text rather than as MateProofPly. It can
+ * contain a block with a piece the defender does not hold yet, which Board
+ * refuses to replay, so only the first move crosses back as a real move.
+ */
+bool probe_single_board_root_mate(
+    Board& board,
+    Stockfish::Color teamSide,
+    int budgetMs,
+    JointActionCandidate& outAction,
+    int& outPlyToMate,
+    string& outPrincipalVariation) {
+    const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamSide,
+                            board.side_to_move(BOARD_B) == ~teamSide};
+    const int probeBoards = onTurn[BOARD_A] + onTurn[BOARD_B];
+    if (probeBoards == 0 || budgetMs <= 0) {
+        return false;
+    }
+
+    int bestBoard = -1;
+    MateProbe::Result best;
+    for (int boardNum : {BOARD_A, BOARD_B}) {
+        if (!onTurn[boardNum]) {
+            continue;
+        }
+        const MateProbe::Result result = MateProbe::probe(
+            board.fen(boardNum),
+            SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES,
+            budgetMs / probeBoards);
+        // A pruned search is not a proof, so the move it names still has to be
+        // one this board accepts before it can become the root action.
+        if (!result.found
+            || result.bestMove == Stockfish::MOVE_NONE
+            || !board.is_legal_move(boardNum, result.bestMove)) {
+            continue;
+        }
+        if (bestBoard < 0 || result.mateInMoves < best.mateInMoves) {
+            bestBoard = boardNum;
+            best = result;
+        }
+    }
+    if (bestBoard < 0) {
+        return false;
+    }
+
+    const JointActionRules rules{
+        onTurn[BOARD_A], onTurn[BOARD_B], true,
+        onTurn[BOARD_A] && board.has_any_legal_move(BOARD_A),
+        onTurn[BOARD_B] && board.has_any_legal_move(BOARD_B)};
+    const bool onBoardA = bestBoard == BOARD_A;
+    outAction = onBoardA
+        ? JointActionCandidate(
+            best.bestMove, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+            rules, board.is_capture(BOARD_A, best.bestMove), false)
+        : JointActionCandidate(
+            Stockfish::MOVE_NONE, 1.0f, 0, best.bestMove, 1.0f, 0,
+            rules, false, board.is_capture(BOARD_B, best.bestMove));
+    outPlyToMate = std::max(1, 2 * best.mateInMoves - 1);
+
+    outPrincipalVariation.clear();
+    for (const string& move : best.principalVariation) {
+        if (!outPrincipalVariation.empty()) {
+            outPrincipalVariation += " ";
+        }
+        outPrincipalVariation +=
+            onBoardA ? "(" + move + ",pass)" : "(pass," + move + ")";
+    }
+    return true;
 }
 
 }  // namespace
@@ -2449,6 +2533,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     bool immediateRootMate = false;
     bool immediateScanComplete = false;
     bool scannedRootMate = false;
+    bool probedRootMate = false;
+    string probePrincipalVariation;
     try {
         cachedRootMate = runRootScan
             && try_reuse_mate_continuation(
@@ -2491,11 +2577,27 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 rootMateBudget, &mateContinuations_, nullptr, true,
                 rootScanDeadline, !immediateScanComplete, false,
                 &rootMatePv);
+
+        // Whatever is left of the pre-pass window goes to the probe, which can
+        // see the quiet preparing moves the check-only scan cannot.
+        if (runRootScan && options.search.enableMateProbe
+            && !cachedRootMate && !immediateRootMate
+            && !scannedRootMate && teamHasTimeAdvantage) {
+            const int probeBudgetMs = rootScanDeadline
+                    != MateSearchBudget::Clock::time_point{}
+                ? static_cast<int>(chrono::duration_cast<chrono::milliseconds>(
+                      rootScanDeadline - chrono::steady_clock::now()).count())
+                : SearchParams::MATE_PROBE_UNTIMED_BUDGET_MS;
+            probedRootMate = probe_single_board_root_mate(
+                *scanBoard, teamSide, probeBudgetMs,
+                rootMateAction, rootMatePly, probePrincipalVariation);
+        }
     } catch (...) {
         halt_workers_after_scan();
         throw;
     }
-    if (cachedRootMate || immediateRootMate || scannedRootMate) {
+    if (cachedRootMate || immediateRootMate || scannedRootMate
+        || probedRootMate) {
         halt_workers_after_scan();
         record_root_scan(true);
         result = rootMateAction;
@@ -2539,8 +2641,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 chrono::steady_clock::now() - searchStart).count());
         if (options.verbose) {
             string bestMoveStr = extract_best_move(board);
-            const string proofPv = format_mate_proof_pv(
-                board, rootMatePv, teamSide, teamHasTimeAdvantage);
+            const string proofPv = probePrincipalVariation.empty()
+                ? format_mate_proof_pv(
+                    board, rootMatePv, teamSide, teamHasTimeAdvantage)
+                : probePrincipalVariation;
             const int mateScore = (rootMatePly + 1) / 2;
             cout << "info depth " << rootMatePly << " score mate " << mateScore
                  << " nodes 1 nps 1000 time 0 pv "
