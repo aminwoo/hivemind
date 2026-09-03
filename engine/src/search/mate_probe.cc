@@ -36,7 +36,8 @@ const Stockfish::Variant* bughouse_variant() {
 
 }  // namespace
 
-Result probe(const std::string& fen, int maxMateMoves, int budgetMs) {
+Result probe(const std::string& fen, int maxMateMoves, int budgetMs,
+             const std::function<bool()>& abort) {
     Result result;
     if (maxMateMoves <= 0 || budgetMs <= 0) {
         return result;
@@ -87,7 +88,8 @@ Result probe(const std::string& fen, int maxMateMoves, int budgetMs) {
         std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
     worker->start_searching();
     while (!Stockfish::Threads.stop) {
-        if (std::chrono::steady_clock::now() >= deadline) {
+        if (std::chrono::steady_clock::now() >= deadline
+            || (abort && abort())) {
             Stockfish::Threads.stop = true;
             break;
         }

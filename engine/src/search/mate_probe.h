@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -53,10 +54,15 @@ struct Result {
  * @param maxMateMoves Stop as soon as a mate in this many attacker moves is
  *        found; the search keeps running while it only finds longer ones.
  * @param budgetMs Wall-clock ceiling for the probe.
+ * @param abort Polled about once a millisecond; the probe returns early when it
+ *        answers true. The caller's own search runs while this one does, so
+ *        without it the probe holds the whole budget after that search has
+ *        already settled the position.
  *
  * Probes are serialized: Fairy-Stockfish keeps its limits, stop flag and
  * transposition table in globals, so only one can be in flight at a time.
  */
-Result probe(const std::string& fen, int maxMateMoves, int budgetMs);
+Result probe(const std::string& fen, int maxMateMoves, int budgetMs,
+             const std::function<bool()>& abort = {});
 
 }  // namespace MateProbe

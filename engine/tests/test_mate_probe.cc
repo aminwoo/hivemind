@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 
 #include "common/globals.h"
@@ -47,6 +48,21 @@ TEST_F(MateProbeTest, ReportsNothingWithoutAMate) {
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1", 4, 500);
     EXPECT_FALSE(result.found);
     EXPECT_TRUE(result.principalVariation.empty());
+}
+
+// The caller's own search runs while the probe does, and the loop that notices
+// it has solved the root only resumes once the probe returns. A probe that
+// ignored the abort would hold its whole budget past the answer.
+TEST_F(MateProbeTest, StopsWhenTheCallerSaysTheAnswerIsIn) {
+    const std::string fen =
+        "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2";
+    const auto started = std::chrono::steady_clock::now();
+    const MateProbe::Result result =
+        MateProbe::probe(fen, 6, 10000, [] { return true; });
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_LT(elapsed, 2000) << "probe ran on past its abort";
+    (void)result;
 }
 
 // The probe holds process-wide Fairy-Stockfish state, so repeated calls have to

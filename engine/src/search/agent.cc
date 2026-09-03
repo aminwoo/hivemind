@@ -1154,6 +1154,7 @@ bool probe_single_board_root_mate(
     Board& board,
     Stockfish::Color teamSide,
     int budgetMs,
+    const std::function<bool()>& abort,
     JointActionCandidate& outAction,
     int& outPlyToMate,
     string& outPrincipalVariation) {
@@ -1167,13 +1168,14 @@ bool probe_single_board_root_mate(
     int bestBoard = -1;
     MateProbe::Result best;
     for (int boardNum : {BOARD_A, BOARD_B}) {
-        if (!onTurn[boardNum]) {
+        if (!onTurn[boardNum] || (abort && abort())) {
             continue;
         }
         const MateProbe::Result result = MateProbe::probe(
             board.fen(boardNum),
             SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES,
-            budgetMs / probeBoards);
+            budgetMs / probeBoards,
+            abort);
         // A pruned search is not a proof, so the move it names still has to be
         // one this board accepts before it can become the root action.
         if (!result.found
@@ -2588,8 +2590,18 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 ? static_cast<int>(chrono::duration_cast<chrono::milliseconds>(
                       rootScanDeadline - chrono::steady_clock::now()).count())
                 : SearchParams::MATE_PROBE_UNTIMED_BUDGET_MS;
+            // The workers are searching the same root while this runs, and
+            // the loop that notices they have solved it does not start until
+            // the scan returns. Without this the probe holds its whole window
+            // after the answer is already in: a mate that MCTS proves in 345ms
+            // was reported at 2000ms on a 10s move.
+            const auto probeSettled = [&] {
+                return !running.load(std::memory_order_acquire)
+                    || (SearchParams::ENABLE_MATE_EARLY_EXIT && rootNode
+                        && rootNode->get_node_type() != NodeType::UNSOLVED);
+            };
             probedRootMate = probe_single_board_root_mate(
-                *scanBoard, teamSide, probeBudgetMs,
+                *scanBoard, teamSide, probeBudgetMs, probeSettled,
                 rootMateAction, rootMatePly, probePrincipalVariation);
         }
     } catch (...) {
