@@ -220,10 +220,10 @@ void Node::configure_root_search(
     const SearchParams::RuntimeConfig& config,
     bool allowProvenLoss) {
     std::unique_lock<std::shared_mutex> guard(nodeMutex);
-    // A side that is behind on time must keep producing its best available
-    // move even after the solver proves that every root action loses. Child
-    // proofs remain active, so the search still avoids losing continuations
-    // while any unresolved alternative exists.
+    // A live partner board may still need a move after the other board is
+    // already mated. In that exceptional root, keep searching even if the
+    // combined position is proven lost. Child proofs remain active, so search
+    // still avoids losing continuations while any alternative is unresolved.
     allowLossProof = allowProvenLoss;
     if (!m_is_expanded.load(std::memory_order_relaxed)) {
         rootGumbelEnabled = config.enableGumbelRootSearch;

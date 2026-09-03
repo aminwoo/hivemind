@@ -57,6 +57,19 @@ struct RootEdgeStats {
     int visits = 0;
 };
 
+/** One joint ply retained from an exact mate proof. */
+struct MateProofPly {
+    Stockfish::Move moveA = Stockfish::MOVE_NONE;
+    Stockfish::Move moveB = Stockfish::MOVE_NONE;
+};
+
+/** Exact opponent-mate proof for one legal action at the current root. */
+struct RootLossProof {
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::vector<MateProofPly> principalVariation;
+};
+
 /**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
  *
@@ -125,12 +138,11 @@ private:
     /**
      * Root pre-pass accounting.
      *
-     * The winning-mate scan runs inside the move time, bounded by
-     * MATE_SEARCH_MAX_TIME_PERCENT, and returns immediately once it proves a
-     * winning action. A down-time team deliberately skips the loss proof: even
-     * in a game-theoretic loss, each seat should keep playing its strongest
-     * move. The cost and hit rate are accumulated here so the trade can be read
-     * off real games at real time controls.
+     * The winning-mate and reverse-loss scans run inside the move time, bounded
+     * by MATE_SEARCH_MAX_TIME_PERCENT. Reverse proofs are also attached to
+     * individual root actions, so a proof can prevent a blunder even when the
+     * whole position is not proven lost. The cost and whole-root hit rate are
+     * accumulated here so the trade can be read off real games.
      */
     struct RootScanStats {
         uint64_t searches = 0;
@@ -286,6 +298,19 @@ public:
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
         MateSearchBudget::Clock::time_point deadline = {});
+
+    /**
+     * @brief Proves losing root actions individually.
+     *
+     * Every proven action is stored in outProofs even when another legal
+     * action refutes a whole-root loss. Returns true only when every legal root
+     * action was proven losing; budget exhaustion remains conservative.
+     */
+    static bool find_root_loss_proofs(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        std::vector<RootLossProof>& outProofs,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
     
     /**
      * @brief Extracts PV line starting from a specific child index.
@@ -294,7 +319,9 @@ public:
      * @param maxDepth Maximum number of moves to extract in the PV.
      * @return Space-separated sequence of joint moves.
      */
-    std::string extract_pv_from_child(Board& board, int childIdx, int maxDepth);
+    std::string extract_pv_from_child(
+        Board& board, int childIdx, int maxDepth,
+        Stockfish::Color rootTeam, bool rootTeamHasTimeAdvantage);
 
     /**
      * @brief Extracts the best move from the root node after search.
@@ -409,7 +436,8 @@ private:
         Stockfish::Move& outMove, int& outPlyToMate,
         MateSearchBudget* budget,
         std::vector<MateContinuation>* continuations,
-        bool partnerBoardAgnostic = false);
+        bool partnerBoardAgnostic = false,
+        std::vector<MateProofPly>* outPrincipalVariation = nullptr);
     static bool find_root_mate_impl(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         JointActionCandidate& outAction, int& outPlyToMate,
@@ -418,6 +446,8 @@ private:
         MateSearchBudget* hardBudget = nullptr,
         bool includeCaptureFeeds = true,
         MateSearchBudget::Clock::time_point deadline = {},
-        bool includeImmediateMate = true);
+        bool includeImmediateMate = true,
+        bool attackerWinsMateRace = false,
+        std::vector<MateProofPly>* outPrincipalVariation = nullptr);
     
 };

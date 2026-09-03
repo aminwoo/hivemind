@@ -41,7 +41,12 @@ std::vector<Stockfish::Move> immediate_mates_on_board(
 bool has_unavoidable_waiting_board_mate(Board& board,
                                         Stockfish::Color teamToPlay,
                                         bool teamToPlayHasTimeAdvantage,
-                                        const std::array<int, 2>& boardSearchPlies) {
+                                        bool waitingMateWinsRace,
+                                        const std::array<int, 2>& boardSearchPlies,
+                                        WaitingMateContinuation* continuation) {
+    if (continuation) {
+        *continuation = {};
+    }
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamToPlay;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamToPlay;
     if (boardAOnTurn == boardBOnTurn) {
@@ -64,17 +69,22 @@ bool has_unavoidable_waiting_board_mate(Board& board,
         return false;
     }
 
+    WaitingMateContinuation representative;
+    bool hasRepresentative = false;
     for (Stockfish::Move reply : replies) {
         if (reply != Stockfish::MOVE_NONE) {
             board.push_move(activeBoard, reply);
         }
 
         bool matePersists = false;
+        Stockfish::Move persistentMate = Stockfish::MOVE_NONE;
         std::array<int, 2> replySearchPlies = boardSearchPlies;
         if (reply != Stockfish::MOVE_NONE) {
             ++replySearchPlies[activeBoard];
         }
-        if (!board.is_checkmate(~teamToPlay, !teamToPlayHasTimeAdvantage)
+        if ((waitingMateWinsRace
+             || !board.is_checkmate(
+                 ~teamToPlay, !teamToPlayHasTimeAdvantage))
             && !board.is_draw(replySearchPlies)) {
             for (Stockfish::Move matingMove : matingMoves) {
                 if (!board.is_legal_move(waitingBoard, matingMove)) {
@@ -85,6 +95,7 @@ bool has_unavoidable_waiting_board_mate(Board& board,
                     teamToPlay, teamToPlayHasTimeAdvantage);
                 board.pop_move(waitingBoard);
                 if (matePersists) {
+                    persistentMate = matingMove;
                     break;
                 }
             }
@@ -96,6 +107,14 @@ bool has_unavoidable_waiting_board_mate(Board& board,
         if (!matePersists) {
             return false;
         }
+        if (!hasRepresentative) {
+            representative = {
+                activeBoard, reply, waitingBoard, persistentMate};
+            hasRepresentative = true;
+        }
+    }
+    if (continuation && hasRepresentative) {
+        *continuation = representative;
     }
     return true;
 }
@@ -109,7 +128,11 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              const std::array<int, 2>& boardSearchPlies,
                                              int* endInPly,
                                              bool partnerBoardAgnostic,
-                                             bool allowMatedTeamToMove) {
+                                             bool allowMatedTeamToMove,
+                                             WaitingMateContinuation* waitingMate) {
+    if (waitingMate) {
+        *waitingMate = {};
+    }
     if (endInPly) {
         *endInPly = 0;
     }
@@ -150,7 +173,8 @@ TerminalOutcome classify_terminal_position(Board& board,
         && (boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
         && has_unavoidable_waiting_board_mate(
             board, teamToPlay, teamToPlayHasTimeAdvantage,
-            boardSearchPlies)) {
+            teamToPlay == rootTeam,
+            boardSearchPlies, waitingMate)) {
         if (endInPly) {
             // One forced reply, then the opponent's mating move. Terminal
             // nodes use distance 1, so this position is three solver plies out.
@@ -168,11 +192,12 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              int searchPly,
                                              int* endInPly,
                                              bool partnerBoardAgnostic,
-                                             bool allowMatedTeamToMove) {
+                                             bool allowMatedTeamToMove,
+                                             WaitingMateContinuation* waitingMate) {
     return classify_terminal_position(
         board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
         {searchPly, searchPly}, endInPly, partnerBoardAgnostic,
-        allowMatedTeamToMove);
+        allowMatedTeamToMove, waitingMate);
 }
 
 SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {

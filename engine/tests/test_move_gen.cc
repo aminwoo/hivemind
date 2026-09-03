@@ -58,6 +58,18 @@ public:
             board, teamSide, teamHasTimeAdvantage, action, plyToMate);
     }
 
+    static bool find_root_mate_with_pv(
+        Board& board, Stockfish::Color teamSide,
+        bool teamHasTimeAdvantage, JointActionCandidate& action,
+        int& plyToMate,
+        std::vector<MateProofPly>& principalVariation) {
+        return Agent::find_root_mate_impl(
+            board, teamSide, teamHasTimeAdvantage, action, plyToMate,
+            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            Agent::MateSearchBudget::Clock::time_point{}, true, false,
+            &principalVariation);
+    }
+
     static std::string format_root_aware_uci_score(
         const std::shared_ptr<Node>& root,
         const std::shared_ptr<Node>& pvChild,
@@ -684,10 +696,24 @@ TEST_F(EngineTest, ClassifiesUnavoidableWaitingBoardMateAsLoss) {
     const std::string fenB = board.fen(BOARD_B);
     const uint64_t hash = board.hash_key(false);
     int endInPly = 0;
+    WaitingMateContinuation continuation;
     EXPECT_EQ(classify_terminal_position(
-                  board, Stockfish::BLACK, Stockfish::BLACK, false, 2, &endInPly),
+                  board, Stockfish::BLACK, Stockfish::BLACK, false, 2,
+                  &endInPly, false, false, &continuation),
               TerminalOutcome::LOSS);
     EXPECT_EQ(endInPly, 3);
+    ASSERT_GE(continuation.activeBoard, 0);
+    ASSERT_GE(continuation.waitingBoard, 0);
+    ASSERT_NE(continuation.matingMove, Stockfish::MOVE_NONE);
+    if (continuation.reply != Stockfish::MOVE_NONE) {
+        board.push_move(continuation.activeBoard, continuation.reply);
+    }
+    board.push_move(continuation.waitingBoard, continuation.matingMove);
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+    board.pop_move(continuation.waitingBoard);
+    if (continuation.reply != Stockfish::MOVE_NONE) {
+        board.pop_move(continuation.activeBoard);
+    }
     EXPECT_EQ(board.fen(BOARD_A), fenA);
     EXPECT_EQ(board.fen(BOARD_B), fenB);
     EXPECT_EQ(board.hash_key(false), hash);
@@ -720,6 +746,28 @@ TEST_F(EngineTest, BlockedWaitingBoardMateIsNotClassifiedAsLoss) {
     EXPECT_EQ(classify_terminal_position(
                   board, Stockfish::BLACK, Stockfish::BLACK, false, 2),
               TerminalOutcome::NONE);
+}
+
+TEST_F(EngineTest, WaitingBoardMateOutrunsActiveBoardMate) {
+    Board board;
+    board.set(
+        "r1bq1b1r/ppp1k1pp/2Bppn2/2B1N3/3Pp3/2N5/PPP2PPP/R1BbK2R[QPBqnn] w - - 0 1"
+        "|"
+        "r1b1k2r/p4ppp/2p1pP2/3p4/8/4PN2/PPPn1PPP/RN2K2R[Qp] w - - 0 1");
+
+    ASSERT_EQ(board.side_to_move(BOARD_A), Stockfish::WHITE);
+    ASSERT_EQ(board.side_to_move(BOARD_B), Stockfish::WHITE);
+    ASSERT_TRUE(board.is_legal_move(
+        BOARD_A, find_move(board, BOARD_A, "Q@f7")));
+    ASSERT_TRUE(board.is_legal_move(
+        BOARD_B, find_move(board, BOARD_B, "Q@e7")));
+
+    for (bool rootTeamHasTimeAdvantage : {false, true}) {
+        EXPECT_EQ(classify_terminal_position(
+                      board, Stockfish::BLACK, Stockfish::BLACK,
+                      rootTeamHasTimeAdvantage, 2),
+                  TerminalOutcome::LOSS);
+    }
 }
 
 TEST_F(EngineTest, WaitingBoardMateRequiresSplitTurns) {
@@ -1874,7 +1922,7 @@ TEST(MctsSolverTest, ProvenLossKeepsBestSearchedMoveInsteadOfDelayingMate) {
     EXPECT_EQ(parent.get_best_move_idx_with_q_weight(), 0);
 }
 
-TEST(MctsSolverTest, DownTimeRootRemainsSearchableAfterProvenLoss) {
+TEST(MctsSolverTest, LivePartnerRootRemainsSearchableAfterProvenLoss) {
     Node parent(Stockfish::WHITE);
     const std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2)};
@@ -2292,6 +2340,49 @@ TEST_F(EngineTest, TreeReuseRejectsUnrelatedPositionAtSameDepth) {
                       Stockfish::BLACK, !teamHasTimeAdvantage), Stockfish::BLACK,
                   Agent::board_signature(elsewhere)),
               nullptr);
+}
+
+TEST_F(EngineTest, CaptureFeedRootMateReportsWholeProofLine) {
+    Board board;
+    board.set(
+        "4rk2/1pp2ppp/1pp2b2/8/2P3B1/7P/PPP2PPP/4R1K1[] w - - 0 1"
+        "|"
+        "r2qnrk1/pp3ppp/2np2Bb/3NpPb1/3n1p2/3BpN1P/PPPB1PPP/R2Q1RK1"
+        "[QRNNqrbn] b - - 0 1");
+
+    JointActionCandidate rootAction;
+    int rootPlyToMate = 0;
+    std::vector<MateProofPly> principalVariation;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_with_pv(
+        board, Stockfish::WHITE, true, rootAction, rootPlyToMate,
+        principalVariation));
+    ASSERT_EQ(rootAction.moveA, Stockfish::MOVE_NONE);
+    ASSERT_EQ(board.uci_move(BOARD_B, rootAction.moveB), "d4f3");
+    ASSERT_EQ(rootPlyToMate, 7);
+
+    // The capture only feeds the mate. A proof line that stopped at the
+    // capture would report a lone quiet-looking move as the whole mate.
+    ASSERT_EQ(principalVariation.size(), static_cast<size_t>(rootPlyToMate));
+    EXPECT_EQ(principalVariation.front().moveA, rootAction.moveA);
+    EXPECT_EQ(principalVariation.front().moveB, rootAction.moveB);
+
+    Board line(board);
+    for (size_t ply = 0; ply < principalVariation.size(); ++ply) {
+        const MateProofPly& step = principalVariation[ply];
+        ASSERT_TRUE(step.moveA != Stockfish::MOVE_NONE
+                    || step.moveB != Stockfish::MOVE_NONE)
+            << "both boards pass at ply " << ply;
+        if (step.moveA != Stockfish::MOVE_NONE) {
+            ASSERT_TRUE(line.is_legal_move(BOARD_A, step.moveA))
+                << "illegal Board A move at ply " << ply;
+        }
+        if (step.moveB != Stockfish::MOVE_NONE) {
+            ASSERT_TRUE(line.is_legal_move(BOARD_B, step.moveB))
+                << "illegal Board B move at ply " << ply;
+        }
+        line.make_moves(step.moveA, step.moveB);
+    }
+    EXPECT_TRUE(line.is_checkmate(Stockfish::BLACK, false));
 }
 
 TEST_F(EngineTest, RootMateProofRetainsEveryDefenderContinuation) {
@@ -3392,6 +3483,87 @@ TEST_F(EngineTest, RootForcedLossScanProvesEveryDefenseAndSelectsDelay) {
     EXPECT_FALSE(Agent::find_root_forced_loss(
         safePosition, Stockfish::WHITE, true,
         falseLossAction, falseLossPly, 2000));
+}
+
+TEST_F(EngineTest, RootLossScanRetainsLosingActionWhenAnotherIsUnproven) {
+    Board board;
+    board.set(
+        "5rk1/ppp2ppp/8/2b5/3q1B2/3r1BP1/P4PP1/1R3RK1 w - - 0 1"
+        "|"
+        "rnbqkb1R/ppp1ppp1/6p1/3pN1p1/3Pn3/5Nb1/PPP1P1PK/R1BQ1B2 w - - 0 1");
+    const std::string originalFenA = board.fen(BOARD_A);
+    const std::string originalFenB = board.fen(BOARD_B);
+
+    std::vector<RootLossProof> proofs;
+    EXPECT_FALSE(Agent::find_root_loss_proofs(
+        board, Stockfish::BLACK, false, proofs, 40000));
+
+    ASSERT_EQ(proofs.size(), 1);
+    EXPECT_EQ(proofs[0].action.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(proofs[0].action.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, proofs[0].action.moveB), "h2g1");
+    EXPECT_GT(proofs[0].plyToMate, 0);
+    EXPECT_EQ(board.fen(BOARD_A), originalFenA);
+    EXPECT_EQ(board.fen(BOARD_B), originalFenB);
+
+    Board swapped;
+    swapped.set(originalFenB + "|" + originalFenA);
+    proofs.clear();
+    EXPECT_FALSE(Agent::find_root_loss_proofs(
+        swapped, Stockfish::WHITE, false, proofs, 40000));
+    ASSERT_EQ(proofs.size(), 1);
+    ASSERT_NE(proofs[0].action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(swapped.uci_move(BOARD_A, proofs[0].action.moveA), "h2g1");
+    EXPECT_EQ(proofs[0].action.moveB, Stockfish::MOVE_NONE);
+}
+
+TEST_F(EngineTest, RootLossScanRespectsImmediateCaptureFeedMateRace) {
+    Board board;
+    board.set(
+        "r1bq1b1r/ppp1k1pp/2B1pn2/2B1N3/3Pp3/2N5/PPP2PPP/R1BbK2R[PBqnnp] b - - 0 1"
+        "|"
+        "r1b1k2r/p4ppp/2p1pP2/3p4/4n3/4PN2/PPPQ1PPP/RN2K2R[Qp] b - - 0 1");
+
+    for (bool teamHasTimeAdvantage : {false, true}) {
+        std::vector<RootLossProof> proofs;
+        Agent::find_root_loss_proofs(
+            board, Stockfish::BLACK, teamHasTimeAdvantage,
+            proofs, 100000);
+
+        std::set<std::string> losingMoves;
+        for (const RootLossProof& proof : proofs) {
+            if (proof.action.moveA != Stockfish::MOVE_NONE) {
+                losingMoves.insert(board.uci_move(
+                    BOARD_A, proof.action.moveA));
+            }
+        }
+        EXPECT_TRUE(losingMoves.contains("P@d6"));
+        EXPECT_TRUE(losingMoves.contains("N@d6"));
+        EXPECT_TRUE(losingMoves.contains("Q@d6"));
+        EXPECT_FALSE(losingMoves.contains("d8d6"));
+    }
+}
+
+TEST_F(EngineTest, RootLossScanRejectsQueenPromotionBeforePartnerMate) {
+    Board board;
+    board.set(
+        "rn1q4/ppp1k1Pp/4p2P/3p2N1/2qP1B1P/2N1P3/PP1K1PP1/R6R[PBNrnbpppp] w - - 0 1"
+        "|"
+        "3r2k1/pPNbBpp1/4pn1r/8/3Pb1n1/4P2b/PP3Q1P/2R2BK1[RQpp] w - - 0 1");
+
+    for (bool teamHasTimeAdvantage : {false, true}) {
+        std::vector<RootLossProof> proofs;
+        Agent::find_root_loss_proofs(
+            board, Stockfish::BLACK, teamHasTimeAdvantage,
+            proofs, 100000);
+
+        EXPECT_TRUE(std::any_of(
+            proofs.begin(), proofs.end(), [&](const RootLossProof& proof) {
+                return proof.action.moveA == Stockfish::MOVE_NONE
+                    && proof.action.moveB != Stockfish::MOVE_NONE
+                    && board.uci_move(BOARD_B, proof.action.moveB) == "b7b8q";
+            }));
+    }
 }
 
 TEST_F(EngineTest, RootMateScanFindsDownTimeCaptureFeedMateInOne) {

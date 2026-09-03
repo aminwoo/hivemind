@@ -731,6 +731,8 @@ public:
 
     /**
      * @brief Configure a newly created or reused node as this search's root.
+     * @param allowProvenLoss False only when another live board must keep
+     * searching after its partner board has already been mated.
      */
     void configure_root_search(
         const SearchParams::RuntimeConfig& config,

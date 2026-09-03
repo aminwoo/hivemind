@@ -22,6 +22,14 @@ enum class TerminalOutcome : uint8_t {
     DRAW,
 };
 
+/** One representative reply-and-mate suffix for a waiting-board mate proof. */
+struct WaitingMateContinuation {
+    int activeBoard = -1;
+    Stockfish::Move reply = Stockfish::MOVE_NONE;
+    int waitingBoard = -1;
+    Stockfish::Move matingMove = Stockfish::MOVE_NONE;
+};
+
 /**
  * @param partnerBoardAgnostic Classify without reading the waiting board:
  *        assume every interposable check can be blocked with a piece from the
@@ -41,7 +49,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              const std::array<int, 2>& boardSearchPlies,
                                              int* endInPly = nullptr,
                                              bool partnerBoardAgnostic = false,
-                                             bool allowMatedTeamToMove = false);
+                                             bool allowMatedTeamToMove = false,
+                                             WaitingMateContinuation* waitingMate = nullptr);
 
 TerminalOutcome classify_terminal_position(Board& board,
                                              Stockfish::Color teamToPlay,
@@ -50,7 +59,8 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              int searchPly,
                                              int* endInPly = nullptr,
                                              bool partnerBoardAgnostic = false,
-                                             bool allowMatedTeamToMove = false);
+                                             bool allowMatedTeamToMove = false,
+                                             WaitingMateContinuation* waitingMate = nullptr);
 
 /**
  * @brief Entry in an MCTS selection trajectory.
