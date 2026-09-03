@@ -361,6 +361,35 @@ constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
 // it whatever is left of MATE_SEARCH_MAX_TIME_PERCENT instead.
 constexpr int MATE_PROBE_UNTIMED_BUDGET_MS = 500;
 
+// Longest mate the probe will stop for, and accept. It doubles as an evidence
+// bound: a mate this short out of a pruned search is worth collapsing the root
+// onto, where the mate in 32 at depth 63 that an unbounded probe once returned
+// inside 400ms is not.
+constexpr int MATE_PROBE_MAX_MATE_MOVES = 16;
+
+// Answer the capture-feed scan's single-board mate question with
+// Fairy-Stockfish instead of the checks-only scan.
+//
+// Off, measured. The feed scan keeps a candidate capture only when every
+// opponent reply comes back "mated", so it needs verdicts that are exhaustive
+// rather than merely deeper. The checks-only scan is restricted but complete
+// within its restriction; a bounded Fairy-Stockfish search reports "no mate
+// found" where it means "not yet", and one such reply discards the candidate.
+// It is faster where it does apply - the suite's first position proves in 937ms
+// against 1730ms - but costs 3 to 4 of 36 suite matches, equally at 2000, 6000
+// and 20000 nodes per question, so it is not a budget problem. The shape that
+// would fit is a hybrid: checks-only for the per-reply verdicts, and this only
+// for the candidate that survives them.
+constexpr bool ENABLE_STOCKFISH_MATE_SEARCH = false;
+
+// Per-question ceiling for that probe, in the scan's own node currency, plus a
+// wall-clock backstop.
+constexpr uint64_t MATE_PROBE_FEED_NODE_BUDGET = 20000;
+constexpr int MATE_PROBE_FEED_MAX_MS = 40;
+
+// The root probe asks one question per board per search, so it may spend more.
+constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 8000000;
+
 // The probe answers with a searched mate score rather than an exact proof, and
 // it is the one part of the pre-pass that can be switched off without giving up
 // the check-only scans, so it gets its own flag.

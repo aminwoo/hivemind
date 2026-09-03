@@ -436,6 +436,7 @@ bool Agent::search_single_board_forced_mate(
         outMove, outPlyToMate, budget, nullptr, partnerBoardAgnostic);
 }
 
+
 bool Agent::search_single_board_forced_mate_impl(
     Board& board,
     int boardNum,
@@ -1153,6 +1154,7 @@ string format_mate_proof_pv(
 bool probe_single_board_root_mate(
     Board& board,
     Stockfish::Color teamSide,
+    bool teamHasTimeAdvantage,
     int budgetMs,
     const std::function<bool()>& abort,
     JointActionCandidate& outAction,
@@ -1160,6 +1162,16 @@ bool probe_single_board_root_mate(
     string& outPrincipalVariation) {
     const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamSide,
                             board.side_to_move(BOARD_B) == ~teamSide};
+    // Sitting out the partner board is what makes a single-board mate line
+    // playable here. Being time-ahead is one way to earn that, but a partner
+    // board that is not on turn sits anyway, and a capture buys the pass too.
+    const auto pass_is_legal = [&](int boardNum, Stockfish::Move move) {
+        const int partner = 1 - boardNum;
+        return !onTurn[partner]
+            || is_single_pass_legal(teamHasTimeAdvantage, onTurn[BOARD_A],
+                                    onTurn[BOARD_B],
+                                    board.is_capture(boardNum, move));
+    };
     const int probeBoards = onTurn[BOARD_A] + onTurn[BOARD_B];
     if (probeBoards == 0 || budgetMs <= 0) {
         return false;
@@ -1172,15 +1184,15 @@ bool probe_single_board_root_mate(
             continue;
         }
         const MateProbe::Result result = MateProbe::probe(
-            board.fen(boardNum),
-            SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES,
-            budgetMs / probeBoards,
-            abort);
+            board.fen(boardNum), SearchParams::MATE_PROBE_MAX_MATE_MOVES,
+            SearchParams::MATE_PROBE_ROOT_NODE_BUDGET,
+            budgetMs / probeBoards, abort);
         // A pruned search is not a proof, so the move it names still has to be
         // one this board accepts before it can become the root action.
         if (!result.found
             || result.bestMove == Stockfish::MOVE_NONE
-            || !board.is_legal_move(boardNum, result.bestMove)) {
+            || !board.is_legal_move(boardNum, result.bestMove)
+            || !pass_is_legal(boardNum, result.bestMove)) {
             continue;
         }
         if (bestBoard < 0 || result.mateInMoves < best.mateInMoves) {
@@ -1193,7 +1205,7 @@ bool probe_single_board_root_mate(
     }
 
     const JointActionRules rules{
-        onTurn[BOARD_A], onTurn[BOARD_B], true,
+        onTurn[BOARD_A], onTurn[BOARD_B], teamHasTimeAdvantage,
         onTurn[BOARD_A] && board.has_any_legal_move(BOARD_A),
         onTurn[BOARD_B] && board.has_any_legal_move(BOARD_B)};
     const bool onBoardA = bestBoard == BOARD_A;
@@ -1648,6 +1660,12 @@ bool Agent::find_root_mate_impl(
         // candidate list below rather than inside a single candidate, so a
         // candidate can never spend its direction's whole budget on a deep
         // refutation before its neighbours have been tried at all.
+        // The cross-board structure stays here - which capture feeds which
+        // board, and every reply that has to be answered - but the single-board
+        // question it asks at each leaf goes to Fairy-Stockfish, which is not
+        // restricted to checking moves and so sees the feed mates that need a
+        // quiet move. The probe is billed in the same node currency, so the
+        // scan's own budget still terminates it.
         auto probe_single_board_mate = [&](
             int boardNum, Stockfish::Color attacker,
             Stockfish::Move& mateMove, int& matePly,
@@ -1657,12 +1675,39 @@ bool Agent::find_root_mate_impl(
             std::vector<MateProofPly>* line = nullptr) {
             mateMove = Stockfish::MOVE_NONE;
             matePly = 0;
-            return attackerMoveLimit > 0
-                && search_single_board_forced_mate_impl(
-                    board, boardNum, attacker, 1, attackerMoveLimit,
-                    mateMove, matePly, &feedBudget,
-                    partnerBoardAgnostic ? nullptr : continuations,
-                    partnerBoardAgnostic, line);
+            if (attackerMoveLimit <= 0) {
+                return false;
+            }
+            if (SearchParams::ENABLE_STOCKFISH_MATE_SEARCH) {
+                if (feedBudget.exhausted || feedBudget.out_of_time()) {
+                    return false;
+                }
+                const MateProbe::Result probed = MateProbe::probe(
+                    board.fen(boardNum), attackerMoveLimit,
+                    std::min<uint64_t>(
+                        feedBudget.remainingNodes,
+                        SearchParams::MATE_PROBE_FEED_NODE_BUDGET),
+                    SearchParams::MATE_PROBE_FEED_MAX_MS);
+                feedBudget.consume_bulk(probed.nodes);
+                if (!probed.found
+                    || probed.bestMove == Stockfish::MOVE_NONE
+                    || !board.is_legal_move(boardNum, probed.bestMove)) {
+                    return false;
+                }
+                mateMove = probed.bestMove;
+                matePly = std::max(1, 2 * probed.mateInMoves - 1);
+                // The probe's line can hold a partner-supplied drop that Board
+                // refuses to replay, so the caller gets the move and no line.
+                if (line) {
+                    line->clear();
+                }
+                return true;
+            }
+            return search_single_board_forced_mate_impl(
+                board, boardNum, attacker, 1, attackerMoveLimit,
+                mateMove, matePly, &feedBudget,
+                partnerBoardAgnostic ? nullptr : continuations,
+                partnerBoardAgnostic, line);
         };
 
         // Once the capture and the reply are made, the target board is the
@@ -2582,6 +2627,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
         // Whatever is left of the pre-pass window goes to the probe, which can
         // see the quiet preparing moves the check-only scan cannot.
+        // Only a time-ahead root, even though pass_is_legal() would accept
+        // more: the probe spends the rest of the pre-pass window, and on an
+        // even clock that window is what find_root_loss_proofs() needs.
         if (runRootScan && options.search.enableMateProbe
             && !cachedRootMate && !immediateRootMate
             && !scannedRootMate && teamHasTimeAdvantage) {
@@ -2601,7 +2649,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         && rootNode->get_node_type() != NodeType::UNSOLVED);
             };
             probedRootMate = probe_single_board_root_mate(
-                *scanBoard, teamSide, probeBudgetMs, probeSettled,
+                *scanBoard, teamSide, teamHasTimeAdvantage, probeBudgetMs,
+                probeSettled,
                 rootMateAction, rootMatePly, probePrincipalVariation);
         }
     } catch (...) {

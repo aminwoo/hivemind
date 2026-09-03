@@ -260,6 +260,20 @@ public:
             return true;
         }
 
+        /// Charge a whole sub-search to this budget in one go.
+        ///
+        /// A Fairy-Stockfish probe answers in its own node count rather than
+        /// one probe at a time, so it is billed after the fact. The budget can
+        /// go to zero but not below, and a probe that emptied it exhausts it.
+        void consume_bulk(uint64_t nodes) {
+            if (nodes >= remainingNodes) {
+                remainingNodes = 0;
+                exhausted = true;
+                return;
+            }
+            remainingNodes -= nodes;
+        }
+
         /// Stop condition for loops that do not consume node probes.
         bool out_of_time() const {
             return deadline != Clock::time_point{} && Clock::now() >= deadline;

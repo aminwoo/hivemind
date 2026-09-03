@@ -24,10 +24,15 @@ TEST_F(MateProbeTest, FindsAMateThatNeedsAQuietMove) {
     const std::string fen =
         "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2";
 
-    const MateProbe::Result result = MateProbe::probe(fen, 6, 3000);
+    // A generous budget the probe should not need: it returns on the first
+    // mate it proves rather than spending what is left shortening it.
+    const auto started = std::chrono::steady_clock::now();
+    const MateProbe::Result result = MateProbe::probe(fen, 16, 8000000, 10000);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
     ASSERT_TRUE(result.found);
+    EXPECT_LT(elapsed, 2000) << "probe kept searching after proving a mate";
     EXPECT_GE(result.mateInMoves, 1);
-    EXPECT_LE(result.mateInMoves, 6);
     ASSERT_FALSE(result.principalVariation.empty());
 
     // The move handed back is the one hivemind would play, so it has to be
@@ -45,7 +50,7 @@ TEST_F(MateProbeTest, FindsAMateThatNeedsAQuietMove) {
 // A quiet position with no mate must come back empty rather than guessing.
 TEST_F(MateProbeTest, ReportsNothingWithoutAMate) {
     const MateProbe::Result result = MateProbe::probe(
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1", 4, 500);
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1", 16, 8000000, 500);
     EXPECT_FALSE(result.found);
     EXPECT_TRUE(result.principalVariation.empty());
 }
@@ -58,7 +63,7 @@ TEST_F(MateProbeTest, StopsWhenTheCallerSaysTheAnswerIsIn) {
         "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2";
     const auto started = std::chrono::steady_clock::now();
     const MateProbe::Result result =
-        MateProbe::probe(fen, 6, 10000, [] { return true; });
+        MateProbe::probe(fen, 16, 8000000, 10000, [] { return true; });
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
     EXPECT_LT(elapsed, 2000) << "probe ran on past its abort";
@@ -71,7 +76,7 @@ TEST_F(MateProbeTest, RepeatedProbesStaySound) {
     const std::string fen =
         "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2";
     for (int attempt = 0; attempt < 3; ++attempt) {
-        const MateProbe::Result result = MateProbe::probe(fen, 6, 1000);
+        const MateProbe::Result result = MateProbe::probe(fen, 16, 8000000, 1000);
         EXPECT_TRUE(result.found) << "attempt " << attempt;
     }
 }

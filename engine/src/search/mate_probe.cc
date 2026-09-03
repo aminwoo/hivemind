@@ -29,6 +29,10 @@ std::mutex probeMutex;
 // silently and is stopped from here instead.
 constexpr size_t PROBE_THREAD_INDEX = 1;
 
+// Roughly what the probe searches in a millisecond, so a budget below this is
+// polled by yielding instead of sleeping.
+constexpr uint64_t NODES_PER_SLEEP = 4000;
+
 const Stockfish::Variant* bughouse_variant() {
     const auto entry = Stockfish::variants.find("bughouse");
     return entry == Stockfish::variants.end() ? nullptr : entry->second;
@@ -36,10 +40,10 @@ const Stockfish::Variant* bughouse_variant() {
 
 }  // namespace
 
-Result probe(const std::string& fen, int maxMateMoves, int budgetMs,
-             const std::function<bool()>& abort) {
+Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
+             int budgetMs, const std::function<bool()>& abort) {
     Result result;
-    if (maxMateMoves <= 0 || budgetMs <= 0) {
+    if (maxMateMoves <= 0 || budgetMs <= 0 || nodeBudget == 0) {
         return result;
     }
 
@@ -69,6 +73,9 @@ Result probe(const std::string& fen, int maxMateMoves, int budgetMs,
         return result;
     }
 
+    // Thread::search() ends an iteration as soon as it holds a mate inside
+    // 2 * Limits.mate plies, so this is what stops the probe on the first mate
+    // worth having rather than leaving it to hunt for a shorter one.
     Stockfish::Search::LimitsType limits;
     limits.startTime = Stockfish::now();
     limits.mate = maxMateMoves;
@@ -88,14 +95,24 @@ Result probe(const std::string& fen, int maxMateMoves, int budgetMs,
         std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
     worker->start_searching();
     while (!Stockfish::Threads.stop) {
-        if (std::chrono::steady_clock::now() >= deadline
+        if (worker->nodes.load(std::memory_order_relaxed) >= nodeBudget
+            || std::chrono::steady_clock::now() >= deadline
             || (abort && abort())) {
             Stockfish::Threads.stop = true;
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Small node budgets are spent in well under a millisecond, so yield
+        // rather than sleep and keep the overshoot to the scheduler's mercy.
+        if (nodeBudget <= NODES_PER_SLEEP) {
+            std::this_thread::yield();
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
     worker->wait_for_search_finished();
+
+    result.depth = worker->completedDepth;
+    result.nodes = worker->nodes.load(std::memory_order_relaxed);
 
     const Stockfish::Search::RootMove& best = worker->rootMoves.front();
     // An iteration cut off before its first move completes leaves the current
@@ -106,8 +123,15 @@ Result probe(const std::string& fen, int maxMateMoves, int budgetMs,
         return result;
     }
 
+    const int mateInMoves = (Stockfish::VALUE_MATE - score + 1) / 2;
+    // Reached the deadline still holding only a long mate: the search never
+    // stopped for it, and it is too thin a claim to hand back.
+    if (mateInMoves > maxMateMoves) {
+        return result;
+    }
+
     result.found = true;
-    result.mateInMoves = (Stockfish::VALUE_MATE - score + 1) / 2;
+    result.mateInMoves = mateInMoves;
     result.bestMove = best.pv.front();
 
     // Format on a scratch position rather than the worker's, and walk it move
