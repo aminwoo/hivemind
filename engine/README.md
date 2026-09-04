@@ -7,7 +7,7 @@ The engine builds against either of two backends, selected with
 |---|---|---|
 | Requires | CUDA 13+, TensorRT 10.14+, NVIDIA GPU | ONNX Runtime |
 | Platforms | Linux + NVIDIA | Linux / macOS / Windows |
-| Precision | FP16 | FP32 |
+| Precision | FP16 | FP16 or FP32 |
 | Redistributable size | ~2 GB | ~28 MB |
 
 The TensorRT path is the default and is unchanged — existing build commands
@@ -19,24 +19,36 @@ engine can be built and shipped without CUDA at all.
 ```bash
 python3 tools/fetch_onnxruntime.py          # ~11 MB, into third_party/
 cmake -S engine -B engine/build-ort -G Ninja \
-    -DHIVEMIND_BACKEND=onnxruntime -DCMAKE_BUILD_TYPE=Release
+    -DHIVEMIND_BACKEND=onnxruntime -DHIVEMIND_ORT_FP16=ON \
+    -DCMAKE_BUILD_TYPE=Release
 cmake --build engine/build-ort -j "$(nproc)"
 ```
 
 CMake finds the runtime in `third_party/onnxruntime`; pass
 `-DONNXRuntime_ROOT=<dir>` to use one installed elsewhere.
 
-**Convert the network to FP32 first.** ONNX Runtime's CPU provider has no
-native FP16 kernels and falls back to per-node casts, which is orders of
-magnitude slower — slow enough to look like a hang. The engine refuses an FP16
-network on this backend and points at the converter:
+Released FP16 networks can be loaded directly on both Windows and Linux:
 
 ```bash
-python3 engine/scripts/convert_onnx_fp32.py models/hivemind.onnx models/hivemind-fp32.onnx
-./engine/build-ort/hivemind.bin --model models/hivemind-fp32.onnx
+./engine/build-ort/hivemind.bin --model models/hivemind.onnx
 ```
 
-The file roughly doubles (27 MB -> 54 MB); that is the cost of portability.
+The backend also accepts FP32 networks. FP16 execution speed on CPU depends on
+the processor and the kernels available in the bundled ONNX Runtime version.
+
+On Windows, run these commands from a Developer PowerShell for Visual Studio:
+
+```powershell
+py tools/fetch_onnxruntime.py
+cmake -S engine -B engine/build-ort -A x64 `
+  -DHIVEMIND_BACKEND=onnxruntime -DHIVEMIND_ORT_FP16=ON `
+  -DONNXRuntime_ROOT=third_party/onnxruntime
+cmake --build engine/build-ort --config Release --parallel
+```
+
+The executable and `onnxruntime.dll` are written to
+`engine/build-ort/Release`. MSVC builds use native compiler options; no CUDA,
+Unix shell, or POSIX compatibility layer is needed.
 
 ### Building the TensorRT backend
 
@@ -134,3 +146,18 @@ the local TensorRT runtime and builder libraries:
 Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
 not need to install CUDA or TensorRT. The first launch builds a TensorRT plan
 for their GPU and caches it beside the bundled model.
+
+## Portable Windows and Linux release bundles
+
+Build the ONNX Runtime CPU bundle natively on either operating system:
+
+```bash
+python tools/fetch_onnxruntime.py
+python engine/scripts/package_portable_release.py \
+    --model model-fp16.onnx --name hivemind-v2.2.0-linux-x86_64
+```
+
+On Windows, use the same Python command and a
+`hivemind-v2.2.0-windows-x86_64` name. The zip includes the engine, FP16 model,
+ONNX Runtime, licenses, and checksums. It does not require a GPU. Tagged builds
+are created for both systems by `.github/workflows/portable-release.yml`.

@@ -47,7 +47,7 @@ public:
  * Two backends implement this interface and the search code cannot tell them
  * apart:
  *   * TensorRT (engine.cc)      — FP16, CUDA graphs, pinned async streams.
- *   * ONNX Runtime (engine_ort.cc) — FP32, portable, CPU or any ORT provider.
+ *   * ONNX Runtime (engine_ort.cc) — FP16/FP32, portable CPU runtime.
  *
  * Both honour the same contract: `enqueueInferenceHalf` starts one batch for a
  * worker and returns immediately, `synchronizeInferenceHalf` waits for it and

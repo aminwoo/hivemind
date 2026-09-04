@@ -7,7 +7,7 @@ if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 
-project(hivemind)
+project(hivemind VERSION 2.2.0 LANGUAGES CXX)
 
 # Defaults to tensorrt so existing build commands are unaffected; the
 # onnxruntime backend is opt-in and needs no CUDA.
@@ -19,9 +19,14 @@ option(HIVEMIND_USE_UNITY_BUILD "Enable unity builds for project targets" ON)
 option(HIVEMIND_USE_CCACHE "Use ccache when available" ON)
 option(HIVEMIND_NATIVE_ARCH "Optimize for the build machine's CPU" ON)
 option(HIVEMIND_USE_PEXT "Use BMI2 PEXT for sliding attacks (benchmark first; slower on most CPUs tested)" OFF)
+option(HIVEMIND_ORT_FP16 "Use native FP16 tensors with the ONNX Runtime backend" OFF)
+option(HIVEMIND_PORTABLE_BUNDLE "Use relocatable runtime search paths for release packaging" OFF)
 
-# Set C++ version and optimization level
+# Set C++ version and optimization level. Keep compiler flags portable: GNU
+# switches passed unconditionally here used to make the ONNX Runtime backend
+# fail during CMake's first compiler check on Visual Studio.
 set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(HIVEMIND_USE_CCACHE)
@@ -33,22 +38,37 @@ if(HIVEMIND_USE_CCACHE)
 endif()
 
 # Fast local builds trade some runtime optimization for much shorter compile/link times.
-set(HIVEMIND_COMMON_FLAGS "-Wall -DNDEBUG -DNNUE_EMBEDDING_OFF")
+set(HIVEMIND_COMMON_DEFINITIONS NDEBUG NNUE_EMBEDDING_OFF)
+if(MSVC)
+    set(HIVEMIND_COMMON_FLAGS /W4 /O2)
+else()
+    set(HIVEMIND_COMMON_FLAGS -Wall)
+endif()
 if(HIVEMIND_USE_PEXT)
-    string(APPEND HIVEMIND_COMMON_FLAGS " -DHIVEMIND_ENABLE_PEXT")
+    list(APPEND HIVEMIND_COMMON_DEFINITIONS HIVEMIND_ENABLE_PEXT)
 endif()
 if(HIVEMIND_NATIVE_ARCH)
-    string(APPEND HIVEMIND_COMMON_FLAGS " -march=native")
+    if(MSVC)
+        list(APPEND HIVEMIND_COMMON_FLAGS /arch:AVX2)
+    else()
+        list(APPEND HIVEMIND_COMMON_FLAGS -march=native)
+    endif()
 endif()
-if(HIVEMIND_FAST_BUILD)
-    string(APPEND HIVEMIND_COMMON_FLAGS " -O2")
+if(HIVEMIND_FAST_BUILD OR MSVC)
+    if(NOT MSVC)
+        list(APPEND HIVEMIND_COMMON_FLAGS -O2)
+    endif()
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
 else()
-    string(APPEND HIVEMIND_COMMON_FLAGS " -Ofast -flto")
+    list(APPEND HIVEMIND_COMMON_FLAGS -Ofast -flto)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${HIVEMIND_COMMON_FLAGS}")
+add_compile_options(${HIVEMIND_COMMON_FLAGS})
+add_compile_definitions(${HIVEMIND_COMMON_DEFINITIONS})
+if(WIN32)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 
 # Add source files
 set(LIB_SOURCES
@@ -116,8 +136,21 @@ elseif(HIVEMIND_BACKEND STREQUAL "onnxruntime")
     message(STATUS "ONNX Runtime: ${ONNXRuntime_LIBRARY}")
 
     get_filename_component(ONNXRuntime_LIBDIR "${ONNXRuntime_LIBRARY}" DIRECTORY)
-    set(CMAKE_BUILD_RPATH "${ONNXRuntime_LIBDIR}")
-    set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib;${ONNXRuntime_LIBDIR}")
+    if(UNIX)
+        set(CMAKE_BUILD_RPATH "${ONNXRuntime_LIBDIR}")
+        set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/lib;$ORIGIN/../lib;${ONNXRuntime_LIBDIR}")
+        if(HIVEMIND_PORTABLE_BUNDLE)
+            set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+            set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
+        endif()
+    elseif(WIN32)
+        find_file(ONNXRuntime_DLL NAMES onnxruntime.dll
+            HINTS ${ONNXRuntime_ROOT}/lib ${ONNXRuntime_ROOT}/bin)
+        if(NOT ONNXRuntime_DLL)
+            message(FATAL_ERROR
+                "onnxruntime.dll not found below ONNXRuntime_ROOT (${ONNXRuntime_ROOT}).")
+        endif()
+    endif()
 else()
     message(FATAL_ERROR "Unknown HIVEMIND_BACKEND '${HIVEMIND_BACKEND}'")
 endif()
@@ -137,13 +170,18 @@ if(HIVEMIND_BACKEND STREQUAL "tensorrt")
 else()
     target_include_directories(${PROJECT_NAME}_lib SYSTEM PUBLIC ${ONNXRuntime_INCLUDE_DIR})
     target_compile_definitions(${PROJECT_NAME}_lib PUBLIC HIVEMIND_BACKEND_ONNXRUNTIME)
+    if(HIVEMIND_ORT_FP16)
+        target_compile_definitions(${PROJECT_NAME}_lib PUBLIC HIVEMIND_ORT_FP16)
+    endif()
 endif()
 target_include_directories(${PROJECT_NAME}_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_definitions(${PROJECT_NAME}_lib PUBLIC
-    TENSORRT_LIBRARY_DIR="${TensorRT_DIR}/lib"
-    HIVEMIND_WORKSPACE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
-    HIVEMIND_FP16_CONVERTER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/convert_onnx_fp16.py"
-)
+if(HIVEMIND_BACKEND STREQUAL "tensorrt")
+    target_compile_definitions(${PROJECT_NAME}_lib PUBLIC
+        TENSORRT_LIBRARY_DIR="${TensorRT_DIR}/lib"
+        HIVEMIND_WORKSPACE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+        HIVEMIND_FP16_CONVERTER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/scripts/convert_onnx_fp16.py"
+    )
+endif()
 if(HIVEMIND_USE_UNITY_BUILD)
     set_target_properties(${PROJECT_NAME}_lib PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
 endif()
@@ -156,13 +194,24 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CMAKE_THREAD_LIBS_INIT} Fairy
 target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CMAKE_DL_LIBS})
 
 add_executable(${PROJECT_NAME} src/main.cc)
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME hivemind.bin)
+if(WIN32)
+    set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME hivemind)
+else()
+    set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME hivemind.bin)
+endif()
 if(HIVEMIND_USE_UNITY_BUILD)
     set_target_properties(${PROJECT_NAME} PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 8)
 endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    HIVEMIND_VERSION="${PROJECT_VERSION}")
 
-if(HIVEMIND_BACKEND STREQUAL "tensorrt")
+if(WIN32 AND HIVEMIND_BACKEND STREQUAL "onnxruntime")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ONNXRuntime_DLL}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+        COMMENT "Copying ONNX Runtime beside hivemind.exe")
+elseif(HIVEMIND_BACKEND STREQUAL "tensorrt")
     file(WRITE "${CMAKE_BINARY_DIR}/hivemind"
     "#!/bin/sh\n"
     "set -e\n"
@@ -177,7 +226,9 @@ else()
     "SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
     "exec \"$SCRIPT_DIR/hivemind.bin\" \"$@\"\n")
 endif()
-execute_process(COMMAND /bin/chmod 755 "${CMAKE_BINARY_DIR}/hivemind")
+if(UNIX)
+    execute_process(COMMAND /bin/chmod 755 "${CMAKE_BINARY_DIR}/hivemind")
+endif()
 
 include(CTest)
 enable_testing()

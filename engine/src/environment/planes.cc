@@ -1,5 +1,6 @@
 #include "environment/planes.h"
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <type_traits>
 
@@ -24,15 +25,15 @@ template <typename T>
 inline T plane_value(float value) {
     if constexpr (std::is_same_v<T, __half>) {
         return __float2half_rn(value);
+    } else {
+        return value;
     }
-    return value;
 }
 
 template <typename T>
 inline void set_bits_from_bitmap(Stockfish::Bitboard bb, T* curIt) {
     while (bb) {
-        // __builtin_ctzll: count trailing zeros (index of lowest set bit)
-        int idx = __builtin_ctzll(bb);
+        int idx = static_cast<int>(std::countr_zero(bb));
         curIt[idx] = plane_value<T>(1.0f);
         bb &= bb - 1;  // Clear lowest set bit
     }
@@ -261,9 +262,8 @@ void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide
     board_to_planes_impl(board, inputPlanes, teamSide, hasTimeAdvantage);
 }
 
-#if defined(HIVEMIND_BACKEND_TENSORRT)
+#if defined(HIVEMIND_BACKEND_TENSORRT) || defined(HIVEMIND_ORT_FP16)
 void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage) {
     board_to_planes_impl(board, inputPlanes, teamSide, hasTimeAdvantage);
 }
 #endif
-

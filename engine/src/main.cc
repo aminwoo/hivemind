@@ -8,6 +8,7 @@
 #include "tools/tournament.h"
 #include "search/search_params.h"
 #include "Fairy-Stockfish/src/bitboard.h"
+#include "Fairy-Stockfish/src/misc.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/thread.h"
 #include "Fairy-Stockfish/src/piece.h"
@@ -117,6 +118,10 @@ void printUsage(const char* progName) {
 }
 
 int main(int argc, char* argv[]) {
+    // Model discovery must be relative to the executable for release bundles;
+    // chess GUIs commonly launch engines with an unrelated working directory.
+    Stockfish::CommandLine::init(argc, argv);
+
     // How many Engine instances to build: one per CUDA device, or a single
     // host engine on the portable backend.
     int deviceCount = 1;
@@ -392,7 +397,7 @@ int main(int argc, char* argv[]) {
     std::vector<int> deviceIds(deviceCount);
     iota(deviceIds.begin(), deviceIds.end(), 0);
 
-    std::cout << "Hivemind 1.0" << std::endl;
+    std::cout << "Hivemind " << HIVEMIND_VERSION << std::endl;
 
     if (!uci.initializeEngines(deviceIds, modelPath.string(), uciBatchSize)) {
         return EXIT_FAILURE;

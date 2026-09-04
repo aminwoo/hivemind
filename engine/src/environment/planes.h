@@ -19,8 +19,6 @@
  */
 void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);
 
-#if defined(HIVEMIND_BACKEND_TENSORRT)
-// Distinct overload only when __half is a real half type; on the portable
-// backend it aliases float and this would redeclare the function above.
+#if defined(HIVEMIND_BACKEND_TENSORRT) || defined(HIVEMIND_ORT_FP16)
 void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage);
 #endif

@@ -1,0 +1,113 @@
+name: Portable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag (for example, v2.2.0)
+        required: true
+        default: v2.2.0
+      model_url:
+        description: Direct ONNX URL or a Hivemind release zip containing the model
+        required: true
+        default: https://github.com/aminwoo/hivemind/releases/download/v2.1.0/hivemind-ubuntu-x86_64.zip
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-model:
+    runs-on: ubuntu-latest
+    env:
+      MODEL_URL: ${{ inputs.model_url || 'https://github.com/aminwoo/hivemind/releases/download/v2.1.0/hivemind-ubuntu-x86_64.zip' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Download released network
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 "$MODEL_URL" --output "$RUNNER_TEMP/model-source"
+          python - <<'PY'
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          source = Path(os.environ["RUNNER_TEMP"]) / "model-source"
+          target = Path(os.environ["RUNNER_TEMP"]) / "hivemind.onnx"
+          if zipfile.is_zipfile(source):
+              with zipfile.ZipFile(source) as archive:
+                  matches = [name for name in archive.namelist()
+                             if name.endswith("/models/hivemind.onnx")]
+                  if len(matches) != 1:
+                      raise SystemExit(f"Expected one bundled model, found: {matches}")
+                  with archive.open(matches[0]) as model, target.open("wb") as output:
+                      shutil.copyfileobj(model, output)
+          else:
+              shutil.copy2(source, target)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portable-model
+          path: ${{ runner.temp }}/hivemind.onnx
+          retention-days: 1
+
+  build:
+    needs: prepare-model
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            slug: linux-x86_64
+          - os: windows-latest
+            slug: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable-model
+          path: model
+      - name: Fetch ONNX Runtime
+        run: python tools/fetch_onnxruntime.py
+      - name: Build and package
+        shell: bash
+        run: |
+          python engine/scripts/package_portable_release.py \
+            --model model/hivemind.onnx \
+            --name "hivemind-${RELEASE_VERSION}-${{ matrix.slug }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.slug }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          generate_release_notes: true
+          files: release-assets/*

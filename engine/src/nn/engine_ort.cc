@@ -6,10 +6,7 @@
 // builder resources is ~2 GB and NVIDIA-only, while ORT's CPU build is ~28 MB
 // and runs everywhere.
 //
-// Differences from the TensorRT path that callers should know about:
-//   * The graph runs in FP32, so `__half` is `float` (see backend_compat.h)
-//     and no conversion happens between the plane encoder and the network.
-//   * `enqueue`/`synchronize` overlap is preserved with a worker thread per
+// `enqueue`/`synchronize` overlap is preserved with a worker thread per
 //     search thread, which is what keeps batch N's inference running while the
 //     search walks the tree for batch N+1.
 
@@ -21,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <stdexcept>
 
@@ -57,8 +55,10 @@ bool matches(const std::string& normalized,
 struct Engine::OrtState {
     // One in-flight request per search thread.
     struct Worker {
-        std::vector<float> input;
+        std::vector<__half> inputHalf;
+        std::vector<float> inputFloat;
         std::vector<Ort::Value> outputs;
+        std::vector<std::vector<__half>> convertedOutputs;
         std::future<bool> pending;
         bool hasPending = false;
     };
@@ -74,6 +74,8 @@ struct Engine::OrtState {
     std::vector<std::string> outputNameStorage;
     std::vector<const char*> outputNames;
     std::array<const char*, 1> inputNames{nullptr};
+    bool usesFp16 = true;
+    std::vector<ONNXTensorElementDataType> outputTypes;
 
     // Index into `outputs` for each head, or -1 when the graph omits it.
     int valueIdx = -1;
@@ -122,8 +124,9 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         state.options.SetInterOpNumThreads(1);
         state.options.SetExecutionMode(ORT_SEQUENTIAL);
 
+        const std::filesystem::path modelPath(onnxFile);
         state.session = std::make_unique<Ort::Session>(
-            ort_env(), onnxFile.c_str(), state.options);
+            ort_env(), modelPath.c_str(), state.options);
 
         Ort::AllocatorWithDefaultOptions allocator;
 
@@ -139,26 +142,36 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         const auto inputType = state.session->GetInputTypeInfo(0)
                                    .GetTensorTypeAndShapeInfo()
                                    .GetElementType();
-        if (inputType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
-            std::cerr
-                << "This network is FP16. The ONNX Runtime CPU backend has no\n"
-                   "native FP16 kernels and falls back to per-node casts, which\n"
-                   "is orders of magnitude slower than the FP32 graph.\n"
-                   "Convert it first:\n"
-                   "  python3 engine/scripts/convert_onnx_fp32.py "
-                << onnxFile << " <output.onnx>" << std::endl;
-            return false;
-        }
-        if (inputType != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+        if (inputType != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
+            inputType != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
             std::cerr << "Unsupported network input type: " << inputType << std::endl;
             return false;
         }
+#if !defined(HIVEMIND_ORT_FP16)
+        if (inputType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+            std::cerr << "This is an FP16 network. Rebuild with "
+                         "-DHIVEMIND_ORT_FP16=ON to use it directly."
+                      << std::endl;
+            return false;
+        }
+#endif
+        state.usesFp16 = inputType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
 
         const size_t outputCount = state.session->GetOutputCount();
         state.outputNameStorage.reserve(outputCount);
         for (size_t i = 0; i < outputCount; ++i) {
             auto name = state.session->GetOutputNameAllocated(i, allocator);
             state.outputNameStorage.emplace_back(name.get());
+            const auto type = state.session->GetOutputTypeInfo(i)
+                                  .GetTensorTypeAndShapeInfo()
+                                  .GetElementType();
+            if (type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
+                type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+                std::cerr << "Unsupported network output type for " << name.get()
+                          << ": " << type << std::endl;
+                return false;
+            }
+            state.outputTypes.push_back(type);
         }
         for (const auto& name : state.outputNameStorage) {
             state.outputNames.push_back(name.c_str());
@@ -217,13 +230,21 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         const int workerCount = std::max(1, SearchParams::NUM_SEARCH_THREADS);
         state.workers.resize(workerCount);
         for (auto& worker : state.workers) {
-            worker.input.assign(
-                static_cast<size_t>(m_batchSize) * NB_INPUT_VALUES(), 0.0f);
+            const size_t inputElements =
+                static_cast<size_t>(m_batchSize) * NB_INPUT_VALUES();
+            if (state.usesFp16) {
+                worker.inputHalf.resize(inputElements);
+            } else {
+                worker.inputFloat.resize(inputElements);
+            }
+            worker.convertedOutputs.resize(outputCount);
         }
 
         std::cout << "info string backend " << backendName() << " model "
                   << onnxFile << " batch " << m_batchSize << " workers "
-                  << workerCount << " intra-op threads " << intraOp
+                  << workerCount << " precision "
+                  << (state.usesFp16 ? "fp16" : "fp32")
+                  << " intra-op threads " << intraOp
                   << std::endl;
         return true;
     } catch (const Ort::Exception& e) {
@@ -249,7 +270,13 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
 
     // Copy rather than alias the caller's buffer: the search reuses its
     // double-buffered observation slabs as soon as it has enqueued.
-    std::memcpy(worker.input.data(), obs, worker.input.size() * sizeof(float));
+    if (m_ort->usesFp16) {
+        std::memcpy(worker.inputHalf.data(), obs,
+                    worker.inputHalf.size() * sizeof(__half));
+    } else {
+        std::transform(obs, obs + worker.inputFloat.size(),
+                       worker.inputFloat.begin(), __half2float);
+    }
 
     auto& state = *m_ort;
     const int64_t batch = m_batchSize;
@@ -257,9 +284,18 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
         try {
             const std::array<int64_t, 4> shape{
                 batch, NB_INPUT_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH};
-            Ort::Value input = Ort::Value::CreateTensor<float>(
-                state.memoryInfo, worker.input.data(), worker.input.size(),
-                shape.data(), shape.size());
+            Ort::Value input{nullptr};
+            if (state.usesFp16) {
+                input = Ort::Value::CreateTensor(
+                    state.memoryInfo, worker.inputHalf.data(),
+                    worker.inputHalf.size() * sizeof(__half),
+                    shape.data(), shape.size(),
+                    ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16);
+            } else {
+                input = Ort::Value::CreateTensor<float>(
+                    state.memoryInfo, worker.inputFloat.data(),
+                    worker.inputFloat.size(), shape.data(), shape.size());
+            }
 
             worker.outputs = state.session->Run(
                 Ort::RunOptions{nullptr}, state.inputNames.data(), &input, 1,
@@ -292,10 +328,24 @@ bool Engine::synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
     if (!ok) return false;
 
     auto& state = *m_ort;
-    auto at = [&](int idx) -> const float* {
-        return idx >= 0 && static_cast<size_t>(idx) < worker.outputs.size()
-                   ? worker.outputs[idx].GetTensorData<float>()
-                   : nullptr;
+    auto at = [&](int idx) -> const __half* {
+        if (idx < 0 || static_cast<size_t>(idx) >= worker.outputs.size()) {
+            return nullptr;
+        }
+        const size_t outputIndex = static_cast<size_t>(idx);
+        if (state.outputTypes[outputIndex] ==
+            ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
+            return static_cast<const __half*>(
+                worker.outputs[outputIndex].GetTensorRawData());
+        }
+        const auto* values = worker.outputs[outputIndex].GetTensorData<float>();
+        auto& converted = worker.convertedOutputs[outputIndex];
+        const size_t count = worker.outputs[outputIndex]
+                                 .GetTensorTypeAndShapeInfo()
+                                 .GetElementCount();
+        converted.resize(count);
+        std::transform(values, values + count, converted.begin(), __float2half_rn);
+        return converted.data();
     };
 
     outputs.value = at(state.valueIdx);
@@ -317,12 +367,19 @@ bool Engine::runInferenceHalf(const __half* obs, HalfInferenceOutputs& outputs,
 
 bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
                           float* wdl, float* movesLeft, size_t workerIndex) {
+    const size_t inputElements =
+        static_cast<size_t>(m_batchSize) * NB_INPUT_VALUES();
+    std::vector<__half> halfInput(inputElements);
+    std::transform(obs, obs + inputElements, halfInput.begin(), __float2half_rn);
+
     HalfInferenceOutputs outputs;
-    if (!runInferenceHalf(obs, outputs, workerIndex)) return false;
+    if (!runInferenceHalf(halfInput.data(), outputs, workerIndex)) return false;
 
     const size_t batch = static_cast<size_t>(m_batchSize);
-    auto copy = [](const float* src, float* dst, size_t count) {
-        if (src && dst) std::memcpy(dst, src, count * sizeof(float));
+    auto copy = [](const __half* src, float* dst, size_t count) {
+        if (src && dst) {
+            std::transform(src, src + count, dst, __half2float);
+        }
     };
     copy(outputs.value, value, batch);
     copy(outputs.policyA, piA, batch * NB_POLICY_VALUES());

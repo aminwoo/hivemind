@@ -1,4 +1,5 @@
 #pragma once
+#include <bit>
 #include <limits>
 #include <vector>
 #include <cmath>
@@ -109,7 +110,7 @@ inline std::vector<float> dynamic_vector(float* p, size_t length) {
  * @return Stockfish::Bitboard Vertically flipped bitboard.
  */
 inline Stockfish::Bitboard flip_vertical(Stockfish::Bitboard x) {
-    return __builtin_bswap64(x);
+    return std::byteswap(x);
 }
 
 /**
@@ -219,8 +220,9 @@ template <typename T>
 inline float policy_value_to_float(T value) {
     if constexpr (std::is_same_v<T, __half>) {
         return __half2float(value);
+    } else {
+        return value;
     }
-    return value;
 }
 
 template <typename T>

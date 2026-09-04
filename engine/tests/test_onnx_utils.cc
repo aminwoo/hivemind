@@ -4,6 +4,7 @@
 #include <fstream>
 
 #include "nn/onnx_utils.h"
+#include "Fairy-Stockfish/src/misc.h"
 
 TEST(OnnxUtilsTest, ResolveModelPathReturnsExplicitPathWhenProvided) {
     EXPECT_EQ(resolveModelPath("/custom/path/model.onnx"), "/custom/path/model.onnx");
@@ -15,6 +16,25 @@ TEST(OnnxUtilsTest, MissingDirectoryHasNoLatestModel) {
     std::filesystem::remove_all(missingDirectory);
 
     EXPECT_TRUE(findLatestOnnxFile(missingDirectory.string()).empty());
+}
+
+TEST(OnnxUtilsTest, ResolveModelPathSearchesBesideExecutable) {
+    const auto bundle = std::filesystem::temp_directory_path()
+        / "hivemind-onnx-utils-bundle";
+    const auto models = bundle / "models";
+    const auto modelPath = models / "bundled.onnx";
+    std::filesystem::remove_all(bundle);
+    std::filesystem::create_directories(models);
+    {
+        std::ofstream model(modelPath);
+        model << "test";
+    }
+
+    const std::string previous = Stockfish::CommandLine::binaryDirectory;
+    Stockfish::CommandLine::binaryDirectory = bundle.string();
+    EXPECT_EQ(std::filesystem::path(resolveModelPath()), modelPath);
+    Stockfish::CommandLine::binaryDirectory = previous;
+    std::filesystem::remove_all(bundle);
 }
 
 TEST(OnnxUtilsTest, FileSignatureIncludesContentsAndBuildDescriptor) {

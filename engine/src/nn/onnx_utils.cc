@@ -8,22 +8,30 @@
 #include <vector>
 #include <chrono>
 
+#include "Fairy-Stockfish/src/misc.h"
+
 namespace fs = std::filesystem;
 
 std::string resolveModelPath(const std::string& explicitPath) {
     if (!explicitPath.empty()) {
         return explicitPath;
     }
-    const std::vector<std::string> searchDirs = {
+    std::vector<fs::path> searchDirs;
+    if (!Stockfish::CommandLine::binaryDirectory.empty()) {
+        const fs::path executableDir = Stockfish::CommandLine::binaryDirectory;
+        searchDirs.emplace_back(executableDir / "models");
+        searchDirs.emplace_back(executableDir / ".." / "models");
+    }
+    searchDirs.insert(searchDirs.end(), {
         "./models",
         "./engine/models",
         "../models",
         "./networks",
         "./engine/networks"
-    };
+    });
     for (const auto& dir : searchDirs) {
         if (fs::is_directory(dir)) {
-            std::string latest = findLatestOnnxFile(dir);
+            std::string latest = findLatestOnnxFile(dir.string());
             if (!latest.empty()) {
                 return latest;
             }

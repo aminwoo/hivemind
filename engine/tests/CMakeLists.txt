@@ -10,6 +10,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(
   hivemind_tests
+  test_backend_compat.cc
   test_move_gen.cc
   test_draw_detection.cc
   test_mate_detection.cc
