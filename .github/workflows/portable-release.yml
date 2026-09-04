@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag (for example, v2.2.1)
+        description: Release tag (for example, v2.2.2)
         required: true
-        default: v2.2.1
+        default: v2.2.2
       model_url:
         description: Direct ONNX URL or a Hivemind release zip containing the model
         required: true
@@ -92,6 +92,8 @@ jobs:
           path: model
       - name: Fetch ONNX Runtime
         run: python tools/fetch_onnxruntime.py
+      - name: Install model conversion dependencies
+        run: python -m pip install numpy onnx
       - name: Build and package
         shell: bash
         run: |

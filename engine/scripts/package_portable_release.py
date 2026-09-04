@@ -76,8 +76,12 @@ def sha256(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, type=Path,
-                        help="FP16 ONNX model to include")
+    parser.add_argument(
+        "--model",
+        required=True,
+        type=Path,
+        help="ONNX model to convert to FP32 and include",
+    )
     parser.add_argument("--onnxruntime-root", type=Path,
                         default=WORKSPACE_DIR / "third_party" / "onnxruntime")
     parser.add_argument("--output", type=Path, default=WORKSPACE_DIR / "dist")
@@ -90,7 +94,7 @@ def main() -> int:
     runtime_root = args.onnxruntime_root.resolve()
     output_dir = args.output.resolve()
     build_dir = args.build_dir.resolve()
-    bundle_name = args.name or f"hivemind-v2.2.1-{host_slug()}-onnxruntime"
+    bundle_name = args.name or f"hivemind-v2.2.2-{host_slug()}-onnxruntime"
 
     if not model.is_file() or model.suffix.lower() != ".onnx":
         raise SystemExit(f"A readable ONNX model is required: {model}")
@@ -103,7 +107,7 @@ def main() -> int:
     run([
         "cmake", "-S", str(ENGINE_DIR), "-B", str(build_dir),
         "-DHIVEMIND_BACKEND=onnxruntime",
-        "-DHIVEMIND_ORT_FP16=ON",
+        "-DHIVEMIND_ORT_FP16=OFF",
         "-DHIVEMIND_PORTABLE_BUNDLE=ON",
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_TESTING=OFF",
@@ -127,7 +131,16 @@ def main() -> int:
         shutil.copy2(engine, bin_dir / engine.name)
         if os.name == "nt":
             shutil.copy2(runtime, bin_dir / runtime.name)
-        shutil.copy2(model, models_dir / "hivemind.onnx")
+        # ONNX Runtime's CPU provider is dramatically faster with an FP32
+        # graph. Released networks are commonly FP16 for TensorRT, so convert
+        # once while packaging rather than making every inference pay for CPU
+        # casts/fallback kernels.
+        run([
+            sys.executable,
+            str(ENGINE_DIR / "scripts" / "convert_onnx_fp32.py"),
+            str(model),
+            str(models_dir / "hivemind.onnx"),
+        ])
         shutil.copy2(WORKSPACE_DIR / "LICENSE", bundle / "LICENSE.txt")
         shutil.copy2(ENGINE_DIR / "LICENSE", bundle / "FAIRY-STOCKFISH-LICENSE.txt")
         for source_name, target_name in (
@@ -163,14 +176,14 @@ def main() -> int:
         (bundle / "README.txt").write_text(
             f"Hivemind {bundle_name}\n"
             f"{'=' * (10 + len(bundle_name))}\n\n"
-            "Portable FP16 release powered by ONNX Runtime. No CUDA, TensorRT, "
+            "Portable FP32 release powered by ONNX Runtime. No CUDA, TensorRT, "
             "or NVIDIA GPU is required.\n\n"
             f"Requirements:\n  {requirements}"
             "- A UCI-compatible chess GUI, or a terminal\n\n"
-            f"Run {executable}. The bundled FP16 model is discovered automatically, "
+            f"Run {executable}. The bundled FP32 model is discovered automatically, "
             "including when a GUI starts the engine from another working directory.\n\n"
-            "The bundled network remains in FP16 on both Windows and Linux. "
-            "CPU performance depends on the host processor and ONNX Runtime.\n",
+            "The input network is converted to FP32 while packaging because "
+            "ONNX Runtime's CPU provider is substantially faster with FP32.\n",
             encoding="utf-8",
         )
 

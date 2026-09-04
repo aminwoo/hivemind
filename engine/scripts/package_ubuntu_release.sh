@@ -11,7 +11,7 @@ engine_dir="$(cd "$script_dir/.." && pwd)"
 workspace_dir="$(cd "$engine_dir/.." && pwd)"
 model=""
 output_dir="$workspace_dir/dist"
-bundle_name="hivemind-v2.2.1-linux-x86_64-tensorrt"
+bundle_name="hivemind-v2.2.2-linux-x86_64-tensorrt"
 tensorrt_dir="${TensorRT_DIR:-/home/ben/opt/TensorRT-11.1.0.106}"
 cuda_dir="${CUDA_TOOLKIT_ROOT_DIR:-/usr/local/cuda}"
 

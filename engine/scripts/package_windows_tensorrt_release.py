@@ -76,7 +76,7 @@ def main() -> int:
     parser.add_argument("--cuda-root", required=True, type=Path,
                         help="Extracted NVIDIA CUDA Runtime root")
     parser.add_argument("--output", type=Path, default=WORKSPACE_DIR / "dist")
-    parser.add_argument("--name", default="hivemind-v2.2.1-windows-x86_64-tensorrt")
+    parser.add_argument("--name", default="hivemind-v2.2.2-windows-x86_64-tensorrt")
     parser.add_argument("--build-dir", type=Path,
                         default=ENGINE_DIR / "build-windows-tensorrt-release")
     args = parser.parse_args()

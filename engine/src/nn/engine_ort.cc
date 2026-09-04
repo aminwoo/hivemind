@@ -114,12 +114,10 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         auto& state = *m_ort;
 
         state.options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        // Search threads each drive their own batch, so give ORT the remaining
-        // cores for intra-op parallelism rather than letting the two layers
-        // oversubscribe each other.
-        const int cores = static_cast<int>(std::thread::hardware_concurrency());
-        const int searchThreads = std::max(1, SearchParams::NUM_SEARCH_THREADS);
-        const int intraOp = std::max(1, cores / searchThreads);
+        // Concurrent Run calls share this session's intra-op pool. Let ORT
+        // choose its topology-aware default instead of dividing the one shared
+        // pool by the number of search workers and leaving cores idle.
+        const int intraOp = 0;
         state.options.SetIntraOpNumThreads(intraOp);
         state.options.SetInterOpNumThreads(1);
         state.options.SetExecutionMode(ORT_SEQUENTIAL);
@@ -156,6 +154,12 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         }
 #endif
         state.usesFp16 = inputType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+        if (state.usesFp16) {
+            std::cout
+                << "info string warning FP16 inference is usually slow on CPU; "
+                   "convert the model with engine/scripts/convert_onnx_fp32.py"
+                << std::endl;
+        }
 
         const size_t outputCount = state.session->GetOutputCount();
         state.outputNameStorage.reserve(outputCount);
@@ -244,7 +248,8 @@ bool Engine::loadNetwork(const std::string& onnxFile,
                   << onnxFile << " batch " << m_batchSize << " workers "
                   << workerCount << " precision "
                   << (state.usesFp16 ? "fp16" : "fp32")
-                  << " intra-op threads " << intraOp
+                  << " intra-op threads "
+                  << (intraOp == 0 ? "auto" : std::to_string(intraOp))
                   << std::endl;
         return true;
     } catch (const Ort::Exception& e) {
