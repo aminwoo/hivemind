@@ -45,7 +45,23 @@ def copy_license(root: Path, destination: Path, target_name: str) -> None:
             candidates.sort(key=lambda path: len(path.parts))
             shutil.copy2(candidates[0], destination / target_name)
             return
-    raise SystemExit(f"License file not found below {root}")
+
+    # NVIDIA's redistributable TensorRT package ships no license file, only the
+    # documents gathered below. Bundle whatever attribution it does carry and
+    # warn, rather than shipping the binaries with nothing alongside them.
+    prefix = target_name.removesuffix("-LICENSE.txt")
+    bundled = []
+    for name in ("Acknowledgements.txt", "README.txt"):
+        candidates = [path for path in root.rglob(name) if path.is_file()]
+        if candidates:
+            candidates.sort(key=lambda path: len(path.parts))
+            shutil.copy2(candidates[0], destination / f"{prefix}-{name}")
+            bundled.append(name)
+    if bundled:
+        print(f"warning: no license text below {root}; "
+              f"bundled {', '.join(bundled)} instead")
+    else:
+        print(f"warning: no license or attribution files below {root}")
 
 
 def main() -> int:

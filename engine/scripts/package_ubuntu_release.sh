@@ -59,18 +59,33 @@ cp "$model" "$bundle_dir/models/hivemind.onnx"
 cp "$workspace_dir/LICENSE" "$bundle_dir/LICENSE.txt"
 cp "$engine_dir/LICENSE" "$bundle_dir/FAIRY-STOCKFISH-LICENSE.txt"
 
-for license in "$tensorrt_dir/LICENSE.txt" "$tensorrt_dir/LICENSE"; do
-    if [[ -f "$license" ]]; then
-        cp "$license" "$bundle_dir/TENSORRT-LICENSE.txt"
-        break
+# NVIDIA's redistributable TensorRT package ships no license file, only the
+# documents copied below. Bundle whatever attribution it does carry and warn,
+# rather than shipping the binaries with nothing alongside them.
+copy_license() {
+    local root="$1" prefix="$2" candidate doc bundled=0
+    for candidate in "$root/LICENSE.txt" "$root/LICENSE"; do
+        if [[ -f "$candidate" ]]; then
+            cp "$candidate" "$bundle_dir/${prefix}-LICENSE.txt"
+            return 0
+        fi
+    done
+    for doc in Acknowledgements.txt README.txt; do
+        candidate="$(find "$root" -type f -name "$doc" -print -quit)"
+        if [[ -n "$candidate" ]]; then
+            cp "$candidate" "$bundle_dir/${prefix}-${doc}"
+            bundled=1
+        fi
+    done
+    if ((bundled)); then
+        echo "warning: no license text below $root; bundled its documentation instead" >&2
+    else
+        echo "warning: no license or attribution files below $root" >&2
     fi
-done
-for license in "$cuda_dir/LICENSE.txt" "$cuda_dir/LICENSE"; do
-    if [[ -f "$license" ]]; then
-        cp "$license" "$bundle_dir/CUDA-RUNTIME-LICENSE.txt"
-        break
-    fi
-done
+}
+
+copy_license "$tensorrt_dir" TENSORRT
+copy_license "$cuda_dir" CUDA-RUNTIME
 
 # The runtime and parser are direct dependencies. Builder resources are loaded
 # dynamically when Hivemind creates a GPU-specific plan on first launch.
