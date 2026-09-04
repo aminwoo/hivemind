@@ -28,13 +28,13 @@ if(TensorRT_DIR)
         PATH_SUFFIXES include)
 
     find_library(TensorRT_LIBRARY
-        NAMES nvinfer
+        NAMES nvinfer nvinfer_11
         PATHS "${TensorRT_DIR}"
         NO_DEFAULT_PATH
         PATH_SUFFIXES lib)
 
     find_library(TensorRT_NVONNXPARSER_LIBRARY
-        NAMES nvonnxparser
+        NAMES nvonnxparser nvonnxparser_11
         PATHS "${TensorRT_DIR}"
         NO_DEFAULT_PATH
         PATH_SUFFIXES lib)
@@ -45,28 +45,36 @@ if(NOT TensorRT_INCLUDE_DIR)
 endif()
 
 if(NOT TensorRT_LIBRARY)
-    find_library(TensorRT_LIBRARY NAMES nvinfer PATHS "/usr" PATH_SUFFIXES lib)
+    find_library(TensorRT_LIBRARY NAMES nvinfer nvinfer_11 PATHS "/usr" PATH_SUFFIXES lib)
 endif()
 
 if(NOT TensorRT_NVONNXPARSER_LIBRARY)
-    find_library(TensorRT_NVONNXPARSER_LIBRARY NAMES nvonnxparser PATHS "/usr" PATH_SUFFIXES lib)
+    find_library(TensorRT_NVONNXPARSER_LIBRARY NAMES nvonnxparser nvonnxparser_11 PATHS "/usr" PATH_SUFFIXES lib)
 endif()
 
 mark_as_advanced(TensorRT_INCLUDE_DIR)
 
-if(TensorRT_INCLUDE_DIR AND EXISTS "${TensorRT_INCLUDE_DIR}/NvInfer.h")
-    file(STRINGS "${TensorRT_INCLUDE_DIR}/NvInfer.h" TensorRT_MAJOR REGEX "^#define NV_TENSORRT_MAJOR [0-9]+.*$")
-    file(STRINGS "${TensorRT_INCLUDE_DIR}/NvInfer.h" TensorRT_MINOR REGEX "^#define NV_TENSORRT_MINOR [0-9]+.*$")
-    file(STRINGS "${TensorRT_INCLUDE_DIR}/NvInfer.h" TensorRT_PATCH REGEX "^#define NV_TENSORRT_PATCH [0-9]+.*$")
+if(TensorRT_INCLUDE_DIR AND EXISTS "${TensorRT_INCLUDE_DIR}/NvInferVersion.h")
+    # TensorRT 11 defines the public NV_TENSORRT_* macros through numeric
+    # TRT_*_ENTERPRISE macros, while older releases used numeric values
+    # directly. Match either form from the dedicated version header.
+    file(STRINGS "${TensorRT_INCLUDE_DIR}/NvInferVersion.h" TensorRT_MAJOR
+        REGEX "^#define (TRT_MAJOR_ENTERPRISE|NV_TENSORRT_MAJOR) [0-9]+.*$")
+    file(STRINGS "${TensorRT_INCLUDE_DIR}/NvInferVersion.h" TensorRT_MINOR
+        REGEX "^#define (TRT_MINOR_ENTERPRISE|NV_TENSORRT_MINOR) [0-9]+.*$")
+    file(STRINGS "${TensorRT_INCLUDE_DIR}/NvInferVersion.h" TensorRT_PATCH
+        REGEX "^#define (TRT_PATCH_ENTERPRISE|NV_TENSORRT_PATCH) [0-9]+.*$")
 
-    string(REGEX REPLACE "^#define NV_TENSORRT_MAJOR ([0-9]+).*$" "\\1" TensorRT_VERSION_MAJOR "${TensorRT_MAJOR}")
-    string(REGEX REPLACE "^#define NV_TENSORRT_MINOR ([0-9]+).*$" "\\1" TensorRT_VERSION_MINOR "${TensorRT_MINOR}")
-    string(REGEX REPLACE "^#define NV_TENSORRT_PATCH ([0-9]+).*$" "\\1" TensorRT_VERSION_PATCH "${TensorRT_PATCH}")
+    string(REGEX REPLACE ".* ([0-9]+).*$" "\\1" TensorRT_VERSION_MAJOR "${TensorRT_MAJOR}")
+    string(REGEX REPLACE ".* ([0-9]+).*$" "\\1" TensorRT_VERSION_MINOR "${TensorRT_MINOR}")
+    string(REGEX REPLACE ".* ([0-9]+).*$" "\\1" TensorRT_VERSION_PATCH "${TensorRT_PATCH}")
     set(TensorRT_VERSION_STRING "${TensorRT_VERSION_MAJOR}.${TensorRT_VERSION_MINOR}.${TensorRT_VERSION_PATCH}")
 endif()
 
 include(FindPackageHandleStandardArgs)
-FIND_PACKAGE_HANDLE_STANDARD_ARGS(TensorRT REQUIRED_VARS TensorRT_LIBRARY TensorRT_INCLUDE_DIR VERSION_VAR TensorRT_VERSION_STRING)
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(TensorRT REQUIRED_VARS
+    TensorRT_LIBRARY TensorRT_NVONNXPARSER_LIBRARY TensorRT_INCLUDE_DIR
+    VERSION_VAR TensorRT_VERSION_STRING)
 
 if(TensorRT_FOUND)
     set(TensorRT_INCLUDE_DIRS ${TensorRT_INCLUDE_DIR})

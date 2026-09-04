@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     echo "Usage: $0 --model MODEL.onnx [--output DIR] [--name NAME]" >&2
-    echo "Builds a portable x86-64 Ubuntu zip with Hivemind and TensorRT." >&2
+    echo "Builds a self-contained x86-64 Linux zip with Hivemind and TensorRT." >&2
 }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,7 +11,7 @@ engine_dir="$(cd "$script_dir/.." && pwd)"
 workspace_dir="$(cd "$engine_dir/.." && pwd)"
 model=""
 output_dir="$workspace_dir/dist"
-bundle_name="hivemind-ubuntu-x86_64"
+bundle_name="hivemind-v2.2.1-linux-x86_64-tensorrt"
 tensorrt_dir="${TensorRT_DIR:-/home/ben/opt/TensorRT-11.1.0.106}"
 cuda_dir="${CUDA_TOOLKIT_ROOT_DIR:-/usr/local/cuda}"
 
@@ -56,6 +56,21 @@ mkdir -p "$bundle_dir/bin" "$bundle_dir/lib" "$bundle_dir/models"
 
 cp "$build_dir/hivemind.bin" "$bundle_dir/bin/"
 cp "$model" "$bundle_dir/models/hivemind.onnx"
+cp "$workspace_dir/LICENSE" "$bundle_dir/LICENSE.txt"
+cp "$engine_dir/LICENSE" "$bundle_dir/FAIRY-STOCKFISH-LICENSE.txt"
+
+for license in "$tensorrt_dir/LICENSE.txt" "$tensorrt_dir/LICENSE"; do
+    if [[ -f "$license" ]]; then
+        cp "$license" "$bundle_dir/TENSORRT-LICENSE.txt"
+        break
+    fi
+done
+for license in "$cuda_dir/LICENSE.txt" "$cuda_dir/LICENSE"; do
+    if [[ -f "$license" ]]; then
+        cp "$license" "$bundle_dir/CUDA-RUNTIME-LICENSE.txt"
+        break
+    fi
+done
 
 # The runtime and parser are direct dependencies. Builder resources are loaded
 # dynamically when Hivemind creates a GPU-specific plan on first launch.
@@ -65,6 +80,20 @@ for library in \
     libnvinfer_builder_resource_sm*.so* \
     libnvinfer_builder_resource_ptx.so*; do
     for source in "$tensorrt_dir/lib"/$library; do
+        [[ -e "$source" || -L "$source" ]] || continue
+        cp -a "$source" "$bundle_dir/lib/"
+    done
+done
+
+# CI uses NVIDIA's small CUDA Runtime redistributable rather than a full CUDA
+# Toolkit. Bundle its dynamic runtime when present; locally, FindCUDA may have
+# selected the static runtime, in which case this loop simply copies nothing.
+for cuda_lib_dir in \
+    "$cuda_dir/lib64" \
+    "$cuda_dir/lib" \
+    "$cuda_dir/targets/x86_64-linux/lib"; do
+    [[ -d "$cuda_lib_dir" ]] || continue
+    for source in "$cuda_lib_dir"/libcudart.so*; do
         [[ -e "$source" || -L "$source" ]] || continue
         cp -a "$source" "$bundle_dir/lib/"
     done
@@ -123,6 +152,7 @@ rm -f "$zip_path"
     cd "$staging_root"
     zip -q -y -r "$zip_path" "$bundle_name"
 )
-sha256sum "$zip_path" >"$zip_path.sha256"
+digest="$(sha256sum "$zip_path" | cut -d ' ' -f1)"
+printf '%s  %s\n' "$digest" "$(basename "$zip_path")" >"$zip_path.sha256"
 echo "Created $zip_path"
 echo "Created $zip_path.sha256"

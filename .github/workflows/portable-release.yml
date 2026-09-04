@@ -1,16 +1,21 @@
-name: Portable release
+name: Release bundles
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag (for example, v2.2.0)
+        description: Release tag (for example, v2.2.1)
         required: true
-        default: v2.2.0
+        default: v2.2.1
       model_url:
         description: Direct ONNX URL or a Hivemind release zip containing the model
         required: true
-        default: https://github.com/aminwoo/hivemind/releases/download/v2.1.0/hivemind-ubuntu-x86_64.zip
+        default: https://github.com/aminwoo/hivemind/releases/download/v2.2.0/hivemind-v2.2.0-linux-x86_64.zip
+      publish:
+        description: Publish the built assets to the requested release tag
+        required: true
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -18,11 +23,15 @@ on:
 permissions:
   contents: write
 
+env:
+  TENSORRT_VERSION: 11.1.0.106
+  CUDA_RUNTIME_VERSION: 13.3.29
+
 jobs:
   prepare-model:
     runs-on: ubuntu-latest
     env:
-      MODEL_URL: ${{ inputs.model_url || 'https://github.com/aminwoo/hivemind/releases/download/v2.1.0/hivemind-ubuntu-x86_64.zip' }}
+      MODEL_URL: ${{ inputs.model_url || 'https://github.com/aminwoo/hivemind/releases/download/v2.2.0/hivemind-v2.2.0-linux-x86_64.zip' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,7 +66,7 @@ jobs:
           path: ${{ runner.temp }}/hivemind.onnx
           retention-days: 1
 
-  build:
+  build-portable:
     needs: prepare-model
     strategy:
       fail-fast: false
@@ -86,7 +95,7 @@ jobs:
         run: |
           python engine/scripts/package_portable_release.py \
             --model model/hivemind.onnx \
-            --name "hivemind-${RELEASE_VERSION}-${{ matrix.slug }}"
+            --name "hivemind-${RELEASE_VERSION}-${{ matrix.slug }}-onnxruntime"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.slug }}
@@ -95,8 +104,127 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
+  build-tensorrt-linux:
+    needs: prepare-model
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable-model
+          path: model
+      - name: Fetch TensorRT and CUDA Runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/nvidia/tensorrt" "$RUNNER_TEMP/nvidia/cuda"
+          curl --fail --location --retry 3 \
+            "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.1.0/tars/TensorRT-Enterprise-${TENSORRT_VERSION}-Linux-x86_64-cuda-13.3-Release-external.tar.zst" \
+            --output "$RUNNER_TEMP/tensorrt.tar.zst"
+          tar --zstd -xf "$RUNNER_TEMP/tensorrt.tar.zst" \
+            -C "$RUNNER_TEMP/nvidia/tensorrt" --strip-components=1
+          curl --fail --location --retry 3 \
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-${CUDA_RUNTIME_VERSION}-archive.tar.xz" \
+            --output "$RUNNER_TEMP/cuda-cudart.tar.xz"
+          tar -xJf "$RUNNER_TEMP/cuda-cudart.tar.xz" \
+            -C "$RUNNER_TEMP/nvidia/cuda" --strip-components=1
+          rm "$RUNNER_TEMP/tensorrt.tar.zst" "$RUNNER_TEMP/cuda-cudart.tar.xz"
+      - name: Build and package TensorRT
+        shell: bash
+        run: |
+          engine/scripts/package_ubuntu_release.sh \
+            --model model/hivemind.onnx \
+            --tensorrt-dir "$RUNNER_TEMP/nvidia/tensorrt" \
+            --cuda-dir "$RUNNER_TEMP/nvidia/cuda" \
+            --name "hivemind-${RELEASE_VERSION}-linux-x86_64-tensorrt"
+          LD_LIBRARY_PATH="$RUNNER_TEMP/nvidia/tensorrt/lib:$RUNNER_TEMP/nvidia/cuda/lib" \
+            engine/build-ubuntu-release/hivemind.bin --help
+          unzip -t "dist/hivemind-${RELEASE_VERSION}-linux-x86_64-tensorrt.zip"
+          (cd dist && sha256sum -c "hivemind-${RELEASE_VERSION}-linux-x86_64-tensorrt.zip.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64-tensorrt
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  build-tensorrt-windows:
+    needs: prepare-model
+    runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v4
+        with:
+          name: portable-model
+          path: model
+      - name: Fetch TensorRT and CUDA Runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nvidia = Join-Path $env:RUNNER_TEMP "nvidia"
+          $tensorrt = Join-Path $nvidia "tensorrt"
+          $cuda = Join-Path $nvidia "cuda"
+          New-Item -ItemType Directory -Force $tensorrt, $cuda | Out-Null
+          $trtArchive = Join-Path $env:RUNNER_TEMP "tensorrt.zip"
+          $cudaArchive = Join-Path $env:RUNNER_TEMP "cuda-cudart.zip"
+          curl.exe --fail --location --retry 3 `
+            "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.1.0/zip/TensorRT-Enterprise-$env:TENSORRT_VERSION-Windows-amd64-cuda-13.3-Release-external.zip" `
+            --output $trtArchive
+          tar -xf $trtArchive -C $tensorrt --strip-components 1
+          curl.exe --fail --location --retry 3 `
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-$env:CUDA_RUNTIME_VERSION-archive.zip" `
+            --output $cudaArchive
+          tar -xf $cudaArchive -C $cuda --strip-components 1
+          Remove-Item $trtArchive, $cudaArchive
+      - name: Build and package TensorRT
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tensorrt = Join-Path $env:RUNNER_TEMP "nvidia/tensorrt"
+          $cuda = Join-Path $env:RUNNER_TEMP "nvidia/cuda"
+          python engine/scripts/package_windows_tensorrt_release.py `
+            --model model/hivemind.onnx `
+            --tensorrt-root $tensorrt `
+            --cuda-root $cuda `
+            --name "hivemind-$env:RELEASE_VERSION-windows-x86_64-tensorrt"
+          $env:PATH = "$tensorrt/bin;$cuda/bin/x64;$env:PATH"
+          & engine/build-windows-tensorrt-release/Release/hivemind.exe --help
+          python -m zipfile -t "dist/hivemind-$env:RELEASE_VERSION-windows-x86_64-tensorrt.zip"
+          Push-Location dist
+          try {
+            $checksum = Get-Content "hivemind-$env:RELEASE_VERSION-windows-x86_64-tensorrt.zip.sha256"
+            $expected = ($checksum -split "  ")[0]
+            $actual = (Get-FileHash "hivemind-$env:RELEASE_VERSION-windows-x86_64-tensorrt.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected) { throw "TensorRT archive checksum mismatch" }
+          } finally {
+            Pop-Location
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64-tensorrt
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
   publish:
-    needs: build
+    if: github.event_name == 'push' || inputs.publish
+    needs:
+      - build-portable
+      - build-tensorrt-linux
+      - build-tensorrt-windows
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}

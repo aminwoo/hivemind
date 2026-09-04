@@ -90,7 +90,7 @@ def main() -> int:
     runtime_root = args.onnxruntime_root.resolve()
     output_dir = args.output.resolve()
     build_dir = args.build_dir.resolve()
-    bundle_name = args.name or f"hivemind-v2.2.0-{host_slug()}"
+    bundle_name = args.name or f"hivemind-v2.2.1-{host_slug()}-onnxruntime"
 
     if not model.is_file() or model.suffix.lower() != ".onnx":
         raise SystemExit(f"A readable ONNX model is required: {model}")

@@ -7,7 +7,7 @@ if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 
-project(hivemind VERSION 2.2.0 LANGUAGES CXX)
+project(hivemind VERSION 2.2.1 LANGUAGES CXX)
 
 # Defaults to tensorrt so existing build commands are unaffected; the
 # onnxruntime backend is opt-in and needs no CUDA.
@@ -106,7 +106,34 @@ if(HIVEMIND_BACKEND STREQUAL "tensorrt")
     endif()
 
     find_package(TensorRT REQUIRED)
-    find_package(CUDA REQUIRED)
+
+    # Hivemind contains no .cu translation units, so it only needs the CUDA
+    # Runtime headers and library. Locate those directly instead of requiring
+    # nvcc/the full CUDA Toolkit; this also supports NVIDIA's redistributable
+    # cudart archive in the Windows and Linux release jobs.
+    find_path(CUDA_INCLUDE_DIR
+        NAMES cuda_runtime_api.h
+        HINTS ${CUDA_TOOLKIT_ROOT_DIR}/include)
+    if(WIN32)
+        find_library(CUDA_CUDART_LIBRARY
+            NAMES cudart
+            HINTS ${CUDA_TOOLKIT_ROOT_DIR}/lib/x64)
+    else()
+        find_library(CUDA_CUDART_LIBRARY
+            NAMES cudart
+            HINTS
+                ${CUDA_TOOLKIT_ROOT_DIR}/lib64
+                ${CUDA_TOOLKIT_ROOT_DIR}/lib
+                ${CUDA_TOOLKIT_ROOT_DIR}/targets/x86_64-linux/lib)
+    endif()
+    if(NOT CUDA_INCLUDE_DIR OR NOT CUDA_CUDART_LIBRARY)
+        message(FATAL_ERROR
+            "CUDA Runtime not found below CUDA_TOOLKIT_ROOT_DIR "
+            "(${CUDA_TOOLKIT_ROOT_DIR}).")
+    endif()
+    set(CUDA_INCLUDE_DIRS ${CUDA_INCLUDE_DIR})
+    set(CUDA_LIBRARIES ${CUDA_CUDART_LIBRARY})
+    message(STATUS "CUDA Runtime: ${CUDA_CUDART_LIBRARY}")
 
     set(CMAKE_BUILD_RPATH "${TensorRT_DIR}/lib;${CUDA_TOOLKIT_ROOT_DIR}/lib64;${CUDA_TOOLKIT_ROOT_DIR}/lib")
     set(CMAKE_INSTALL_RPATH "${TensorRT_DIR}/lib;${CUDA_TOOLKIT_ROOT_DIR}/lib64;${CUDA_TOOLKIT_ROOT_DIR}/lib")
@@ -211,7 +238,7 @@ if(WIN32 AND HIVEMIND_BACKEND STREQUAL "onnxruntime")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ONNXRuntime_DLL}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
         COMMENT "Copying ONNX Runtime beside hivemind.exe")
-elseif(HIVEMIND_BACKEND STREQUAL "tensorrt")
+elseif(UNIX AND HIVEMIND_BACKEND STREQUAL "tensorrt")
     file(WRITE "${CMAKE_BINARY_DIR}/hivemind"
     "#!/bin/sh\n"
     "set -e\n"

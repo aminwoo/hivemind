@@ -59,7 +59,7 @@ hivemind/
 - CMake 3.16+
 - C++23 compatible compiler
 - Windows or Linux with ONNX Runtime (portable CPU build), or
-- Linux with CUDA Toolkit 13.0+ and TensorRT 10.14+ (NVIDIA GPU build)
+- Windows or Linux with CUDA 13+ and TensorRT 10.14+ (NVIDIA GPU build)
 
 ### Training (Python)
 
@@ -76,7 +76,7 @@ cmake ..
 make -j$(nproc)
 ```
 
-For a Windows-compatible CPU build or ready-to-distribute Windows/Linux zip,
+For CPU and NVIDIA GPU builds, plus ready-to-distribute Windows/Linux ZIPs,
 see [the engine build and release guide](engine/README.md).
 
 ## Installation (Python)

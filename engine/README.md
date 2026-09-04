@@ -6,7 +6,7 @@ The engine builds against either of two backends, selected with
 | | `tensorrt` (default) | `onnxruntime` |
 |---|---|---|
 | Requires | CUDA 13+, TensorRT 10.14+, NVIDIA GPU | ONNX Runtime |
-| Platforms | Linux + NVIDIA | Linux / macOS / Windows |
+| Platforms | Linux / Windows + NVIDIA | Linux / macOS / Windows |
 | Precision | FP16 | FP16 or FP32 |
 | Redistributable size | ~2 GB | ~28 MB |
 
@@ -52,17 +52,30 @@ Unix shell, or POSIX compatibility layer is needed.
 
 ### Building the TensorRT backend
 
-Unchanged from before:
+On Linux:
 
 ```bash
 cmake --preset ninja-fast \
     -DTensorRT_DIR=/path/to/TensorRT -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
-```
-
-cmake --preset ninja-fast -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-fast -j "$(nproc)"
 ./build-ninja/hivemind \
 	--network "$(realpath ../src/training/weights/rl/model-rl-final-v3.0.onnx)"
+```
+
+On Windows, use a Developer PowerShell for Visual Studio and point CMake at
+the extracted TensorRT SDK and CUDA Runtime redistributable:
+
+```powershell
+cmake -S engine -B engine/build-tensorrt -A x64 `
+  -DHIVEMIND_BACKEND=tensorrt `
+  -DTensorRT_DIR=C:\path\to\TensorRT-11.1.0.106 `
+  -DCUDA_TOOLKIT_ROOT_DIR=C:\path\to\cuda-runtime
+cmake --build engine/build-tensorrt --config Release --parallel
+```
+
+The Windows backend loads TensorRT builder-resource DLLs from the executable
+directory. FP32-to-FP16 conversion uses `.venv\\Scripts\\python.exe` or
+`python` and can be overridden with `HIVEMIND_PYTHON`.
 
 When a TensorRT plan is missing or stale, Hivemind accepts an FP32 ONNX model
 and converts it to a temporary all-FP16 graph before building the plan. Plan
@@ -132,20 +145,30 @@ full-search NPS for each contestant and every effective search parameter.
 cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"
 
-## Ubuntu release bundle
+## TensorRT release bundles
 
-Build a generic x86-64 Ubuntu zip containing the engine, an ONNX network, and
-the local TensorRT runtime and builder libraries:
+Build a generic x86-64 Linux ZIP containing the engine, an ONNX network, and
+the local TensorRT and CUDA runtime libraries:
 
 ```bash
 ./scripts/package_ubuntu_release.sh \
     --model /path/to/model.onnx \
-    --name hivemind-v2.1.0-ubuntu-x86_64
+    --name hivemind-v2.2.1-linux-x86_64-tensorrt
 ```
 
 Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
 not need to install CUDA or TensorRT. The first launch builds a TensorRT plan
 for their GPU and caches it beside the bundled model.
+
+Build the equivalent package from a Developer PowerShell on Windows:
+
+```powershell
+python engine/scripts/package_windows_tensorrt_release.py `
+  --model C:\path\to\model.onnx `
+  --tensorrt-root C:\path\to\TensorRT-11.1.0.106 `
+  --cuda-root C:\path\to\cuda-runtime `
+  --name hivemind-v2.2.1-windows-x86_64-tensorrt
+```
 
 ## Portable Windows and Linux release bundles
 
@@ -154,10 +177,11 @@ Build the ONNX Runtime CPU bundle natively on either operating system:
 ```bash
 python tools/fetch_onnxruntime.py
 python engine/scripts/package_portable_release.py \
-    --model model-fp16.onnx --name hivemind-v2.2.0-linux-x86_64
+    --model model-fp16.onnx --name hivemind-v2.2.1-linux-x86_64-onnxruntime
 ```
 
 On Windows, use the same Python command and a
-`hivemind-v2.2.0-windows-x86_64` name. The zip includes the engine, FP16 model,
-ONNX Runtime, licenses, and checksums. It does not require a GPU. Tagged builds
-are created for both systems by `.github/workflows/portable-release.yml`.
+`hivemind-v2.2.1-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
+FP16 model, ONNX Runtime, licenses, and checksums. It does not require a GPU.
+Tagged builds create ONNX Runtime and TensorRT archives for both Linux and
+Windows through `.github/workflows/portable-release.yml`.

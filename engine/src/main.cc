@@ -122,19 +122,6 @@ int main(int argc, char* argv[]) {
     // chess GUIs commonly launch engines with an unrelated working directory.
     Stockfish::CommandLine::init(argc, argv);
 
-    // How many Engine instances to build: one per CUDA device, or a single
-    // host engine on the portable backend.
-    int deviceCount = 1;
-#if defined(HIVEMIND_BACKEND_TENSORRT)
-    deviceCount = 0;
-    cudaError_t error_id = cudaGetDeviceCount(&deviceCount);
-    if (error_id != cudaSuccess) {
-        std::cerr << "cudaGetDeviceCount failed: " 
-                  << cudaGetErrorString(error_id) << std::endl;
-        return EXIT_FAILURE;
-    }
-#endif
-
     // Parse --log argument first (can appear anywhere)
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "--help") == 0) || (strcmp(argv[i], "-h") == 0)) {
@@ -151,6 +138,20 @@ int main(int argc, char* argv[]) {
             i--;  // Recheck this position
         }
     }
+
+    // How many Engine instances to build: one per CUDA device, or a single
+    // host engine on the portable backend. Handle --help first so packaged
+    // GPU builds can be smoke-tested on CI hosts without an NVIDIA device.
+    int deviceCount = 1;
+#if defined(HIVEMIND_BACKEND_TENSORRT)
+    deviceCount = 0;
+    cudaError_t error_id = cudaGetDeviceCount(&deviceCount);
+    if (error_id != cudaSuccess) {
+        std::cerr << "cudaGetDeviceCount failed: "
+                  << cudaGetErrorString(error_id) << std::endl;
+        return EXIT_FAILURE;
+    }
+#endif
 
     init_fairy_stockfish();
 

@@ -5,14 +5,20 @@
 #include <cstdlib>
 #include <filesystem>
 #include <cuda_fp16.h>
-#include <dlfcn.h>
 #include <iostream>
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#include <windows.h>
+#else
+#include <dlfcn.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <vector>
+#endif
 
 #include "nn/onnx_utils.h"
 
@@ -21,6 +27,18 @@ namespace {
 constexpr int BUILDER_OPTIMIZATION_LEVEL = 5;
 constexpr std::string_view ENGINE_CACHE_SCHEMA = "hivemind-trt-cache-v5";
 constexpr std::string_view FP16_CONVERTER_SCHEMA = "onnxruntime-fp16-v1";
+
+#if defined(_WIN32)
+std::filesystem::path executableDirectory() {
+    std::vector<wchar_t> buffer(32768);
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) {
+        return std::filesystem::current_path();
+    }
+    return std::filesystem::path(buffer.data(), buffer.data() + length).parent_path();
+}
+#endif
 
 std::string engineBuildDescriptor(int deviceId, int batchSize) {
     cudaDeviceProp deviceProperties{};
@@ -76,10 +94,13 @@ void preloadTensorRTBuilderResources() {
         std::error_code errorCode;
         const char* configuredLibraryDir =
             std::getenv("HIVEMIND_TENSORRT_LIBRARY_DIR");
-        const fs::path libraryDir(
-            configuredLibraryDir && *configuredLibraryDir
-                ? configuredLibraryDir
-                : TENSORRT_LIBRARY_DIR);
+        const fs::path libraryDir = configuredLibraryDir && *configuredLibraryDir
+            ? fs::path(configuredLibraryDir)
+#if defined(_WIN32)
+            : executableDirectory();
+#else
+            : fs::path(TENSORRT_LIBRARY_DIR);
+#endif
         if (!fs::exists(libraryDir, errorCode)) {
             std::cerr << "TensorRT library directory not found: " << libraryDir << std::endl;
             return;
@@ -94,15 +115,32 @@ void preloadTensorRTBuilderResources() {
             }
 
             const std::string fileName = entry.path().filename().string();
-            if (fileName.rfind("libnvinfer_builder_resource_", 0) != 0) {
+#if defined(_WIN32)
+            const bool isBuilderResource =
+                fileName.rfind("nvinfer_builder_resource_", 0) == 0
+                && entry.path().extension() == ".dll";
+#else
+            const bool isBuilderResource =
+                fileName.rfind("libnvinfer_builder_resource_", 0) == 0;
+#endif
+            if (!isBuilderResource) {
                 continue;
             }
 
+#if defined(_WIN32)
+            HMODULE handle = LoadLibraryW(entry.path().c_str());
+            if (!handle) {
+                std::cerr << "Failed to preload TensorRT resource library "
+                          << entry.path() << " (Windows error "
+                          << GetLastError() << ')' << std::endl;
+            }
+#else
             void* handle = dlopen(entry.path().c_str(), RTLD_NOW | RTLD_GLOBAL);
             if (!handle) {
                 std::cerr << "Failed to preload TensorRT resource library "
                           << entry.path() << ": " << dlerror() << std::endl;
             }
+#endif
         }
     });
 }
@@ -133,6 +171,29 @@ size_t elementsPerBatch(const nvinfer1::Dims& dims) {
 bool runFp16Converter(const std::string& python,
                       const std::filesystem::path& input,
                       const std::filesystem::path& output) {
+#if defined(_WIN32)
+    const std::filesystem::path executable(python);
+    const char* configuredConverter =
+        std::getenv("HIVEMIND_FP16_CONVERTER_SCRIPT");
+    std::filesystem::path converter = configuredConverter && *configuredConverter
+        ? std::filesystem::path(configuredConverter)
+        : executableDirectory() / "convert_onnx_fp16.py";
+    if (!std::filesystem::is_regular_file(converter)) {
+        converter = HIVEMIND_FP16_CONVERTER_SCRIPT;
+    }
+    const std::wstring executableString = executable.wstring();
+    const std::wstring converterString = converter.wstring();
+    const std::wstring inputString = input.wstring();
+    const std::wstring outputString = output.wstring();
+    const wchar_t* arguments[] = {
+        executableString.c_str(),
+        converterString.c_str(),
+        inputString.c_str(),
+        outputString.c_str(),
+        nullptr,
+    };
+    return _wspawnvp(_P_WAIT, executableString.c_str(), arguments) == 0;
+#else
     const pid_t child = fork();
     if (child < 0) {
         return false;
@@ -151,6 +212,7 @@ bool runFp16Converter(const std::string& python,
     int status = 0;
     return waitpid(child, &status, 0) == child &&
            WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#endif
 }
 
 bool convertOnnxToFp16(const std::filesystem::path& input,
@@ -160,11 +222,20 @@ bool convertOnnxToFp16(const std::filesystem::path& input,
         pythonCandidates.emplace_back(configuredPython);
     }
     const std::filesystem::path workspacePython =
-        std::filesystem::path(HIVEMIND_WORKSPACE_ROOT) / ".venv/bin/python";
+        std::filesystem::path(HIVEMIND_WORKSPACE_ROOT)
+#if defined(_WIN32)
+        / ".venv/Scripts/python.exe";
+#else
+        / ".venv/bin/python";
+#endif
     if (std::filesystem::is_regular_file(workspacePython)) {
         pythonCandidates.push_back(workspacePython.string());
     }
+#if defined(_WIN32)
+    pythonCandidates.emplace_back("python");
+#else
     pythonCandidates.emplace_back("python3");
+#endif
 
     for (const std::string& python : pythonCandidates) {
         if (runFp16Converter(python, input, output)) {
