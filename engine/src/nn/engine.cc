@@ -9,6 +9,7 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #if defined(_WIN32)
@@ -397,8 +398,11 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
             std::cerr << "Failed to create TensorRT ONNX parser" << std::endl;
             return false;
         }
+        // path::c_str() is wchar_t* on Windows, but the parser takes a narrow
+        // path, so hand it a string that outlives the call.
+        const std::string modelPath = path.string();
         return parser->parseFromFile(
-            path.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING));
+            modelPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING));
     };
 
     // A network is usable as-is only when every tensor is already FP16; a single
