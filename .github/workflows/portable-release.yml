@@ -26,6 +26,7 @@ permissions:
 env:
   TENSORRT_VERSION: 11.1.0.106
   CUDA_RUNTIME_VERSION: 13.3.29
+  CUDA_CRT_VERSION: 13.3.33
 
 jobs:
   prepare-model:
@@ -130,7 +131,13 @@ jobs:
             --output "$RUNNER_TEMP/cuda-cudart.tar.xz"
           tar -xJf "$RUNNER_TEMP/cuda-cudart.tar.xz" \
             -C "$RUNNER_TEMP/nvidia/cuda" --strip-components=1
-          rm "$RUNNER_TEMP/tensorrt.tar.zst" "$RUNNER_TEMP/cuda-cudart.tar.xz"
+          curl --fail --location --retry 3 \
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-${CUDA_CRT_VERSION}-archive.tar.xz" \
+            --output "$RUNNER_TEMP/cuda-crt.tar.xz"
+          tar -xJf "$RUNNER_TEMP/cuda-crt.tar.xz" \
+            -C "$RUNNER_TEMP/nvidia/cuda" --strip-components=1
+          rm "$RUNNER_TEMP/tensorrt.tar.zst" \
+            "$RUNNER_TEMP/cuda-cudart.tar.xz" "$RUNNER_TEMP/cuda-crt.tar.xz"
       - name: Build and package TensorRT
         shell: bash
         run: |
@@ -171,12 +178,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $nvidia = Join-Path $env:RUNNER_TEMP "nvidia"
           $tensorrt = Join-Path $nvidia "tensorrt"
           $cuda = Join-Path $nvidia "cuda"
           New-Item -ItemType Directory -Force $tensorrt, $cuda | Out-Null
           $trtArchive = Join-Path $env:RUNNER_TEMP "tensorrt.zip"
           $cudaArchive = Join-Path $env:RUNNER_TEMP "cuda-cudart.zip"
+          $crtArchive = Join-Path $env:RUNNER_TEMP "cuda-crt.zip"
           curl.exe --fail --location --retry 3 `
             "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.1.0/zip/TensorRT-Enterprise-$env:TENSORRT_VERSION-Windows-amd64-cuda-13.3-Release-external.zip" `
             --output $trtArchive
@@ -185,11 +194,16 @@ jobs:
             "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-$env:CUDA_RUNTIME_VERSION-archive.zip" `
             --output $cudaArchive
           tar -xf $cudaArchive -C $cuda --strip-components 1
-          Remove-Item $trtArchive, $cudaArchive
+          curl.exe --fail --location --retry 3 `
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-$env:CUDA_CRT_VERSION-archive.zip" `
+            --output $crtArchive
+          tar -xf $crtArchive -C $cuda --strip-components 1
+          Remove-Item $trtArchive, $cudaArchive, $crtArchive
       - name: Build and package TensorRT
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $tensorrt = Join-Path $env:RUNNER_TEMP "nvidia/tensorrt"
           $cuda = Join-Path $env:RUNNER_TEMP "nvidia/cuda"
           python engine/scripts/package_windows_tensorrt_release.py `
