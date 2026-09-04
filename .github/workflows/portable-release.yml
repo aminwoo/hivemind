@@ -27,6 +27,7 @@ env:
   TENSORRT_VERSION: 11.1.0.106
   CUDA_RUNTIME_VERSION: 13.3.29
   CUDA_CRT_VERSION: 13.3.33
+  CUDA_CCCL_VERSION: 13.3.3.3.1
 
 jobs:
   prepare-model:
@@ -127,17 +128,23 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/tensorrt.tar.zst" \
             -C "$RUNNER_TEMP/nvidia/tensorrt" --strip-components=1
           curl --fail --location --retry 3 \
-            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-${CUDA_RUNTIME_VERSION}-archive.tar.xz" \
-            --output "$RUNNER_TEMP/cuda-cudart.tar.xz"
-          tar -xJf "$RUNNER_TEMP/cuda-cudart.tar.xz" \
+            "https://developer.download.nvidia.com/compute/cuda/redist/cccl/linux-x86_64/cccl-linux-x86_64-${CUDA_CCCL_VERSION}-archive.tar.xz" \
+            --output "$RUNNER_TEMP/cuda-cccl.tar.xz"
+          tar -xJf "$RUNNER_TEMP/cuda-cccl.tar.xz" \
             -C "$RUNNER_TEMP/nvidia/cuda" --strip-components=1
           curl --fail --location --retry 3 \
             "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-${CUDA_CRT_VERSION}-archive.tar.xz" \
             --output "$RUNNER_TEMP/cuda-crt.tar.xz"
           tar -xJf "$RUNNER_TEMP/cuda-crt.tar.xz" \
             -C "$RUNNER_TEMP/nvidia/cuda" --strip-components=1
-          rm "$RUNNER_TEMP/tensorrt.tar.zst" \
-            "$RUNNER_TEMP/cuda-cudart.tar.xz" "$RUNNER_TEMP/cuda-crt.tar.xz"
+          curl --fail --location --retry 3 \
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-${CUDA_RUNTIME_VERSION}-archive.tar.xz" \
+            --output "$RUNNER_TEMP/cuda-cudart.tar.xz"
+          tar -xJf "$RUNNER_TEMP/cuda-cudart.tar.xz" \
+            -C "$RUNNER_TEMP/nvidia/cuda" --strip-components=1
+          test -f "$RUNNER_TEMP/nvidia/cuda/include/nv/target"
+          rm "$RUNNER_TEMP/tensorrt.tar.zst" "$RUNNER_TEMP/cuda-cccl.tar.xz" \
+            "$RUNNER_TEMP/cuda-crt.tar.xz" "$RUNNER_TEMP/cuda-cudart.tar.xz"
       - name: Build and package TensorRT
         shell: bash
         run: |
@@ -186,19 +193,27 @@ jobs:
           $trtArchive = Join-Path $env:RUNNER_TEMP "tensorrt.zip"
           $cudaArchive = Join-Path $env:RUNNER_TEMP "cuda-cudart.zip"
           $crtArchive = Join-Path $env:RUNNER_TEMP "cuda-crt.zip"
+          $ccclArchive = Join-Path $env:RUNNER_TEMP "cuda-cccl.zip"
           curl.exe --fail --location --retry 3 `
             "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.1.0/zip/TensorRT-Enterprise-$env:TENSORRT_VERSION-Windows-amd64-cuda-13.3-Release-external.zip" `
             --output $trtArchive
           tar -xf $trtArchive -C $tensorrt --strip-components 1
           curl.exe --fail --location --retry 3 `
-            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-$env:CUDA_RUNTIME_VERSION-archive.zip" `
-            --output $cudaArchive
-          tar -xf $cudaArchive -C $cuda --strip-components 1
+            "https://developer.download.nvidia.com/compute/cuda/redist/cccl/windows-x86_64/cccl-windows-x86_64-$env:CUDA_CCCL_VERSION-archive.zip" `
+            --output $ccclArchive
+          tar -xf $ccclArchive -C $cuda --strip-components 1
           curl.exe --fail --location --retry 3 `
             "https://developer.download.nvidia.com/compute/cuda/redist/cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-$env:CUDA_CRT_VERSION-archive.zip" `
             --output $crtArchive
           tar -xf $crtArchive -C $cuda --strip-components 1
-          Remove-Item $trtArchive, $cudaArchive, $crtArchive
+          curl.exe --fail --location --retry 3 `
+            "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-$env:CUDA_RUNTIME_VERSION-archive.zip" `
+            --output $cudaArchive
+          tar -xf $cudaArchive -C $cuda --strip-components 1
+          if (-not (Test-Path (Join-Path $cuda "include/nv/target"))) {
+            throw "CCCL headers are missing from the CUDA include tree"
+          }
+          Remove-Item $trtArchive, $cudaArchive, $crtArchive, $ccclArchive
       - name: Build and package TensorRT
         shell: pwsh
         run: |
