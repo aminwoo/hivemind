@@ -12,10 +12,12 @@ add_executable(
   hivemind_tests
   test_backend_compat.cc
   test_move_gen.cc
+  test_tactical_movegen.cc
   test_draw_detection.cc
   test_mate_detection.cc
   test_mate_probe.cc
   test_onnx_utils.cc
+  test_uci.cc
   test_tournament.cc
   test_node_concurrency.cc
 )

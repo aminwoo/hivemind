@@ -3553,6 +3553,91 @@ TEST_F(EngineTest, RootLossScanRespectsImmediateCaptureFeedMateRace) {
     }
 }
 
+// Regression for nachos position 1. After Black plays B@c6 on Board B,
+// White can capture either knight with the queen. That capture supplies a
+// knight to Black on Board A, where N@f3 is immediately decisive.
+TEST_F(EngineTest, DetectsKnightCaptureFeedAfterBc6) {
+    Board board;
+    board.set(
+        "r1b1k2r/ppp1qp1p/2P1pp1p/3p2n1/3P4/2P1N3/P1P1NPPP/R1BQKB1R[Bp] b KQkq - 0 1"
+        "|"
+        "r1b1kb1r/pppnq2p/4p1p1/6N1/3P4/2n2Q2/P1P1nPPP/R1B2R1K[PPNb] b kq - 0 1");
+
+    std::vector<Stockfish::Move> losingDrops;
+    for (const std::string defense : {"B@c6", "B@h5", "B@c4", "e7g7"}) {
+        Board defended(board);
+        const Stockfish::Move bishopDrop = find_move(
+            defended, BOARD_B, defense);
+        ASSERT_NE(bishopDrop, Stockfish::MOVE_NONE) << defense;
+        defended.push_move(BOARD_B, bishopDrop);
+
+        JointActionCandidate mateAction;
+        int matePly = 0;
+        ASSERT_TRUE(Agent::find_root_mate(
+            defended, Stockfish::BLACK, true,
+            mateAction, matePly, 100000)) << defense;
+        EXPECT_EQ(mateAction.moveA, Stockfish::MOVE_NONE);
+        ASSERT_NE(mateAction.moveB, Stockfish::MOVE_NONE);
+        const std::string capture = defended.uci_move(
+            BOARD_B, mateAction.moveB);
+        EXPECT_TRUE(capture == "f3e2" || capture == "f3c3")
+            << defense << ": " << capture;
+        EXPECT_EQ(matePly, 5) << defense;
+        losingDrops.push_back(bishopDrop);
+    }
+
+    std::vector<RootLossProof> proofs;
+    std::vector<JointActionCandidate> preferredActions;
+    for (Stockfish::Move move : losingDrops) {
+        JointActionCandidate preferred;
+        preferred.moveB = move;
+        preferredActions.push_back(preferred);
+    }
+    Agent::find_root_loss_proofs(
+        board, Stockfish::WHITE, false, proofs, 10000000,
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(120),
+        nullptr, &preferredActions);
+    for (const std::string defense : {"B@c6", "B@h5", "B@c4", "e7g7"}) {
+        EXPECT_TRUE(std::any_of(
+            proofs.begin(), proofs.end(), [&](const RootLossProof& proof) {
+                return proof.action.moveA == Stockfish::MOVE_NONE
+                    && proof.action.moveB != Stockfish::MOVE_NONE
+                    && board.uci_move(BOARD_B, proof.action.moveB) == defense;
+            })) << defense;
+    }
+}
+
+// Regression for nachos position 2. Black is in check on board B and has only
+// two king moves; both lose, one to a mate in 3 and one to a 12-ply proof that
+// runs through a capture feed. The scan proved this feed-first in 1586ms - past
+// any window a 1000ms move can give it - and reaches it inside the live budget
+// only because the direct bound is searched first.
+TEST_F(EngineTest, ProvesBothKingMovesLoseWithinTheLiveBudget) {
+    Board board;
+    board.set(
+        "r3k2B/pppbrp1p/8/1P4b1/8/PPP1nP2/4NPnP/1N1Q2KR[QRRBPppp] b q - 4 32"
+        "|"
+        "1n6/4qP1p/ppkb2pN/3B1b2/2P5/3N4/PP2pPpP/3B2K1[RPPqrrnpp] b - - 2 37");
+
+    std::vector<RootLossProof> proofs;
+    const auto start = std::chrono::steady_clock::now();
+    // What a 1000ms move actually hands the reverse scan.
+    const bool proven = Agent::find_root_loss_proofs(
+        board, Stockfish::WHITE, false, proofs, 2000000,
+        start + std::chrono::milliseconds(800));
+
+    EXPECT_TRUE(proven);
+    ASSERT_EQ(proofs.size(), 2u);
+    for (const std::string defense : {"c6d7", "c6c7"}) {
+        EXPECT_TRUE(std::any_of(
+            proofs.begin(), proofs.end(), [&](const RootLossProof& proof) {
+                return proof.action.moveA == Stockfish::MOVE_NONE
+                    && proof.action.moveB != Stockfish::MOVE_NONE
+                    && board.uci_move(BOARD_B, proof.action.moveB) == defense;
+            })) << defense;
+    }
+}
+
 TEST_F(EngineTest, RootLossScanRejectsQueenPromotionBeforePartnerMate) {
     Board board;
     board.set(
@@ -3718,6 +3803,80 @@ TEST_F(EngineTest, RootMateScanStopsAtItsDeadline) {
 
     EXPECT_FALSE(found);
     EXPECT_LT(elapsedMs, 200.0);
+}
+
+// The probe runs beside the workers for the whole move, so a caller must hear
+// about a mate on the second board as soon as it lands rather than when the
+// first board's share of the budget has also been spent.
+TEST_F(EngineTest, RootProbePublishesEachBoardAsItLands) {
+    Board board;
+    board.set(
+        // No mate here, so this board spends its whole share of the budget.
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] b KQkq - 0 1"
+        "|"
+        // B@f7 mates, and it needs a quiet preparing move, so only the probe
+        // sees it. Being ahead on time is what lets board A sit through it.
+        "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2");
+
+    JointActionCandidate probedAction;
+    int probedPly = 0;
+    std::string probedPv;
+    int publishes = 0;
+    Stockfish::Move publishedMove = Stockfish::MOVE_NONE;
+    int publishedPly = 0;
+
+    ASSERT_TRUE(Agent::probe_root_mate(
+        board, Stockfish::BLACK, true, 1200, {},
+        probedAction, probedPly, probedPv,
+        [&] {
+            ++publishes;
+            publishedMove = probedAction.moveB;
+            publishedPly = probedPly;
+        }));
+
+    EXPECT_EQ(probedAction.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(probedAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, probedAction.moveB), "B@f7");
+    EXPECT_GT(probedPly, 1);
+    EXPECT_FALSE(probedPv.empty());
+    // One accepted board, and the caller saw the same answer the return did.
+    EXPECT_EQ(publishes, 1);
+    EXPECT_EQ(publishedMove, probedAction.moveB);
+    EXPECT_EQ(publishedPly, probedPly);
+}
+
+// A probe that finds nothing publishes nothing, so a concurrent caller is
+// never handed a move to play on the strength of an empty search.
+TEST_F(EngineTest, RootProbePublishesNothingWithoutAMate) {
+    Board board;
+    board.set(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1"
+        "|"
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] b KQkq - 0 1");
+
+    JointActionCandidate probedAction;
+    int probedPly = 0;
+    std::string probedPv;
+    int publishes = 0;
+
+    EXPECT_FALSE(Agent::probe_root_mate(
+        board, Stockfish::WHITE, true, 60, {},
+        probedAction, probedPly, probedPv, [&] { ++publishes; }));
+    EXPECT_EQ(publishes, 0);
+}
+
+TEST(MateSearchBudgetTest, StopsAtCancellationPollingBoundary) {
+    std::atomic<bool> cancelled{true};
+    Agent::MateSearchBudget budget;
+    budget.cancelled = &cancelled;
+
+    for (uint32_t probe = 1;
+         probe < SearchParams::MATE_SEARCH_TIME_CHECK_INTERVAL;
+         ++probe) {
+        EXPECT_TRUE(budget.consume());
+    }
+    EXPECT_FALSE(budget.consume());
+    EXPECT_TRUE(budget.exhausted);
 }
 
 // The capture-feed allowance is derived from the caller's budget instead of a

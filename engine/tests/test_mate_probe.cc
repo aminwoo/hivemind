@@ -7,8 +7,30 @@
 #include "environment/board.h"
 #include "environment/constants.h"
 #include "search/mate_probe.h"
+#include "search/search_params.h"
 
 #include "Fairy-Stockfish/src/types.h"
+
+// The root probe accepts mates beyond the exact check-only scan's horizon.
+// Those answers must not be held until movetime expires by a second, smaller
+// early-exit limit (notably mate in 7 and mate in 13 in the Nachos suite).
+TEST(MateProbeEarlyExitTest, AcceptsEverySupportedMateDistance) {
+    ASSERT_TRUE(SearchParams::ENABLE_MATE_EARLY_EXIT);
+    for (int moves = 1; moves <= SearchParams::MATE_PROBE_MAX_MATE_MOVES;
+         ++moves) {
+        EXPECT_TRUE(SearchParams::mate_probe_can_end_search(2 * moves - 1))
+            << "mate in " << moves;
+    }
+}
+
+TEST(MateProbeEarlyExitTest, RejectsInvalidAndOutOfRangeDistances) {
+    EXPECT_FALSE(SearchParams::mate_probe_can_end_search(-1));
+    EXPECT_FALSE(SearchParams::mate_probe_can_end_search(0));
+    EXPECT_FALSE(SearchParams::mate_probe_can_end_search(
+        2 * SearchParams::MATE_PROBE_MAX_MATE_MOVES));
+    EXPECT_FALSE(SearchParams::mate_probe_can_end_search(
+        2 * (SearchParams::MATE_PROBE_MAX_MATE_MOVES + 1) - 1));
+}
 
 class MateProbeTest : public ::testing::Test {
 protected:
