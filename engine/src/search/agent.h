@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <exception>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -238,6 +239,10 @@ public:
         bool exhausted = false;
         Clock::time_point deadline{};
         uint32_t probesSinceTimeCheck = 0;
+        const std::atomic<bool>* cancelled = nullptr;
+        // The concurrent MCTS root stays alive until the scans have unwound.
+        // A solved root makes further winning/reverse proofs unnecessary.
+        const Node* stopOnSolvedRoot = nullptr;
 
         bool consume() {
             if (exhausted) {
@@ -247,11 +252,10 @@ public:
                 exhausted = true;
                 return false;
             }
-            if (deadline != Clock::time_point{}
-                && ++probesSinceTimeCheck
-                       >= SearchParams::MATE_SEARCH_TIME_CHECK_INTERVAL) {
+            if (++probesSinceTimeCheck
+                    >= SearchParams::MATE_SEARCH_TIME_CHECK_INTERVAL) {
                 probesSinceTimeCheck = 0;
-                if (Clock::now() >= deadline) {
+                if (out_of_time()) {
                     exhausted = true;
                     return false;
                 }
@@ -276,7 +280,12 @@ public:
 
         /// Stop condition for loops that do not consume node probes.
         bool out_of_time() const {
-            return deadline != Clock::time_point{} && Clock::now() >= deadline;
+            return (cancelled
+                    && cancelled->load(std::memory_order_relaxed))
+                || (SearchParams::ENABLE_MATE_EARLY_EXIT && stopOnSolvedRoot
+                    && stopOnSolvedRoot->get_node_type() != NodeType::UNSOLVED)
+                || (deadline != Clock::time_point{}
+                    && Clock::now() >= deadline);
         }
     };
 
@@ -302,6 +311,26 @@ public:
         MateSearchBudget::Clock::time_point deadline = {});
 
     /**
+     * @brief Bounded Fairy-Stockfish mate search for the root, board by board.
+     *
+     * Answers the question the checking-move scans cannot ask - a mate that
+     * needs a quiet preparing move - and reports it as a strong candidate
+     * rather than a proof: the move it names is checked against this board,
+     * and against the partner board's right to sit while the line is played.
+     *
+     * The boards are searched one after the other out of one budget, so a
+     * caller running this beside its own search is told through @p onMate as
+     * each mate lands rather than only when the last board's share is spent.
+     * The out parameters hold the shortest mate found so far whenever it runs.
+     */
+    static bool probe_root_mate(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        int budgetMs, const std::function<bool()>& abort,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        std::string& outPrincipalVariation,
+        const std::function<void()>& onMate = {});
+
+    /**
      * @brief Proves that every legal root action permits a forced opponent mate.
      *
      * Returns the action that delays terminal loss longest. Exhausting the
@@ -324,7 +353,10 @@ public:
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         std::vector<RootLossProof>& outProofs,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
-        MateSearchBudget::Clock::time_point deadline = {});
+        MateSearchBudget::Clock::time_point deadline = {},
+        const std::atomic<bool>* cancelled = nullptr,
+        const std::vector<JointActionCandidate>* preferredActions = nullptr,
+        Node* liveRoot = nullptr);
     
     /**
      * @brief Extracts PV line starting from a specific child index.
@@ -444,6 +476,14 @@ public:
                              const SearchOptions& options);
 
 private:
+    struct SingleBoardMateCacheEntry {
+        Stockfish::Move move = Stockfish::MOVE_NONE;
+        int plyToMate = 0;
+        std::vector<MateProofPly> principalVariation;
+    };
+    using SingleBoardMateCache =
+        std::unordered_map<std::string, SingleBoardMateCacheEntry>;
+
     static bool search_single_board_forced_mate_impl(
         Board& board, int boardNum, Stockfish::Color attackerColor,
         int currentPly, int maxAttackerMoves,
@@ -462,6 +502,9 @@ private:
         MateSearchBudget::Clock::time_point deadline = {},
         bool includeImmediateMate = true,
         bool attackerWinsMateRace = false,
-        std::vector<MateProofPly>* outPrincipalVariation = nullptr);
+        std::vector<MateProofPly>* outPrincipalVariation = nullptr,
+        const std::atomic<bool>* cancelled = nullptr,
+        SingleBoardMateCache* singleBoardMateCache = nullptr,
+        const Node* stopOnSolvedRoot = nullptr);
     
 };

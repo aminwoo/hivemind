@@ -377,9 +377,17 @@ constexpr int MATE_PROBE_MAX_MATE_MOVES = 16;
 // found" where it means "not yet", and one such reply discards the candidate.
 // It is faster where it does apply - the suite's first position proves in 937ms
 // against 1730ms - but costs 3 to 4 of 36 suite matches, equally at 2000, 6000
-// and 20000 nodes per question, so it is not a budget problem. The shape that
-// would fit is a hybrid: checks-only for the per-reply verdicts, and this only
-// for the candidate that survives them.
+// and 20000 nodes per question, so it is not a budget problem.
+//
+// Falling back to the checks-only scan on a probe miss answers that objection
+// and still costs matches, now on the clock rather than on verdicts: the
+// probes spend the pre-pass window the exact scan needs, and the suite's
+// four-move capture-feed mate goes missing at 1000ms - 2 of 42, both
+// orientations of one position. Asking the probe for direct mates ahead of the
+// exact scan is worse again, 8 of 42, because a bounded search answers with
+// the mate it reached: a mate in 15 where the exact scan proves one in 2.
+// The shape that would fit is still the hybrid: checks-only for the per-reply
+// verdicts, and this only for the candidate that survives them.
 constexpr bool ENABLE_STOCKFISH_MATE_SEARCH = false;
 
 // Per-question ceiling for that probe, in the scan's own node currency, plus a
@@ -389,6 +397,17 @@ constexpr int MATE_PROBE_FEED_MAX_MS = 40;
 
 // The root probe asks one question per board per search, so it may spend more.
 constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 8000000;
+
+// Use the same evidence bound for accepting a probe mate and ending a move.
+// A separate five-move early-exit cap made accepted mates in 6..16 wait for
+// the deadline even though the probe had already stopped searching. These
+// remain single-board search claims, not exact two-board proofs; the caller
+// must still prefer an exact scan or a root already solved by MCTS.
+constexpr bool mate_probe_can_end_search(int plyToMate) {
+    return ENABLE_MATE_EARLY_EXIT && plyToMate > 0
+        && plyToMate <= 2 * MATE_PROBE_MAX_MATE_MOVES - 1;
+}
+
 
 // The probe answers with a searched mate score rather than an exact proof, and
 // it is the one part of the pre-pass that can be switched off without giving up
@@ -407,6 +426,14 @@ constexpr bool ENABLE_MATE_PROBE = true;
  * the average cost is far below the cap.
  */
 constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
+
+// The winning scan and reverse (move-safety) scan share the work already done
+// by concurrent MCTS, but the winning scan can consume its entire deadline.
+// Give the reverse scan a small bounded tail in which to certify the current
+// MCTS favourites. This is capped so long time controls do not turn it into a
+// second multi-second search.
+constexpr int ROOT_LOSS_EXTRA_TIME_PERCENT = 80;
+constexpr int ROOT_LOSS_EXTRA_MAX_MS = 800;
 
 /**
  * Tiny synchronous mate-in-one probe performed before neural workers start.

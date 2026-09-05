@@ -23,10 +23,7 @@ std::vector<Stockfish::Move> immediate_mates_on_board(
     Stockfish::Color victimTeam,
     bool victimTeamHasTimeAdvantage) {
     std::vector<Stockfish::Move> mates;
-    for (Stockfish::Move move : board.legal_moves(boardNum)) {
-        if (!board.gives_check(boardNum, move)) {
-            continue;
-        }
+    for (Stockfish::Move move : board.checking_moves(boardNum)) {
         board.push_move(boardNum, move);
         const bool isMate = board.is_checkmate(
             victimTeam, victimTeamHasTimeAdvantage);

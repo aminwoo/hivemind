@@ -180,6 +180,8 @@ class Board {
         bool is_legal_move(int board_num, Stockfish::Move move) const;
         bool has_any_legal_move(int board_num) const;
         std::vector<Stockfish::Move> legal_moves(int board_num);
+        /// Legal checks only; skips legality tests for non-checking candidates.
+        std::vector<Stockfish::Move> checking_moves(int board_num) const;
         std::vector<std::pair<int, Stockfish::Move>> legal_moves(Stockfish::Color side, bool teamHasTimeAdvantage = false);
 
         /**

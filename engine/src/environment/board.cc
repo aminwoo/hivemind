@@ -103,8 +103,14 @@ void Board::push_move(int board_num, Stockfish::Move move) {
 }
 
 bool Board::is_legal_move(int board_num, Stockfish::Move move) const {
-    return move == Stockfish::MOVE_NONE
-        || Stockfish::MoveList<Stockfish::LEGAL>(*pos[board_num]).contains(move);
+    if (move == Stockfish::MOVE_NONE) {
+        return true;
+    }
+    const Stockfish::Position& position = *pos[board_num];
+    return !position.is_immediate_game_end()
+        && position.pseudo_legal(move)
+        && !position.virtual_drop(move)
+        && position.legal(move);
 }
 
 bool Board::has_any_legal_move(int board_num) const {
@@ -162,11 +168,37 @@ void Board::pop_move(int board_num) {
 
 // Returns a list of legal moves for the specified board index.
 std::vector<Stockfish::Move> Board::legal_moves(int board_num) {
+    const Stockfish::MoveList<Stockfish::LEGAL> candidates(*pos[board_num]);
     std::vector<Stockfish::Move> legal_moves;
-    for (const Stockfish::ExtMove& move : Stockfish::MoveList<Stockfish::LEGAL>(*pos[board_num])) {
+    legal_moves.reserve(candidates.size());
+    for (const Stockfish::ExtMove& move : candidates) {
         legal_moves.emplace_back(move);
     }
     return legal_moves;
+}
+
+std::vector<Stockfish::Move> Board::checking_moves(int board_num) const {
+    const Stockfish::Position& position = *pos[board_num];
+    std::vector<Stockfish::Move> checks;
+    if (position.is_immediate_game_end()) {
+        return checks;
+    }
+
+    // Keep all move types, including checking evasions, en passant, castling
+    // and underpromotions. QUIET_CHECKS alone omits some of those. Filtering
+    // before legality avoids validating hundreds of irrelevant pocket drops.
+    Stockfish::ExtMove candidates[Stockfish::MAX_MOVES];
+    const Stockfish::ExtMove* end = position.checkers()
+        ? Stockfish::generate<Stockfish::EVASIONS>(position, candidates)
+        : Stockfish::generate<Stockfish::NON_EVASIONS>(position, candidates);
+    for (const Stockfish::ExtMove* candidate = candidates; candidate != end; ++candidate) {
+        if (!position.virtual_drop(*candidate)
+            && position.gives_check(*candidate)
+            && position.legal(*candidate)) {
+            checks.push_back(*candidate);
+        }
+    }
+    return checks;
 }
 
 // Returns a list of legal moves for the specified side by checking both boards.
