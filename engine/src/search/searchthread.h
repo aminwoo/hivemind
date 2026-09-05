@@ -93,6 +93,9 @@ struct LeafContext {
     vector<Stockfish::Move> actionsB;
     vector<uint8_t> capturesA;
     vector<uint8_t> capturesB;
+    vector<float> supplyWeightsA;
+    vector<float> supplyWeightsB;
+    float supplyPressure = 0.0f;
     vector<int> policyIndicesA;
     vector<int> policyIndicesB;
     Stockfish::Color teamToPlay;

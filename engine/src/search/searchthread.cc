@@ -1,4 +1,5 @@
 #include "search/searchthread.h"
+#include "search/supply_search.h"
 
 #include <chrono>
 #include <cmath>
@@ -575,6 +576,16 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         prepare_actions(BOARD_B, ctx.boardBOnTurn, ctx.actionsB,
                         ctx.capturesB, ctx.policyIndicesB);
 
+        if (runtimeConfig.supplyPolicyWeight > 0.0f) {
+            ctx.supplyWeightsA = SupplySearch::weights(
+                board, BOARD_A, ctx.teamToPlay, ctx.actionsA);
+            ctx.supplyWeightsB = SupplySearch::weights(
+                board, BOARD_B, ctx.teamToPlay, ctx.actionsB);
+        }
+        if (runtimeConfig.supplyValueWeight > 0.0f) {
+            ctx.supplyPressure = SupplySearch::pressure(board, ctx.teamToPlay);
+        }
+
         // Convert board to planes for this batch slot
         board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(), 
                         ctx.teamToPlay, ctx.sitPlaneActive);
@@ -680,6 +691,11 @@ void SearchThread::process_batch(
                     batchPiB, ctx.policyIndicesB);
             }
 
+            SupplySearch::mix_policy(priorsA, ctx.supplyWeightsA,
+                                    runtimeConfig.supplyPolicyWeight);
+            SupplySearch::mix_policy(priorsB, ctx.supplyWeightsB,
+                                    runtimeConfig.supplyPolicyWeight);
+
             auto action_factors = [jointFactorRank, jointVocabularySize](
                 const vector<Stockfish::Move>& actions,
                 const vector<int>& policyIndices,
@@ -767,7 +783,9 @@ void SearchThread::process_batch(
 
                 neuralValue *= 1.0f - discount * normalizedPlies;
             }
-            neuralValue = std::clamp(neuralValue, -1.0f, 1.0f);
+            neuralValue = std::clamp(
+                neuralValue + runtimeConfig.supplyValueWeight * ctx.supplyPressure,
+                -1.0f, 1.0f);
 
             backup(ctx.trajectory, neuralValue);
 

@@ -43,7 +43,7 @@ const Stockfish::Variant* bughouse_variant() {
 Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
              int budgetMs, const std::function<bool()>& abort) {
     Result result;
-    if (maxMateMoves <= 0 || budgetMs <= 0 || nodeBudget == 0) {
+    if (maxMateMoves <= 0 || budgetMs < 0 || nodeBudget == 0) {
         return result;
     }
 
@@ -91,8 +91,9 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
     Stockfish::Threads.increaseDepth = true;
     Stockfish::TT.new_search();
 
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
+    const auto deadline = budgetMs > 0
+        ? std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs)
+        : std::chrono::steady_clock::time_point::max();
     worker->start_searching();
     while (!Stockfish::Threads.stop) {
         if (worker->nodes.load(std::memory_order_relaxed) >= nodeBudget

@@ -29,6 +29,8 @@ TEST(TournamentConfigTest, SelectsAllStrengthParametersByContestant) {
     config.baselineMovesLeftDiscount = 0.9f;
     config.contenderQValueWeight = 0.6f;
     config.baselineQVetoDelta = 0.15f;
+    config.contenderSupplyPolicyWeight = 0.2f;
+    config.contenderSupplyValueWeight = 0.3f;
 
     const auto contender = config.searchConfigFor(true);
     const auto baseline = config.searchConfigFor(false);
@@ -40,6 +42,10 @@ TEST(TournamentConfigTest, SelectsAllStrengthParametersByContestant) {
     EXPECT_FLOAT_EQ(baseline.movesLeftDiscount, 0.9f);
     EXPECT_FLOAT_EQ(contender.qValueWeight, 0.6f);
     EXPECT_FLOAT_EQ(baseline.qVetoDelta, 0.15f);
+    EXPECT_FLOAT_EQ(contender.supplyPolicyWeight, 0.2f);
+    EXPECT_FLOAT_EQ(contender.supplyValueWeight, 0.3f);
+    EXPECT_FLOAT_EQ(baseline.supplyPolicyWeight, 0.0f);
+    EXPECT_FLOAT_EQ(baseline.supplyValueWeight, 0.0f);
 }
 
 TEST(TournamentConfigTest, LoadsPairedRealPositions) {

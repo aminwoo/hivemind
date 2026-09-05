@@ -355,6 +355,18 @@ void UCI::setoption(std::istringstream& is) {
         searchConfig.movesLeftDiscount = static_cast<float>(permille) / 1000.0f;
         std::cout << "info string MovesLeftDiscountPermille set to " << permille
                   << std::endl;
+    } else if (name == "SupplyPolicyWeightPermille"
+               || name == "SupplyValueWeightPermille") {
+        const float weight = std::clamp(std::stoi(value), 0, 500) / 1000.0f;
+        float& configured = name == "SupplyPolicyWeightPermille"
+            ? searchConfig.supplyPolicyWeight : searchConfig.supplyValueWeight;
+        if (weight != configured) {
+            stop();
+            if (agent) agent->reset_search_state();
+            configured = weight;
+        }
+        std::cout << "info string " << name << " set to "
+                  << static_cast<int>(weight * 1000.0f) << std::endl;
     } else if (name == "PWCoefficientPermille") {
         int permille = std::clamp(std::stoi(value), 1, 10000);
         searchConfig.pwCoefficient = static_cast<float>(permille) / 1000.0f;
@@ -456,6 +468,8 @@ void UCI::send_uci_response() {
     cout << "option name MovesLeftDiscountPermille type spin default "
          << static_cast<int>(SearchParams::MOVES_LEFT_DISCOUNT * 1000.0f)
          << " min 0 max 1000" << endl;
+    cout << "option name SupplyPolicyWeightPermille type spin default 0 min 0 max 500" << endl;
+    cout << "option name SupplyValueWeightPermille type spin default 0 min 0 max 500" << endl;
     cout << "option name PWCoefficientPermille type spin default "
          << static_cast<int>(SearchParams::PW_COEFFICIENT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name RootPWCoefficientPermille type spin default "

@@ -1931,6 +1931,38 @@ TEST(MctsSolverTest, ProvenLossKeepsBestSearchedMoveInsteadOfDelayingMate) {
     EXPECT_EQ(parent.get_best_move_idx_with_q_weight(), 0);
 }
 
+TEST(MctsSolverTest, PositiveContemptAvoidsHighVisitSolvedDraw) {
+    Node parent(Stockfish::WHITE);
+    const std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2)};
+    SearchParams::RuntimeConfig config;
+
+    ASSERT_TRUE(parent.try_init_and_expand(
+        actionsA, {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+
+    JointActionCandidate secondAction;
+    int secondIndex = -1;
+    ASSERT_NE(parent.expand_next_joint_child(
+        nullptr, 0, secondAction, config, &secondIndex), nullptr);
+    ASSERT_EQ(secondIndex, 1);
+
+    for (int visit = 0; visit < 10; ++visit) {
+        parent.update(0, -1.0f);
+    }
+    parent.update(secondIndex, 0.5f);
+
+    const auto children = parent.get_children();
+    children[0]->mark_as_draw(1);
+    parent.init_child_node_types();
+    parent.update_child_node_type(0, NodeType::DRAW);
+
+    EXPECT_EQ(parent.get_best_move_idx_with_q_weight(0.0f, 0.0f), 0);
+    EXPECT_EQ(parent.get_best_move_idx_with_q_weight(
+        0.0f, 0.0f, true),
+        secondIndex);
+}
+
 TEST(MctsSolverTest, LivePartnerRootRemainsSearchableAfterProvenLoss) {
     Node parent(Stockfish::WHITE);
     const std::vector<Stockfish::Move> actionsA = {
@@ -3826,7 +3858,8 @@ TEST_F(EngineTest, RootProbePublishesEachBoardAsItLands) {
     int publishedPly = 0;
 
     ASSERT_TRUE(Agent::probe_root_mate(
-        board, Stockfish::BLACK, true, 1200, {},
+        board, Stockfish::BLACK, true,
+        SearchParams::MATE_PROBE_ROOT_NODE_BUDGET, 1200, {},
         probedAction, probedPly, probedPv,
         [&] {
             ++publishes;
@@ -3860,7 +3893,8 @@ TEST_F(EngineTest, RootProbePublishesNothingWithoutAMate) {
     int publishes = 0;
 
     EXPECT_FALSE(Agent::probe_root_mate(
-        board, Stockfish::WHITE, true, 60, {},
+        board, Stockfish::WHITE, true,
+        SearchParams::MATE_PROBE_ROOT_NODE_BUDGET, 60, {},
         probedAction, probedPly, probedPv, [&] { ++publishes; }));
     EXPECT_EQ(publishes, 0);
 }

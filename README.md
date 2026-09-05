@@ -117,6 +117,20 @@ of the current working directory. Without explicit path, the engine searches `./
   --games 1000 --nodes 400 --output engine/selfplay_games
 ```
 
+Self-play also runs the bounded Fairy-Stockfish mate search for each searched
+position. It receives a fixed total allowance of 8,000,000 nodes across the two
+boards by default and is allowed to finish after the MCGS node budget is reached,
+so mate-aware generation trades some throughput for stronger tactical play.
+Adjust the node allowance, or disable it, with:
+
+```bash
+./engine/build-ninja/hivemind selfplay \
+  --fairy-stockfish-mate-nodes 4000000 ...
+
+./engine/build-ninja/hivemind selfplay \
+  --fairy-stockfish-mate-nodes 0 ...
+```
+
 ### Inference Batch Size
 
 The number of leaves gathered per neural network evaluation defaults to

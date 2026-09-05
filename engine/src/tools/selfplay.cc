@@ -718,6 +718,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             agent.reset_search_state();
             SearchOptions searchOptions;
             searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
+            searchOptions.search.enableMateProbe = config.fairyStockfishMateNodes > 0;
+            searchOptions.mateProbeNodes = config.fairyStockfishMateNodes;
+            searchOptions.completeMateProbe = config.fairyStockfishMateNodes > 0;
             // Self-play policy targets and temperature sampling are visit-based.
             // Keep that data-generation contract until it has a dedicated
             // Gumbel-improved policy target rather than biased halving visits.

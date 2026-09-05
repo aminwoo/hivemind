@@ -27,6 +27,7 @@ struct SelfPlayConfig {
     double nodeRandomFactor = 0.05;
     float dirichletAlpha = 0.3f;
     float dirichletEpsilon = 0.25f;
+    uint64_t fairyStockfishMateNodes = SearchParams::MATE_PROBE_ROOT_NODE_BUDGET;
     float initialClockSeconds = 180.0f;
     int batchSize = SearchParams::BATCH_SIZE;
     uint64_t seed = 0;

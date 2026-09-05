@@ -102,6 +102,8 @@ void printUsage(const char* progName) {
     cout << "    --raw-policy-max-macro-plies <n> --raw-policy-high-temp-probability <x>" << endl;
     cout << "    --mcts-temperature <x> --mcts-temperature-decay <x>" << endl;
     cout << "    --node-random-factor <x>" << endl;
+    cout << "    --fairy-stockfish-mate-nodes <n> (0 disables; default "
+         << SearchParams::MATE_PROBE_ROOT_NODE_BUDGET << ")" << endl;
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
     cout << "  tournament [options] Run a paired model-vs-model tournament" << endl;
     cout << "    --contender <onnx> --baseline <onnx> --games <even-n>" << endl;
@@ -113,6 +115,8 @@ void printUsage(const char* progName) {
     cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
     cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
+    cout << "    --contender-{supply-policy-weight,supply-value-weight} <0..0.5>" << endl;
+    cout << "    --baseline-{supply-policy-weight,supply-value-weight} <0..0.5>" << endl;
     cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
     cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
 }
@@ -218,6 +222,7 @@ int main(int argc, char* argv[]) {
                 else if (option == "--resign-disable-fraction") config.resignDisableFraction = stod(value);
                 else if (option == "--q-value-ratio") config.qValueRatio = stod(value);
                 else if (option == "--node-random-factor") config.nodeRandomFactor = stod(value);
+                else if (option == "--fairy-stockfish-mate-nodes") config.fairyStockfishMateNodes = stoull(value);
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
@@ -255,7 +260,13 @@ int main(int argc, char* argv[]) {
             cerr << "Failed to load an engine on any CUDA device" << endl;
             return EXIT_FAILURE;
         }
-        cout << "Self-play using " << engines.size() << " GPU engine(s)" << endl;
+        cout << "Self-play using " << engines.size() << " inference engine(s)" << endl;
+        cout << "Fairy-Stockfish mate search "
+             << (config.fairyStockfishMateNodes > 0
+                 ? "enabled (" + to_string(config.fairyStockfishMateNodes)
+                   + " nodes per searched position)"
+                 : "disabled")
+             << endl;
         try {
             return run_selfplay(engines, config);
         } catch (const exception& error) {
@@ -322,6 +333,10 @@ int main(int argc, char* argv[]) {
                 else if (option == "--baseline-q-value-weight") config.baselineQValueWeight = stof(value);
                 else if (option == "--contender-q-veto-delta") config.contenderQVetoDelta = stof(value);
                 else if (option == "--baseline-q-veto-delta") config.baselineQVetoDelta = stof(value);
+                else if (option == "--contender-supply-policy-weight") config.contenderSupplyPolicyWeight = stof(value);
+                else if (option == "--baseline-supply-policy-weight") config.baselineSupplyPolicyWeight = stof(value);
+                else if (option == "--contender-supply-value-weight") config.contenderSupplyValueWeight = stof(value);
+                else if (option == "--baseline-supply-value-weight") config.baselineSupplyValueWeight = stof(value);
                 else if (option == "--sprt-elo0") config.sprtElo0 = stod(value);
                 else if (option == "--sprt-elo1") config.sprtElo1 = stod(value);
                 else if (option == "--sprt-alpha") config.sprtAlpha = stod(value);

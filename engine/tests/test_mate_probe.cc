@@ -69,6 +69,18 @@ TEST_F(MateProbeTest, FindsAMateThatNeedsAQuietMove) {
     EXPECT_EQ(result.principalVariation.front(), "B@f7");
 }
 
+TEST_F(MateProbeTest, SupportsNodeOnlyBudget) {
+    const std::string fen =
+        "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2";
+
+    const MateProbe::Result result = MateProbe::probe(
+        fen, 16, SearchParams::MATE_PROBE_ROOT_NODE_BUDGET, 0);
+
+    ASSERT_TRUE(result.found);
+    EXPECT_GT(result.nodes, 0);
+    EXPECT_NE(result.bestMove, Stockfish::MOVE_NONE);
+}
+
 // A quiet position with no mate must come back empty rather than guessing.
 TEST_F(MateProbeTest, ReportsNothingWithoutAMate) {
     const MateProbe::Result result = MateProbe::probe(

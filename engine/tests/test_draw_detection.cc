@@ -364,6 +364,41 @@ TEST_F(DrawDetectionTest, ReportedBoardTwoMoveCompletesThreefoldRepetition) {
     EXPECT_TRUE(board.is_draw());
 }
 
+TEST_F(DrawDetectionTest, GptSolQc7CompletesThreefoldRepetition) {
+    Board board;
+    const std::string moves =
+        "1e2e4 1e7e5 1g1f3 1b8c6 1d2d4 1e5d4 1f3d4 1f8c5 1d4f5 1c5f2 "
+        "1e1f2 1g8f6 1f5g7 1e8f8 1g7f5 1f6e4 1f2e1 1d8h4 1f5h4 2e2e4 "
+        "2e7e6 2e4e5 2B@d4 2P@e3 2d4e5 2g1f3 2e5d6 2d2d4 2b8c6 2f1b5 "
+        "2P@e4 2b5c6 1N@f2 1P@g7 1f8g7 2b7c6 1B@d4 1c6d4 1d1d4 1f7f6 "
+        "2f3e5 2d6e5 1N@f5 1g7f7 1f1c4 2d4e5 1B@e6 1c4e6 1d7e6 1f5h6 "
+        "1f7g7 1b1c3 1f2h1 1c3e4 2P@f3 2g2f3 1P@f2 1e4f2 1h1f2 1h6f5 "
+        "1e6f5 1c1h6 1g7h6 1d4f6 1h6h5 1f6h8 1h5h4 1h8h7 1h4g4 "
+        "1h7g7 1g4f4 1g7c7 1f4g5 1c7g7 1g5f4 1g7c7 1f4g5 1c7g7 "
+        "1g5f4 2N@g2 2e1f1";
+
+    std::istringstream stream(moves);
+    std::string token;
+    while (stream >> token) {
+        const int boardNum = token[0] - '1';
+        std::string moveText = token.substr(1);
+        const Stockfish::Move move = Stockfish::UCI::to_move(
+            *board.pos[boardNum], moveText);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << "Invalid move: " << token;
+        board.push_move(boardNum, move);
+    }
+
+    EXPECT_FALSE(board.is_draw());
+    std::string repetitionText = "g7c7";
+    const Stockfish::Move repetition = Stockfish::UCI::to_move(
+        *board.pos[BOARD_A], repetitionText);
+    ASSERT_NE(repetition, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_A, repetition);
+
+    EXPECT_TRUE(board.is_repetition_draw({0, 0}));
+    EXPECT_TRUE(board.is_draw());
+}
+
 // The repetition key is a Zobrist over the board fields rather than a hashed
 // FEN string. Beyond ignoring pockets (covered above), it must still separate
 // promoted pieces, side to move, castling rights and the en passant file, and

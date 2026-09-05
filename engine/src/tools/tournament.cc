@@ -153,6 +153,10 @@ void write_summary(
            << "  \"contender_threads\": " << config.contenderThreads << ",\n"
            << "  \"baseline_threads\": " << config.baselineThreads << ",\n"
            << "  \"seed\": " << config.seed << ",\n"
+           << "  \"contender_supply_policy_weight\": " << config.contenderSupplyPolicyWeight << ",\n"
+           << "  \"baseline_supply_policy_weight\": " << config.baselineSupplyPolicyWeight << ",\n"
+           << "  \"contender_supply_value_weight\": " << config.contenderSupplyValueWeight << ",\n"
+           << "  \"baseline_supply_value_weight\": " << config.baselineSupplyValueWeight << ",\n"
            << "  \"contender_pw_coefficient\": "
            << config.contenderPwCoefficient << ",\n"
            << "  \"baseline_pw_coefficient\": "
@@ -521,7 +525,11 @@ int run_tournament(
     const auto finite_in_range = [](float value, float minimum, float maximum) {
         return std::isfinite(value) && value >= minimum && value <= maximum;
     };
-    if (!finite_in_range(config.contenderWdlWeight, 0.0f, 1.0f)
+    if (!finite_in_range(config.contenderSupplyPolicyWeight, 0.0f, 0.5f)
+        || !finite_in_range(config.baselineSupplyPolicyWeight, 0.0f, 0.5f)
+        || !finite_in_range(config.contenderSupplyValueWeight, 0.0f, 0.5f)
+        || !finite_in_range(config.baselineSupplyValueWeight, 0.0f, 0.5f)
+        || !finite_in_range(config.contenderWdlWeight, 0.0f, 1.0f)
         || !finite_in_range(config.baselineWdlWeight, 0.0f, 1.0f)
         || !finite_in_range(config.contenderMovesLeftDiscount, 0.0f, 1.0f)
         || !finite_in_range(config.baselineMovesLeftDiscount, 0.0f, 1.0f)
@@ -529,7 +537,7 @@ int run_tournament(
         || !finite_in_range(config.baselineQValueWeight, 0.0f, 100.0f)
         || !finite_in_range(config.contenderQVetoDelta, 0.0f, 2.0f)
         || !finite_in_range(config.baselineQVetoDelta, 0.0f, 2.0f)) {
-        throw std::invalid_argument("Invalid tournament WDL/moves-left/Q parameter");
+        throw std::invalid_argument("Invalid tournament supply/WDL/moves-left/Q parameter");
     }
     if (config.sprtEnabled()
         && (!(config.sprtAlpha > 0.0 && config.sprtAlpha < 1.0)

@@ -846,8 +846,10 @@ public:
      * @param qValueWeight Weight for Q-value adjustment (0 = pure visits)
      * @return Index of the best move considering Q-values
      */
-    int get_best_move_idx_with_q_weight(float qVetoDelta = SearchParams::Q_VETO_DELTA,
-                                        float qValueWeight = SearchParams::Q_VALUE_WEIGHT) const {
+    int get_best_move_idx_with_q_weight(
+        float qVetoDelta = SearchParams::Q_VETO_DELTA,
+        float qValueWeight = SearchParams::Q_VALUE_WEIGHT,
+        bool avoidSolvedDraw = false) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         
         if (edges.empty()) return -1;
@@ -873,6 +875,14 @@ public:
         // Q values below, so a dead partner board cannot make this board throw
         // away its strongest move merely to delay the combined mate score.
 
+        const bool hasNonDrawingAlternative = avoidSolvedDraw && std::any_of(
+            children.begin(), children.end(),
+            [](const std::shared_ptr<Node>& child) {
+                return child
+                    && child->get_node_type() != NodeType::WIN
+                    && child->get_node_type() != NodeType::DRAW;
+            });
+
         if (rootGumbelEnabled && !rootGumbelActive.empty()) {
             int bestIdx = -1;
             float bestScore = -std::numeric_limits<float>::infinity();
@@ -881,7 +891,10 @@ public:
                 if (childIdx < 0
                     || static_cast<size_t>(childIdx) >= children.size()
                     || !children[childIdx]
-                    || children[childIdx]->get_node_type() == NodeType::WIN) {
+                    || children[childIdx]->get_node_type() == NodeType::WIN
+                    || (hasNonDrawingAlternative
+                        && children[childIdx]->get_node_type()
+                            == NodeType::DRAW)) {
                     continue;
                 }
                 const NodeType childType = children[childIdx]->get_node_type();
@@ -908,8 +921,14 @@ public:
                 return child && child->get_node_type() != NodeType::WIN;
             });
         auto isEligible = [&](size_t index) {
-            return !hasNonLosingAlternative || !children[index]
-                || children[index]->get_node_type() != NodeType::WIN;
+            if (!children[index]) {
+                return true;
+            }
+            const NodeType childType = children[index]->get_node_type();
+            if (hasNonLosingAlternative && childType == NodeType::WIN) {
+                return false;
+            }
+            return !hasNonDrawingAlternative || childType != NodeType::DRAW;
         };
 
         size_t firstEligibleIdx = 0;

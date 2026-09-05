@@ -13,6 +13,7 @@ add_executable(
   test_backend_compat.cc
   test_move_gen.cc
   test_tactical_movegen.cc
+  test_supply_search.cc
   test_draw_detection.cc
   test_mate_detection.cc
   test_mate_probe.cc

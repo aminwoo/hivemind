@@ -395,7 +395,7 @@ constexpr bool ENABLE_STOCKFISH_MATE_SEARCH = false;
 constexpr uint64_t MATE_PROBE_FEED_NODE_BUDGET = 20000;
 constexpr int MATE_PROBE_FEED_MAX_MS = 40;
 
-// The root probe asks one question per board per search, so it may spend more.
+// Total Fairy-Stockfish nodes available to the root probe across both boards.
 constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 8000000;
 
 // Use the same evidence bound for accepting a probe mate and ending a move.
@@ -516,6 +516,10 @@ constexpr int ROOT_JOINT_POLICY_TOP_K = 32;
 constexpr float JOINT_POLICY_RESIDUAL_SCALE = 1.0f;
 
 struct RuntimeConfig {
+    // Experimental share of marginal policy assigned to cross-board supply
+    // candidates. Zero preserves the original search; this is not a time cap.
+    float supplyPolicyWeight = 0.0f;
+    float supplyValueWeight = 0.0f;
     float cpuctInit = CPUCT_INIT;
     float cpuctBase = CPUCT_BASE;
     bool enableMCGS = ENABLE_MCGS;

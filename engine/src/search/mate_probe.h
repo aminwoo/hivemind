@@ -65,7 +65,8 @@ struct Result {
  *        nodes can bill this one in the same currency; `nodes` in the result
  *        reports what it actually spent. Enforced by polling, so it overshoots
  *        by up to a poll interval.
- * @param budgetMs Wall-clock ceiling, a backstop for the node cap.
+ * @param budgetMs Wall-clock ceiling, a backstop for the node cap. Zero uses
+ *        only the node budget.
  * @param abort Polled about once a millisecond; the probe returns early when it
  *        answers true. The caller's own search runs while this one does, so
  *        without it the probe holds the whole budget after that search has

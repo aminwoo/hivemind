@@ -86,6 +86,31 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
     }
 }
 
+static void mark_immediate_root_repetitions(
+    const shared_ptr<Node>& rootNode, Board& board) {
+    if (!rootNode || !rootNode->is_expanded()) {
+        return;
+    }
+    const auto children = rootNode->get_children();
+    const size_t generated = min(
+        children.size(), rootNode->get_num_generated());
+    for (size_t index = 0; index < generated; ++index) {
+        const shared_ptr<Node>& child = children[index];
+        if (!child || child->get_node_type() != NodeType::UNSOLVED) {
+            continue;
+        }
+        const JointActionCandidate action =
+            rootNode->get_joint_action(static_cast<int>(index));
+        board.make_moves(action.moveA, action.moveB);
+        const bool repeats = board.is_repetition_draw({0, 0});
+        board.unmake_moves(action.moveA, action.moveB);
+        if (repeats) {
+            child->mark_as_draw(1);
+            rootNode->update_child_node_type(index, NodeType::DRAW);
+        }
+    }
+}
+
 string Agent::format_root_aware_uci_score(
     const shared_ptr<Node>& root,
     const shared_ptr<Node>& pvChild,
@@ -1173,6 +1198,7 @@ bool Agent::probe_root_mate(
     Board& board,
     Stockfish::Color teamSide,
     bool teamHasTimeAdvantage,
+    uint64_t nodeBudget,
     int budgetMs,
     const std::function<bool()>& abort,
     JointActionCandidate& outAction,
@@ -1192,7 +1218,7 @@ bool Agent::probe_root_mate(
                                     board.is_capture(boardNum, move));
     };
     const int probeBoards = onTurn[BOARD_A] + onTurn[BOARD_B];
-    if (probeBoards == 0 || budgetMs <= 0) {
+    if (probeBoards == 0 || nodeBudget == 0 || budgetMs < 0) {
         return false;
     }
 
@@ -1230,14 +1256,23 @@ bool Agent::probe_root_mate(
 
     bool found = false;
     int bestMateInMoves = 0;
+    uint64_t probeIndex = 0;
     for (int boardNum : {BOARD_A, BOARD_B}) {
-        if (!onTurn[boardNum] || (abort && abort())) {
+        if (!onTurn[boardNum]) {
             continue;
         }
+        const uint64_t boardNodeBudget = nodeBudget / probeBoards
+            + (probeIndex < nodeBudget % probeBoards ? 1 : 0);
+        ++probeIndex;
+        if (boardNodeBudget == 0 || (abort && abort())) {
+            continue;
+        }
+        const int boardBudgetMs = budgetMs > 0
+            ? std::max(1, budgetMs / probeBoards)
+            : 0;
         const MateProbe::Result result = MateProbe::probe(
             board.fen(boardNum), SearchParams::MATE_PROBE_MAX_MATE_MOVES,
-            SearchParams::MATE_PROBE_ROOT_NODE_BUDGET,
-            budgetMs / probeBoards, abort);
+            boardNodeBudget, boardBudgetMs, abort);
         // A pruned search is not a proof, so the move it names still has to be
         // one this board accepts before it can become the root action.
         if (!result.found
@@ -2850,7 +2885,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         if (!runRootScan || !options.search.enableMateProbe) {
             return;
         }
-        const int probeBudgetMs = moveTimeMs > 0
+        const uint64_t probeNodeBudget = options.mateProbeNodes > 0
+            ? options.mateProbeNodes
+            : SearchParams::MATE_PROBE_ROOT_NODE_BUDGET;
+        const int probeBudgetMs = options.completeMateProbe
+            ? 0
+            : moveTimeMs > 0
             ? std::max(1, moveTimeMs - static_cast<int>(searchInfo.elapsed()))
             : SearchParams::MATE_PROBE_UNTIMED_BUDGET_MS;
         // The scans on this thread make and unmake moves on scanBoard while
@@ -2869,7 +2909,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 string pv;
                 const auto settled = [&] {
                     return stopRootProbe.load(memory_order_acquire)
-                        || !running.load(memory_order_acquire)
+                        || (!options.completeMateProbe
+                            && !running.load(memory_order_acquire))
                         || stopRequested_.load(memory_order_relaxed)
                         || (SearchParams::ENABLE_MATE_EARLY_EXIT && probeRoot
                             && probeRoot->get_node_type()
@@ -2888,7 +2929,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 try {
                     probe_root_mate(
                         *probeBoard, teamSide, teamHasTimeAdvantage,
-                        probeBudgetMs, settled, action, plyToMate, pv,
+                        probeNodeBudget, probeBudgetMs, settled,
+                        action, plyToMate, pv,
                         publish);
                 } catch (const std::exception& error) {
                     cout << "info string mate probe failed: " << error.what()
@@ -3800,13 +3842,22 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // it ran - either mid-move, which ended the loop above, or on the last
     // poll before the deadline - decides the move instead.
     if (rootNode && rootNode->get_node_type() == NodeType::UNSOLVED) {
-        stop_root_probe();
+        if (options.completeMateProbe && rootProbeThread.joinable()) {
+            rootProbeThread.join();
+        } else {
+            stop_root_probe();
+        }
         JointActionCandidate probedAction;
         int probedPly = 0;
         string probedPv;
         if (take_probe_mate(probedAction, probedPly, probedPv)) {
             return return_proven_mate(probedAction, probedPly, probedPv);
         }
+    }
+
+    const bool avoidSolvedDraw = lastRuntimeConfig_.drawContempt > 0.0f;
+    if (avoidSolvedDraw) {
+        mark_immediate_root_repetitions(rootNode, board);
     }
 
     // Extract best joint action by selecting the most visited child
@@ -3818,7 +3869,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             
             // Use Q-value weighted selection (with veto and weighting)
             int bestIdx = rootNode->get_best_move_idx_with_q_weight(
-                options.search.qVetoDelta, options.search.qValueWeight);
+                options.search.qVetoDelta, options.search.qValueWeight,
+                avoidSolvedDraw);
             
             // Fallback to most-visited if Q-value selection failed
             if (bestIdx < 0) {
@@ -3881,7 +3933,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             
             // Keep PV 1 aligned with the solver-aware move used for bestmove.
             int solverIdx = rootNode->get_best_move_idx_with_q_weight(
-                options.search.qVetoDelta, options.search.qValueWeight);
+                options.search.qVetoDelta, options.search.qValueWeight,
+                avoidSolvedDraw);
             if (solverIdx >= 0) {
                 auto it = std::find(sortedIndices.begin(), sortedIndices.end(), static_cast<size_t>(solverIdx));
                 if (it != sortedIndices.end() && it != sortedIndices.begin()) {
@@ -4074,7 +4127,8 @@ string Agent::extract_best_move(Board& board) {
 
     // Use solver-aware move selection (handles proven wins/losses)
     int bestIdx = rootNode->get_best_move_idx_with_q_weight(
-        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight,
+        lastRuntimeConfig_.drawContempt > 0.0f);
     if (bestIdx < 0) {
         return "(none)";
     }
@@ -4096,7 +4150,8 @@ string Agent::extract_ponder_move(Board& board) {
     }
 
     int bestIdx = rootNode->get_best_move_idx_with_q_weight(
-        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
+        lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight,
+        lastRuntimeConfig_.drawContempt > 0.0f);
     if (bestIdx < 0) {
         auto visits = rootNode->get_child_visits();
         int maxVisits = 0;

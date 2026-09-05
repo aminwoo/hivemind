@@ -44,6 +44,10 @@ struct TournamentConfig {
     float baselineQValueWeight = SearchParams::Q_VALUE_WEIGHT;
     float contenderQVetoDelta = SearchParams::Q_VETO_DELTA;
     float baselineQVetoDelta = SearchParams::Q_VETO_DELTA;
+    float contenderSupplyPolicyWeight = 0.0f;
+    float baselineSupplyPolicyWeight = 0.0f;
+    float contenderSupplyValueWeight = 0.0f;
+    float baselineSupplyValueWeight = 0.0f;
     std::filesystem::path positionsFile;
     std::string contenderModelSignature;
     std::string baselineModelSignature;
@@ -60,6 +64,10 @@ struct TournamentConfig {
 
     SearchParams::RuntimeConfig searchConfigFor(bool isContender) const {
         SearchParams::RuntimeConfig searchConfig;
+        searchConfig.supplyPolicyWeight = isContender
+            ? contenderSupplyPolicyWeight : baselineSupplyPolicyWeight;
+        searchConfig.supplyValueWeight = isContender
+            ? contenderSupplyValueWeight : baselineSupplyValueWeight;
         searchConfig.pwCoefficient = pwCoefficientFor(isContender);
         searchConfig.rootPwCoefficient = isContender
             ? contenderRootPwCoefficient : baselineRootPwCoefficient;

@@ -50,6 +50,36 @@ TEST_F(UCIOpeningNoiseTest, IsDisabledByDefault) {
     EXPECT_EQ(config.rootNoiseSeed, 0U);
 }
 
+TEST_F(UCIOpeningNoiseTest, SupplyExplorationIsOptInAndBounded) {
+    UCI uci;
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyPolicyWeight, 0.0f);
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyValueWeight, 0.0f);
+    set_option(uci, "SupplyValueWeightPermille", "200");
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyValueWeight, 0.2f);
+    set_option(uci, "SupplyValueWeightPermille", "999");
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyValueWeight, 0.5f);
+    set_option(uci, "SupplyValueWeightPermille", "0");
+    set_option(uci, "SupplyPolicyWeightPermille", "200");
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyPolicyWeight, 0.2f);
+    set_option(uci, "SupplyPolicyWeightPermille", "900");
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyPolicyWeight, 0.5f);
+    set_option(uci, "SupplyPolicyWeightPermille", "-1");
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                        .supplyPolicyWeight, 0.0f);
+    std::ostringstream output;
+    auto* previous = std::cout.rdbuf(output.rdbuf());
+    uci.send_uci_response();
+    std::cout.rdbuf(previous);
+    EXPECT_NE(output.str().find("option name SupplyPolicyWeightPermille type spin default 0 min 0 max 500"),
+              std::string::npos);
+}
+
 TEST_F(UCIOpeningNoiseTest, AppliesConfiguredNoiseInsideOpeningHorizon) {
     UCI uci;
     set_option(uci, "OpeningNoise", "true");

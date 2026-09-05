@@ -82,6 +82,7 @@ set(LIB_SOURCES
     src/search/mate_probe.cc
     src/search/node.cc
     src/search/searchthread.cc
+    src/search/supply_search.cc
     src/interface/uci.cc
     src/tools/benchmark.cc
     src/tools/selfplay.cc

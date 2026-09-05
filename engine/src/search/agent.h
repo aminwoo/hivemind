@@ -28,6 +28,8 @@ struct SearchOptions {
     // Stopping conditions (one must be set)
     size_t targetNodes = 0;      // Stop after this many nodes (0 = use time)
     int moveTimeMs = 0;          // Stop after this many milliseconds (0 = use nodes)
+    uint64_t mateProbeNodes = 0; // Override the Fairy-Stockfish root probe budget
+    bool completeMateProbe = false; // Let a bounded probe finish after MCGS stops
     
     // UCI mode options
     bool verbose = false;        // Output UCI info strings (info, bestmove)
@@ -325,7 +327,8 @@ public:
      */
     static bool probe_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
-        int budgetMs, const std::function<bool()>& abort,
+        uint64_t nodeBudget, int budgetMs,
+        const std::function<bool()>& abort,
         JointActionCandidate& outAction, int& outPlyToMate,
         std::string& outPrincipalVariation,
         const std::function<void()>& onMate = {});
