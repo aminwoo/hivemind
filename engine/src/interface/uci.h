@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <random>
 
 #include "environment/board.h"
 #include "environment/constants.h"
@@ -15,6 +16,8 @@
 
 class UCI {
 private:
+    friend class UCIOpeningNoiseTestPeer;
+
     std::thread* mainSearchThread;
     std::unique_ptr<Agent> agent;
     Board board;
@@ -31,10 +34,21 @@ private:
     int multiPV = 1;  // Number of principal variations to display
     bool ponderEnabled = true;  // Whether to output ponder move and accept ponder search
     SearchParams::RuntimeConfig searchConfig;
+    // Optional early-game diversity for normal UCI play. A zero/noise-free
+    // RuntimeConfig remains the default so existing users stay deterministic.
+    bool openingNoiseEnabled = false;
+    int openingNoisePlies = 16;
+    int openingNoiseAlphaPermille = 100;
+    int openingNoiseEpsilonPermille = 600;
+    std::mt19937_64 openingNoiseGenerator;
 
     // Rebuilds the engines (and the agent) with the current settings. The batch
     // size is baked into the TensorRT engine, so changing it means reloading.
     bool reload_engines();
+
+    // Returns the per-search config, enabling root noise only while both
+    // boards are still inside the configured opening horizon.
+    SearchParams::RuntimeConfig current_search_config();
 
 public:
     UCI();

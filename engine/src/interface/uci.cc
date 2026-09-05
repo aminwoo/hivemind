@@ -1,5 +1,8 @@
 #include "interface/uci.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <filesystem>
 #include <sstream>
@@ -7,6 +10,7 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <random>
 
 #include "nn/onnx_utils.h"
 #include "environment/planes.h"
@@ -16,7 +20,14 @@
 using namespace std;
 
 UCI::UCI() : mainSearchThread(nullptr) {
-
+    std::random_device entropy;
+    const uint64_t clockSeed = static_cast<uint64_t>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    std::seed_seq seed{
+        entropy(), entropy(), entropy(), entropy(),
+        static_cast<unsigned int>(clockSeed),
+        static_cast<unsigned int>(clockSeed >> 32)};
+    openingNoiseGenerator.seed(seed);
 }
 
 UCI::~UCI() {
@@ -194,7 +205,15 @@ void UCI::go(std::istringstream& is) {
         opts = SearchOptions::uci(1000, multiPV, isPonder);
     }
     opts.enablePonder = ponderEnabled;
-    opts.search = searchConfig;
+    opts.search = current_search_config();
+
+    // Dirichlet noise is applied when a root is first expanded. Discard an
+    // already searched/noised retained root during the opening so every move
+    // receives an independent sample instead of inheriting the previous one.
+    if (opts.search.rootDirichletAlpha > 0.0f
+        && opts.search.rootDirichletEpsilon > 0.0f) {
+        agent->reset_search_state();
+    }
     
     // Launch the search thread
     mainSearchThread = new std::thread([this, enginePtrs, opts]() {
@@ -225,6 +244,28 @@ void UCI::go(std::istringstream& is) {
     while (ongoingSearch.load(std::memory_order_acquire) && !agent->is_running()) {
         std::this_thread::yield();
     }
+}
+
+SearchParams::RuntimeConfig UCI::current_search_config() {
+    SearchParams::RuntimeConfig config = searchConfig;
+    const int currentPly = std::max(
+        board.game_ply(BOARD_A), board.game_ply(BOARD_B));
+    if (!openingNoiseEnabled || openingNoisePlies <= 0
+        || currentPly >= openingNoisePlies
+        || openingNoiseAlphaPermille <= 0
+        || openingNoiseEpsilonPermille <= 0) {
+        config.rootDirichletAlpha = 0.0f;
+        config.rootDirichletEpsilon = 0.0f;
+        config.rootNoiseSeed = 0;
+        return config;
+    }
+
+    config.rootDirichletAlpha =
+        static_cast<float>(openingNoiseAlphaPermille) / 1000.0f;
+    config.rootDirichletEpsilon =
+        static_cast<float>(openingNoiseEpsilonPermille) / 1000.0f;
+    config.rootNoiseSeed = openingNoiseGenerator();
+    return config;
 }
 
 void UCI::ponderhit() {
@@ -288,6 +329,23 @@ void UCI::setoption(std::istringstream& is) {
             ponderEnabled = (value == "true");
             std::cout << "info string Ponder set to " << value << std::endl;
         }
+    } else if (name == "OpeningNoise") {
+        if (value == "true" || value == "false") {
+            openingNoiseEnabled = value == "true";
+            std::cout << "info string OpeningNoise set to " << value << std::endl;
+        }
+    } else if (name == "OpeningNoisePlies") {
+        openingNoisePlies = std::clamp(std::stoi(value), 0, 200);
+        std::cout << "info string OpeningNoisePlies set to "
+                  << openingNoisePlies << std::endl;
+    } else if (name == "OpeningNoiseAlphaPermille") {
+        openingNoiseAlphaPermille = std::clamp(std::stoi(value), 1, 10000);
+        std::cout << "info string OpeningNoiseAlphaPermille set to "
+                  << openingNoiseAlphaPermille << std::endl;
+    } else if (name == "OpeningNoiseEpsilonPermille") {
+        openingNoiseEpsilonPermille = std::clamp(std::stoi(value), 0, 1000);
+        std::cout << "info string OpeningNoiseEpsilonPermille set to "
+                  << openingNoiseEpsilonPermille << std::endl;
     } else if (name == "DrawContemptPermille") {
         int permille = std::clamp(std::stoi(value), 0, 1000);
         searchConfig.drawContempt = static_cast<float>(permille) / 1000.0f;
@@ -390,6 +448,10 @@ void UCI::send_uci_response() {
          << " min 1 max 1024" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
+    cout << "option name OpeningNoise type check default false" << endl;
+    cout << "option name OpeningNoisePlies type spin default 16 min 0 max 200" << endl;
+    cout << "option name OpeningNoiseAlphaPermille type spin default 100 min 1 max 10000" << endl;
+    cout << "option name OpeningNoiseEpsilonPermille type spin default 600 min 0 max 1000" << endl;
     cout << "option name DrawContemptPermille type spin default 0 min 0 max 1000" << endl;
     cout << "option name MovesLeftDiscountPermille type spin default "
          << static_cast<int>(SearchParams::MOVES_LEFT_DISCOUNT * 1000.0f)

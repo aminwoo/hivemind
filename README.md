@@ -174,6 +174,28 @@ legal joint actions — set it to match the real clocks before searching.
 > setting (`sit` = `TimeAdvantage true`). It is still accepted but no longer
 > advertised.
 
+### Opening diversity
+
+Normal UCI play is deterministic by default. To vary early play without the
+coverage and maintenance cost of a Bughouse opening book, enable Dirichlet
+noise at the search root:
+
+```text
+setoption name OpeningNoise value true
+setoption name OpeningNoisePlies value 16
+setoption name OpeningNoiseAlphaPermille value 100
+setoption name OpeningNoiseEpsilonPermille value 600
+```
+
+`OpeningNoisePlies` is measured in ordinary game plies on each board. Noise is
+used only while the larger of the two board ply counts is below the limit, so a
+setting of 16 covers roughly the first eight moves per board. Alpha controls
+the shape of the sampled alternatives; epsilon controls how much of that sample
+is mixed into the network policy (600 means 60%). Each noisy search uses a fresh
+sample and starts a fresh root, while later positions retain the normal
+deterministic search and tree reuse. Set `OpeningNoise` to `false` (the default),
+`OpeningNoisePlies` to 0, or epsilon to 0 to disable it.
+
 ### Paired Model Tournament
 
 ```bash
