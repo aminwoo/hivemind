@@ -1,5 +1,11 @@
 ## Inference backends
 
+Download the [published network](https://huggingface.co/aminwoo/bughouse-rise-v3)
+from the repository root with `python tools/fetch_network.py`. Files are verified
+and installed into `engine/models`. See the [network setup instructions](../README.md#download-the-network)
+for native FP16, CPU conversion, and training checkpoints. Pass `--model PATH`
+to explicitly select the network for your backend.
+
 The engine builds against either of two backends, selected with
 `-DHIVEMIND_BACKEND=`:
 
@@ -63,7 +69,7 @@ cmake --preset ninja-fast \
     -DTensorRT_DIR=/path/to/TensorRT -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-fast -j "$(nproc)"
 ./build-ninja/hivemind \
-	--network "$(realpath ../src/training/weights/rl/model-rl-final-v3.0.onnx)"
+	--network "$(realpath ../artifacts/training/weights/rl/model-rl-final-v3.0.onnx)"
 ```
 
 Self-play allocates a fixed Fairy-Stockfish mate-search budget per searched
@@ -71,7 +77,7 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 ```bash
 ./build-ninja/hivemind selfplay \
-  --network "$(realpath ../src/training/weights/rl/model-rl-final-v3.0.onnx)" \
+  --network "$(realpath ../artifacts/training/weights/rl/model-rl-final-v3.0.onnx)" \
   --games 1000 --nodes 400 --fairy-stockfish-mate-nodes 8000000
 ```
 

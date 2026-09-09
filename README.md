@@ -24,33 +24,29 @@ Hivemind is a neural network-based engine for [Bughouse chess](https://en.wikipe
 
 ## Project Structure
 
-```
+```text
 hivemind/
-├── engine/              # C++ UCI engine
-│   ├── src/             # Modular engine source code
-│   │   ├── common/      # Globals, logging, utilities
-│   │   ├── environment/ # Bughouse board, joint actions, planes, zobrist
-│   │   ├── nn/          # TensorRT inference engine, ONNX utilities
-│   │   ├── search/      # MCTS/MCGS search, agent, nodes, transposition table
-│   │   ├── interface/   # UCI protocol interface
-│   │   ├── tools/       # Selfplay, tournament, benchmarks
-│   │   └── Fairy-Stockfish/  # Move generation library
-│   └── models/          # ONNX and TensorRT engine model files
-├── src/                 # Python training code
-│   ├── architectures/   # Neural network architectures (RISEv3)
-│   ├── domain/          # Board representation and move encoding
-│   ├── preprocessing/   # Data preprocessing utilities
-│   ├── training/        # Training loop and data loaders
-│   └── utils/           # Utility functions
-├── scripts/             # Utility scripts
-│   ├── analyze_training_data.py  # Inspect training samples
-│   ├── evaluate_model.py         # Evaluate model on data
-│   ├── infer_from_fen.py         # Run inference on positions
-│   └── search_training_fen.py    # Search for positions in data
-├── tests/               # Test suite
-├── configs/             # Configuration files
-└── data/                # Training data and game archives
+├── src/hivemind/        # Installable Python package
+│   ├── architectures/  # Neural network definitions and model configuration
+│   ├── cli/            # Training, inference, and data inspection commands
+│   ├── config/         # Training and representation settings
+│   ├── data/           # Game acquisition, encoding, and Parquet preparation
+│   ├── domain/         # Bughouse board and move representation
+│   ├── inference/      # ONNX and checkpoint inference
+│   └── training/       # Data loaders, optimization, metrics, and schedules
+├── engine/             # C++ UCI engine, with its own build and test setup
+│   ├── src/            # Engine implementation and vendored Fairy-Stockfish
+│   ├── tests/          # C++ tests
+│   ├── scripts/        # Engine build, packaging, conversion, and UCI tools
+│   └── models/         # Downloaded inference networks (ignored)
+├── tests/              # Python tests grouped by subsystem
+├── tools/              # Network and runtime bootstrapping without installation
+├── docs/               # Development and layout guide
+├── data/               # Game archives and prepared datasets (ignored)
+└── artifacts/training/ # Generated checkpoints and logs (ignored)
 ```
+
+See [the development guide](docs/development.md) for commands and migration notes.
 
 ## Requirements
 
@@ -66,6 +62,44 @@ hivemind/
 - Python 3.13+
 - PyTorch 2.9+
 - See `pyproject.toml` for full dependencies
+
+## Download the Network
+
+Published weights are hosted at [aminwoo/bughouse-rise-v3](https://huggingface.co/aminwoo/bughouse-rise-v3).
+The downloader pins a release revision and verifies its SHA-256 checksum:
+
+```bash
+python tools/fetch_network.py                       # ONNX with FP32 input/output
+python tools/fetch_network.py --variant fp16        # Native FP16 input/output
+python tools/fetch_network.py --variant checkpoint  # PyTorch training checkpoint
+```
+
+Files go into `engine/models`, which the engine searches automatically. Use
+`--model PATH` to select a specific file when multiple networks are present.
+Both published ONNX variants contain FP16 weights internally. For the portable
+CPU backend, convert the standard download once:
+
+```bash
+python engine/scripts/convert_onnx_fp32.py \
+  engine/models/hivemind-it04-crossboard-risev33-loss1.556-p82.0.onnx \
+  engine/models/hivemind-fp32.onnx
+```
+
+Python inference defaults to the standard downloaded ONNX file:
+
+```bash
+hivemind infer --starting
+hivemind checkpoint --device cpu  # Requires --variant checkpoint above
+```
+
+Training and checkpoint inference share architecture options in
+`src/hivemind/architectures/model_config.py`; ONNX inference helpers live in
+`src/hivemind/inference/onnx.py`. Network provenance and default paths live in
+`src/hivemind/network.py`. To run the Python regression suite after installing dependencies:
+
+```bash
+uv run python -m pytest
+```
 
 ## Building the Engine
 
@@ -85,7 +119,11 @@ Using [uv](https://github.com/astral-sh/uv):
 
 ```bash
 uv sync
+uv run hivemind --help
 ```
+
+`uv sync` installs the Python package and its `hivemind` command.
+`python -m hivemind` provides the same interface in an activated environment.
 
 ## Usage
 
@@ -93,7 +131,7 @@ uv sync
 
 ```bash
 ./engine/build-ninja/hivemind \
-  --model "$(realpath src/training/weights/rl/model-rl-final-v3.0.onnx)"
+  --model "$(realpath artifacts/training/weights/rl/model-rl-final-v3.0.onnx)"
 ```
 
 The engine communicates via UCI protocol. Use with any UCI-compatible chess GUI.
@@ -113,7 +151,7 @@ of the current working directory. Without explicit path, the engine searches `./
 
 # Run self-play for training data generation
 ./engine/build-ninja/hivemind selfplay \
-  --model src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --model artifacts/training/weights/rl/model-rl-final-v3.0.onnx \
   --games 1000 --nodes 400 --output engine/selfplay_games
 ```
 
@@ -214,7 +252,7 @@ deterministic search and tree reuse. Set `OpeningNoise` to `false` (the default)
 
 ```bash
 ./engine/build-ninja/hivemind tournament \
-  --contender src/training/weights/rl/model-rl-final-v3.0.onnx \
+  --contender artifacts/training/weights/rl/model-rl-final-v3.0.onnx \
   --baseline engine/models/model-rl-final-v3.0.onnx \
   --games 100 --nodes 800 --output engine/tournament_results --seed 1
 ```
@@ -230,18 +268,18 @@ results to `summary.json`. Set `--dirichlet-epsilon 0` for deterministic games.
 
 ```bash
 # Supervised learning on human games
-uv run python src/training/train_loop.py --mode sl
+uv run hivemind train --mode sl
 
 # Train the explicit cross-board coordination architecture from scratch
-uv run python src/training/train_loop.py --mode sl \
+uv run hivemind train --mode sl \
   --architecture crossboard-risev33
 
 # Train the staged dual-stream architecture with persistent latent memory
-uv run python src/training/train_loop.py --mode sl \
+uv run hivemind train --mode sl \
   --architecture dualstream-memory-risev33
 
 # Generate an isolated >=2250 corpus and train cross-board RISEv3 on it
-uv run python scripts/train_from_games_parquet.py \
+uv run hivemind prepare \
   --games data/games.parquet \
   --min-rating 2250 \
   --train-planes-dir data/planes/sl_2250/train \
@@ -251,7 +289,7 @@ uv run python scripts/train_from_games_parquet.py \
   --batch-size 256
 
 # RL training directly from native HVM5 self-play data
-uv run python src/training/train_loop.py --mode rl --checkpoint /home/ben/hivemind/src/training/weights/rl/model-rl-final.tar --selfplay-dir /home/ben/hivemind/engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
+uv run hivemind train --mode rl --checkpoint artifacts/training/weights/rl/model-rl-final.tar --selfplay-dir engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
 ```
 
 RL training reads `engine/selfplay_games/training_data` by default, creates a
@@ -259,19 +297,19 @@ deterministic game-level 98/2 train/validation split under
 `engine/selfplay_games/rl_data`, and then starts training. Original HVM chunks
 are preserved. Use `--selfplay-dir` for a different self-play directory, or
 provide both `--rl-data-dir` and `--val-data-dir` to train from existing Parquet
-data. Supervised artifacts are written under `src/training/weights/supervised`;
+data. Supervised artifacts are written under `artifacts/training/weights/supervised`;
 RL artifacts, including resumable `model-rl-final.tar` and deployable
-`model-rl-final-v3.0.onnx`, are written under `src/training/weights/rl`.
+`model-rl-final-v3.0.onnx`, are written under `artifacts/training/weights/rl`.
 For later RL iterations, pass
-`--checkpoint src/training/weights/rl/model-rl-final.tar`.
+`--checkpoint artifacts/training/weights/rl/model-rl-final.tar`.
 Cross-board and dual-stream checkpoints must be continued with their original
 `--architecture`; legacy RISEv3 checkpoints are not shape compatible with the
 new attention and policy heads.
 
 ```bash
 # Train on iteration 3 with CrazyAra-style replay from iteration 2
-uv run python src/training/train_loop.py --mode rl \
-  --checkpoint src/training/weights/rl/model-rl-final.tar \
+uv run hivemind train --mode rl \
+  --checkpoint artifacts/training/weights/rl/model-rl-final.tar \
   --selfplay-dir engine/selfplay_games/iteration-3 \
   --replay-dir engine/selfplay_games/iteration-2 \
   --architecture crossboard-risev33

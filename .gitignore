@@ -215,9 +215,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-src/training/weights/
-src/training/logs
-src/traininglogs/
-data/
+/artifacts/
+/data/
 # Vendored inference runtimes fetched by tools/fetch_onnxruntime.py
 third_party/
