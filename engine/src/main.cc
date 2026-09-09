@@ -115,8 +115,6 @@ void printUsage(const char* progName) {
     cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
     cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
-    cout << "    --contender-{supply-policy-weight,supply-value-weight} <0..0.5>" << endl;
-    cout << "    --baseline-{supply-policy-weight,supply-value-weight} <0..0.5>" << endl;
     cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
     cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
 }
@@ -333,10 +331,6 @@ int main(int argc, char* argv[]) {
                 else if (option == "--baseline-q-value-weight") config.baselineQValueWeight = stof(value);
                 else if (option == "--contender-q-veto-delta") config.contenderQVetoDelta = stof(value);
                 else if (option == "--baseline-q-veto-delta") config.baselineQVetoDelta = stof(value);
-                else if (option == "--contender-supply-policy-weight") config.contenderSupplyPolicyWeight = stof(value);
-                else if (option == "--baseline-supply-policy-weight") config.baselineSupplyPolicyWeight = stof(value);
-                else if (option == "--contender-supply-value-weight") config.contenderSupplyValueWeight = stof(value);
-                else if (option == "--baseline-supply-value-weight") config.baselineSupplyValueWeight = stof(value);
                 else if (option == "--sprt-elo0") config.sprtElo0 = stod(value);
                 else if (option == "--sprt-elo1") config.sprtElo1 = stod(value);
                 else if (option == "--sprt-alpha") config.sprtAlpha = stod(value);

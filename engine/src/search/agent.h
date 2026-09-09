@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -182,7 +183,8 @@ private:
                             int level);
     bool try_reuse_mate_continuation(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
-        JointActionCandidate& outAction, int& outPlyToMate) const;
+        JointActionCandidate& outAction, int& outPlyToMate,
+        bool avoidRepetition = false) const;
     static std::string format_root_aware_uci_score(
         const std::shared_ptr<Node>& root,
         const std::shared_ptr<Node>& pvChild,
@@ -313,6 +315,66 @@ public:
         MateSearchBudget::Clock::time_point deadline = {});
 
     /**
+     * @brief Whether a joint action hands the opponents a mate they play first.
+     *
+     * Each board keeps its own clock, so a mate that is on the board is played
+     * whenever its owner wants it - there is no turn to wait for. A team that
+     * does not mate with this action, and leaves the opponents one that does,
+     * never gets to make the second move its own mate needs: theirs lands
+     * first. That race has no place in an alternating turn model, so a win
+     * whose first move is such an action - a capture that feeds the mating
+     * piece across is the usual shape - is reported as a mate in two when it
+     * is a loss.
+     *
+     * The test is asked of the action, so a claimed win from a retained tree,
+     * a cached continuation, a root scan or the probe is all held to it.
+     * Answers false once @p budget is spent, so a veto only ever rests on a
+     * mate this scan actually saw. Leaves @p board as it found it.
+     */
+    static bool action_loses_mate_race(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget* budget = nullptr);
+
+    /**
+     * @brief The action a solved node stands behind, empty when it claims no
+     *        forced win.
+     *
+     * Only a claimed win is worth a race scan. An ordinary move was chosen
+     * against the whole position already, and a losing race is exactly the
+     * kind of thing an unproven score is free to notice for itself.
+     */
+    static std::optional<JointActionCandidate> claimed_win_action(
+        const Node& node, float qVetoDelta, float qValueWeight,
+        bool avoidSolvedDraw);
+
+    /**
+     * @brief A replacement for a claimed win that loses the mate race.
+     *
+     * Empty when @p node claims no win, when the win it claims is race-safe,
+     * or when none of the alternatives the search visited is - the last of
+     * those meaning the race is lost whatever this team plays, where the
+     * claimed win is as good a try as any. Alternatives are ranked by the
+     * visits the search spent on them, with children the solver already proved
+     * lost ranked last, and only the first few are scanned.
+     */
+    static std::optional<JointActionCandidate> race_safe_alternative(
+        Board& board, const Node& node, Stockfish::Color teamSide,
+        bool teamHasTimeAdvantage, float qVetoDelta, float qValueWeight,
+        bool avoidSolvedDraw,
+        const std::atomic<bool>* cancelled = nullptr);
+
+    /**
+     * @brief Whether playing @p move on @p boardNum reaches that board's
+     *        position for the third time, ending the game as a draw.
+     *
+     * Used to keep an unproven mate score from being spent on a shuffle.
+     * Leaves @p board as it found it.
+     */
+    static bool move_completes_repetition(
+        Board& board, int boardNum, Stockfish::Move move);
+
+    /**
      * @brief Bounded Fairy-Stockfish mate search for the root, board by board.
      *
      * Answers the question the checking-move scans cannot ask - a mate that
@@ -331,7 +393,8 @@ public:
         const std::function<bool()>& abort,
         JointActionCandidate& outAction, int& outPlyToMate,
         std::string& outPrincipalVariation,
-        const std::function<void()>& onMate = {});
+        const std::function<void()>& onMate = {},
+        bool avoidRepetition = false);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.
@@ -359,7 +422,8 @@ public:
         MateSearchBudget::Clock::time_point deadline = {},
         const std::atomic<bool>* cancelled = nullptr,
         const std::vector<JointActionCandidate>* preferredActions = nullptr,
-        Node* liveRoot = nullptr);
+        Node* liveRoot = nullptr,
+        bool scanWaitingChecks = true);
     
     /**
      * @brief Extracts PV line starting from a specific child index.

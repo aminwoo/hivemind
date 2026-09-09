@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -25,6 +26,23 @@
 #include "common/globals.h"
 
 using namespace std;
+
+namespace {
+
+/**
+ * @brief Whether a ponder has spent its node or time ceiling.
+ *
+ * A ponder ignores both the clock and the node target - that is what makes it
+ * a ponder - so nothing but a GUI stop ends one. These ceilings bound the tree
+ * it grows in the meantime. Applies to `go ponder` and to the permanent brain
+ * alike; the caller checks it only while `isPondering_` holds.
+ */
+bool ponder_budget_exhausted(const SearchInfo& searchInfo) {
+    return searchInfo.get_nodes_searched() >= SearchParams::PONDER_MAX_NODES
+        || searchInfo.elapsed() >= SearchParams::PONDER_MAX_MS;
+}
+
+}  // namespace
 
 /**
  * @brief Format UCI score string based on node type.
@@ -387,6 +405,121 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
     }
 
     return false;
+}
+
+bool Agent::action_loses_mate_race(Board& board,
+                                   const JointActionCandidate& action,
+                                   Stockfish::Color teamSide,
+                                   bool teamHasTimeAdvantage,
+                                   MateSearchBudget* budget) {
+    if (!board.is_legal_move(BOARD_A, action.moveA)
+        || !board.is_legal_move(BOARD_B, action.moveB)) {
+        return false;
+    }
+    if (budget && budget->exhausted) {
+        return false;
+    }
+
+    board.make_moves(action.moveA, action.moveB);
+    bool lost = false;
+    // Mating ends the game where it stands, so no reply of theirs is played.
+    // Anything short of that leaves them free to play a mate they already
+    // hold, and the follow-up this action was chosen for never arrives.
+    if (!board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
+        JointActionCandidate reply;
+        lost = find_immediate_root_mate(
+            board, ~teamSide, !teamHasTimeAdvantage, reply, budget);
+    }
+    board.unmake_moves(action.moveA, action.moveB);
+    return lost;
+}
+
+std::optional<JointActionCandidate> Agent::claimed_win_action(
+    const Node& node, float qVetoDelta, float qValueWeight,
+    bool avoidSolvedDraw) {
+    if (!node.is_expanded()) {
+        return std::nullopt;
+    }
+    const int index = node.get_best_move_idx_with_q_weight(
+        qVetoDelta, qValueWeight, avoidSolvedDraw);
+    if (index < 0 || static_cast<size_t>(index) >= node.get_num_generated()) {
+        return std::nullopt;
+    }
+    const shared_ptr<Node> child = node.get_child(index);
+    // The root proves a win by holding a child the opponent loses from. Read
+    // both: the root is only marked once every branch below it agrees, and the
+    // certificate can be on the edge before it reaches the node.
+    if (node.get_node_type() != NodeType::WIN
+        && (!child || child->get_node_type() != NodeType::LOSS)) {
+        return std::nullopt;
+    }
+    return node.get_joint_action(index);
+}
+
+std::optional<JointActionCandidate> Agent::race_safe_alternative(
+    Board& board, const Node& node, Stockfish::Color teamSide,
+    bool teamHasTimeAdvantage, float qVetoDelta, float qValueWeight,
+    bool avoidSolvedDraw, const std::atomic<bool>* cancelled) {
+    const std::optional<JointActionCandidate> claimed = claimed_win_action(
+        node, qVetoDelta, qValueWeight, avoidSolvedDraw);
+    if (!claimed) {
+        return std::nullopt;
+    }
+    const auto race_budget = [cancelled] {
+        MateSearchBudget budget;
+        budget.remainingNodes = SearchParams::MATE_RACE_VETO_NODE_BUDGET;
+        budget.deadline = MateSearchBudget::Clock::now()
+            + chrono::milliseconds(SearchParams::MATE_RACE_VETO_MAX_MS);
+        budget.cancelled = cancelled;
+        return budget;
+    };
+    MateSearchBudget claimBudget = race_budget();
+    if (!action_loses_mate_race(
+            board, *claimed, teamSide, teamHasTimeAdvantage, &claimBudget)) {
+        return std::nullopt;
+    }
+
+    const vector<int> visits = node.get_child_visits();
+    const vector<shared_ptr<Node>> children = node.get_children();
+    const size_t generated = std::min(
+        {visits.size(), children.size(), node.get_num_generated()});
+    vector<size_t> byVisits;
+    byVisits.reserve(generated);
+    for (size_t index = 0; index < generated; ++index) {
+        const JointActionCandidate action =
+            node.get_joint_action(static_cast<int>(index));
+        if (action.moveA == claimed->moveA && action.moveB == claimed->moveB) {
+            continue;
+        }
+        byVisits.push_back(index);
+    }
+    // Keep the replacement out of a mate of its own: a child the solver proved
+    // a WIN is a proven loss for this team.
+    const auto isProvenLoss = [&](size_t index) {
+        return children[index]
+            && children[index]->get_node_type() == NodeType::WIN;
+    };
+    std::stable_sort(
+        byVisits.begin(), byVisits.end(), [&](size_t lhs, size_t rhs) {
+            if (isProvenLoss(lhs) != isProvenLoss(rhs)) {
+                return isProvenLoss(rhs);
+            }
+            return visits[lhs] > visits[rhs];
+        });
+    if (byVisits.size() > static_cast<size_t>(
+            SearchParams::MATE_RACE_VETO_MAX_ALTERNATIVES)) {
+        byVisits.resize(SearchParams::MATE_RACE_VETO_MAX_ALTERNATIVES);
+    }
+    for (size_t index : byVisits) {
+        const JointActionCandidate candidate =
+            node.get_joint_action(static_cast<int>(index));
+        MateSearchBudget budget = race_budget();
+        if (!action_loses_mate_race(
+                board, candidate, teamSide, teamHasTimeAdvantage, &budget)) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
 }
 
 /**
@@ -1177,6 +1310,26 @@ string format_mate_proof_pv(
 }  // namespace
 
 /**
+ * A bounded search keeps its mate score across a move that returns the board
+ * to a position already played: the mate is still there, just one move further
+ * away. So the probe will name a shuffle as the "mating" move, the caller
+ * plays it, and the next search names the shuffle back. From outside that is a
+ * mate distance which grows move by move, until the third occurrence draws a
+ * won game. A move that completes the repetition is not a mating move, and no
+ * mate score attached to it makes it one.
+ */
+bool Agent::move_completes_repetition(
+    Board& board, int boardNum, Stockfish::Move move) {
+    if (move == Stockfish::MOVE_NONE) {
+        return false;
+    }
+    board.push_move(boardNum, move);
+    const bool repeats = board.repetition_count(boardNum) >= 3;
+    board.pop_move(boardNum);
+    return repeats;
+}
+
+/**
  * @brief Ask Fairy-Stockfish for a single-board mate the check-only scan missed.
  *
  * find_root_mate_impl() searches attacker moves that give check, so a mate that
@@ -1204,7 +1357,8 @@ bool Agent::probe_root_mate(
     JointActionCandidate& outAction,
     int& outPlyToMate,
     string& outPrincipalVariation,
-    const std::function<void()>& onMate) {
+    const std::function<void()>& onMate,
+    bool avoidRepetition) {
     const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamSide,
                             board.side_to_move(BOARD_B) == ~teamSide};
     // Sitting out the partner board is what makes a single-board mate line
@@ -1278,7 +1432,10 @@ bool Agent::probe_root_mate(
         if (!result.found
             || result.bestMove == Stockfish::MOVE_NONE
             || !board.is_legal_move(boardNum, result.bestMove)
-            || !pass_is_legal(boardNum, result.bestMove)) {
+            || !pass_is_legal(boardNum, result.bestMove)
+            || (avoidRepetition
+                && move_completes_repetition(
+                    board, boardNum, result.bestMove))) {
             continue;
         }
         if (found && result.mateInMoves >= bestMateInMoves) {
@@ -2167,7 +2324,8 @@ bool Agent::find_root_loss_proofs(
     MateSearchBudget::Clock::time_point deadline,
     const std::atomic<bool>* cancelled,
     const vector<JointActionCandidate>* preferredActions,
-    Node* liveRoot) {
+    Node* liveRoot,
+    bool scanWaitingChecks) {
     outProofs.clear();
     MateSearchBudget totalBudget;
     totalBudget.remainingNodes = nodeBudget;
@@ -2182,6 +2340,18 @@ bool Agent::find_root_loss_proofs(
     if (defenses.empty() || nodeBudget == 0) {
         return false;
     }
+
+    const bool hasFocusedCandidates =
+        (preferredActions && !preferredActions->empty())
+        || (liveRoot && liveRoot->is_expanded());
+    const size_t focusedDefenseCount = hasFocusedCandidates
+        ? std::min(
+            SearchParams::ROOT_LOSS_FOCUSED_ACTIONS, defenses.size())
+        : 0;
+    const uint64_t focusedAllocation = focusedDefenseCount > 0
+        ? (nodeBudget * SearchParams::ROOT_LOSS_FOCUSED_BUDGET_PERCENT / 100)
+            / focusedDefenseCount
+        : 0;
 
     // The reverse scan is deliberately bounded and usually cannot prove every
     // legal bughouse defense. Search the moves MCTS is actually considering
@@ -2312,6 +2482,121 @@ bool Agent::find_root_loss_proofs(
         return false;
     };
 
+    // A pass has no neural policy entry, so the joint prior of (pass, check)
+    // can remain too small for MCTS to expand even when the check forces a
+    // queen feed and mate. When the opponent owns the clock, enumerate those
+    // waiting checks explicitly and ask the existing reverse prover whether
+    // every reply loses. The recursive proof disables this wrapper: it is
+    // proving the check evasions, not opening another unbounded threat tree.
+    std::optional<MateProofPly> preferredWaitingCheck;
+    const auto try_time_ahead_waiting_check = [&] (
+        uint64_t& defenseAllowance,
+        int& opponentMatePly,
+        vector<MateProofPly>& opponentPv) {
+        if (!scanWaitingChecks || !opponentHasTimeAdvantage
+            || defenseAllowance == 0) {
+            return false;
+        }
+        const bool opponentAOnTurn =
+            board.side_to_move(BOARD_A) == opponentTeam;
+        const bool opponentBOnTurn =
+            board.side_to_move(BOARD_B) == ~opponentTeam;
+        if (!opponentAOnTurn || !opponentBOnTurn) {
+            return false;
+        }
+
+        struct WaitingCheck {
+            MateProofPly action;
+            size_t replyCount;
+        };
+        vector<WaitingCheck> checks;
+        for (int boardNum : {BOARD_A, BOARD_B}) {
+            for (Stockfish::Move move : board.checking_moves(boardNum)) {
+                MateProofPly action = boardNum == BOARD_A
+                    ? MateProofPly{move, Stockfish::MOVE_NONE}
+                    : MateProofPly{Stockfish::MOVE_NONE, move};
+                board.make_moves(action.moveA, action.moveB);
+                const size_t replyCount = board.legal_moves(boardNum).size();
+                board.unmake_moves(action.moveA, action.moveB);
+                checks.push_back({action, replyCount});
+            }
+        }
+        std::stable_sort(
+            checks.begin(), checks.end(),
+            [&](const WaitingCheck& lhs, const WaitingCheck& rhs) {
+                const auto isPreferred = [&](const WaitingCheck& candidate) {
+                    return preferredWaitingCheck
+                        && candidate.action.moveA
+                               == preferredWaitingCheck->moveA
+                        && candidate.action.moveB
+                               == preferredWaitingCheck->moveB;
+                };
+                if (isPreferred(lhs) != isPreferred(rhs)) {
+                    return isPreferred(lhs);
+                }
+                return lhs.replyCount < rhs.replyCount;
+            });
+
+        for (const WaitingCheck& check : checks) {
+            if (defenseAllowance == 0 || totalBudget.out_of_time()) {
+                break;
+            }
+            const uint64_t allocation = std::min(
+                {defenseAllowance, totalBudget.remainingNodes,
+                 SearchParams::ROOT_LOSS_WAITING_CHECK_NODE_BUDGET});
+            if (allocation == 0) {
+                break;
+            }
+
+            board.make_moves(check.action.moveA, check.action.moveB);
+            bool forcedMate = board.is_checkmate(
+                teamSide, teamHasTimeAdvantage);
+            int matePly = forcedMate ? 1 : 0;
+            vector<MateProofPly> line{check.action};
+            if (!forcedMate
+                && !board.is_checkmate(
+                    opponentTeam, opponentHasTimeAdvantage)
+                && !board.is_draw(1)) {
+                vector<RootLossProof> replyProofs;
+                forcedMate = find_root_loss_proofs(
+                    board, teamSide, teamHasTimeAdvantage,
+                    replyProofs, allocation, deadline, cancelled,
+                    nullptr, nullptr, false);
+                if (forcedMate) {
+                    const auto delaying = std::max_element(
+                        replyProofs.begin(), replyProofs.end(),
+                        [](const RootLossProof& lhs,
+                           const RootLossProof& rhs) {
+                            return lhs.plyToMate < rhs.plyToMate;
+                        });
+                    if (delaying == replyProofs.end()) {
+                        forcedMate = false;
+                    } else {
+                        matePly = delaying->plyToMate + 1;
+                        line.insert(
+                            line.end(),
+                            delaying->principalVariation.begin(),
+                            delaying->principalVariation.end());
+                    }
+                }
+            }
+            board.unmake_moves(check.action.moveA, check.action.moveB);
+
+            // The nested budget is intentionally charged in full. Its API is
+            // conservative and does not expose unused nodes; treating them as
+            // spent keeps this safety pass inside the candidate's allocation.
+            defenseAllowance -= allocation;
+            totalBudget.remainingNodes -= allocation;
+            if (forcedMate) {
+                preferredWaitingCheck = check.action;
+                opponentMatePly = matePly;
+                opponentPv = std::move(line);
+                return true;
+            }
+        }
+        return false;
+    };
+
     for (size_t defenseIndex = 0;
          defenseIndex < defenses.size(); ++defenseIndex) {
         // A proof attached below immediately removes that edge from live MCTS
@@ -2364,9 +2649,31 @@ bool Agent::find_root_loss_proofs(
         } else if (!board.is_checkmate(
                        opponentTeam, opponentHasTimeAdvantage)
                    && !board.is_draw(1)) {
+            const uint64_t remainingDefenses =
+                defenses.size() - defenseIndex;
+            const uint64_t fairAllocation =
+                totalBudget.remainingNodes / remainingDefenses;
+            uint64_t defenseAllocation = std::min(
+                totalBudget.remainingNodes,
+                defenseIndex < focusedDefenseCount
+                    ? std::max(fairAllocation, focusedAllocation)
+                    : fairAllocation);
+
+            std::vector<MateProofPly> waitingCheckPv;
+            int waitingCheckMatePly = 0;
+            if (defenseIndex < focusedDefenseCount
+                && try_time_ahead_waiting_check(
+                    defenseAllocation,
+                    waitingCheckMatePly, waitingCheckPv)) {
+                defenseIsMated = true;
+                totalLossPly = waitingCheckMatePly + 1;
+                principalVariation.insert(
+                    principalVariation.end(),
+                    waitingCheckPv.begin(), waitingCheckPv.end());
+            }
             std::vector<MateProofPly> cachedOpponentPv;
             int cachedOpponentMatePly = 0;
-            if (try_cached_capture_feed(
+            if (!defenseIsMated && try_cached_capture_feed(
                     cachedOpponentMatePly, cachedOpponentPv)) {
                 defenseIsMated = true;
                 totalLossPly = cachedOpponentMatePly + 1;
@@ -2374,13 +2681,12 @@ bool Agent::find_root_loss_proofs(
                     principalVariation.end(),
                     cachedOpponentPv.begin(), cachedOpponentPv.end());
             }
-            // Divide the remaining budget fairly among the current and all
-            // untested defenses. Unused probes return to the common pool, and
-            // an early branch cannot starve the universal proof.
-            const uint64_t remainingDefenses =
-                defenses.size() - defenseIndex;
-            const uint64_t defenseAllocation =
-                totalBudget.remainingNodes / remainingDefenses;
+            // The first few MCTS favourites receive enough concentrated work
+            // to serve as a useful move-safety veto at a very wide root. After
+            // that, divide the remaining budget fairly among every untested
+            // defense. Unused probes always return to the common pool.
+            defenseAllocation = std::min(
+                defenseAllocation, totalBudget.remainingNodes);
             if (!defenseIsMated && defenseAllocation > 0) {
                 MateSearchBudget defenseBudget;
                 defenseBudget.remainingNodes = defenseAllocation;
@@ -2653,7 +2959,8 @@ void Agent::reset_search_state() {
 
 bool Agent::try_reuse_mate_continuation(
     Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
-    JointActionCandidate& outAction, int& outPlyToMate) const {
+    JointActionCandidate& outAction, int& outPlyToMate,
+    bool avoidRepetition) const {
     const uint64_t positionHash = board.search_hash_key(
         teamSide, teamHasTimeAdvantage);
     const std::string signature = board_signature(board);
@@ -2673,6 +2980,20 @@ bool Agent::try_reuse_mate_continuation(
             || (continuation.action.moveA == Stockfish::MOVE_NONE
                 && continuation.action.moveB == Stockfish::MOVE_NONE)) {
             continue;
+        }
+        // The stored line was proven in one history; the position it is being
+        // replayed into carries another. A move that completes a threefold
+        // ends the game as a draw before the mate arrives, so it is no longer
+        // this position's continuation whatever the retained distance says.
+        if (avoidRepetition) {
+            board.make_moves(continuation.action.moveA,
+                             continuation.action.moveB);
+            const bool repeats = board.is_repetition_draw({0, 0});
+            board.unmake_moves(continuation.action.moveA,
+                               continuation.action.moveB);
+            if (repeats) {
+                continue;
+            }
         }
 
         outAction = continuation.action;
@@ -2774,6 +3095,21 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         teamSide, teamHasTimeAdvantage);
     const std::string positionSignature = board_signature(board);
 
+    // Every claimed forced win passes this before it is acted on, whichever
+    // scan, cache or subtree produced it. A win that does not mate at once
+    // while the opponents can is not a win at all: bughouse clocks run in
+    // parallel, so their mate is played before the rest of ours arrives.
+    const auto loses_mate_race = [&](Board& target,
+                                     const JointActionCandidate& action) {
+        MateSearchBudget budget;
+        budget.remainingNodes = SearchParams::MATE_RACE_VETO_NODE_BUDGET;
+        budget.deadline = MateSearchBudget::Clock::now()
+            + chrono::milliseconds(SearchParams::MATE_RACE_VETO_MAX_MS);
+        budget.cancelled = &stopRequested_;
+        return action_loses_mate_race(
+            target, action, teamSide, teamHasTimeAdvantage, &budget);
+    };
+
     // Try to reuse tree from previous search (if enabled)
     std::shared_ptr<Node> reusedRoot = nullptr;
     if (SearchParams::ENABLE_TREE_REUSE) {
@@ -2785,6 +3121,24 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // below an earlier root. Reusing its solved state would stop this live
         // partner board before it can compare the available moves.
         reusedRoot.reset();
+    }
+    if (reusedRoot && !options.background) {
+        // A win solved under an earlier root is adopted whole, so a race the
+        // solver could not express travels with it and no scan below this
+        // point ever revisits it. Drop the subtree rather than the proof: a
+        // stale certificate is reason enough to search the position again.
+        const std::optional<JointActionCandidate> claimed = claimed_win_action(
+            *reusedRoot, options.search.qVetoDelta, options.search.qValueWeight,
+            options.search.drawContempt > 0.0f);
+        if (claimed && loses_mate_race(board, *claimed)) {
+            if (options.verbose) {
+                cout << "info string Tree reuse: discarding a proven win that "
+                        "loses the mate race" << endl;
+            }
+            reusedRoot.reset();
+            drop_retained_candidates();
+            lastSearchHash_ = 0;
+        }
     }
 
     if (reusedRoot) {
@@ -2931,7 +3285,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         *probeBoard, teamSide, teamHasTimeAdvantage,
                         probeNodeBudget, probeBudgetMs, settled,
                         action, plyToMate, pv,
-                        publish);
+                        publish, options.search.drawContempt > 0.0f);
                 } catch (const std::exception& error) {
                     cout << "info string mate probe failed: " << error.what()
                          << endl;
@@ -3200,8 +3554,20 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         cachedRootMate = runRootScan
             && try_reuse_mate_continuation(
                 *scanBoard, teamSide, teamHasTimeAdvantage,
-                rootMateAction, rootMatePly);
+                rootMateAction, rootMatePly,
+                options.search.drawContempt > 0.0f);
+        if (cachedRootMate && loses_mate_race(*scanBoard, rootMateAction)) {
+            // The continuation was proven where its board stood alone. Replayed
+            // here it starts a race the other board has already lost, and no
+            // legality or repetition check it carries can see that. Forget the
+            // line as well as the claim, or every ply of this position pays for
+            // the same refutation.
+            cachedRootMate = false;
+            mateContinuations_.clear();
+        }
 
+        // A mate the immediate scan finds is on the board now: the opponents
+        // never move again, so there is no race for them to win.
         if (runRootScan && !cachedRootMate) {
             MateSearchBudget immediateBudget;
             immediateBudget.remainingNodes = std::min(
@@ -3241,6 +3607,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 rootMateBudget, &mateContinuations_, nullptr, true,
                 rootScanDeadline, !immediateScanComplete, false,
                 &rootMatePv, &stopRequested_, nullptr, rootNode.get());
+        if (scannedRootMate && loses_mate_race(*scanBoard, rootMateAction)) {
+            // A capture feed is the scan's own shape for "mate next move", and
+            // it is exactly the shape that hands the feed board back to an
+            // opponent who is already mating there.
+            scannedRootMate = false;
+        }
 
         // The concurrent probe has been running beside the workers since they
         // were dispatched. Take whatever it has proved by now before the
@@ -3249,6 +3621,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             && probe_mate_ends_search()) {
             probedRootMate = take_probe_mate(
                 rootMateAction, rootMatePly, probePrincipalVariation);
+            if (probedRootMate
+                && loses_mate_race(*scanBoard, rootMateAction)) {
+                probedRootMate = false;
+                probePrincipalVariation.clear();
+            }
         }
     } catch (...) {
         stop_prepass_reporter();
@@ -3497,6 +3874,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 running = false;
                 break;
             }
+            if (isPondering_.load(std::memory_order_relaxed)
+                && ponder_budget_exhausted(searchInfo)) {
+                running = false;
+                break;
+            }
             double remainingMs = searchInfo.get_effective_move_time() - searchInfo.elapsed();
             int sleepMs = isPondering_.load(std::memory_order_relaxed)
                 ? POLL_INTERVAL_MS
@@ -3673,6 +4055,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 running = false;
                 break;
             }
+            if (isPondering_.load(std::memory_order_relaxed)
+                && ponder_budget_exhausted(searchInfo)) {
+                running = false;
+                break;
+            }
             double remainingMs = searchInfo.get_effective_move_time() - searchInfo.elapsed();
             int sleepMs = isPondering_.load(std::memory_order_relaxed)
                 ? POLL_INTERVAL_MS
@@ -3799,6 +4186,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 running = false;
                 break;
             }
+            // A node-limited ponder ignores its target the same way a timed one
+            // ignores the clock, so it needs the ceilings too.
+            if (isPondering_.load(std::memory_order_relaxed)
+                && ponder_budget_exhausted(searchInfo)) {
+                running = false;
+                break;
+            }
             const int completedNodes = searchInfo.get_nodes_searched();
             if (!isPondering_.load(std::memory_order_relaxed)
                 && static_cast<size_t>(completedNodes) >= targetNodes) {
@@ -3850,7 +4244,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         JointActionCandidate probedAction;
         int probedPly = 0;
         string probedPv;
-        if (take_probe_mate(probedAction, probedPly, probedPv)) {
+        if (take_probe_mate(probedAction, probedPly, probedPv)
+            && !loses_mate_race(board, probedAction)) {
             return return_proven_mate(probedAction, probedPly, probedPv);
         }
     }
@@ -3890,6 +4285,22 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             }
             
             result = rootNode->get_joint_action(bestIdx);
+
+            // A win the tree proved during this search answers to the same
+            // test the scans above passed. The proof is what put this action
+            // ahead of the rest, so when the race is lost the move is the best
+            // of the alternatives the search actually looked at.
+            if (const std::optional<JointActionCandidate> safer =
+                    race_safe_alternative(
+                        board, *rootNode, teamSide, teamHasTimeAdvantage,
+                        options.search.qVetoDelta, options.search.qValueWeight,
+                        avoidSolvedDraw, &stopRequested_)) {
+                if (options.verbose) {
+                    cout << "info string Proven win loses the mate race; "
+                            "playing an alternative" << endl;
+                }
+                result = *safer;
+            }
         }
     }
     
@@ -4011,7 +4422,18 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                            / static_cast<double>(nodes)
                        : 0.0)
                << endl;
-        string bestMoveStr = extract_best_move(board);
+        // Report the action this search returns rather than re-deriving it:
+        // the two agree everywhere except where the mate-race veto replaced a
+        // proven win, and there the caller's move is the one to announce.
+        string bestMoveStr = rootNode && rootNode->is_expanded()
+            ? "(" + (result.moveA == Stockfish::MOVE_NONE
+                         ? string("pass")
+                         : board.uci_move(BOARD_A, result.moveA))
+                + "," + (result.moveB == Stockfish::MOVE_NONE
+                             ? string("pass")
+                             : board.uci_move(BOARD_B, result.moveB))
+                + ")"
+            : extract_best_move(board);
         string ponderMoveStr = options.enablePonder ? extract_ponder_move(board) : "";
         if (!ponderMoveStr.empty()) {
             cout << "bestmove " << bestMoveStr << " ponder " << ponderMoveStr << endl;

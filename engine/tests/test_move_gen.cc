@@ -3558,6 +3558,100 @@ TEST_F(EngineTest, RootLossScanRetainsLosingActionWhenAnotherIsUnproven) {
     EXPECT_EQ(proofs[0].action.moveB, Stockfish::MOVE_NONE);
 }
 
+// Regression for nachos game 183149301015. With both boards live, this root
+// has 7,606 legal joint actions. Dividing the reverse-mate budget across all of
+// them gave the MCTS favourite only a few hundred probes, so 21...Nxd1 paired
+// with 15.Nxg7+ survived the safety scan despite allowing the forced mating
+// attack beginning exf7+ and a knight drop on e5.
+TEST_F(EngineTest, RootLossScanConcentratesBudgetOnWideRootFavourite) {
+    Board board;
+    board.set(
+        "r2qk2r/ppp1bppp/4P3/8/3P1N1n/7B/PPP2nPP/R1BQ2K1[Bn] b kq - 1 21"
+        "|"
+        "rnbqk1r1/ppp1ppbp/7p/b3P2N/3Pp3/2N5/PPP2PPP/R2QKBNR[RPpp] w KQq - 2 15");
+
+    JointActionCandidate blunder;
+    blunder.moveA = find_move(board, BOARD_A, "f2d1");
+    blunder.moveB = find_move(board, BOARD_B, "h5g7");
+    ASSERT_NE(blunder.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(blunder.moveB, Stockfish::MOVE_NONE);
+    const std::string signatureBefore = Agent::board_signature(board);
+
+    std::vector<RootLossProof> proofs;
+    const std::vector<JointActionCandidate> preferredActions{blunder};
+    Agent::find_root_loss_proofs(
+        board, Stockfish::BLACK, false, proofs, 3000000,
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(800),
+        nullptr, &preferredActions);
+
+    const auto proof = std::find_if(
+        proofs.begin(), proofs.end(), [&](const RootLossProof& candidate) {
+            return candidate.action.moveA == blunder.moveA
+                && candidate.action.moveB == blunder.moveB;
+        });
+    ASSERT_NE(proof, proofs.end());
+    EXPECT_GT(proof->plyToMate, 1);
+    ASSERT_EQ(proof->principalVariation.size(),
+              static_cast<size_t>(proof->plyToMate));
+    EXPECT_EQ(board.uci_move(BOARD_A, proof->principalVariation[0].moveA),
+              "f2d1");
+    EXPECT_EQ(board.uci_move(BOARD_B, proof->principalVariation[0].moveB),
+              "h5g7");
+
+    Board proofLine(board);
+    for (const MateProofPly& ply : proof->principalVariation) {
+        if (ply.moveA != Stockfish::MOVE_NONE) {
+            ASSERT_TRUE(proofLine.is_legal_move(BOARD_A, ply.moveA));
+        }
+        if (ply.moveB != Stockfish::MOVE_NONE) {
+            ASSERT_TRUE(proofLine.is_legal_move(BOARD_B, ply.moveB));
+        }
+        proofLine.make_moves(ply.moveA, ply.moveB);
+    }
+    EXPECT_TRUE(proofLine.is_checkmate(Stockfish::BLACK, false));
+    EXPECT_EQ(Agent::board_signature(board), signatureBefore);
+}
+
+// Regression for nachos game 183185901749/183185901751. N@g5/P@e2 lets the
+// time-ahead opponent sit on Board A and play B@c6+ on Board B. Every check
+// evasion loses the queen on d5; its transfer enables Q@f2# on Board A.
+TEST_F(EngineTest, RootLossScanRejectsWaitingBishopSkewerQueenFeed) {
+    Board board;
+    board.set(
+        "3qkb1r/1rp1pbpp/p1p5/3p4/3P2n1/2NP1N2/PP4PP/"
+        "R1BQ1K1R[Np] w k - 0 15|"
+        "r3k1nr/p1p2ppp/b3p3/3qN3/3Pp3/2P5/P1P2PPP/"
+        "R1BQK2R[BBPPPbnnp] b KQkq - 2 10");
+
+    JointActionCandidate blunder;
+    blunder.moveA = find_move(board, BOARD_A, "N@g5");
+    blunder.moveB = find_move(board, BOARD_B, "P@e2");
+    ASSERT_NE(blunder.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(blunder.moveB, Stockfish::MOVE_NONE);
+
+    std::vector<RootLossProof> proofs;
+    const std::vector<JointActionCandidate> preferredActions{blunder};
+    Agent::find_root_loss_proofs(
+        board, Stockfish::WHITE, false, proofs, 3000000,
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(800),
+        nullptr, &preferredActions);
+
+    const auto proof = std::find_if(
+        proofs.begin(), proofs.end(), [&](const RootLossProof& candidate) {
+            return candidate.action.moveA == blunder.moveA
+                && candidate.action.moveB == blunder.moveB;
+        });
+    ASSERT_NE(proof, proofs.end());
+    ASSERT_GE(proof->principalVariation.size(), 4u);
+    EXPECT_EQ(proof->principalVariation[0].moveA, blunder.moveA);
+    EXPECT_EQ(proof->principalVariation[0].moveB, blunder.moveB);
+    EXPECT_EQ(proof->principalVariation[1].moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(proof->principalVariation[1].moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(
+                  BOARD_B, proof->principalVariation[1].moveB),
+              "B@c6");
+}
+
 TEST_F(EngineTest, RootLossScanRespectsImmediateCaptureFeedMateRace) {
     Board board;
     board.set(
@@ -3876,6 +3970,77 @@ TEST_F(EngineTest, RootProbePublishesEachBoardAsItLands) {
     EXPECT_EQ(publishes, 1);
     EXPECT_EQ(publishedMove, probedAction.moveB);
     EXPECT_EQ(publishedPly, probedPly);
+}
+
+// A bounded probe reports the same mate after a move that returns the board to
+// a position already played, so it will name a shuffle as the mating move. The
+// third occurrence draws the game the mate was meant to win, which is what a
+// reported mate distance growing move by move looks like from outside.
+TEST_F(EngineTest, DetectsAMoveThatCompletesAThreefold) {
+    Board board;
+    board.set_fen(BOARD_A, board.startingFen);
+
+    const auto move_named = [&](const std::string& uci) {
+        for (const Stockfish::Move move : board.legal_moves(BOARD_A)) {
+            if (board.uci_move(BOARD_A, move) == uci) {
+                return move;
+            }
+        }
+        return Stockfish::MOVE_NONE;
+    };
+
+    // Both sides shuffle a knight out and back. After 4 plies the starting
+    // position has been seen twice, so the second lap's closing move is the
+    // one that makes it three.
+    for (const std::string& uci : {"g1f3", "b8c6", "f3g1", "c6b8", "g1f3",
+                                   "b8c6", "f3g1"}) {
+        const Stockfish::Move move = move_named(uci);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+        board.push_move(BOARD_A, move);
+    }
+
+    const std::string beforeFen = board.fen(BOARD_A);
+    const Stockfish::Move closing = move_named("c6b8");
+    ASSERT_NE(closing, Stockfish::MOVE_NONE);
+    EXPECT_TRUE(Agent::move_completes_repetition(board, BOARD_A, closing));
+
+    // A move that leaves the shuffle does not.
+    const Stockfish::Move leaving = move_named("e7e5");
+    ASSERT_NE(leaving, Stockfish::MOVE_NONE);
+    EXPECT_FALSE(Agent::move_completes_repetition(board, BOARD_A, leaving));
+    EXPECT_FALSE(
+        Agent::move_completes_repetition(board, BOARD_A, Stockfish::MOVE_NONE));
+
+    // The probe asks this question on the board it is searching, so every
+    // answer has to leave that board exactly as it found it.
+    EXPECT_EQ(board.fen(BOARD_A), beforeFen);
+}
+
+// The guard rejects shuffles, not mates: a mating move reaches a position the
+// game has never been in, so asking for repetition avoidance must not cost the
+// probe the mate it would otherwise have found.
+TEST_F(EngineTest, RootProbeStillFindsAMateWhenAvoidingRepetitions) {
+    Board board;
+    board.set(
+        // Not this team's turn, so the whole budget goes to the mate below.
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1"
+        "|"
+        // Ra8 mates at once, and reaches a position the game has not held.
+        "6k1/5ppp/8/8/8/8/8/R5K1[] w - - 0 1");
+
+    JointActionCandidate probedAction;
+    int probedPly = 0;
+    std::string probedPv;
+
+    ASSERT_TRUE(Agent::probe_root_mate(
+        board, Stockfish::BLACK, true,
+        SearchParams::MATE_PROBE_ROOT_NODE_BUDGET, 500, {},
+        probedAction, probedPly, probedPv, {}, /*avoidRepetition=*/true));
+
+    ASSERT_NE(probedAction.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, probedAction.moveB), "a1a8");
+    EXPECT_FALSE(
+        Agent::move_completes_repetition(board, BOARD_B, probedAction.moveB));
 }
 
 // A probe that finds nothing publishes nothing, so a concurrent caller is
