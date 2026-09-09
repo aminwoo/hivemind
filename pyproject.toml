@@ -1,7 +1,7 @@
 [project]
 name = "hivemind"
 version = "0.1.0"
-description = "Add your description here"
+description = "Neural bughouse engine, inference tools, and self-play training"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -12,7 +12,6 @@ dependencies = [
     "onnx>=1.20.1",
     "onnxruntime>=1.23.2",
     "onnxscript>=0.5.7",
-    "onnxsim>=0.4.36",
     "pandas>=2.3.3",
     "polars>=1.37.1",
     "pytest>=9.0.2",
@@ -23,6 +22,9 @@ dependencies = [
     "torchvision>=0.24.1",
 ]
 
+[project.optional-dependencies]
+onnx-export = ["onnxsim>=0.4.36"]
+
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cu130"
 
@@ -30,3 +32,18 @@ url = "https://download.pytorch.org/whl/cu130"
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["hivemind*"]
+
+[project.scripts]
+hivemind = "hivemind.cli:main"

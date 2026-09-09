@@ -10,7 +10,7 @@ on:
       model_url:
         description: Direct ONNX URL or a Hivemind release zip containing the model
         required: true
-        default: https://github.com/aminwoo/hivemind/releases/download/v2.2.0/hivemind-v2.2.0-linux-x86_64.zip
+        default: https://huggingface.co/aminwoo/bughouse-rise-v3/resolve/eac7b7a415061b63bdce672d064aa5b8030e9ae8/hivemind-it04-crossboard-risev33-loss1.556-p82.0.onnx
       publish:
         description: Publish the built assets to the requested release tag
         required: true
@@ -33,7 +33,7 @@ jobs:
   prepare-model:
     runs-on: ubuntu-latest
     env:
-      MODEL_URL: ${{ inputs.model_url || 'https://github.com/aminwoo/hivemind/releases/download/v2.2.0/hivemind-v2.2.0-linux-x86_64.zip' }}
+      MODEL_URL: ${{ inputs.model_url || 'https://huggingface.co/aminwoo/bughouse-rise-v3/resolve/eac7b7a415061b63bdce672d064aa5b8030e9ae8/hivemind-it04-crossboard-risev33-loss1.556-p82.0.onnx' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

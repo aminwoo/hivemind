@@ -329,7 +329,7 @@ wheels = [
 [[package]]
 name = "hivemind"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "chess" },
     { name = "cloudscraper" },
@@ -338,7 +338,6 @@ dependencies = [
     { name = "onnx" },
     { name = "onnxruntime" },
     { name = "onnxscript" },
-    { name = "onnxsim" },
     { name = "pandas" },
     { name = "polars" },
     { name = "pytest" },
@@ -348,6 +347,11 @@ dependencies = [
     { name = "torch" },
     { name = "torchvision", version = "0.24.1", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "torchvision", version = "0.24.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
+]
+
+[package.optional-dependencies]
+onnx-export = [
+    { name = "onnxsim" },
 ]
 
 [package.dev-dependencies]
@@ -364,7 +368,7 @@ requires-dist = [
     { name = "onnx", specifier = ">=1.20.1" },
     { name = "onnxruntime", specifier = ">=1.23.2" },
     { name = "onnxscript", specifier = ">=0.5.7" },
-    { name = "onnxsim", specifier = ">=0.4.36" },
+    { name = "onnxsim", marker = "extra == 'onnx-export'", specifier = ">=0.4.36" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "polars", specifier = ">=1.37.1" },
     { name = "pytest", specifier = ">=9.0.2" },
@@ -374,6 +378,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.9.1" },
     { name = "torchvision", specifier = ">=0.24.1" },
 ]
+provides-extras = ["onnx-export"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]

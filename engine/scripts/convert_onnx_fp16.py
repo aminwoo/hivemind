@@ -1,32 +1,16 @@
 #!/usr/bin/env python3
 
 import argparse
+from pathlib import Path
+import sys
+
+source_dir = Path(__file__).resolve().parents[2] / "src"
+if source_dir.is_dir():
+    sys.path.insert(0, str(source_dir))
+from hivemind.inference.onnx_graph import topologically_sort_graph
 
 import onnx
 from onnxruntime.transformers.float16 import convert_float_to_float16
-
-
-def topologically_sort_graph(model: onnx.ModelProto) -> None:
-    available_values = {
-        value.name for value in [*model.graph.input, *model.graph.initializer]
-    }
-    pending_nodes = list(model.graph.node)
-    sorted_nodes = []
-    while pending_nodes:
-        ready_nodes = [
-            node
-            for node in pending_nodes
-            if all(not name or name in available_values for name in node.input)
-        ]
-        if not ready_nodes:
-            raise RuntimeError("FP16 ONNX conversion produced an unsortable graph")
-        for node in ready_nodes:
-            sorted_nodes.append(node)
-            available_values.update(name for name in node.output if name)
-            pending_nodes.remove(node)
-
-    del model.graph.node[:]
-    model.graph.node.extend(sorted_nodes)
 
 
 def main() -> None:

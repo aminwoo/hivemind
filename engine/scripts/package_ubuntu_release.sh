@@ -115,6 +115,11 @@ for cuda_lib_dir in \
 done
 
 cp "$engine_dir/scripts/convert_onnx_fp16.py" "$bundle_dir/bin/"
+# Ship the converter's shared helper without requiring the training package.
+mkdir -p "$bundle_dir/bin/hivemind/inference"
+cp "$engine_dir/../src/hivemind/__init__.py" "$bundle_dir/bin/hivemind/"
+cp "$engine_dir/../src/hivemind/inference/"{__init__,onnx_graph}.py \
+    "$bundle_dir/bin/hivemind/inference/"
 
 cat >"$bundle_dir/hivemind" <<'LAUNCHER'
 #!/bin/sh
