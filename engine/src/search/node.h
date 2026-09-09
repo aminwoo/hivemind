@@ -427,6 +427,11 @@ public:
         if (outChildIdx) {
             *outChildIdx = expandedCount - 1;
         }
+        // That candidate may have been the last one. If so, the generator's
+        // frontier machinery is spent and can go back now rather than sitting
+        // in the tree until the search ends; it is rebuilt from the retained
+        // move lists if this node is ever re-rooted.
+        candidateGenerator.releaseExhaustedFrontier();
         const int registeredChildIdx = expandedCount - 1;
         std::shared_ptr<Node> parent = weak_from_this().lock();
         guard.unlock();

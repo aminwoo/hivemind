@@ -13,14 +13,15 @@ add_executable(
   test_backend_compat.cc
   test_move_gen.cc
   test_tactical_movegen.cc
-  test_supply_search.cc
   test_draw_detection.cc
   test_mate_detection.cc
   test_mate_probe.cc
+  test_mate_race.cc
   test_onnx_utils.cc
   test_uci.cc
   test_tournament.cc
   test_node_concurrency.cc
+  test_search_memory.cc
 )
 target_link_libraries(hivemind_tests PRIVATE hivemind_lib gtest_main)
 

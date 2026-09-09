@@ -120,6 +120,8 @@ public:
     }
 
     void clear() { keys_.clear(); }
+    /// Like clear(), but hands the storage back rather than keeping capacity.
+    void release() { std::vector<uint32_t>().swap(keys_); }
     size_t size() const { return keys_.size(); }
 
 private:
@@ -594,6 +596,36 @@ public:
                       return lhs.gumbelScore > rhs.gumbelScore;
                   });
         gumbelCandidates = std::move(pool);
+    }
+
+    /**
+     * @brief Hand back the lazy-generation scaffolding once it is spent.
+     *
+     * A node that has expanded every joint action still carries the machinery
+     * that produced them: the factorized frontier heap, the three visited-pair
+     * sets, and the consumed learned and Gumbel pools. None of it is read
+     * again - every accessor is already gated on the emptiness this checks -
+     * yet it outlives the node in a tree that may be searched for a minute.
+     *
+     * It is not lost either. rebuildCandidateFrontier() clears and rebuilds
+     * all six from the sorted move lists and the generated candidates, which
+     * this deliberately keeps, so a node released here still reprepares
+     * correctly if tree reuse later makes it a root.
+     *
+     * No-op while any candidate remains, so callers need not check first.
+     */
+    void releaseExhaustedFrontier() {
+        if (hasNext()) {
+            return;
+        }
+        std::priority_queue<JointActionCandidate>().swap(heap);
+        visited.release();
+        jointPoolKeys.release();
+        generatedCandidateKeys.release();
+        std::vector<JointActionCandidate>().swap(jointPolicyCandidates);
+        nextJointPolicyCandidate = 0;
+        std::vector<JointActionCandidate>().swap(gumbelCandidates);
+        nextGumbelCandidate = 0;
     }
 
     /**

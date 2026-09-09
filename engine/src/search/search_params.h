@@ -247,6 +247,17 @@ constexpr bool ENABLE_PERMANENT_BRAIN = true;
 constexpr int PERMANENT_BRAIN_MAX_NODES = 500000;
 constexpr double PERMANENT_BRAIN_MAX_MS = 60000.0;
 
+/**
+ * The same rails for a `go ponder`, which has a movetime but ignores it: a
+ * ponder runs until the GUI sends ponderhit or stop, so the requested time
+ * bounds nothing. Left uncapped, one ponder grows a tree for as long as the
+ * opponents think - measured at 48s against a 1000ms request - and every node
+ * carries both boards' move lists, so the tree, not the model, is what fills
+ * memory. These stop it before it does.
+ */
+constexpr int PONDER_MAX_NODES = 500000;
+constexpr double PONDER_MAX_MS = 60000.0;
+
 // =============================================================================
 // Early Stopping and Time Management Parameters
 // =============================================================================
@@ -436,6 +447,26 @@ constexpr int ROOT_LOSS_EXTRA_TIME_PERCENT = 80;
 constexpr int ROOT_LOSS_EXTRA_MAX_MS = 800;
 
 /**
+ * Concentrate part of the reverse scan on moves MCTS may actually play.
+ *
+ * A quiet two-board position can have several thousand legal joint actions.
+ * An equal split then leaves each candidate too little work to prove even a
+ * short mate, so the safety scan spends its whole deadline without vetoing the
+ * current favourite. The first few visit-ranked candidates share this portion
+ * of the original node allowance. Any nodes a proof does not use remain in the
+ * common pool, and these focused mate calls can consume at most half of the
+ * allowance before the scan returns to equal sharing.
+ */
+constexpr size_t ROOT_LOSS_FOCUSED_ACTIONS = 4;
+constexpr uint64_t ROOT_LOSS_FOCUSED_BUDGET_PERCENT = 50;
+
+// A time-ahead opponent may sit on one board while giving check on the other.
+// For each such forcing reply, spend enough of the focused root-action budget
+// to prove whether every check evasion loses. This catches short skewers and
+// capture feeds that have a tiny joint policy because one half is a pass.
+constexpr uint64_t ROOT_LOSS_WAITING_CHECK_NODE_BUDGET = 40000;
+
+/**
  * Tiny synchronous mate-in-one probe performed before neural workers start.
  *
  * Once a TensorRT batch has been dispatched it cannot be cancelled. Starting
@@ -445,6 +476,22 @@ constexpr int ROOT_LOSS_EXTRA_MAX_MS = 800;
  */
 constexpr uint64_t IMMEDIATE_MATE_PREFLIGHT_NODE_BUDGET = 2000;
 constexpr int IMMEDIATE_MATE_PREFLIGHT_MAX_MS = 5;
+
+/**
+ * Bound on the mate-race veto that guards a claimed forced win.
+ *
+ * The veto asks the pre-flight's question of the opponents one move on - can
+ * they mate at once after our first move - so it takes the same kind of
+ * budget. It runs only where a win has already been claimed, at most
+ * MATE_RACE_VETO_MAX_ALTERNATIVES + 1 times per move, and answers "no race
+ * lost" when it runs out, so the cap costs nothing a claimed win depends on.
+ */
+constexpr uint64_t MATE_RACE_VETO_NODE_BUDGET = 20000;
+constexpr int MATE_RACE_VETO_MAX_MS = 10;
+
+/// Replacements tried when the claimed win turns out to lose the race.
+constexpr int MATE_RACE_VETO_MAX_ALTERNATIVES = 4;
+
 
 /// Probes between deadline samples. Keeps the clock read well under 1% of the
 /// cheapest probe while still stopping a joint scan within a few milliseconds.
@@ -516,10 +563,6 @@ constexpr int ROOT_JOINT_POLICY_TOP_K = 32;
 constexpr float JOINT_POLICY_RESIDUAL_SCALE = 1.0f;
 
 struct RuntimeConfig {
-    // Experimental share of marginal policy assigned to cross-board supply
-    // candidates. Zero preserves the original search; this is not a time cap.
-    float supplyPolicyWeight = 0.0f;
-    float supplyValueWeight = 0.0f;
     float cpuctInit = CPUCT_INIT;
     float cpuctBase = CPUCT_BASE;
     bool enableMCGS = ENABLE_MCGS;
