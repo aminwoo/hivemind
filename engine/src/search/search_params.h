@@ -375,8 +375,10 @@ constexpr int MATE_PROBE_UNTIMED_BUDGET_MS = 500;
 // Longest mate the probe will stop for, and accept. It doubles as an evidence
 // bound: a mate this short out of a pruned search is worth collapsing the root
 // onto, where the mate in 32 at depth 63 that an unbounded probe once returned
-// inside 400ms is not.
-constexpr int MATE_PROBE_MAX_MATE_MOVES = 16;
+// inside 400ms is not. Ten is the length a single-board line can be trusted
+// to stay single-board for: the partner sits through it, and every move of
+// it is one the other board's clock has to wait out.
+constexpr int MATE_PROBE_MAX_MATE_MOVES = 10;
 
 // Answer the capture-feed scan's single-board mate question with
 // Fairy-Stockfish instead of the checks-only scan.
@@ -410,7 +412,7 @@ constexpr int MATE_PROBE_FEED_MAX_MS = 40;
 constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 8000000;
 
 // Use the same evidence bound for accepting a probe mate and ending a move.
-// A separate five-move early-exit cap made accepted mates in 6..16 wait for
+// A separate five-move early-exit cap made accepted mates beyond it wait for
 // the deadline even though the probe had already stopped searching. These
 // remain single-board search claims, not exact two-board proofs; the caller
 // must still prefer an exact scan or a root already solved by MCTS.
@@ -488,6 +490,14 @@ constexpr int IMMEDIATE_MATE_PREFLIGHT_MAX_MS = 5;
  */
 constexpr uint64_t MATE_RACE_VETO_NODE_BUDGET = 20000;
 constexpr int MATE_RACE_VETO_MAX_MS = 10;
+
+/**
+ * Wall-clock bound on replaying a probe mate on the two-board model. The
+ * replay is a handful of make/unmake calls plus bounded mate-race scans around
+ * each defender turn. It runs on the probe's own thread, so this only stops a
+ * pathological position from holding the probe's result past the move.
+ */
+constexpr int MATE_PROBE_VERIFY_MAX_MS = 50;
 
 /// Replacements tried when the claimed win turns out to lose the race.
 constexpr int MATE_RACE_VETO_MAX_ALTERNATIVES = 4;

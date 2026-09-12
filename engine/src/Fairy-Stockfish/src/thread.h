@@ -55,6 +55,7 @@ public:
   void idle_loop();
   void start_searching();
   void wait_for_search_finished();
+  bool is_searching() { std::lock_guard<std::mutex> lk(mutex); return searching; }
   size_t id() const { return idx; }
 
   Pawns::Table pawnsTable;

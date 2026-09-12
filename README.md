@@ -104,6 +104,17 @@ uv run python -m pytest
 ## Building the Engine
 
 ```bash
+uv run hivemind build-engine
+```
+
+This configures the fast Ninja preset and builds the C++ engine at
+`engine/build-ninja/hivemind`. Use `--preset ninja-release` for a fully
+optimized build, or run `uv run hivemind build-engine --help` for backend and
+dependency-path options.
+
+The equivalent manual build is:
+
+```bash
 cd engine
 mkdir build && cd build
 cmake ..
@@ -149,7 +160,12 @@ of the current working directory. Without explicit path, the engine searches `./
 # Run move generation benchmark
 ./hivemind perft 5
 
-# Run self-play for training data generation
+# Run self-play with training defaults (800 MCTS nodes, 100k Fairy-Stockfish
+# mate nodes per position); extra flags pass through to the engine
+uv run hivemind selfplay --games 1000
+uv run hivemind selfplay --games 1000 --nodes 400 --mate-nodes 0 --seed 7
+
+# Or call the engine directly
 ./engine/build-ninja/hivemind selfplay \
   --model artifacts/training/weights/rl/model-rl-final-v3.0.onnx \
   --games 1000 --nodes 400 --output engine/selfplay_games

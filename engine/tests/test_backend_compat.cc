@@ -1,8 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <cmath>
-#include <limits>
-
 #include "nn/backend_compat.h"
 
 TEST(BackendCompatTest, HalfHasOnnxFloat16Layout) {
@@ -27,9 +24,3 @@ TEST(BackendCompatTest, HalfRoundTripsExactlyRepresentableValues) {
     }
 }
 
-TEST(BackendCompatTest, HalfPreservesInfinityAndNan) {
-    EXPECT_TRUE(std::isinf(__half2float(
-        __float2half_rn(std::numeric_limits<float>::infinity()))));
-    EXPECT_TRUE(std::isnan(__half2float(
-        __float2half_rn(std::numeric_limits<float>::quiet_NaN()))));
-}

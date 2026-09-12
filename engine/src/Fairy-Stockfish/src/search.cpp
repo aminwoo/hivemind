@@ -1692,6 +1692,12 @@ moves_loop: // When in check, search starts from here
 
       assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
 
+      // Quiescence trees in drop variants can dwarf the main search, so a
+      // stop request has to be honoured here as well as in search(): the
+      // caller discards the value of an aborted search anyway.
+      if (Threads.stop.load(std::memory_order_relaxed))
+          return VALUE_ZERO;
+
       // Check for a new best move
       if (value > bestValue)
       {

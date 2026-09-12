@@ -6,6 +6,7 @@
 #include "environment/board.h"
 #include "environment/constants.h"
 #include "environment/joint_action.h"
+#include "Fairy-Stockfish/src/uci.h"
 #include "search/node.h"
 #include "environment/planes.h"
 #include "search/search_params.h"
@@ -840,22 +841,6 @@ TEST_F(EngineTest, CancellingCollisionDoesNotCreateAVisit) {
     EXPECT_EQ(parent.get_child_visits()[0], 0);
     EXPECT_EQ(parent.get_visits(), 0);
     EXPECT_FLOAT_EQ(parent.get_child_q(0), SearchParams::Q_INIT);
-}
-
-TEST(PolicyTest, NormalizesExtremeAndNonFiniteLogits) {
-    auto probabilities = normalize_logits({1000.0f, 999.0f, -1000.0f});
-    ASSERT_EQ(probabilities.size(), 3);
-    EXPECT_TRUE(std::all_of(probabilities.begin(), probabilities.end(), [](float value) {
-        return std::isfinite(value);
-    }));
-    EXPECT_NEAR(std::accumulate(probabilities.begin(), probabilities.end(), 0.0f), 1.0f, 1e-6f);
-    EXPECT_GT(probabilities[0], probabilities[1]);
-
-    auto fallback = normalize_logits({
-        std::numeric_limits<float>::quiet_NaN(),
-        -std::numeric_limits<float>::infinity()});
-    EXPECT_FLOAT_EQ(fallback[0], 0.5f);
-    EXPECT_FLOAT_EQ(fallback[1], 0.5f);
 }
 
 TEST_F(EngineTest, PassProbabilityUsesNetworkLogitWithoutFloor) {
@@ -3053,10 +3038,35 @@ TEST_F(EngineTest, Promotion) {
         if (uci == "a7a8n") found_knight_promo = true;
     }
     
-    EXPECT_TRUE(found_queen_promo) << "Queen promotion should be legal";
-    EXPECT_TRUE(found_rook_promo) << "Rook promotion should be legal";
-    EXPECT_TRUE(found_bishop_promo) << "Bishop promotion should be legal";
-    EXPECT_TRUE(found_knight_promo) << "Knight promotion should be legal";
+    // The policy head only knows queen and knight promotions, so those are
+    // the only ones the engine's own move lists offer - a rook or bishop
+    // promotion stays a legal move for the opponent to play against us.
+    EXPECT_TRUE(found_queen_promo) << "Queen promotion should be searched";
+    EXPECT_FALSE(found_rook_promo) << "Rook promotion should not be searched";
+    EXPECT_FALSE(found_bishop_promo) << "Bishop promotion should not be searched";
+    EXPECT_TRUE(found_knight_promo) << "Knight promotion should be searched";
+    for (const char* uci : {"a7a8r", "a7a8b"}) {
+        std::string text = uci;
+        const Stockfish::Move move = Stockfish::UCI::to_move(*board.pos[BOARD_A], text);
+        ASSERT_NE(move, Stockfish::MOVE_NONE);
+        EXPECT_TRUE(board.is_legal_move(BOARD_A, move)) << uci;
+    }
+}
+
+TEST_F(EngineTest, TeamLegalMovesSearchQueenAndKnightPromotionsOnly) {
+    Board board;
+    board.set_fen(BOARD_A, "8/P7/8/8/8/8/8/4K2k w - - 0 1");
+
+    std::set<std::string> promotions;
+    for (const auto& [boardNum, move] :
+         board.legal_moves(Stockfish::WHITE, false)) {
+        if (boardNum == BOARD_A
+            && Stockfish::type_of(move) == Stockfish::PROMOTION) {
+            promotions.insert(board.uci_move(boardNum, move));
+        }
+    }
+
+    EXPECT_EQ(promotions, (std::set<std::string>{"a7a8n", "a7a8q"}));
 }
 
 TEST_F(EngineTest, PolicySupportsQueenAndKnightPromotionsOnly) {

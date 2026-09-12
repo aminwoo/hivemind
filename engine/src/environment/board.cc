@@ -167,12 +167,30 @@ void Board::pop_move(int board_num) {
 }
 
 // Returns a list of legal moves for the specified board index.
+namespace {
+
+// Rook and bishop promotions have no policy index, so nothing the engine
+// searches may play one: a queen does everything either can, mate-wise, and
+// a knight covers the rest. Opponent moves arrive through is_legal_move and
+// UCI parsing, which still accept them.
+bool is_unplayable_promotion(Stockfish::Move move) {
+    if (Stockfish::type_of(move) != Stockfish::PROMOTION) {
+        return false;
+    }
+    const Stockfish::PieceType promoted = Stockfish::promotion_type(move);
+    return promoted != Stockfish::QUEEN && promoted != Stockfish::KNIGHT;
+}
+
+}  // namespace
+
 std::vector<Stockfish::Move> Board::legal_moves(int board_num) {
     const Stockfish::MoveList<Stockfish::LEGAL> candidates(*pos[board_num]);
     std::vector<Stockfish::Move> legal_moves;
     legal_moves.reserve(candidates.size());
     for (const Stockfish::ExtMove& move : candidates) {
-        legal_moves.emplace_back(move);
+        if (!is_unplayable_promotion(move)) {
+            legal_moves.emplace_back(move);
+        }
     }
     return legal_moves;
 }
@@ -185,7 +203,7 @@ std::vector<Stockfish::Move> Board::checking_moves(int board_num) const {
     }
 
     // Keep all move types, including checking evasions, en passant, castling
-    // and underpromotions. QUIET_CHECKS alone omits some of those. Filtering
+    // and knight promotions. QUIET_CHECKS alone omits some of those. Filtering
     // before legality avoids validating hundreds of irrelevant pocket drops.
     Stockfish::ExtMove candidates[Stockfish::MAX_MOVES];
     const Stockfish::ExtMove* end = position.checkers()
@@ -193,6 +211,7 @@ std::vector<Stockfish::Move> Board::checking_moves(int board_num) const {
         : Stockfish::generate<Stockfish::NON_EVASIONS>(position, candidates);
     for (const Stockfish::ExtMove* candidate = candidates; candidate != end; ++candidate) {
         if (!position.virtual_drop(*candidate)
+            && !is_unplayable_promotion(*candidate)
             && position.gives_check(*candidate)
             && position.legal(*candidate)) {
             checks.push_back(*candidate);
@@ -212,13 +231,17 @@ std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color
     
     if (pos[0]->side_to_move() == side) {
         for (const Stockfish::ExtMove& move : Stockfish::MoveList<Stockfish::LEGAL>(*pos[0])) {
-            moves.emplace_back(0, move);
+            if (!is_unplayable_promotion(move)) {
+                moves.emplace_back(0, move);
+            }
         }
     }
 
     if (pos[1]->side_to_move() == ~side) {
         for (const Stockfish::ExtMove& move : Stockfish::MoveList<Stockfish::LEGAL>(*pos[1])) {
-            moves.emplace_back(1, move);
+            if (!is_unplayable_promotion(move)) {
+                moves.emplace_back(1, move);
+            }
         }
     }
     return moves;
@@ -245,6 +268,23 @@ bool Board::is_checkmate(Stockfish::Color side,
         return *cache[boardNum];
     };
 
+    auto partner_capture_unfreezes = [&](int stuckBoard, int partnerBoard) {
+        for (const Stockfish::ExtMove& extMove
+             : Stockfish::MoveList<Stockfish::LEGAL>(*pos[partnerBoard])) {
+            const Stockfish::Move move = extMove;
+            if (!is_capture(partnerBoard, move)) {
+                continue;
+            }
+            push_move(partnerBoard, move);
+            const bool unfrozen = has_any_legal_move(stuckBoard);
+            pop_move(partnerBoard);
+            if (unfrozen) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     // Check Board A (where 'side' plays)
     if (isOnTurnOnA && pos[BOARD_A]->checkers() && !has_legal_move(BOARD_A)) {
         // No legal moves - but can partner provide a blocking piece?
@@ -268,6 +308,16 @@ bool Board::is_checkmate(Stockfish::Color side,
     if (isOnTurnOnA || isOnTurnOnB) {
         const bool hasMovesOnA = isOnTurnOnA && has_legal_move(BOARD_A);
         const bool hasMovesOnB = isOnTurnOnB && has_legal_move(BOARD_B);
+        if (!teamHasTimeAdvantage) {
+            if (isOnTurnOnA && !hasMovesOnA && hasMovesOnB
+                && !partner_capture_unfreezes(BOARD_A, BOARD_B)) {
+                return true;
+            }
+            if (isOnTurnOnB && !hasMovesOnB && hasMovesOnA
+                && !partner_capture_unfreezes(BOARD_B, BOARD_A)) {
+                return true;
+            }
+        }
         if (!hasMovesOnA && !hasMovesOnB
             && (!teamHasTimeAdvantage || (isOnTurnOnA && isOnTurnOnB))) {
             return true;

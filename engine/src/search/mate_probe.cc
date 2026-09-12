@@ -1,5 +1,6 @@
 #include "search/mate_probe.h"
 
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <mutex>
@@ -33,9 +34,32 @@ constexpr size_t PROBE_THREAD_INDEX = 1;
 // polled by yielding instead of sleeping.
 constexpr uint64_t NODES_PER_SLEEP = 4000;
 
+// The bughouse variant, searched as one board on its own.
+//
+// Fairy-Stockfish's twoBoards flag is what lets a side drop a piece it does
+// not hold (Position::allow_virtual_drop), on the assumption its partner will
+// capture one in time. The probe exists for the position where the partner
+// board sits while this one mates, and a partner who sits feeds nobody - so
+// the flag comes off, and both sides play with the hands they actually have.
+// That also retires the virtual-mate score band the flag switches on, which
+// the probe would otherwise have to tell apart from a real mate.
+//
+// Promotions are narrowed to queen and knight. The policy head only knows
+// those two, so a mate the probe can only reach by underpromoting to a rook
+// or bishop is one the engine could never play or train on; searching it
+// would just hand back a move with no policy index.
 const Stockfish::Variant* bughouse_variant() {
-    const auto entry = Stockfish::variants.find("bughouse");
-    return entry == Stockfish::variants.end() ? nullptr : entry->second;
+    static const Stockfish::Variant* probeVariant = [] {
+        const auto entry = Stockfish::variants.find("bughouse");
+        if (entry == Stockfish::variants.end()) {
+            return static_cast<const Stockfish::Variant*>(nullptr);
+        }
+        auto* narrowed = new Stockfish::Variant(*entry->second);
+        narrowed->twoBoards = false;
+        narrowed->promotionPieceTypes = {Stockfish::QUEEN, Stockfish::KNIGHT};
+        return static_cast<const Stockfish::Variant*>(narrowed->conclude());
+    }();
+    return probeVariant;
 }
 
 }  // namespace
@@ -60,18 +84,30 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
     Stockfish::Position& position = worker->rootPos;
     position.set(variant, fen, false, &worker->rootState, worker);
 
-    // A virtual drop spends a piece the partner has not handed over yet. The
-    // defender is allowed one - that is what keeps the model conservative - but
-    // the attacker must mate with what it actually holds.
     Stockfish::Search::RootMoves rootMoves;
     for (const auto& move : Stockfish::MoveList<Stockfish::LEGAL>(position)) {
-        if (!position.virtual_drop(move)) {
-            rootMoves.emplace_back(move);
-        }
+        rootMoves.emplace_back(move);
     }
     if (rootMoves.empty()) {
         return result;
     }
+
+    // Bughouse gives checkmate and stalemate the same terminal score. Keep an
+    // immediate checkmate ahead of an immediate stalemate when their scores
+    // tie, matching Hivemind's preference for the explicit mate.
+    std::stable_partition(
+        rootMoves.begin(), rootMoves.end(), [&](const auto& rootMove) {
+            const Stockfish::Move move = rootMove.pv.front();
+            if (!position.gives_check(move)) {
+                return false;
+            }
+            Stockfish::StateInfo nextState;
+            position.do_move(move, nextState);
+            const bool checkmate = position.checkers()
+                && Stockfish::MoveList<Stockfish::LEGAL>(position).size() == 0;
+            position.undo_move(move);
+            return checkmate;
+        });
 
     // Thread::search() ends an iteration as soon as it holds a mate inside
     // 2 * Limits.mate plies, so this is what stops the probe on the first mate
@@ -96,6 +132,14 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
         : std::chrono::steady_clock::time_point::max();
     worker->start_searching();
     while (!Stockfish::Threads.stop) {
+        // A helper thread never raises Threads.stop itself: it returns to the
+        // idle loop once rootDepth hits MAX_PLY, which a tiny tree reaches
+        // well inside the node budget. Without this check the poll spins
+        // forever when no deadline or abort is armed, as under self-play's
+        // complete-probe mode.
+        if (!worker->is_searching()) {
+            break;
+        }
         if (worker->nodes.load(std::memory_order_relaxed) >= nodeBudget
             || std::chrono::steady_clock::now() >= deadline
             || (abort && abort())) {
@@ -137,7 +181,7 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
 
     // Format on a scratch position rather than the worker's, and walk it move
     // by move so a drop or a castle is named against the position it is played
-    // in. Board cannot replay the line, so this is the only faithful rendering.
+    // in.
     Stockfish::Position line;
     std::deque<Stockfish::StateInfo> lineStates(1);
     line.set(variant, fen, false, &lineStates.back(), Stockfish::Threads.main());

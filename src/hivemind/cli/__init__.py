@@ -5,8 +5,10 @@ from importlib import import_module
 import sys
 
 COMMANDS = {
+    "build-engine": ("hivemind.cli.build_engine", "Configure and build the C++ engine"),
     "infer": ("hivemind.cli.infer_from_fen", "Evaluate a pair of FENs with ONNX"),
     "checkpoint": ("hivemind.inference.checkpoint", "Run PyTorch checkpoint inference"),
+    "selfplay": ("hivemind.cli.selfplay", "Run engine self-play (800 nodes, 100k mate nodes)"),
     "evaluate": ("hivemind.cli.evaluate_model", "Evaluate a network on self-play data"),
     "train": ("hivemind.training.train_loop", "Train with supervised or self-play data"),
     "prepare": ("hivemind.cli.train_from_games_parquet", "Prepare game shards and train"),

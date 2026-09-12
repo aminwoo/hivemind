@@ -13,17 +13,17 @@
  * The hand-rolled root scanner in agent.cc only ever tries attacker moves that
  * give check, so a mate that needs a quiet preparing move is invisible to it no
  * matter how large its budget. Fairy-Stockfish's alpha-beta search has no such
- * restriction, and its bughouse variant already models the defender blocking a
- * check with a piece its partner supplies (Position::allow_virtual_drop, used
- * whenever evasions are generated). That is the same conservative assumption
- * hivemind's own partner-agnostic proofs make, so a mate reported here is a
- * mate under the model the scanner already trusts.
+ * restriction.
  *
- * Two caveats travel with the result. It is a pruned alpha-beta score rather
- * than an exhaustive proof, and at a node where the attacker is itself in check
- * the evasion generator hands the attacker virtual drops too, which the model
- * does not otherwise allow. Callers should treat a hit as a strong mate
- * candidate for a single board, not as a certificate.
+ * The board is searched on its own: neither side may drop a piece it does not
+ * hold, so this search assumes the partner board sits for the whole line and
+ * feeds nobody. A team ahead on time can keep its own partner sitting; the
+ * caller must also reject lines where the defending partner can use a capture
+ * to pass and change the searched hand.
+ *
+ * The result is a pruned alpha-beta score rather than an exhaustive proof, so
+ * callers should treat a hit as a strong mate candidate for a single board,
+ * not as a certificate.
  */
 namespace MateProbe {
 
@@ -43,10 +43,9 @@ struct Result {
     int depth = 0;
     uint64_t nodes = 0;
     /**
-     * The whole line in UCI, for reporting only. Later plies can include a
-     * drop of a piece the defender does not hold yet, because the model lets
-     * its partner supply one blocker; such a ply is legal to Fairy-Stockfish
-     * and not to Board, so replay it there rather than through Board.
+     * The whole line in UCI. Every ply is a move of the probed board alone,
+     * so Board can replay it; a line cut short by a table hit ends before
+     * the mate it scored.
      */
     std::vector<std::string> principalVariation;
 };

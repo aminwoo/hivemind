@@ -37,7 +37,13 @@ protected:
             ? Stockfish::generate<Stockfish::EVASIONS>(position, candidates)
             : Stockfish::generate<Stockfish::NON_EVASIONS>(position, candidates);
         for (const auto* candidate = candidates; candidate != end; ++candidate) {
-            EXPECT_EQ(board.is_legal_move(boardNum, *candidate),
+            // Rook and bishop promotions are legal to play against us but
+            // never searched, so they are the one gap between the two.
+            const bool unsearchedPromotion =
+                Stockfish::type_of(*candidate) == Stockfish::PROMOTION
+                && Stockfish::promotion_type(*candidate) != Stockfish::QUEEN
+                && Stockfish::promotion_type(*candidate) != Stockfish::KNIGHT;
+            EXPECT_EQ(board.is_legal_move(boardNum, *candidate) && !unsearchedPromotion,
                       std::find(legal.begin(), legal.end(), candidate->move) != legal.end());
         }
     }

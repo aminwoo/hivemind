@@ -380,7 +380,10 @@ public:
      * Answers the question the checking-move scans cannot ask - a mate that
      * needs a quiet preparing move - and reports it as a strong candidate
      * rather than a proof: the move it names is checked against this board,
-     * and against the partner board's right to sit while the line is played.
+     * and the line replayed against the partner board.
+     *
+     * Only a team ahead on time may sit one board while the other plays a
+     * mate out, so without @p teamHasTimeAdvantage this reports nothing.
      *
      * The boards are searched one after the other out of one budget, so a
      * caller running this beside its own search is told through @p onMate as

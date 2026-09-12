@@ -225,7 +225,8 @@ static uint64_t mate_search_node_budget(const SearchOptions& options) {
 static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
                                      bool teamHasTimeAdvantage,
                                      JointActionCandidate& outAction,
-                                     Agent::MateSearchBudget* budget = nullptr) {
+                                     Agent::MateSearchBudget* budget = nullptr,
+                                     bool requireUnblockable = false) {
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
 
@@ -242,6 +243,47 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
     const bool boardBCanMove = !actionsB.empty();
     const JointActionRules rules{boardAOnTurn, boardBOnTurn, teamHasTimeAdvantage,
                                  boardACanMove, boardBCanMove};
+
+    // is_checkmate() deliberately includes bughouse stalemate. Distinguish a
+    // literal checkmate so a stalemate can be retained as a fallback while the
+    // other board is checked for an equally immediate checkmate.
+    const auto hasLiteralCheckmate = [&](Stockfish::Color victimTeam,
+                                         bool victimHasTimeAdvantage) {
+        for (int boardNum : {BOARD_A, BOARD_B}) {
+            const Stockfish::Color victim = boardNum == BOARD_A
+                ? victimTeam : ~victimTeam;
+            if (board.side_to_move(boardNum) == victim
+                && board.is_in_check(boardNum)
+                && !board.has_any_legal_move(boardNum)
+                && !board.can_partner_provide_blocking_piece(
+                    boardNum, victim, victimHasTimeAdvantage)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto hasUnblockableCheckmate = [&](Stockfish::Color victimTeam) {
+        for (int boardNum : {BOARD_A, BOARD_B}) {
+            const Stockfish::Color victim = boardNum == BOARD_A
+                ? victimTeam : ~victimTeam;
+            if (board.side_to_move(boardNum) == victim
+                && board.is_in_check(boardNum)
+                && !board.has_any_legal_move(boardNum)
+                && !board.can_partner_provide_blocking_piece(
+                    boardNum, victim, false, true)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::optional<JointActionCandidate> stalemateFallback;
+    const auto finishWithStalemate = [&] {
+        if (!stalemateFallback) {
+            return false;
+        }
+        outAction = *stalemateFallback;
+        return true;
+    };
 
     const bool aInCheckBefore = board.is_in_check(BOARD_A);
     const bool bInCheckBefore = board.is_in_check(BOARD_B);
@@ -294,7 +336,7 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
     if (boardAOnTurn) {
         for (size_t iA = 0; iA < limitA; ++iA) {
             if (budget && !budget->consume()) {
-                return false;
+                return finishWithStalemate();
             }
             const Stockfish::Move mA = actionsA[iA];
             const bool isCapA = board.is_capture(BOARD_A, mA);
@@ -303,11 +345,22 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
             if (canPassB) {
                 board.push_move(BOARD_A, mA);
                 const bool isMate = board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+                const bool isLiteralMate = isMate && hasLiteralCheckmate(
+                    ~teamSide, !teamHasTimeAdvantage);
+                const bool isUnblockableMate = isMate
+                    && hasUnblockableCheckmate(~teamSide);
                 board.pop_move(BOARD_A);
-                if (isMate) {
-                    outAction = JointActionCandidate(mA, 1.0f, iA, Stockfish::MOVE_NONE, 1.0f, 0,
-                                                     rules, isCapA, false);
-                    return true;
+                if (isMate && (!requireUnblockable || isUnblockableMate)) {
+                    JointActionCandidate action(
+                        mA, 1.0f, iA, Stockfish::MOVE_NONE, 1.0f, 0,
+                        rules, isCapA, false);
+                    if (isLiteralMate) {
+                        outAction = action;
+                        return true;
+                    }
+                    if (!stalemateFallback) {
+                        stalemateFallback = action;
+                    }
                 }
             }
         }
@@ -317,7 +370,7 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
     if (boardBOnTurn) {
         for (size_t iB = 0; iB < limitB; ++iB) {
             if (budget && !budget->consume()) {
-                return false;
+                return finishWithStalemate();
             }
             const Stockfish::Move mB = actionsB[iB];
             const bool isCapB = board.is_capture(BOARD_B, mB);
@@ -326,11 +379,22 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
             if (canPassA) {
                 board.push_move(BOARD_B, mB);
                 const bool isMate = board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+                const bool isLiteralMate = isMate && hasLiteralCheckmate(
+                    ~teamSide, !teamHasTimeAdvantage);
+                const bool isUnblockableMate = isMate
+                    && hasUnblockableCheckmate(~teamSide);
                 board.pop_move(BOARD_B);
-                if (isMate) {
-                    outAction = JointActionCandidate(Stockfish::MOVE_NONE, 1.0f, 0, mB, 1.0f, iB,
-                                                     rules, false, isCapB);
-                    return true;
+                if (isMate && (!requireUnblockable || isUnblockableMate)) {
+                    JointActionCandidate action(
+                        Stockfish::MOVE_NONE, 1.0f, 0, mB, 1.0f, iB,
+                        rules, false, isCapB);
+                    if (isLiteralMate) {
+                        outAction = action;
+                        return true;
+                    }
+                    if (!stalemateFallback) {
+                        stalemateFallback = action;
+                    }
                 }
             }
         }
@@ -373,14 +437,25 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
             const Stockfish::Move mB = actionsB[iB];
             board.make_moves(mA, mB);
             const bool isMate = board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+            const bool isLiteralMate = isMate && hasLiteralCheckmate(
+                ~teamSide, !teamHasTimeAdvantage);
+            const bool isUnblockableMate = isMate
+                && hasUnblockableCheckmate(~teamSide);
             board.unmake_moves(mA, mB);
-            if (!isMate) {
+            if (!isMate || (requireUnblockable && !isUnblockableMate)) {
                 return false;
             }
-            outAction = JointActionCandidate(
+            JointActionCandidate action(
                 mA, 1.0f, iA, mB, 1.0f, iB, rules,
                 board.is_capture(BOARD_A, mA), board.is_capture(BOARD_B, mB));
-            return true;
+            if (isLiteralMate) {
+                outAction = action;
+                return true;
+            }
+            if (!stalemateFallback) {
+                stalemateFallback = action;
+            }
+            return false;
         };
 
         for (size_t iA : immobilizingA) {
@@ -404,6 +479,46 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
         }
     }
 
+    return finishWithStalemate();
+}
+
+/**
+ * @brief Whether a capture the defending team can play now hands their partner
+ *        an immediate mate.
+ *
+ * A capture lands in the partner's hand the instant it is made, and that
+ * partner plays on their own clock: there is no turn of ours between the
+ * capture and the drop. So a team that holds no mate right now, but can
+ * capture into one, is as good as mating already - the move we planned to
+ * follow up with is never made. @p defenders is the team to test, on the
+ * boards where they are on turn. Leaves @p board as it found it.
+ */
+static bool defenders_capture_into_immediate_mate(
+    Board& board, Stockfish::Color defenders, bool defendersHaveTimeAdvantage,
+    Agent::MateSearchBudget* budget) {
+    for (int boardNum : {BOARD_A, BOARD_B}) {
+        const Stockfish::Color mover = boardNum == BOARD_A
+            ? defenders : ~defenders;
+        if (board.side_to_move(boardNum) != mover) {
+            continue;
+        }
+        for (Stockfish::Move reply : board.legal_moves(boardNum)) {
+            if (!board.is_capture(boardNum, reply)) {
+                continue;
+            }
+            if (budget && !budget->consume()) {
+                return false;
+            }
+            board.push_move(boardNum, reply);
+            JointActionCandidate mate;
+            const bool mates = find_immediate_root_mate(
+                board, defenders, defendersHaveTimeAdvantage, mate, budget);
+            board.pop_move(boardNum);
+            if (mates) {
+                return true;
+            }
+        }
+    }
     return false;
 }
 
@@ -420,15 +535,27 @@ bool Agent::action_loses_mate_race(Board& board,
         return false;
     }
 
+    JointActionCandidate instantMate;
+    if (find_immediate_root_mate(
+            board, ~teamSide, !teamHasTimeAdvantage, instantMate,
+            budget, true)) {
+        return true;
+    }
+
     board.make_moves(action.moveA, action.moveB);
     bool lost = false;
     // Mating ends the game where it stands, so no reply of theirs is played.
     // Anything short of that leaves them free to play a mate they already
-    // hold, and the follow-up this action was chosen for never arrives.
+    // hold, and the follow-up this action was chosen for never arrives. The
+    // same goes for a mate they are one capture away from: the piece is in
+    // their partner's hand the moment it is taken, so a forced recapture of
+    // our checking piece is a mate for them, not a tempo for us.
     if (!board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
         JointActionCandidate reply;
         lost = find_immediate_root_mate(
-            board, ~teamSide, !teamHasTimeAdvantage, reply, budget);
+                   board, ~teamSide, !teamHasTimeAdvantage, reply, budget)
+            || defenders_capture_into_immediate_mate(
+                   board, ~teamSide, !teamHasTimeAdvantage, budget);
     }
     board.unmake_moves(action.moveA, action.moveB);
     return lost;
@@ -770,15 +897,27 @@ bool Agent::search_single_board_forced_mate_impl(
                     allRepliesMated = false;
                     break;
                 }
+                const bool feedsPartner = board.is_capture(boardNum, reply);
                 board.push_move(boardNum, reply);
                 Stockfish::Move nextAttackerMove = Stockfish::MOVE_NONE;
                 int nextReplyPly = 0;
                 std::vector<MateProofPly> childLine;
-                const bool replyMated = search_single_board_forced_mate_impl(
-                    board, boardNum, attackerColor, currentPly + 2, maxAttackerMoves,
-                    nextAttackerMove, nextReplyPly, budget, continuations,
-                    partnerBoardAgnostic,
-                    outPrincipalVariation ? &childLine : nullptr);
+                // A capturing evasion puts the piece in the victim's
+                // partner's hand at once. If that partner mates with it on
+                // the waiting board, our next check is never played - so the
+                // evasion refutes the line, however forced it looked here.
+                // The proof assumes the attacking team is time-ahead, so
+                // the victims are not.
+                JointActionCandidate raceMate;
+                const bool replyMated = feedsPartner && !partnerBoardAgnostic
+                        && find_immediate_root_mate(
+                            board, victimTeam, false, raceMate, budget)
+                    ? false
+                    : search_single_board_forced_mate_impl(
+                        board, boardNum, attackerColor, currentPly + 2,
+                        maxAttackerMoves, nextAttackerMove, nextReplyPly,
+                        budget, continuations, partnerBoardAgnostic,
+                        outPrincipalVariation ? &childLine : nullptr);
                 board.pop_move(boardNum);
                 if (!replyMated) {
                     allRepliesMated = false;
@@ -1196,11 +1335,26 @@ JointMateProof search_joint_forced_mate(
             sawUnknown = true;
             return true;
         }
+        const bool feedsPartner =
+            (action.moveA != Stockfish::MOVE_NONE
+             && board.is_capture(BOARD_A, action.moveA))
+            || (action.moveB != Stockfish::MOVE_NONE
+                && board.is_capture(BOARD_B, action.moveB));
         board.make_moves(action.moveA, action.moveB);
-        const JointMateProof child = search_joint_forced_mate(
-            board, attackingTeam, attackingTeamHasTimeAdvantage,
-            ~teamToPlay, attackerMovesRemaining, searchPly + 1,
-            budget, cache, attackerWinsMateRace);
+        // A defender's capture is in their partner's hand at once, and that
+        // partner does not wait for our next action to drop it. A reply that
+        // captures into an immediate mate therefore ends the line before the
+        // attacker moves again, whatever the alternating model says.
+        JointActionCandidate raceMate;
+        const JointMateProof child = feedsPartner && !attackerWinsMateRace
+                && find_immediate_root_mate(
+                    board, teamToPlay, teamToPlayHasTimeAdvantage,
+                    raceMate, &budget)
+            ? JointMateProof{JointMateStatus::REFUTED, 0, {}}
+            : search_joint_forced_mate(
+                board, attackingTeam, attackingTeamHasTimeAdvantage,
+                ~teamToPlay, attackerMovesRemaining, searchPly + 1,
+                budget, cache, attackerWinsMateRace);
         board.unmake_moves(action.moveA, action.moveB);
 
         if (child.status == JointMateStatus::REFUTED) {
@@ -1334,18 +1488,21 @@ bool Agent::move_completes_repetition(
  *
  * find_root_mate_impl() searches attacker moves that give check, so a mate that
  * needs a quiet preparing move is invisible to it at any budget. The probe has
- * no such restriction and shares the model: its bughouse variant lets the
- * defender block with a piece its partner supplies, the same assumption the
- * partner-agnostic proofs here already make.
+ * no such restriction.
  *
- * Restricted to a board this team is actually on turn on, and to a move the
- * partner board may sit through: the single-board position the probe searches
- * is one where the partner board does not move, which a board that is not on
- * turn does anyway, and which being ahead on time or capturing also buys.
+ * The probe searches one board as if the other stood still, and that is only
+ * the game when this team is ahead on time. Ahead, the partner board may sit
+ * through every move of the line. The defender, behind, has to answer each
+ * check on the board it is given unless a partner capture buys a pass and
+ * supplies a new blocker; the replay below rejects that unsearched branch.
+ * Behind, it is the defender who may otherwise sit after the first check and
+ * play the other board, while this team is made to keep moving there. A line
+ * that holds only until the defender declines to follow it is not a mate,
+ * whatever its length, so a root without the time advantage is left to the
+ * joint prover, which searches the defender's sits.
  *
- * The probe's own line is kept as text rather than as MateProofPly. It can
- * contain a block with a piece the defender does not hold yet, which Board
- * refuses to replay, so only the first move crosses back as a real move.
+ * The probe's line is kept as text; only the first move crosses back as a
+ * real move, the rest is replayed once to check it against the second board.
  */
 bool Agent::probe_root_mate(
     Board& board,
@@ -1359,18 +1516,11 @@ bool Agent::probe_root_mate(
     string& outPrincipalVariation,
     const std::function<void()>& onMate,
     bool avoidRepetition) {
+    if (!teamHasTimeAdvantage) {
+        return false;
+    }
     const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamSide,
                             board.side_to_move(BOARD_B) == ~teamSide};
-    // Sitting out the partner board is what makes a single-board mate line
-    // playable here. Being time-ahead is one way to earn that, but a partner
-    // board that is not on turn sits anyway, and a capture buys the pass too.
-    const auto pass_is_legal = [&](int boardNum, Stockfish::Move move) {
-        const int partner = 1 - boardNum;
-        return !onTurn[partner]
-            || is_single_pass_legal(teamHasTimeAdvantage, onTurn[BOARD_A],
-                                    onTurn[BOARD_B],
-                                    board.is_capture(boardNum, move));
-    };
     const int probeBoards = onTurn[BOARD_A] + onTurn[BOARD_B];
     if (probeBoards == 0 || nodeBudget == 0 || budgetMs < 0) {
         return false;
@@ -1381,9 +1531,9 @@ bool Agent::probe_root_mate(
         onTurn[BOARD_A] && board.has_any_legal_move(BOARD_A),
         onTurn[BOARD_B] && board.has_any_legal_move(BOARD_B)};
 
-    // The boards are probed one after the other, so a caller running this
-    // concurrently with its own search is told about each mate as it lands
-    // rather than only once the second board's share of the budget is spent.
+    // The boards are probed one after the other. The caller may be notified as
+    // soon as a checkmate lands, but a stalemate waits until both boards have
+    // been searched so it cannot stop MCTS ahead of a later checkmate.
     const auto accept = [&](int boardNum, const MateProbe::Result& result) {
         const bool onBoardA = boardNum == BOARD_A;
         outAction = onBoardA
@@ -1403,12 +1553,91 @@ bool Agent::probe_root_mate(
             outPrincipalVariation +=
                 onBoardA ? "(" + move + ",pass)" : "(pass," + move + ")";
         }
-        if (onMate) {
-            onMate();
+    };
+
+    // The probe sees one board and never the other, so it cannot know that
+    // the recapture of our checking piece hands the partner board a mate, or
+    // that the partner can capture a blocker. Replay its line on the two-board
+    // model before believing it. The replay catches an immediate race mate and
+    // a capture that changes the final terminal result. A blocker supplied in
+    // the middle of a longer line remains for the joint prover; rejecting every
+    // possible partner capture here would discard valid probes such as benchmark
+    // position 4, where the available capture cannot stop the mate.
+    const auto line_holds_on_both_boards = [&](
+        int boardNum, const MateProbe::Result& result,
+        bool& outEndsInCheckmate) {
+        outEndsInCheckmate = false;
+        Board line(board);
+        MateSearchBudget budget;
+        budget.remainingNodes = SearchParams::MATE_RACE_VETO_NODE_BUDGET;
+        budget.deadline = MateSearchBudget::Clock::now()
+            + chrono::milliseconds(SearchParams::MATE_PROBE_VERIFY_MAX_MS);
+
+        size_t plies = 0;
+        for (const string& moveText : result.principalVariation) {
+            string parsedMoveText = moveText;
+            const Stockfish::Move move = Stockfish::UCI::to_move(
+                *line.pos[boardNum], parsedMoveText);
+            if (move == Stockfish::MOVE_NONE
+                || !line.is_legal_move(boardNum, move)) {
+                return false;
+            }
+            line.push_move(boardNum, move);
+            ++plies;
+            if (plies % 2 != 0
+                && !line.is_checkmate(
+                    ~teamSide, !teamHasTimeAdvantage)) {
+                JointActionCandidate raceMate;
+                if (find_immediate_root_mate(
+                        line, ~teamSide, !teamHasTimeAdvantage, raceMate,
+                        &budget)
+                    || defenders_capture_into_immediate_mate(
+                        line, ~teamSide, !teamHasTimeAdvantage, &budget)) {
+                    return false;
+                }
+                if (budget.exhausted) {
+                    return false;
+                }
+            } else if (plies % 2 == 0) {
+                JointActionCandidate raceMate;
+                if (find_immediate_root_mate(
+                        line, ~teamSide, !teamHasTimeAdvantage, raceMate,
+                        &budget)) {
+                    return false;
+                }
+                if (budget.exhausted) {
+                    return false;
+                }
+            }
         }
+        if (line.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
+            outEndsInCheckmate = line.is_in_check(boardNum);
+            return true;
+        }
+        // A line as long as the mate it scored has to end in one.
+        if (plies + 1 >= 2 * static_cast<size_t>(result.mateInMoves)) {
+            return false;
+        }
+        // Otherwise the line stopped short, which happens at a table hit. A
+        // mate that is one move away can be settled exactly; a longer tail
+        // is the probe's word against nothing, since the mates it exists to
+        // find are the ones a checks-only prover cannot reach.
+        if (plies % 2 != 0) {
+            return true;
+        }
+        const int attackerMovesLeft =
+            result.mateInMoves - static_cast<int>(plies / 2);
+        if (attackerMovesLeft <= 1) {
+            JointActionCandidate finish;
+            const bool foundFinish = find_immediate_root_mate(
+                line, teamSide, teamHasTimeAdvantage, finish, &budget);
+            return foundFinish && !budget.exhausted;
+        }
+        return true;
     };
 
     bool found = false;
+    bool bestEndsInCheckmate = false;
     int bestMateInMoves = 0;
     uint64_t probeIndex = 0;
     for (int boardNum : {BOARD_A, BOARD_B}) {
@@ -1427,23 +1656,38 @@ bool Agent::probe_root_mate(
         const MateProbe::Result result = MateProbe::probe(
             board.fen(boardNum), SearchParams::MATE_PROBE_MAX_MATE_MOVES,
             boardNodeBudget, boardBudgetMs, abort);
+        bool endsInCheckmate = false;
         // A pruned search is not a proof, so the move it names still has to be
         // one this board accepts before it can become the root action.
         if (!result.found
             || result.bestMove == Stockfish::MOVE_NONE
             || !board.is_legal_move(boardNum, result.bestMove)
-            || !pass_is_legal(boardNum, result.bestMove)
             || (avoidRepetition
                 && move_completes_repetition(
-                    board, boardNum, result.bestMove))) {
+                    board, boardNum, result.bestMove))
+            || !line_holds_on_both_boards(
+                boardNum, result, endsInCheckmate)) {
             continue;
         }
-        if (found && result.mateInMoves >= bestMateInMoves) {
-            continue;
+        if (found) {
+            if (bestEndsInCheckmate != endsInCheckmate) {
+                if (!endsInCheckmate) {
+                    continue;
+                }
+            } else if (result.mateInMoves >= bestMateInMoves) {
+                continue;
+            }
         }
+        bestEndsInCheckmate = endsInCheckmate;
         bestMateInMoves = result.mateInMoves;
         found = true;
         accept(boardNum, result);
+        if (endsInCheckmate && onMate) {
+            onMate();
+        }
+    }
+    if (found && !bestEndsInCheckmate && onMate) {
+        onMate();
     }
     return found;
 }
@@ -3222,11 +3466,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     // The probe answers a question the checking-move scans cannot ask - a mate
     // that needs a quiet preparing move - so it runs beside the workers for the
-    // whole move on a thread of its own. It used to run on this thread inside
-    // the pre-pass window, which is why it was restricted to time-ahead roots:
-    // on an even clock that window belongs to the reverse scan. Off the window
-    // it costs one CPU thread (~5% of MCTS nps here) and no search time, so
-    // both clock states get it.
+    // whole move on a thread of its own, at the cost of one CPU thread (~5% of
+    // MCTS nps here) and no search time. It searches one board with the other
+    // sitting, which is only this team's to do when it is ahead on time; a
+    // root behind on time is the joint prover's, where the defender's sits
+    // are part of the search.
     atomic<bool> stopRootProbe{false};
     std::mutex rootProbeMutex;
     bool rootProbeFoundMate = false;
@@ -3236,7 +3480,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     thread rootProbeThread;
 
     const auto start_root_probe = [&] {
-        if (!runRootScan || !options.search.enableMateProbe) {
+        if (!runRootScan || !options.search.enableMateProbe
+            || !teamHasTimeAdvantage) {
             return;
         }
         const uint64_t probeNodeBudget = options.mateProbeNodes > 0
@@ -3256,7 +3501,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // polls it.
         Node* const probeRoot = rootNode.get();
         rootProbeThread = thread(
-            [&, probeBudgetMs, probeRoot,
+            [&, probeNodeBudget, probeBudgetMs, probeRoot,
              probeBoard = std::move(probeBoard)]() mutable {
                 JointActionCandidate action;
                 int plyToMate = 0;

@@ -359,8 +359,7 @@ TEST_F(MateDetectionTest, TimeAdvantageButNoPieces) {
 // Edge Cases
 // =============================================================================
 
-// Test: Stalemate is NOT checkmate
-TEST_F(MateDetectionTest, StalemateIsNotCheckmate) {
+TEST_F(MateDetectionTest, StalemateDependsOnTimeAdvantageWhenPartnerCannotCapture) {
     Board board;
     // Board A: Stalemate position - Black king not in check but no legal moves
     // Black king on a8, White queen on b6 and White king on c7 - classic stalemate
@@ -373,9 +372,10 @@ TEST_F(MateDetectionTest, StalemateIsNotCheckmate) {
     
     board.set_fen(BOARD_B, board.startingFen);
     
-    // is_checkmate should return false for stalemate (not in check)
-    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, false))
-        << "Stalemate should not be detected as checkmate";
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false))
+        << "The time-behind team cannot sit and its partner cannot supply a move";
+    EXPECT_FALSE(board.is_checkmate(Stockfish::BLACK, true))
+        << "The time-ahead team may sit on the stalemated board";
 }
 
 TEST_F(MateDetectionTest, TwoActiveStalematesLoseDespiteTimeAdvantage) {
