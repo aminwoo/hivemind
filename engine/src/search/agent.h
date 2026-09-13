@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 #include "search/node.h"
+#include "search/mate_candidate.h"
 #include "nn/engine.h"
 #include "search/search_params.h"
 #include "search/transposition_table.h"
@@ -59,6 +60,30 @@ struct SearchOptions {
 struct RootEdgeStats {
     JointActionCandidate action;
     int visits = 0;
+};
+
+struct InternalMateProbeStats {
+    uint64_t childProbes = 0;
+    uint64_t grandchildProbes = 0;
+    uint64_t childHits = 0;
+    uint64_t grandchildHits = 0;
+    uint64_t childActionableHits = 0;
+    uint64_t grandchildActionableHits = 0;
+    uint64_t alreadyGeneratedHits = 0;
+    uint64_t alreadySolvedHits = 0;
+    uint64_t staleHits = 0;
+    uint64_t checksOnlyCertificates = 0;
+    uint64_t reducedPartnerCertificates = 0;
+    uint64_t jointCertificates = 0;
+    uint64_t nodes = 0;
+    uint64_t certificateNodes = 0;
+};
+
+enum class MateCertificateTier : uint8_t {
+    NONE,
+    CHECKS_ONLY,
+    REDUCED_PARTNER,
+    FULL_JOINT,
 };
 
 /** One joint ply retained from an exact mate proof. */
@@ -119,6 +144,7 @@ private:
     std::exception_ptr workerException_;
     std::shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
+    MateCandidateTable mateCandidateHints_;
     int numThreads;                                          // Search threads per engine
     SearchParams::RuntimeConfig lastRuntimeConfig_;
     std::atomic<bool> isPondering_{false};                   // Whether current search is in ponder mode
@@ -155,6 +181,8 @@ private:
         uint64_t thinkNanos = 0;
     };
     RootScanStats rootScanStats_;
+    mutable std::mutex internalMateProbeStatsMutex_;
+    InternalMateProbeStats lastInternalMateProbeStats_;
     std::string root_scan_summary() const;
     
     // Garbage collection thread for async tree cleanup
@@ -222,6 +250,9 @@ public:
 
     /** Returns the evaluated Q-value of the root node after search. */
     float root_q() const;
+
+    /** Returns telemetry from the most recent internal mate-probe experiment. */
+    InternalMateProbeStats internal_mate_probe_stats() const;
 
     /**
      * @brief Node and time budget for the root forced-mate search.
@@ -390,6 +421,16 @@ public:
      * each mate lands rather than only when the last board's share is spent.
      * The out parameters hold the shortest mate found so far whenever it runs.
      */
+    static bool probe_position_mate(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        uint64_t nodeBudget, int budgetMs,
+        const std::function<bool()>& abort,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        std::string& outPrincipalVariation,
+        const std::function<void()>& onMate = {},
+        bool avoidRepetition = false,
+        uint64_t* outNodes = nullptr);
+
     static bool probe_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         uint64_t nodeBudget, int budgetMs,
@@ -398,6 +439,16 @@ public:
         std::string& outPrincipalVariation,
         const std::function<void()>& onMate = {},
         bool avoidRepetition = false);
+
+    /** Proves that a specific Fairy candidate forces mate before publication. */
+    static bool certify_mate_candidate(
+        Board& board, Stockfish::Color teamSide,
+        bool teamHasTimeAdvantage,
+        const JointActionCandidate& candidate,
+        int candidatePlyToMate,
+        MateSearchBudget& budget,
+        int& outPlyToMate,
+        MateCertificateTier& outTier);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.

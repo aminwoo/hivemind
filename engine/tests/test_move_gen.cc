@@ -343,6 +343,59 @@ TEST(JointActionTest, JointCandidatesFollowPriorOrdering) {
     EXPECT_FLOAT_EQ(second.jointPrior, 0.18f);
 }
 
+TEST(JointActionTest, PromotedCandidateExpandsFirstWithoutDuplication) {
+    const Stockfish::Move bestA = static_cast<Stockfish::Move>(1);
+    const Stockfish::Move hintedA = static_cast<Stockfish::Move>(2);
+    const Stockfish::Move moveB = static_cast<Stockfish::Move>(3);
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {bestA, hintedA}, {moveB}, {0.9f, 0.1f}, {1.0f},
+        false, true, true);
+
+    ASSERT_TRUE(generator.promote(hintedA, moveB));
+    EXPECT_EQ(generator.getNext().moveA, hintedA);
+    EXPECT_EQ(generator.getNext().moveA, bestA);
+    EXPECT_FALSE(generator.hasNext());
+}
+
+TEST(JointActionTest, LatePromotionDoesNotDuplicateExhaustedCandidate) {
+    const Stockfish::Move moveA = static_cast<Stockfish::Move>(1);
+    const Stockfish::Move moveB = static_cast<Stockfish::Move>(2);
+    JointCandidateGenerator generator;
+    generator.initialize(
+        {moveA}, {moveB}, {1.0f}, {1.0f}, false, true, true);
+
+    ASSERT_TRUE(generator.hasNext());
+    const JointActionCandidate generated = generator.getNext();
+    generator.releaseExhaustedFrontier();
+
+    EXPECT_FALSE(generator.promote(generated.moveA, generated.moveB));
+    EXPECT_FALSE(generator.hasNext());
+    EXPECT_EQ(generator.generatedCount(), 1U);
+}
+
+TEST(NodeTest, MateCandidateBonusPrefersHintWithoutChangingPrior) {
+    const Stockfish::Move bestA = static_cast<Stockfish::Move>(1);
+    const Stockfish::Move hintedA = static_cast<Stockfish::Move>(2);
+    const Stockfish::Move moveB = static_cast<Stockfish::Move>(3);
+    Node node(Stockfish::WHITE);
+    SearchParams::RuntimeConfig config;
+    ASSERT_TRUE(node.try_init_and_expand(
+        {bestA, hintedA}, {moveB}, {0.9f, 0.1f}, {1.0f},
+        false, true, true, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(node.expand_next_joint_child(
+        nullptr, 0, expanded, config), nullptr);
+    const JointActionCandidate hint = node.get_joint_action(1);
+
+    const Node::ChildSelection selected =
+        node.select_child_and_apply_virtual_loss(config, nullptr, &hint);
+
+    EXPECT_EQ(selected.childIdx, 1);
+    EXPECT_FLOAT_EQ(node.get_joint_action(0).jointPrior, 0.9f);
+    EXPECT_FLOAT_EQ(node.get_joint_action(1).jointPrior, 0.1f);
+}
+
 TEST(JointActionTest, LowerPolicyChecksDoNotLeapfrogQuietMoves) {
     Stockfish::Move quietA = static_cast<Stockfish::Move>(1);
     Stockfish::Move firstCheckingA = static_cast<Stockfish::Move>(2);
@@ -3162,6 +3215,87 @@ TEST_F(EngineTest, SingleBoardForcedMateOnPosition4) {
     EXPECT_FALSE(startFound);
 }
 
+TEST_F(EngineTest, CertifiesCandidateWithNoPartnerIntervention) {
+    Board board;
+    board.set(
+        "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2"
+        "|"
+        "r1bk4/ppp1npNp/2nb3B/3B2B1/3P4/2P5/P1P2PPP/R2QK2R[bpp] b KQ");
+    JointActionCandidate candidate;
+    int candidatePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, candidate, candidatePly));
+
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = SearchParams::INTERNAL_MATE_CERT_NODE_BUDGET;
+    int certifiedPly = 0;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+
+    EXPECT_TRUE(Agent::certify_mate_candidate(
+        board, Stockfish::WHITE, true, candidate, candidatePly,
+        budget, certifiedPly, tier));
+    EXPECT_EQ(tier, MateCertificateTier::CHECKS_ONLY);
+    EXPECT_GT(certifiedPly, 0);
+}
+
+TEST_F(EngineTest, CandidateCertificateRejectsExhaustedRaceScan) {
+    Board board;
+    board.set(
+        "6k1/5ppp/8/8/8/8/8/R5K1[] w - - 0 1"
+        "|"
+        "7k/8/8/8/8/8/8/K7[] w - - 0 1");
+    Stockfish::Move rookMate = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "a1a8") {
+            rookMate = move;
+            break;
+        }
+    }
+    ASSERT_NE(rookMate, Stockfish::MOVE_NONE);
+    const JointActionCandidate candidate(
+        rookMate, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+        JointActionRules{true, false, true, true, false}, false, false);
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 0;
+    int certifiedPly = 0;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+
+    EXPECT_FALSE(Agent::certify_mate_candidate(
+        board, Stockfish::WHITE, true, candidate, 1,
+        budget, certifiedPly, tier));
+    EXPECT_EQ(budget.remainingNodes, 0U);
+    EXPECT_EQ(tier, MateCertificateTier::NONE);
+}
+
+TEST_F(EngineTest, CertifiesBoundedPartnerInterventions) {
+    Board board;
+    board.set(
+        "7k/8/4K3/8/8/8/5Q2/6R1[] w - - 0 1"
+        "|"
+        "7k/8/8/8/8/8/8/K7[] w - - 0 1");
+    Stockfish::Move queenCheck = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f2f8") {
+            queenCheck = move;
+            break;
+        }
+    }
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    const JointActionCandidate candidate(
+        queenCheck, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+        JointActionRules{true, false, true, true, false}, false, false);
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = SearchParams::INTERNAL_MATE_CERT_NODE_BUDGET;
+    int certifiedPly = 0;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+
+    EXPECT_TRUE(Agent::certify_mate_candidate(
+        board, Stockfish::WHITE, true, candidate, 3,
+        budget, certifiedPly, tier));
+    EXPECT_EQ(tier, MateCertificateTier::REDUCED_PARTNER);
+    EXPECT_EQ(certifiedPly, 3);
+}
+
 TEST_F(EngineTest, JointForcedMateWithOnlyOneBoardOnTurn) {
     Board board;
     board.set(
@@ -3233,6 +3367,35 @@ TEST_F(EngineTest, JointForcedMateAccountsForCrossBoardDefense) {
     int matePly = 0;
     EXPECT_FALSE(Agent::find_root_mate(
         board, Stockfish::WHITE, true, mateAction, matePly));
+}
+
+TEST_F(EngineTest, CandidateCertificateRejectsCrossBoardDefense) {
+    Board board;
+    board.set(
+        "r6k/6pp/8/8/8/8/5Q2/4KR2[] w - - 0 1"
+        "|"
+        "7k/8/8/8/8/8/n7/R6K[] w - - 0 1");
+    Stockfish::Move queenCheck = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f2f8") {
+            queenCheck = move;
+            break;
+        }
+    }
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    const JointActionCandidate candidate(
+        queenCheck, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+        JointActionRules{true, false, true, true, false}, false, false);
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = SearchParams::INTERNAL_MATE_CERT_NODE_BUDGET;
+    int certifiedPly = 0;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+
+    EXPECT_FALSE(Agent::certify_mate_candidate(
+        board, Stockfish::WHITE, true, candidate, 3,
+        budget, certifiedPly, tier));
+    EXPECT_EQ(tier, MateCertificateTier::NONE);
+    EXPECT_EQ(certifiedPly, 0);
 }
 
 TEST_F(EngineTest, JointForcedMateBudgetExhaustionIsConservative) {

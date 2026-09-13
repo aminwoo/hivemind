@@ -308,6 +308,9 @@ public:
 
     bool should_expand_new_child(const SearchParams::RuntimeConfig& config) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        if (candidateGenerator.hasPromoted()) {
+            return true;
+        }
         const bool allExpandedChildrenLose = !children.empty()
             && provenWinningChildCount == static_cast<int>(children.size());
         if (candidateGenerator.hasNext() && allExpandedChildrenLose) {
@@ -338,6 +341,11 @@ public:
     JointActionCandidate peek_next_joint_action() {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         return candidateGenerator.peekNext();
+    }
+
+    bool promote_joint_action(const JointActionCandidate& action) {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        return candidateGenerator.promote(action.moveA, action.moveB);
     }
 
     /**
@@ -564,7 +572,8 @@ public:
      */
     ChildSelection select_child_and_apply_virtual_loss(
         const SearchParams::RuntimeConfig& config = SearchParams::RuntimeConfig{},
-        const std::unordered_set<const Node*>* blockedNodes = nullptr);
+        const std::unordered_set<const Node*>* blockedNodes = nullptr,
+        const JointActionCandidate* preferredAction = nullptr);
 
     std::vector<std::shared_ptr<Node>> get_children() const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);

@@ -427,6 +427,21 @@ constexpr bool mate_probe_can_end_search(int plyToMate) {
 // the check-only scans, so it gets its own flag.
 constexpr bool ENABLE_MATE_PROBE = true;
 
+// Experimental probing below the root. Fairy hits remain candidates: they may
+// bias exploration, but only an exact certificate may alter solver state.
+constexpr bool ENABLE_INTERNAL_MATE_PROBE = false;
+constexpr uint64_t INTERNAL_MATE_PROBE_NODE_BUDGET = 500000;
+constexpr int INTERNAL_MATE_PROBE_TOP_K = 3;
+constexpr int INTERNAL_MATE_PROBE_MIN_VISITS = 16;
+constexpr int INTERNAL_MATE_PROBE_ROOT_SHARE_PERCENT = 90;
+constexpr int INTERNAL_MATE_PROBE_JOB_MAX_MS = 75;
+constexpr float INTERNAL_MATE_PROBE_DECIDED_Q = 0.8f;
+constexpr float INTERNAL_MATE_PROBE_BIAS = 0.35f;
+constexpr float INTERNAL_MATE_PROBE_BIAS_DECAY_VISITS = 32.0f;
+constexpr uint64_t INTERNAL_MATE_CERT_NODE_BUDGET = 200000;
+constexpr int INTERNAL_MATE_CERT_MAX_MS = 50;
+constexpr int INTERNAL_MATE_CERT_MAX_PARTNER_INTERVENTIONS = 24;
+
 /**
  * Share of the move time the root proof pre-pass may occupy. Both clock states
  * run the winning scan and the bounded loss scan.
@@ -579,6 +594,10 @@ struct RuntimeConfig {
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     bool enableMateProbe = ENABLE_MATE_PROBE;
+    bool enableInternalMateProbe = ENABLE_INTERNAL_MATE_PROBE;
+    float internalMateProbeBias = INTERNAL_MATE_PROBE_BIAS;
+    float internalMateProbeBiasDecayVisits =
+        INTERNAL_MATE_PROBE_BIAS_DECAY_VISITS;
     float drawContempt = DRAW_CONTEMPT;
     bool enableDynamicFpu = ENABLE_DYNAMIC_FPU;
     float fpuReduction = FPU_REDUCTION;

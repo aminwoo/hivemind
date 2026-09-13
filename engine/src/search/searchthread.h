@@ -8,6 +8,7 @@
 #include "environment/planes.h"
 #include "nn/engine.h"
 #include "search/node.h"
+#include "search/mate_candidate.h"
 #include "search/searchinfo.h"
 #include "search/transposition_table.h"
 
@@ -146,6 +147,7 @@ private:
     std::weak_ptr<Node> rootOwner;
     SearchInfo* searchInfo;
     TranspositionTable* transpositionTable;  // Shared across all search threads (MCGS)
+    MateCandidateTable* mateCandidateTable;
     SearchParams::RuntimeConfig runtimeConfig;
     
     // Trajectory stores entries for backup and move undoing
@@ -185,6 +187,7 @@ public:
     void set_search_info(SearchInfo* info);
     void set_root_node(const std::shared_ptr<Node>& node);
     void set_transposition_table(TranspositionTable* table);
+    void set_mate_candidate_table(MateCandidateTable* table);
     void set_runtime_config(const SearchParams::RuntimeConfig& config);
     void set_inference_worker_index(size_t workerIndex);
     

@@ -372,6 +372,12 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableMateProbe = value == "true";
             std::cout << "info string MateProbe set to " << value << std::endl;
         }
+    } else if (name == "InternalMateProbe") {
+        if (value == "true" || value == "false") {
+            searchConfig.enableInternalMateProbe = value == "true";
+            std::cout << "info string InternalMateProbe set to "
+                      << value << std::endl;
+        }
     } else if (name == "Transpositions") {
         if (value == "true" || value == "false") {
             searchConfig.enableTranspositions = value == "true";
@@ -464,6 +470,9 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::PW_EXPONENT * 1000.0f) << " min 1 max 1000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
+        cout << "option name InternalMateProbe type check default "
+            << (SearchParams::ENABLE_INTERNAL_MATE_PROBE ? "true" : "false")
+            << endl;
     cout << "option name Transpositions type check default "
         << (SearchParams::ENABLE_TRANSPOSITIONS ? "true" : "false") << endl;
     cout << "option name GumbelRootSearch type check default "

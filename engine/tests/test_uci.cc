@@ -45,9 +45,20 @@ TEST_F(UCIOpeningNoiseTest, IsDisabledByDefault) {
     const SearchParams::RuntimeConfig config =
         UCIOpeningNoiseTestPeer::current_search_config(uci);
 
+    EXPECT_FALSE(config.enableInternalMateProbe);
     EXPECT_FLOAT_EQ(config.rootDirichletAlpha, 0.0f);
     EXPECT_FLOAT_EQ(config.rootDirichletEpsilon, 0.0f);
     EXPECT_EQ(config.rootNoiseSeed, 0U);
+}
+
+TEST_F(UCIOpeningNoiseTest, EnablesInternalMateProbeExperiment) {
+    UCI uci;
+    set_option(uci, "InternalMateProbe", "true");
+
+    const SearchParams::RuntimeConfig config =
+        UCIOpeningNoiseTestPeer::current_search_config(uci);
+
+    EXPECT_TRUE(config.enableInternalMateProbe);
 }
 
 TEST_F(UCIOpeningNoiseTest, AppliesConfiguredNoiseInsideOpeningHorizon) {
@@ -102,6 +113,9 @@ TEST_F(UCIOpeningNoiseTest, AdvertisesOptionsInUciHandshake) {
         std::string::npos);
     EXPECT_NE(output.str().find(
         "option name OpeningNoiseEpsilonPermille type spin default 600"),
+        std::string::npos);
+    EXPECT_NE(output.str().find(
+        "option name InternalMateProbe type check default false"),
         std::string::npos);
 }
 

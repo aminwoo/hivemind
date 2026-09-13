@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <functional>
 #include <numeric>
+#include <optional>
 #include "Fairy-Stockfish/src/types.h"
 #include "common/globals.h"
 #include "search/search_params.h"
@@ -230,6 +231,7 @@ private:
     // before the lazy fallback resumes.
     std::vector<JointActionCandidate> gumbelCandidates;
     size_t nextGumbelCandidate = 0;
+    std::optional<JointActionCandidate> promotedCandidate;
     size_t jointFactorRank = 0;
     
     // Turn, time and pass context used to reject illegal joint actions
@@ -301,6 +303,7 @@ private:
         nextJointPolicyCandidate = 0;
         gumbelCandidates.clear();
         nextGumbelCandidate = 0;
+        promotedCandidate.reset();
 
         std::unordered_map<std::pair<size_t, size_t>, size_t, PairHash>
             generatedIndices;
@@ -405,6 +408,80 @@ private:
 public:
     JointCandidateGenerator() = default;
 
+    bool promote(Stockfish::Move moveA, Stockfish::Move moveB) {
+        const auto foundA = std::find(
+            sortedActionsA.begin(), sortedActionsA.end(), moveA);
+        const auto foundB = std::find(
+            sortedActionsB.begin(), sortedActionsB.end(), moveB);
+        if (foundA == sortedActionsA.end() || foundB == sortedActionsB.end()) {
+            return false;
+        }
+        const size_t idxA = static_cast<size_t>(
+            std::distance(sortedActionsA.begin(), foundA));
+        const size_t idxB = static_cast<size_t>(
+            std::distance(sortedActionsB.begin(), foundB));
+        if (generatedCandidateKeys.contains(idxA, idxB)
+            || std::any_of(
+                generatedCandidates.begin(), generatedCandidates.end(),
+                [&](const JointActionCandidate& generated) {
+                    return generated.idxA == idxA && generated.idxB == idxB;
+                })) {
+            return false;
+        }
+
+        JointActionCandidate candidate(
+            moveA, sortedPriorsA[idxA], idxA,
+            moveB, sortedPriorsB[idxB], idxB,
+            rules, sortedCapturesA[idxA] != 0,
+            sortedCapturesB[idxB] != 0);
+        if (candidate.jointPrior < 0.0f) {
+            return false;
+        }
+
+        for (size_t index = nextJointPolicyCandidate;
+             index < jointPolicyCandidates.size(); ++index) {
+            if (jointPolicyCandidates[index].idxA == idxA
+                && jointPolicyCandidates[index].idxB == idxB) {
+                jointPolicyCandidates.erase(
+                    jointPolicyCandidates.begin()
+                    + static_cast<std::ptrdiff_t>(index));
+                break;
+            }
+        }
+        for (size_t index = nextGumbelCandidate;
+             index < gumbelCandidates.size(); ++index) {
+            if (gumbelCandidates[index].idxA == idxA
+                && gumbelCandidates[index].idxB == idxB) {
+                gumbelCandidates.erase(
+                    gumbelCandidates.begin()
+                    + static_cast<std::ptrdiff_t>(index));
+                break;
+            }
+        }
+
+        bool removedFromHeap = false;
+        std::priority_queue<JointActionCandidate> retained;
+        while (!heap.empty()) {
+            JointActionCandidate queued = heap.top();
+            heap.pop();
+            if (queued.idxA == idxA && queued.idxB == idxB) {
+                removedFromHeap = true;
+            } else {
+                retained.push(queued);
+            }
+        }
+        heap = std::move(retained);
+        if (removedFromHeap) {
+            pushCandidate(idxA + 1, idxB);
+            pushCandidate(idxA, idxB + 1);
+        }
+
+        promotedCandidate = candidate;
+        return true;
+    }
+
+    bool hasPromoted() const { return promotedCandidate.has_value(); }
+
     void restoreFactorizedOrder() {
         for (size_t index = nextGumbelCandidate;
              index < gumbelCandidates.size(); ++index) {
@@ -462,6 +539,7 @@ public:
         nextJointPolicyCandidate = 0;
         gumbelCandidates.clear();
         nextGumbelCandidate = 0;
+        promotedCandidate.reset();
         this->jointFactorRank = 0;
         
         // Use explicit on-turn status (not inferred from action count,
@@ -632,7 +710,8 @@ public:
      * @brief Check if there are more candidates to generate.
      */
     bool hasNext() const {
-        return nextGumbelCandidate < gumbelCandidates.size()
+        return promotedCandidate.has_value()
+            || nextGumbelCandidate < gumbelCandidates.size()
             || nextJointPolicyCandidate < jointPolicyCandidates.size()
             || !heap.empty();
     }
@@ -649,6 +728,9 @@ public:
      * otherwise the learned and factorized frontiers compete by priority.
      */
     JointActionCandidate peekNext() const {
+        if (promotedCandidate) {
+            return *promotedCandidate;
+        }
         if (nextGumbelCandidate < gumbelCandidates.size()) {
             return gumbelCandidates[nextGumbelCandidate];
         }
@@ -681,7 +763,10 @@ public:
         }
 
         JointActionCandidate best;
-        if (nextGumbelCandidate < gumbelCandidates.size()) {
+        if (promotedCandidate) {
+            best = *promotedCandidate;
+            promotedCandidate.reset();
+        } else if (nextGumbelCandidate < gumbelCandidates.size()) {
             best = gumbelCandidates[nextGumbelCandidate++];
         } else {
             best = popBestUnperturbedCandidate();
