@@ -125,14 +125,32 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
         root, minimumVisits);
     const std::vector<std::shared_ptr<Node>> rootChildren = root->get_children();
     std::unordered_set<uint64_t> seen;
+    std::unordered_set<const Node*> seenNodes;
 
     auto add_target = [&](size_t rootEdge, int replyEdge,
                           const std::shared_ptr<Node>& targetNode,
                           int visitsAtSubmit) {
         if (!targetNode || targetNode->get_node_type() != NodeType::UNSOLVED
-            || rootEdge >= rootChildren.size()) {
+            || rootEdge >= rootChildren.size()
+            || seenNodes.contains(targetNode.get())) {
             return;
         }
+
+        std::weak_ptr<Node> replyParent;
+        int treeDepth = 1;
+        JointActionCandidate reply;
+        if (replyEdge >= 0) {
+            const std::shared_ptr<Node>& child = rootChildren[rootEdge];
+            if (!child || static_cast<size_t>(replyEdge)
+                    >= child->get_num_generated()) {
+                return;
+            }
+            reply = child->get_joint_action(replyEdge);
+            replyParent = child;
+            treeDepth = 2;
+        }
+        seenNodes.insert(targetNode.get());
+
         auto targetBoard = std::make_unique<Board>(rootBoard);
         const JointActionCandidate rootAction = root->get_joint_action(
             static_cast<int>(rootEdge));
@@ -142,22 +160,12 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
         }
         targetBoard->make_moves(rootAction.moveA, rootAction.moveB);
 
-        std::weak_ptr<Node> replyParent;
-        int treeDepth = 1;
         if (replyEdge >= 0) {
-            const std::shared_ptr<Node>& child = rootChildren[rootEdge];
-            if (!child || static_cast<size_t>(replyEdge)
-                    >= child->get_num_generated()) {
-                return;
-            }
-            const JointActionCandidate reply = child->get_joint_action(replyEdge);
             if (!targetBoard->is_legal_move(BOARD_A, reply.moveA)
                 || !targetBoard->is_legal_move(BOARD_B, reply.moveB)) {
                 return;
             }
             targetBoard->make_moves(reply.moveA, reply.moveB);
-            replyParent = child;
-            treeDepth = 2;
         }
 
         const Stockfish::Color targetTeam = treeDepth == 1
@@ -1626,17 +1634,61 @@ JointMateProof search_reduced_partner_mate(
             : JointMateProof{JointMateStatus::REFUTED, 0, {}};
     }
 
-    const MateActionSpace actionSpace = make_mate_action_space(
+    MateActionSpace actionSpace = make_mate_action_space(
         board, teamToPlay, false);
+    const int partnerBoard = 1 - activeBoard;
+    std::vector<MateMoveCandidate>& partnerActions = partnerBoard == BOARD_A
+        ? actionSpace.actionsA : actionSpace.actionsB;
+    const bool partnerCanIntervene = partnerActions.size() > 1;
+    // Quiet partner moves are interchangeable only on the final defender
+    // turn. Earlier ones may prepare a check or capture on a later turn.
+    if (partnerCanIntervene && attackerMovesRemaining <= 1) {
+        std::vector<MateMoveCandidate> reducedPartnerActions;
+        reducedPartnerActions.reserve(partnerActions.size());
+        std::optional<MateMoveCandidate> quietRepresentative;
+        MateMoveCandidate pass;
+        for (const MateMoveCandidate& action : partnerActions) {
+            if (action.move == Stockfish::MOVE_NONE) {
+                pass = action;
+                continue;
+            }
+
+            bool changesTerminalOrDraw = false;
+            if (!action.isCapture && !action.givesCheck) {
+                board.push_move(partnerBoard, action.move);
+                changesTerminalOrDraw =
+                    board.legal_moves(partnerBoard).empty()
+                    || board.is_draw_on_board(partnerBoard, 1);
+                board.pop_move(partnerBoard);
+            }
+            if (action.isCapture || action.givesCheck
+                || changesTerminalOrDraw) {
+                reducedPartnerActions.push_back(action);
+            } else if (!quietRepresentative) {
+                quietRepresentative = action;
+            }
+        }
+        if (quietRepresentative) {
+            reducedPartnerActions.push_back(*quietRepresentative);
+        }
+        // MOVE_NONE preserves both capture-and-pass directions after the
+        // ordinary joint-action legality filter is applied.
+        reducedPartnerActions.push_back(pass);
+        partnerActions = std::move(reducedPartnerActions);
+    }
+    if (partnerCanIntervene
+        && partnerActions.size() - 1
+            > static_cast<size_t>(
+                SearchParams::INTERNAL_MATE_CERT_MAX_PARTNER_INTERVENTIONS)) {
+        return {JointMateStatus::UNKNOWN, 0, {}};
+    }
+
     JointMateProof result{JointMateStatus::PROVEN, 0, {}};
     bool sawAction = false;
     bool sawUnknown = false;
-    int interventionCount = 0;
     const auto verifyDefense = [&](const MateJointAction& action) {
         sawAction = true;
-        if (++interventionCount
-                > SearchParams::INTERNAL_MATE_CERT_MAX_PARTNER_INTERVENTIONS
-            || !budget.consume()) {
+        if (!budget.consume()) {
             sawUnknown = true;
             return true;
         }
@@ -3902,7 +3954,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 ? transpositionTable.get()
                 : nullptr);
         st->set_mate_candidate_table(
-            options.search.enableInternalMateProbe
+            SearchParams::internal_mate_probe_bias_enabled(
+                options.search.internalMateProbeMode)
                 ? &mateCandidateHints_
                 : nullptr);
     }
@@ -3950,7 +4003,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     const auto start_root_probe = [&] {
         const bool runInternalProbe =
-            options.search.enableInternalMateProbe;
+            SearchParams::internal_mate_probe_enabled(
+                options.search.internalMateProbeMode);
         if (!runRootScan || !options.search.enableMateProbe
             || (!teamHasTimeAdvantage && !runInternalProbe)) {
             return;
@@ -3963,7 +4017,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                   SearchParams::INTERNAL_MATE_PROBE_NODE_BUDGET,
                   teamHasTimeAdvantage
                       ? totalProbeNodeBudget
-                          * (100 - SearchParams::INTERNAL_MATE_PROBE_ROOT_SHARE_PERCENT)
+                          * (100 - SearchParams::
+                              INTERNAL_MATE_PROBE_ROOT_NODE_SHARE_PERCENT)
                           / 100
                       : totalProbeNodeBudget)
             : 0;
@@ -3978,7 +4033,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 && teamHasTimeAdvantage && totalProbeBudgetMs > 0
             ? std::max(
                   1, totalProbeBudgetMs
-                      * SearchParams::INTERNAL_MATE_PROBE_ROOT_SHARE_PERCENT
+                      * SearchParams::internal_mate_probe_root_time_percent(
+                          options.search.internalMateProbeMode)
                       / 100)
             : totalProbeBudgetMs;
         // The scans on this thread make and unmake moves on scanBoard while
@@ -4088,6 +4144,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         int candidatePly = 0;
                         string candidatePv;
                         uint64_t nodesUsed = 0;
+                        // A single-board candidate assumes this target team
+                        // can sit on the partner board. It remains a hint until
+                        // the two-board certifier checks that same assumption.
                         const bool found = probe_position_mate(
                             *target.board, targetNode->get_team_to_play(), true,
                             jobNodes, jobBudgetMs, internalSettled,
@@ -4129,17 +4188,35 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         if (alreadyGenerated) {
                             ++internalProbeStats.alreadyGeneratedHits;
                         }
+                        const bool opponentMate = target.treeDepth == 1;
                         if (stillTop && !alreadySolved
-                            && std::abs(currentRootQ)
-                                < SearchParams::INTERNAL_MATE_PROBE_DECIDED_Q) {
-                            mateCandidateHints_.publish(
-                                target.positionHash, candidate, candidatePly);
+                            && SearchParams::internal_mate_probe_hit_is_actionable(
+                                opponentMate, currentRootQ)) {
                             if (target.treeDepth == 1) {
                                 ++internalProbeStats.childActionableHits;
                             } else {
                                 ++internalProbeStats.grandchildActionableHits;
                             }
 
+                            if (!SearchParams::internal_mate_probe_bias_enabled(
+                                    options.search.internalMateProbeMode)) {
+                                continue;
+                            }
+                            // Promotion mutates only candidate ordering. Do it
+                            // once here so workers never take the target's
+                            // exclusive lock merely because a hint exists.
+                            targetNode->promote_joint_action(candidate);
+                            mateCandidateHints_.publish(
+                                target.positionHash, candidate, candidatePly);
+
+                            if (!SearchParams::
+                                    internal_mate_probe_certification_enabled(
+                                        options.search.internalMateProbeMode)) {
+                                continue;
+                            }
+
+                            // Certification failure does not retract the hint:
+                            // solver state still requires an exact result.
                             const uint64_t certificateNodeBudget = std::min(
                                 remainingNodes,
                                 SearchParams::INTERNAL_MATE_CERT_NODE_BUDGET);
@@ -4215,7 +4292,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 std::lock_guard statsLock(internalMateProbeStatsMutex_);
                 lastInternalMateProbeStats_ = internalProbeStats;
             }
-            if (options.verbose && options.search.enableInternalMateProbe) {
+            if (options.verbose
+                && SearchParams::internal_mate_probe_enabled(
+                    options.search.internalMateProbeMode)) {
                 cout << "info string internal mate probe: child "
                      << internalProbeStats.childHits << "/"
                      << internalProbeStats.childProbes

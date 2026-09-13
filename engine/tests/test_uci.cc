@@ -45,20 +45,37 @@ TEST_F(UCIOpeningNoiseTest, IsDisabledByDefault) {
     const SearchParams::RuntimeConfig config =
         UCIOpeningNoiseTestPeer::current_search_config(uci);
 
-    EXPECT_FALSE(config.enableInternalMateProbe);
+    EXPECT_EQ(
+        config.internalMateProbeMode,
+        SearchParams::InternalMateProbeMode::OFF);
     EXPECT_FLOAT_EQ(config.rootDirichletAlpha, 0.0f);
     EXPECT_FLOAT_EQ(config.rootDirichletEpsilon, 0.0f);
     EXPECT_EQ(config.rootNoiseSeed, 0U);
 }
 
-TEST_F(UCIOpeningNoiseTest, EnablesInternalMateProbeExperiment) {
+TEST_F(UCIOpeningNoiseTest, SelectsInternalMateProbeExperimentMode) {
     UCI uci;
-    set_option(uci, "InternalMateProbe", "true");
+    set_option(uci, "InternalMateProbe", "telemetry");
 
-    const SearchParams::RuntimeConfig config =
+    const SearchParams::RuntimeConfig telemetry =
         UCIOpeningNoiseTestPeer::current_search_config(uci);
+    EXPECT_EQ(
+        telemetry.internalMateProbeMode,
+        SearchParams::InternalMateProbeMode::TELEMETRY);
 
-    EXPECT_TRUE(config.enableInternalMateProbe);
+    set_option(uci, "InternalMateProbe", "bias");
+    const SearchParams::RuntimeConfig bias =
+        UCIOpeningNoiseTestPeer::current_search_config(uci);
+    EXPECT_EQ(
+        bias.internalMateProbeMode,
+        SearchParams::InternalMateProbeMode::BIAS);
+
+    set_option(uci, "InternalMateProbe", "certify");
+    const SearchParams::RuntimeConfig certify =
+        UCIOpeningNoiseTestPeer::current_search_config(uci);
+    EXPECT_EQ(
+        certify.internalMateProbeMode,
+        SearchParams::InternalMateProbeMode::CERTIFY);
 }
 
 TEST_F(UCIOpeningNoiseTest, AppliesConfiguredNoiseInsideOpeningHorizon) {
@@ -115,7 +132,8 @@ TEST_F(UCIOpeningNoiseTest, AdvertisesOptionsInUciHandshake) {
         "option name OpeningNoiseEpsilonPermille type spin default 600"),
         std::string::npos);
     EXPECT_NE(output.str().find(
-        "option name InternalMateProbe type check default false"),
+        "option name InternalMateProbe type combo default off "
+        "var off var telemetry var bias var certify"),
         std::string::npos);
 }
 

@@ -396,6 +396,66 @@ TEST(NodeTest, MateCandidateBonusPrefersHintWithoutChangingPrior) {
     EXPECT_FLOAT_EQ(node.get_joint_action(1).jointPrior, 0.1f);
 }
 
+TEST_F(EngineTest, PublishedMateHintReachesSearchThreadSelection) {
+    Board board;
+    const std::vector<Stockfish::Move> legalMoves = board.legal_moves(BOARD_A);
+    ASSERT_GE(legalMoves.size(), 2U);
+
+    SearchParams::RuntimeConfig config;
+    config.internalMateProbeMode = SearchParams::InternalMateProbeMode::BIAS;
+    const uint64_t rootHash = board.search_hash_key(Stockfish::WHITE, false);
+    auto root = std::make_shared<Node>(Stockfish::WHITE, rootHash);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {legalMoves[0], legalMoves[1]}, {Stockfish::MOVE_NONE},
+        {0.9f, 0.1f}, {1.0f}, false, true, false, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(root->expand_next_joint_child(
+        nullptr, 0, expanded, config), nullptr);
+    ASSERT_EQ(root->get_num_generated(), 2U);
+    const JointActionCandidate hint = root->get_joint_action(1);
+    const std::shared_ptr<Node> hintedChild = root->get_child(1);
+
+    MateCandidateTable hints;
+    hints.publish(rootHash, hint, 3);
+    SearchThread searchThread;
+    searchThread.set_root_node(root);
+    searchThread.set_runtime_config(config);
+    searchThread.set_mate_candidate_table(&hints);
+
+    const LeafSelection selection = searchThread.select_and_expand(board, false);
+
+    EXPECT_EQ(selection.leaf, hintedChild);
+    EXPECT_TRUE(selection.hasEvaluationReservation);
+    EXPECT_EQ(board.uci_move(BOARD_A, hint.moveA),
+              board.uci_move(BOARD_A, legalMoves[1]));
+    root->remove_virtual_loss(1);
+    hintedChild->release_evaluation_reservation();
+    board.unmake_moves(hint.moveA, hint.moveB);
+}
+
+TEST(InternalMateProbeTest, ActionabilityUsesSignedRootQByDepth) {
+    EXPECT_TRUE(SearchParams::internal_mate_probe_hit_is_actionable(
+        true, 0.95f));
+    EXPECT_FALSE(SearchParams::internal_mate_probe_hit_is_actionable(
+        true, -0.95f));
+    EXPECT_TRUE(SearchParams::internal_mate_probe_hit_is_actionable(
+        false, -0.95f));
+    EXPECT_FALSE(SearchParams::internal_mate_probe_hit_is_actionable(
+        false, 0.95f));
+}
+
+TEST(InternalMateProbeTest, StrengthModesReceiveHintsEarly) {
+    EXPECT_EQ(SearchParams::internal_mate_probe_root_time_percent(
+                  SearchParams::InternalMateProbeMode::TELEMETRY),
+              90);
+    EXPECT_EQ(SearchParams::internal_mate_probe_root_time_percent(
+                  SearchParams::InternalMateProbeMode::BIAS),
+              10);
+    EXPECT_EQ(SearchParams::internal_mate_probe_root_time_percent(
+                  SearchParams::InternalMateProbeMode::CERTIFY),
+              10);
+}
+
 TEST(JointActionTest, LowerPolicyChecksDoNotLeapfrogQuietMoves) {
     Stockfish::Move quietA = static_cast<Stockfish::Move>(1);
     Stockfish::Move firstCheckingA = static_cast<Stockfish::Move>(2);
@@ -3272,7 +3332,8 @@ TEST_F(EngineTest, CertifiesBoundedPartnerInterventions) {
     board.set(
         "7k/8/4K3/8/8/8/5Q2/6R1[] w - - 0 1"
         "|"
-        "7k/8/8/8/8/8/8/K7[] w - - 0 1");
+        "7k/8/8/1N6/8/1N1N4/8/KN1N4[] w - - 0 1");
+    ASSERT_GT(board.legal_moves(BOARD_B).size(), 24U);
     Stockfish::Move queenCheck = Stockfish::MOVE_NONE;
     for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
         if (board.uci_move(BOARD_A, move) == "f2f8") {
@@ -3294,6 +3355,39 @@ TEST_F(EngineTest, CertifiesBoundedPartnerInterventions) {
         budget, certifiedPly, tier));
     EXPECT_EQ(tier, MateCertificateTier::REDUCED_PARTNER);
     EXPECT_EQ(certifiedPly, 3);
+}
+
+TEST_F(EngineTest, CandidateCertificateRejectsInterventionOverflow) {
+    Board board;
+    board.set(
+        "7k/8/4K3/8/8/8/5Q2/6R1[] w - - 0 1"
+        "|"
+        "7k/8/8/8/8/8/8/K7[QR] w - - 0 1");
+    ASSERT_GT(
+        board.checking_moves(BOARD_B).size(),
+        static_cast<size_t>(
+            SearchParams::INTERNAL_MATE_CERT_MAX_PARTNER_INTERVENTIONS));
+    Stockfish::Move queenCheck = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f2f8") {
+            queenCheck = move;
+            break;
+        }
+    }
+    ASSERT_NE(queenCheck, Stockfish::MOVE_NONE);
+    const JointActionCandidate candidate(
+        queenCheck, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+        JointActionRules{true, false, true, true, false}, false, false);
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 100;
+    int certifiedPly = 0;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+
+    EXPECT_FALSE(Agent::certify_mate_candidate(
+        board, Stockfish::WHITE, true, candidate, 3,
+        budget, certifiedPly, tier));
+    EXPECT_EQ(tier, MateCertificateTier::NONE);
+    EXPECT_EQ(certifiedPly, 0);
 }
 
 TEST_F(EngineTest, JointForcedMateWithOnlyOneBoardOnTurn) {

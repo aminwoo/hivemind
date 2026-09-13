@@ -409,6 +409,14 @@ public:
     JointCandidateGenerator() = default;
 
     bool promote(Stockfish::Move moveA, Stockfish::Move moveB) {
+        if (promotedCandidate
+            && promotedCandidate->moveA == moveA
+            && promotedCandidate->moveB == moveB) {
+            return false;
+        }
+        if (promotedCandidate) {
+            return false;
+        }
         const auto foundA = std::find(
             sortedActionsA.begin(), sortedActionsA.end(), moveA);
         const auto foundB = std::find(
@@ -438,6 +446,7 @@ public:
             return false;
         }
 
+        bool removedFromOrderedPool = false;
         for (size_t index = nextJointPolicyCandidate;
              index < jointPolicyCandidates.size(); ++index) {
             if (jointPolicyCandidates[index].idxA == idxA
@@ -445,32 +454,38 @@ public:
                 jointPolicyCandidates.erase(
                     jointPolicyCandidates.begin()
                     + static_cast<std::ptrdiff_t>(index));
+                removedFromOrderedPool = true;
                 break;
             }
         }
-        for (size_t index = nextGumbelCandidate;
-             index < gumbelCandidates.size(); ++index) {
-            if (gumbelCandidates[index].idxA == idxA
-                && gumbelCandidates[index].idxB == idxB) {
-                gumbelCandidates.erase(
-                    gumbelCandidates.begin()
-                    + static_cast<std::ptrdiff_t>(index));
-                break;
+        if (!removedFromOrderedPool) {
+            for (size_t index = nextGumbelCandidate;
+                 index < gumbelCandidates.size(); ++index) {
+                if (gumbelCandidates[index].idxA == idxA
+                    && gumbelCandidates[index].idxB == idxB) {
+                    gumbelCandidates.erase(
+                        gumbelCandidates.begin()
+                        + static_cast<std::ptrdiff_t>(index));
+                    removedFromOrderedPool = true;
+                    break;
+                }
             }
         }
 
         bool removedFromHeap = false;
-        std::priority_queue<JointActionCandidate> retained;
-        while (!heap.empty()) {
-            JointActionCandidate queued = heap.top();
-            heap.pop();
-            if (queued.idxA == idxA && queued.idxB == idxB) {
-                removedFromHeap = true;
-            } else {
-                retained.push(queued);
+        if (!removedFromOrderedPool) {
+            std::priority_queue<JointActionCandidate> retained;
+            while (!heap.empty()) {
+                JointActionCandidate queued = heap.top();
+                heap.pop();
+                if (queued.idxA == idxA && queued.idxB == idxB) {
+                    removedFromHeap = true;
+                } else {
+                    retained.push(queued);
+                }
             }
+            heap = std::move(retained);
         }
-        heap = std::move(retained);
         if (removedFromHeap) {
             pushCandidate(idxA + 1, idxB);
             pushCandidate(idxA, idxB + 1);

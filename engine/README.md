@@ -83,6 +83,26 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
 
+### Internal mate-probe experiment
+
+The `InternalMateProbe` UCI combo is disabled by default and separates the
+experiment's effects:
+
+| Mode | Candidate telemetry | Selection bias | Exact solver update |
+| ---- | ------------------- | -------------- | ------------------- |
+| `off` | no | no | no |
+| `telemetry` | yes | no | no |
+| `bias` | yes | yes | no |
+| `certify` | yes | yes | only after exact two-board certification |
+
+Use `setoption name InternalMateProbe value telemetry` to measure candidate
+hit rates without changing play. That mode preserves 90% of the Fairy probe's
+time for the established root probe. The strength-affecting `bias` and
+`certify` modes cap that initial root phase at 10%, allowing internal hints to
+arrive early enough to accumulate visits. All modes retain the shared node
+budget. A Fairy hit remains in the hint table when exact certification fails;
+only successful certification may update MCTS solver state.
+
 On Windows, use a Developer PowerShell for Visual Studio and point CMake at
 the extracted TensorRT SDK and CUDA Runtime redistributable:
 

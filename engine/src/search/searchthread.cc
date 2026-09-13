@@ -1016,20 +1016,12 @@ LeafSelection SearchThread::select_and_expand(
         }
 
         std::optional<MateCandidateHint> mateHint;
-        if (runtimeConfig.enableInternalMateProbe && mateCandidateTable) {
-            const bool currentTeamHasTimeAdvantage =
-                currentNode->get_team_to_play() == root->get_team_to_play()
-                ? teamHasTimeAdvantage
-                : !teamHasTimeAdvantage;
-            uint64_t positionHash = currentNode->get_hash();
-            if (positionHash == 0) {
-                positionHash = board.search_hash_key(
-                    currentNode->get_team_to_play(),
-                    currentTeamHasTimeAdvantage);
-            }
-            mateHint = mateCandidateTable->lookup(positionHash);
-            if (mateHint) {
-                currentNode->promote_joint_action(mateHint->action);
+        if (SearchParams::internal_mate_probe_bias_enabled(
+                runtimeConfig.internalMateProbeMode)
+            && mateCandidateTable) {
+            const uint64_t positionHash = currentNode->get_hash();
+            if (positionHash != 0) {
+                mateHint = mateCandidateTable->lookup(positionHash);
             }
         }
 

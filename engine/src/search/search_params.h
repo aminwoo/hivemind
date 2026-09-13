@@ -427,13 +427,36 @@ constexpr bool mate_probe_can_end_search(int plyToMate) {
 // the check-only scans, so it gets its own flag.
 constexpr bool ENABLE_MATE_PROBE = true;
 
-// Experimental probing below the root. Fairy hits remain candidates: they may
-// bias exploration, but only an exact certificate may alter solver state.
-constexpr bool ENABLE_INTERNAL_MATE_PROBE = false;
+// Experimental probing below the root. Each mode adds one effect so hit-rate,
+// playing-strength, and solver experiments can be measured independently.
+enum class InternalMateProbeMode {
+    OFF,
+    TELEMETRY,
+    BIAS,
+    CERTIFY,
+};
+constexpr InternalMateProbeMode INTERNAL_MATE_PROBE_MODE =
+    InternalMateProbeMode::OFF;
+
+constexpr bool internal_mate_probe_enabled(InternalMateProbeMode mode) {
+    return mode != InternalMateProbeMode::OFF;
+}
+
+constexpr bool internal_mate_probe_bias_enabled(InternalMateProbeMode mode) {
+    return mode == InternalMateProbeMode::BIAS
+        || mode == InternalMateProbeMode::CERTIFY;
+}
+
+constexpr bool internal_mate_probe_certification_enabled(
+    InternalMateProbeMode mode) {
+    return mode == InternalMateProbeMode::CERTIFY;
+}
 constexpr uint64_t INTERNAL_MATE_PROBE_NODE_BUDGET = 500000;
 constexpr int INTERNAL_MATE_PROBE_TOP_K = 3;
 constexpr int INTERNAL_MATE_PROBE_MIN_VISITS = 16;
-constexpr int INTERNAL_MATE_PROBE_ROOT_SHARE_PERCENT = 90;
+constexpr int INTERNAL_MATE_PROBE_ROOT_NODE_SHARE_PERCENT = 90;
+constexpr int INTERNAL_MATE_PROBE_TELEMETRY_ROOT_TIME_PERCENT = 90;
+constexpr int INTERNAL_MATE_PROBE_STRENGTH_ROOT_TIME_PERCENT = 10;
 constexpr int INTERNAL_MATE_PROBE_JOB_MAX_MS = 75;
 constexpr float INTERNAL_MATE_PROBE_DECIDED_Q = 0.8f;
 constexpr float INTERNAL_MATE_PROBE_BIAS = 0.35f;
@@ -441,6 +464,20 @@ constexpr float INTERNAL_MATE_PROBE_BIAS_DECAY_VISITS = 32.0f;
 constexpr uint64_t INTERNAL_MATE_CERT_NODE_BUDGET = 200000;
 constexpr int INTERNAL_MATE_CERT_MAX_MS = 50;
 constexpr int INTERNAL_MATE_CERT_MAX_PARTNER_INTERVENTIONS = 24;
+
+constexpr bool internal_mate_probe_hit_is_actionable(
+    bool opponentMate, float rootQ) {
+    return opponentMate
+        ? rootQ > -INTERNAL_MATE_PROBE_DECIDED_Q
+        : rootQ < INTERNAL_MATE_PROBE_DECIDED_Q;
+}
+
+constexpr int internal_mate_probe_root_time_percent(
+    InternalMateProbeMode mode) {
+    return internal_mate_probe_bias_enabled(mode)
+        ? INTERNAL_MATE_PROBE_STRENGTH_ROOT_TIME_PERCENT
+        : INTERNAL_MATE_PROBE_TELEMETRY_ROOT_TIME_PERCENT;
+}
 
 /**
  * Share of the move time the root proof pre-pass may occupy. Both clock states
@@ -594,7 +631,7 @@ struct RuntimeConfig {
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     bool enableMateProbe = ENABLE_MATE_PROBE;
-    bool enableInternalMateProbe = ENABLE_INTERNAL_MATE_PROBE;
+    InternalMateProbeMode internalMateProbeMode = INTERNAL_MATE_PROBE_MODE;
     float internalMateProbeBias = INTERNAL_MATE_PROBE_BIAS;
     float internalMateProbeBiasDecayVisits =
         INTERNAL_MATE_PROBE_BIAS_DECAY_VISITS;
