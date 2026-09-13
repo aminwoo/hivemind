@@ -409,11 +409,6 @@ public:
     JointCandidateGenerator() = default;
 
     bool promote(Stockfish::Move moveA, Stockfish::Move moveB) {
-        if (promotedCandidate
-            && promotedCandidate->moveA == moveA
-            && promotedCandidate->moveB == moveB) {
-            return false;
-        }
         if (promotedCandidate) {
             return false;
         }

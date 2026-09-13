@@ -1640,9 +1640,10 @@ JointMateProof search_reduced_partner_mate(
     std::vector<MateMoveCandidate>& partnerActions = partnerBoard == BOARD_A
         ? actionSpace.actionsA : actionSpace.actionsB;
     const bool partnerCanIntervene = partnerActions.size() > 1;
-    // Quiet partner moves are interchangeable only on the final defender
-    // turn. Earlier ones may prepare a check or capture on a later turn.
-    if (partnerCanIntervene && attackerMovesRemaining <= 1) {
+    // The attacker sits on the partner board for the rest of this proof, so
+    // after one defender move that board stays frozen. A defender capture that
+    // would force the attacker to move there is refuted below, not searched.
+    if (partnerCanIntervene) {
         std::vector<MateMoveCandidate> reducedPartnerActions;
         reducedPartnerActions.reserve(partnerActions.size());
         std::optional<MateMoveCandidate> quietRepresentative;
@@ -4205,7 +4206,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             // Promotion mutates only candidate ordering. Do it
                             // once here so workers never take the target's
                             // exclusive lock merely because a hint exists.
-                            targetNode->promote_joint_action(candidate);
+                            if (!targetNode->promote_joint_action(candidate)) {
+                                ++internalProbeStats.promotionsSkipped;
+                            }
                             mateCandidateHints_.publish(
                                 target.positionHash, candidate, candidatePly);
 
@@ -4309,6 +4312,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                      << ", solved " << internalProbeStats.alreadySolvedHits
                      << ", generated "
                      << internalProbeStats.alreadyGeneratedHits
+                     << ", promotion skipped "
+                     << internalProbeStats.promotionsSkipped
                      << ", fairy nodes " << internalProbeStats.nodes
                      << ", certificates "
                      << internalProbeStats.checksOnlyCertificates << "+"

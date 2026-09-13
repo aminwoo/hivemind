@@ -70,6 +70,7 @@ struct InternalMateProbeStats {
     uint64_t childActionableHits = 0;
     uint64_t grandchildActionableHits = 0;
     uint64_t alreadyGeneratedHits = 0;
+    uint64_t promotionsSkipped = 0;
     uint64_t alreadySolvedHits = 0;
     uint64_t staleHits = 0;
     uint64_t checksOnlyCertificates = 0;
