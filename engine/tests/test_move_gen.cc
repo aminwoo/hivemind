@@ -444,6 +444,38 @@ TEST(InternalMateProbeTest, ActionabilityUsesSignedRootQByDepth) {
         false, 0.95f));
 }
 
+TEST(InternalMateProbeTest, CertifyOnlyModeProvesWithoutBiasOrQGate) {
+    using SearchParams::InternalMateProbeMode;
+    EXPECT_FALSE(SearchParams::internal_mate_probe_bias_enabled(
+        InternalMateProbeMode::CERTIFY_ONLY));
+    EXPECT_TRUE(SearchParams::internal_mate_probe_certification_enabled(
+        InternalMateProbeMode::CERTIFY_ONLY));
+    EXPECT_TRUE(SearchParams::internal_mate_probe_affects_play(
+        InternalMateProbeMode::CERTIFY_ONLY));
+    EXPECT_FALSE(SearchParams::internal_mate_probe_affects_play(
+        InternalMateProbeMode::TELEMETRY));
+
+    // A root Q of -0.83 is what a -6.4 pawn score converts to. The bias
+    // modes drop an opponent-mate hit there as already decided; a proof is
+    // still wanted.
+    EXPECT_FALSE(SearchParams::internal_mate_probe_hit_is_actionable(
+        InternalMateProbeMode::CERTIFY, true, -0.83f));
+    EXPECT_TRUE(SearchParams::internal_mate_probe_hit_is_actionable(
+        InternalMateProbeMode::CERTIFY_ONLY, true, -0.83f));
+    EXPECT_TRUE(SearchParams::internal_mate_probe_hit_is_actionable(
+        InternalMateProbeMode::CERTIFY_ONLY, false, 0.95f));
+    EXPECT_TRUE(SearchParams::internal_mate_probe_hit_is_actionable(
+        InternalMateProbeMode::BIAS, true, 0.5f));
+}
+
+TEST(SelectedMoveCertParamsTest, ReserveIsAShareOfTheMoveTimeCapped) {
+    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(0), 0);
+    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(1000), 100);
+    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(2000), 200);
+    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(10000),
+              SearchParams::SELECTED_MOVE_CERT_MAX_MS);
+}
+
 TEST(InternalMateProbeTest, StrengthModesReceiveHintsEarly) {
     EXPECT_EQ(SearchParams::internal_mate_probe_root_time_percent(
                   SearchParams::InternalMateProbeMode::TELEMETRY),
@@ -453,6 +485,9 @@ TEST(InternalMateProbeTest, StrengthModesReceiveHintsEarly) {
               10);
     EXPECT_EQ(SearchParams::internal_mate_probe_root_time_percent(
                   SearchParams::InternalMateProbeMode::CERTIFY),
+              10);
+    EXPECT_EQ(SearchParams::internal_mate_probe_root_time_percent(
+                  SearchParams::InternalMateProbeMode::CERTIFY_ONLY),
               10);
 }
 

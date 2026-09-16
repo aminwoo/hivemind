@@ -372,6 +372,12 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableMateProbe = value == "true";
             std::cout << "info string MateProbe set to " << value << std::endl;
         }
+    } else if (name == "CertifySelectedMove") {
+        if (value == "true" || value == "false") {
+            searchConfig.certifySelectedMove = value == "true";
+            std::cout << "info string CertifySelectedMove set to " << value
+                      << std::endl;
+        }
     } else if (name == "InternalMateProbe") {
         if (value == "off") {
             searchConfig.internalMateProbeMode =
@@ -385,6 +391,9 @@ void UCI::setoption(std::istringstream& is) {
         } else if (value == "certify") {
             searchConfig.internalMateProbeMode =
                 SearchParams::InternalMateProbeMode::CERTIFY;
+        } else if (value == "certifyonly") {
+            searchConfig.internalMateProbeMode =
+                SearchParams::InternalMateProbeMode::CERTIFY_ONLY;
         } else {
             return;
         }
@@ -482,8 +491,12 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::PW_EXPONENT * 1000.0f) << " min 1 max 1000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
+    cout << "option name CertifySelectedMove type check default "
+         << (SearchParams::ENABLE_SELECTED_MOVE_CERTIFICATION ? "true" : "false")
+         << endl;
     cout << "option name InternalMateProbe type combo default off"
-         << " var off var telemetry var bias var certify" << endl;
+         << " var off var telemetry var bias var certify var certifyonly"
+         << endl;
     cout << "option name Transpositions type check default "
         << (SearchParams::ENABLE_TRANSPOSITIONS ? "true" : "false") << endl;
     cout << "option name GumbelRootSearch type check default "

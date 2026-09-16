@@ -80,6 +80,17 @@ struct InternalMateProbeStats {
     uint64_t certificateNodes = 0;
 };
 
+/** What certifying the selected move cost and decided, for one search. */
+struct SelectedMoveCertStats {
+    uint64_t candidates = 0;
+    uint64_t probeHits = 0;
+    uint64_t certificates = 0;
+    uint64_t nodes = 0;
+    uint64_t certificateNodes = 0;
+    bool vetoed = false;
+    bool replaced = false;
+};
+
 enum class MateCertificateTier : uint8_t {
     NONE,
     CHECKS_ONLY,
@@ -395,6 +406,60 @@ public:
         bool teamHasTimeAdvantage, float qVetoDelta, float qValueWeight,
         bool avoidSolvedDraw,
         const std::atomic<bool>* cancelled = nullptr);
+
+    /**
+     * @brief Exact joint forced-mate proof for @p attackingTeam to move.
+     *
+     * The full two-board AND/OR solver: checking actions on either board,
+     * every defender reply, hands updated by each capture, sits by the clock
+     * rules. Proves at most @p maxAttackerMoves attacker moves. With
+     * @p shortestFirst it deepens from two and answers with the shortest
+     * mate it holds; without, it searches the full depth at once, which is
+     * far cheaper when any proof will do, as for a veto. Spent budget is
+     * UNKNOWN, never a claim. Leaves @p board as it found it; the proof's
+     * first action and length come back on success.
+     */
+    static bool prove_joint_forced_mate(
+        Board& board, Stockfish::Color attackingTeam,
+        bool attackingTeamHasTimeAdvantage, int maxAttackerMoves,
+        MateSearchBudget& budget, JointActionCandidate& outAction,
+        int& outPlyToMate, std::vector<MateProofPly>* outLine = nullptr,
+        bool shortestFirst = true);
+
+    /**
+     * @brief Whether @p action hands the opponents a proven forced mate.
+     *
+     * Plays the action on @p board, asks Fairy-Stockfish for the opponents'
+     * mate from the position it leaves, and holds that line to the exact
+     * two-board certifier. Answers true only on a certificate, with the
+     * mate's length in @p outPlyToMate: a hit the certifier could not prove
+     * before @p deadline, or no hit at all, is a no. Without the time
+     * advantage the opponents cannot sit the other board through a line, so
+     * ahead on time this team is never vetoed. Leaves @p board as it found it.
+     */
+    static bool action_walks_into_certified_mate(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled,
+        int& outPlyToMate, SelectedMoveCertStats* stats = nullptr);
+
+    /**
+     * @brief A replacement for @p chosen when it walks into a certified mate.
+     *
+     * Empty when the chosen action survives the test, or when every
+     * alternative tried fails it too, where the chosen action is as good a
+     * try as any. Alternatives are the actions @p node visited, ranked by
+     * visits with children the solver already proved lost ranked last, and
+     * only the first few are tried before @p deadline. A child proven lost
+     * here is marked so in the tree, where tree reuse keeps the proof.
+     */
+    static std::optional<JointActionCandidate> certified_mate_free_alternative(
+        Board& board, const Node& node, const JointActionCandidate& chosen,
+        Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled = nullptr,
+        SelectedMoveCertStats* stats = nullptr);
 
     /**
      * @brief Whether playing @p move on @p boardNum reaches that board's

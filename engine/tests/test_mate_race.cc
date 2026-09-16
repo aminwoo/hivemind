@@ -452,3 +452,219 @@ TEST_F(QueenFeedRaceTest, TheExactScansDoNotClaimEitherMate) {
     EXPECT_EQ(board.uci_move(BOARD_A, theirs.moveA), "Q@e1");
     EXPECT_EQ(theirPly, 1);
 }
+
+// Board A with Black (this team) to move, behind on time. The rook on a8 is
+// all that guards the back rank: ...Rxa2 leaves it and walks into Rb8#, which
+// the opponents ahead on time can play while sitting board B. ...h6 does not.
+// Board B is bare so no partner capture can ever supply a blocker.
+constexpr const char* kBackRankBoardA =
+    "r5k1/5ppp/8/8/8/8/P7/1R4K1[] b - - 0 1";
+constexpr const char* kBackRankBoardB =
+    "7k/8/8/8/8/8/8/K7[] b - - 0 1";
+
+class SelectedMoveCertTest : public MateRaceTest {
+protected:
+    static Board back_rank_board() {
+        Board board;
+        board.set_fen(BOARD_A, kBackRankBoardA);
+        board.set_fen(BOARD_B, kBackRankBoardB);
+        return board;
+    }
+    static Agent::MateSearchBudget::Clock::time_point deadline_in(int ms) {
+        return Agent::MateSearchBudget::Clock::now()
+            + std::chrono::milliseconds(ms);
+    }
+};
+
+TEST_F(SelectedMoveCertTest, LeavingTheBackRankIsCertifiedLost) {
+    Board board = back_rank_board();
+    const JointActionCandidate rxa2 = joint(
+        move_of(board, BOARD_A, "a8a2"), Stockfish::MOVE_NONE);
+    const std::string before = board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
+
+    int plyToMate = 0;
+    SelectedMoveCertStats stats;
+    EXPECT_TRUE(Agent::action_walks_into_certified_mate(
+        board, rxa2, Stockfish::BLACK, false, deadline_in(2000), nullptr,
+        plyToMate, &stats));
+    EXPECT_EQ(plyToMate, 1);
+    EXPECT_EQ(stats.candidates, 1U);
+    EXPECT_EQ(stats.probeHits, 1U);
+    EXPECT_EQ(stats.certificates, 1U);
+    EXPECT_EQ(board.fen(BOARD_A) + "|" + board.fen(BOARD_B), before);
+}
+
+TEST_F(SelectedMoveCertTest, MakingLuftIsNotVetoed) {
+    Board board = back_rank_board();
+    const JointActionCandidate h6 = joint(
+        move_of(board, BOARD_A, "h7h6"), Stockfish::MOVE_NONE);
+
+    int plyToMate = 0;
+    SelectedMoveCertStats stats;
+    EXPECT_FALSE(Agent::action_walks_into_certified_mate(
+        board, h6, Stockfish::BLACK, false, deadline_in(2000), nullptr,
+        plyToMate, &stats));
+    EXPECT_EQ(plyToMate, 0);
+    EXPECT_EQ(stats.candidates, 1U);
+    EXPECT_EQ(stats.certificates, 0U);
+}
+
+// Ahead on time this team may sit board A after Rb8+ and play board B, so
+// no single-board line is forced against it and no veto is raised.
+TEST_F(SelectedMoveCertTest, TimeAdvantageDisarmsTheVeto) {
+    Board board = back_rank_board();
+    const JointActionCandidate rxa2 = joint(
+        move_of(board, BOARD_A, "a8a2"), Stockfish::MOVE_NONE);
+
+    int plyToMate = 0;
+    SelectedMoveCertStats stats;
+    EXPECT_FALSE(Agent::action_walks_into_certified_mate(
+        board, rxa2, Stockfish::BLACK, true, deadline_in(2000), nullptr,
+        plyToMate, &stats));
+    EXPECT_EQ(stats.candidates, 0U);
+}
+
+TEST_F(SelectedMoveCertTest, SpentDeadlineRaisesNoVeto) {
+    Board board = back_rank_board();
+    const JointActionCandidate rxa2 = joint(
+        move_of(board, BOARD_A, "a8a2"), Stockfish::MOVE_NONE);
+
+    int plyToMate = 0;
+    SelectedMoveCertStats stats;
+    EXPECT_FALSE(Agent::action_walks_into_certified_mate(
+        board, rxa2, Stockfish::BLACK, false, deadline_in(-1), nullptr,
+        plyToMate, &stats));
+    EXPECT_EQ(stats.candidates, 0U);
+    EXPECT_EQ(stats.certificates, 0U);
+}
+
+// The tree's most visited alternative is held to the same test, and the
+// proof lands on the vetoed child so its root edge is a solved loss after.
+TEST_F(SelectedMoveCertTest, VetoedMoveIsReplacedByTheNextVisitedAlternative) {
+    Board board = back_rank_board();
+    const Stockfish::Move rxa2 = move_of(board, BOARD_A, "a8a2");
+    const Stockfish::Move h6 = move_of(board, BOARD_A, "h7h6");
+
+    SearchParams::RuntimeConfig config;
+    auto root = std::make_shared<Node>(
+        Stockfish::BLACK, board.search_hash_key(Stockfish::BLACK, false));
+    ASSERT_TRUE(root->try_init_and_expand(
+        {rxa2, h6}, {Stockfish::MOVE_NONE}, {0.6f, 0.4f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(root->expand_next_joint_child(nullptr, 0, expanded, config),
+              nullptr);
+    ASSERT_EQ(root->get_num_generated(), 2U);
+    const JointActionCandidate chosen = root->get_joint_action(0);
+    ASSERT_EQ(chosen.moveA, rxa2);
+
+    SelectedMoveCertStats stats;
+    const std::optional<JointActionCandidate> replacement =
+        Agent::certified_mate_free_alternative(
+            board, *root, chosen, Stockfish::BLACK, false, deadline_in(4000),
+            nullptr, &stats);
+    ASSERT_TRUE(replacement.has_value());
+    EXPECT_EQ(replacement->moveA, h6);
+    EXPECT_EQ(replacement->moveB, Stockfish::MOVE_NONE);
+    EXPECT_TRUE(stats.vetoed);
+    EXPECT_TRUE(stats.replaced);
+    EXPECT_EQ(stats.candidates, 2U);
+    EXPECT_EQ(root->get_child(0)->get_node_type(), NodeType::WIN);
+    EXPECT_EQ(root->get_child(1)->get_node_type(), NodeType::UNSOLVED);
+}
+
+TEST_F(SelectedMoveCertTest, SafeChosenMoveNeedsNoAlternative) {
+    Board board = back_rank_board();
+    const Stockfish::Move rxa2 = move_of(board, BOARD_A, "a8a2");
+    const Stockfish::Move h6 = move_of(board, BOARD_A, "h7h6");
+
+    SearchParams::RuntimeConfig config;
+    auto root = std::make_shared<Node>(
+        Stockfish::BLACK, board.search_hash_key(Stockfish::BLACK, false));
+    ASSERT_TRUE(root->try_init_and_expand(
+        {h6, rxa2}, {Stockfish::MOVE_NONE}, {0.6f, 0.4f}, {1.0f},
+        false, true, false, config));
+    const JointActionCandidate chosen = root->get_joint_action(0);
+    ASSERT_EQ(chosen.moveA, h6);
+
+    SelectedMoveCertStats stats;
+    EXPECT_FALSE(Agent::certified_mate_free_alternative(
+        board, *root, chosen, Stockfish::BLACK, false, deadline_in(4000),
+        nullptr, &stats).has_value());
+    EXPECT_FALSE(stats.vetoed);
+    EXPECT_EQ(stats.candidates, 1U);
+}
+
+// Board B after the feed of the lost game: Black holds the queen captured on
+// board A and mates in three checks while White on B has [QBPPP] to drop.
+// The joint solver proves it in under a thousand nodes once its checks are
+// ordered by evasions and the depth is searched in one pass; the same proof
+// used to cost several hundred thousand.
+TEST_F(SelectedMoveCertTest, JointSolverProvesTheFedBoardMateCheaply) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r5rk/ppp2p1p/4pP2/3p4/7B/2P1P1P1/PpP1n1P1/3qN2K[QNNb] w - - 1 31");
+    board.set_fen(BOARD_B,
+        "r1bkn2R/pp2np1p/3pp3/7B/3P1r2/3BbR2/PPP3PP/R4KNR[QBPPPqbnpp] b - - 3 24");
+
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 5000;
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::vector<MateProofPly> line;
+    ASSERT_TRUE(Agent::prove_joint_forced_mate(
+        board, Stockfish::WHITE, true, 3, budget, action, plyToMate, &line,
+        false));
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, action.moveB), "f4f3");
+    EXPECT_EQ(plyToMate, 5);
+    EXPECT_LT(5000 - budget.remainingNodes, 2000U);
+}
+
+// One move earlier on board A: the queen is still on f6 and gxf6+ has to be
+// found before the board-B mate exists. Two boards, a capture that feeds the
+// hand, and a switch of boards, proven in one pass.
+TEST_F(SelectedMoveCertTest, JointSolverFollowsTheFeedAcrossBoards) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r5r1/ppp2pkp/4pq2/3p2P1/7B/2P1P1P1/PpP1n1P1/3qN2K[QNNb] w - - 0 30");
+    board.set_fen(BOARD_B,
+        "r1bkn2R/pp2np1p/3pp3/7B/3P1r2/3BbR2/PPP3PP/R4KNR[QBPPbnpp] b - - 3 24");
+
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 5000000;
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::vector<MateProofPly> line;
+    ASSERT_TRUE(Agent::prove_joint_forced_mate(
+        board, Stockfish::WHITE, true, 4, budget, action, plyToMate, &line,
+        false));
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "g5f6");
+    EXPECT_EQ(action.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(plyToMate, 7);
+}
+
+// The same position seen from the team about to be mated: their chosen
+// move on board A is irrelevant, the joint fallback vetoes it regardless of
+// what Fairy sees on either board alone.
+TEST_F(SelectedMoveCertTest, JointFallbackVetoesACrossBoardMate) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r5rk/ppp2p1p/4pP2/3p4/7B/2P1P1P1/PpP1n1P1/3qN2K[QNNb] w - - 1 31");
+    board.set_fen(BOARD_B,
+        "r1bkn2R/pp2np1p/3pp3/7B/3P1r2/3BbR2/PPP3PP/R4KNR[QBPPPqbnpp] b - - 3 24");
+    // Hand the move to Black on A so this team has an action to certify:
+    // a quiet king move on board A, White to move afterwards on both boards.
+    board.set_fen(BOARD_A,
+        "r5r1/ppp2pkp/4pP2/3p4/7B/2P1P1P1/PpP1n1P1/3qN2K[QNNb] b - - 1 31");
+    const JointActionCandidate kh8 = joint(
+        move_of(board, BOARD_A, "g7h8"), Stockfish::MOVE_NONE);
+
+    int plyToMate = 0;
+    SelectedMoveCertStats stats;
+    EXPECT_TRUE(Agent::action_walks_into_certified_mate(
+        board, kh8, Stockfish::BLACK, false, deadline_in(2000), nullptr,
+        plyToMate, &stats));
+    EXPECT_EQ(plyToMate, 5);
+    EXPECT_EQ(stats.certificates, 1U);
+}

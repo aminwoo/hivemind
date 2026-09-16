@@ -76,6 +76,23 @@ TEST_F(UCIOpeningNoiseTest, SelectsInternalMateProbeExperimentMode) {
     EXPECT_EQ(
         certify.internalMateProbeMode,
         SearchParams::InternalMateProbeMode::CERTIFY);
+
+    set_option(uci, "InternalMateProbe", "certifyonly");
+    const SearchParams::RuntimeConfig certifyOnly =
+        UCIOpeningNoiseTestPeer::current_search_config(uci);
+    EXPECT_EQ(
+        certifyOnly.internalMateProbeMode,
+        SearchParams::InternalMateProbeMode::CERTIFY_ONLY);
+}
+
+TEST_F(UCIOpeningNoiseTest, SelectedMoveCertificationIsOnByDefault) {
+    UCI uci;
+    EXPECT_TRUE(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                    .certifySelectedMove);
+
+    set_option(uci, "CertifySelectedMove", "false");
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::current_search_config(uci)
+                     .certifySelectedMove);
 }
 
 TEST_F(UCIOpeningNoiseTest, AppliesConfiguredNoiseInsideOpeningHorizon) {
