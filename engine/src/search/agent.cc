@@ -4493,6 +4493,29 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     bool internalProbeStatsStored = false;
     thread rootProbeThread;
 
+    // The concurrent verifier's verdict on each root action, by action. A
+    // proof or an exhaustive refutation within the bound is final for this
+    // search; anything cut short stays eligible for another slice, and for
+    // the serial tail if it is the action finally chosen. The proof cache
+    // stays with the action so a later slice resumes from settled subtrees.
+    struct RootActionVerdict {
+        enum class State { UNKNOWN, PROVEN_LOSS, REFUTED_AT_BOUND };
+        State state = State::UNKNOWN;
+        bool fairyProbed = false;
+        int slices = 0;
+        int plyToMate = 0;
+        JointMateCache cache;
+    };
+    const auto action_key = [](const JointActionCandidate& action) {
+        return Board::mix_hash(
+            static_cast<uint64_t>(action.moveA) + 1,
+            static_cast<uint64_t>(action.moveB) + 1);
+    };
+    std::unordered_map<uint64_t, RootActionVerdict> verifierVerdicts;
+    ConcurrentVerifierStats verifierStats;
+    const bool runConcurrentVerifier = selectedMoveCertReserveMs > 0
+        && runRootScan && moveTimeMs > 0;
+
     const auto start_root_probe = [&] {
         const bool runInternalProbe =
             SearchParams::internal_mate_probe_enabled(
@@ -4500,7 +4523,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         const bool certifyOnly = options.search.internalMateProbeMode
             == SearchParams::InternalMateProbeMode::CERTIFY_ONLY;
         if (!runRootScan || !options.search.enableMateProbe
-            || (!teamHasTimeAdvantage && !runInternalProbe)) {
+            || (!teamHasTimeAdvantage && !runInternalProbe
+                && !runConcurrentVerifier)) {
             return;
         }
         const uint64_t totalProbeNodeBudget = options.mateProbeNodes > 0
@@ -4572,8 +4596,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             rootProbeNodeBudget, rootProbeBudgetMs, rootSettled,
                             action, plyToMate, pv,
                             publish, options.search.drawContempt > 0.0f);
-                    if (!runInternalProbe || rootFound
-                        || internalProbeNodeBudget == 0) {
+                    const bool runInternal = runInternalProbe && !rootFound
+                        && internalProbeNodeBudget > 0;
+                    if (!runInternal && !(runConcurrentVerifier && !rootFound)) {
                         return;
                     }
 
@@ -4588,7 +4613,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     };
 
                     std::vector<InternalMateProbeTarget> targets;
-                    while (!internalSettled()) {
+                    while (runInternal && !internalSettled()) {
                         targets = collect_internal_probe_targets(
                             *probeBoard, probeRoot, teamSide,
                             teamHasTimeAdvantage,
@@ -4786,6 +4811,181 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                 }
                                 targetNode->mark_as_win(certifiedPly);
                             }
+                        }
+                    }
+
+                    if (!runConcurrentVerifier || rootFound) {
+                        return;
+                    }
+                    // The verifier: the leading root actions, each played
+                    // on the private board and asked whether the opponents
+                    // then have a proven mate. Fairy first for the
+                    // single-board ones, then the joint solver in slices, so
+                    // an action that stops leading stops being searched and
+                    // the rest of the move goes to whichever leads now.
+                    const auto remaining_move_ms = [&] {
+                        return std::max(
+                            0, moveTimeMs - static_cast<int>(searchInfo.elapsed()));
+                    };
+                    const auto pick_target = [&]() -> int {
+                        const std::vector<size_t> edges = ranked_visited_edges(
+                            probeRoot, SearchParams::CONCURRENT_VERIFIER_MIN_VISITS);
+                        int chosen = -1;
+                        int fewestSlices = std::numeric_limits<int>::max();
+                        for (size_t rank = 0; rank < edges.size()
+                                 && rank < static_cast<size_t>(
+                                     SearchParams::CONCURRENT_VERIFIER_TOP_K);
+                             ++rank) {
+                            const int edge = static_cast<int>(edges[rank]);
+                            const std::shared_ptr<Node> child =
+                                probeRoot->get_child(edge);
+                            if (!child
+                                || child->get_node_type() != NodeType::UNSOLVED) {
+                                continue;
+                            }
+                            const auto verdict = verifierVerdicts.find(
+                                action_key(probeRoot->get_joint_action(edge)));
+                            const int slices = verdict == verifierVerdicts.end()
+                                ? 0 : verdict->second.slices;
+                            if (verdict != verifierVerdicts.end()
+                                && verdict->second.state
+                                    != RootActionVerdict::State::UNKNOWN) {
+                                continue;
+                            }
+                            // Round-robin among the eligible: the leader is
+                            // not allowed to hold the thread through a long
+                            // job while the others go unexamined.
+                            if (slices < fewestSlices) {
+                                fewestSlices = slices;
+                                chosen = edge;
+                            }
+                        }
+                        return chosen;
+                    };
+
+                    uint64_t nodesSpent = 0;
+                    while (!internalSettled()
+                           && nodesSpent
+                               < SearchParams::CONCURRENT_VERIFIER_NODE_CEILING
+                           && remaining_move_ms() > 0) {
+                        const int edge = pick_target();
+                        if (edge < 0) {
+                            this_thread::sleep_for(chrono::milliseconds(1));
+                            continue;
+                        }
+                        const JointActionCandidate action =
+                            probeRoot->get_joint_action(edge);
+                        const std::shared_ptr<Node> child =
+                            probeRoot->get_child(edge);
+                        if (!probeBoard->is_legal_move(BOARD_A, action.moveA)
+                            || !probeBoard->is_legal_move(BOARD_B, action.moveB)) {
+                            verifierVerdicts[action_key(action)].state =
+                                RootActionVerdict::State::REFUTED_AT_BOUND;
+                            continue;
+                        }
+                        RootActionVerdict& verdict =
+                            verifierVerdicts[action_key(action)];
+                        if (verdict.slices == 0) {
+                            ++verifierStats.actions;
+                        }
+                        ++verdict.slices;
+                        ++verifierStats.slices;
+
+                        probeBoard->make_moves(action.moveA, action.moveB);
+                        bool proven = false;
+                        int provenPly = 0;
+                        bool refuted = false;
+                        // Mating them ends the game where it stands.
+                        if (probeBoard->is_checkmate(~teamSide, true)) {
+                            refuted = true;
+                        } else if (!verdict.fairyProbed) {
+                            verdict.fairyProbed = true;
+                            ++verifierStats.probes;
+                            JointActionCandidate reply;
+                            int replyPly = 0;
+                            string replyPv;
+                            uint64_t probeNodes = 0;
+                            const int probeMs = std::max(1, std::min(
+                                SearchParams::CONCURRENT_VERIFIER_PROBE_MAX_MS,
+                                remaining_move_ms()));
+                            if (probe_position_mate(
+                                    *probeBoard, ~teamSide, true,
+                                    SearchParams::SELECTED_MOVE_PROBE_NODE_BUDGET,
+                                    probeMs, internalSettled, reply, replyPly,
+                                    replyPv, {}, false, &probeNodes)
+                                && !internalSettled()) {
+                                ++verifierStats.probeHits;
+                                MateSearchBudget certBudget;
+                                certBudget.remainingNodes =
+                                    SearchParams::SELECTED_MOVE_CERT_NODE_BUDGET;
+                                certBudget.cancelled = &stopRootProbe;
+                                certBudget.deadline =
+                                    MateSearchBudget::Clock::now()
+                                    + chrono::milliseconds(std::max(1, std::min(
+                                        SearchParams::
+                                            SELECTED_MOVE_CERT_PER_CANDIDATE_MAX_MS,
+                                        remaining_move_ms())));
+                                MateCertificateTier tier =
+                                    MateCertificateTier::NONE;
+                                int certifiedPly = 0;
+                                proven = certify_mate_candidate(
+                                    *probeBoard, ~teamSide, true, reply,
+                                    replyPly, certBudget, certifiedPly, tier);
+                                provenPly = certifiedPly;
+                                const uint64_t spent =
+                                    SearchParams::SELECTED_MOVE_CERT_NODE_BUDGET
+                                    - certBudget.remainingNodes;
+                                nodesSpent += spent;
+                                verifierStats.nodes += spent;
+                            }
+                        } else {
+                            MateSearchBudget slice;
+                            slice.remainingNodes = std::min(
+                                SearchParams::CONCURRENT_VERIFIER_SLICE_NODES,
+                                SearchParams::CONCURRENT_VERIFIER_NODE_CEILING
+                                    - nodesSpent);
+                            slice.cancelled = &stopRootProbe;
+                            slice.stopOnSolvedRoot = probeRoot.get();
+                            slice.deadline = MateSearchBudget::Clock::now()
+                                + chrono::milliseconds(
+                                    std::max(1, remaining_move_ms()));
+                            const JointMateProof proof =
+                                search_joint_forced_mate(
+                                    *probeBoard, ~teamSide, true, ~teamSide,
+                                    SearchParams::
+                                        SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES,
+                                    0, slice, verdict.cache, false);
+                            const uint64_t spent =
+                                std::min(
+                                    SearchParams::CONCURRENT_VERIFIER_SLICE_NODES,
+                                    SearchParams::CONCURRENT_VERIFIER_NODE_CEILING
+                                        - nodesSpent)
+                                - slice.remainingNodes;
+                            nodesSpent += spent;
+                            verifierStats.nodes += spent;
+                            if (proof.status == JointMateStatus::PROVEN) {
+                                proven = true;
+                                provenPly = proof.pliesToMate;
+                            } else if (proof.status == JointMateStatus::REFUTED
+                                       && !slice.exhausted
+                                       && !slice.out_of_time()) {
+                                refuted = true;
+                            }
+                        }
+                        probeBoard->unmake_moves(action.moveA, action.moveB);
+
+                        if (proven) {
+                            verdict.state = RootActionVerdict::State::PROVEN_LOSS;
+                            verdict.plyToMate = provenPly;
+                            ++verifierStats.proven;
+                            if (child && child->get_node_type()
+                                    == NodeType::UNSOLVED) {
+                                child->mark_as_win(provenPly);
+                            }
+                        } else if (refuted) {
+                            verdict.state =
+                                RootActionVerdict::State::REFUTED_AT_BOUND;
+                            ++verifierStats.refuted;
                         }
                     }
                 } catch (const std::exception& error) {
@@ -5848,7 +6048,33 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             // and Q. Hold it to a proof before it is played: the reserve
             // taken off the move time above is spent here, up to the move's
             // original deadline. A solved root has already been held to one.
-            if (selectedMoveCertReserveMs > 0
+            const auto leaderVerdict = verifierVerdicts.find(action_key(result));
+            const bool leaderSettled = leaderVerdict != verifierVerdicts.end()
+                && leaderVerdict->second.state
+                    != RootActionVerdict::State::UNKNOWN;
+            if (runConcurrentVerifier) {
+                verifierStats.leaderVerdict =
+                    leaderVerdict == verifierVerdicts.end() ? "unseen"
+                    : leaderVerdict->second.state
+                            == RootActionVerdict::State::PROVEN_LOSS
+                        ? "proven"
+                    : leaderVerdict->second.state
+                            == RootActionVerdict::State::REFUTED_AT_BOUND
+                        ? "refuted"
+                        : "unknown";
+                if (options.verbose) {
+                    cout << "info string concurrent verifier: "
+                         << verifierStats.actions << " actions, "
+                         << verifierStats.slices << " slices, "
+                         << verifierStats.probes << " probes ("
+                         << verifierStats.probeHits << " hits), "
+                         << verifierStats.proven << " proven, "
+                         << verifierStats.refuted << " refuted, "
+                         << verifierStats.nodes << " nodes, leader "
+                         << verifierStats.leaderVerdict << endl;
+                }
+            }
+            if (selectedMoveCertReserveMs > 0 && !leaderSettled
                 && rootNode->get_node_type() == NodeType::UNSOLVED) {
                 const auto certStart = MateSearchBudget::Clock::now();
                 const auto certDeadline = certStart + chrono::milliseconds(

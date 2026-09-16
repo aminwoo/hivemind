@@ -470,8 +470,8 @@ TEST(InternalMateProbeTest, CertifyOnlyModeProvesWithoutBiasOrQGate) {
 
 TEST(SelectedMoveCertParamsTest, ReserveIsAShareOfTheMoveTimeCapped) {
     EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(0), 0);
-    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(1000), 100);
-    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(2000), 200);
+    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(1000), 30);
+    EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(2000), 60);
     EXPECT_EQ(SearchParams::selected_move_cert_reserve_ms(10000),
               SearchParams::SELECTED_MOVE_CERT_MAX_MS);
 }

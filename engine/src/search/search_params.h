@@ -595,8 +595,11 @@ constexpr int MATE_RACE_VETO_MAX_ALTERNATIVES = 4;
  * time it may sit the threatened board and no single-board line is forced.
  */
 constexpr bool ENABLE_SELECTED_MOVE_CERTIFICATION = true;
-constexpr int SELECTED_MOVE_CERT_TIME_PERCENT = 10;
-constexpr int SELECTED_MOVE_CERT_MAX_MS = 200;
+/// The serial tail. The concurrent verifier below covers the leading actions
+/// while the tree grows, so this only has to catch a leader that arrived too
+/// late for it, and stays small.
+constexpr int SELECTED_MOVE_CERT_TIME_PERCENT = 3;
+constexpr int SELECTED_MOVE_CERT_MAX_MS = 100;
 /// Fairy search per candidate. Bounded by what is left of the reserve.
 constexpr uint64_t SELECTED_MOVE_PROBE_NODE_BUDGET = 500000;
 constexpr int SELECTED_MOVE_PROBE_MAX_MS = 75;
@@ -613,6 +616,20 @@ constexpr int SELECTED_MOVE_CERT_MAX_ALTERNATIVES = 4;
  */
 constexpr int SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES = 6;
 constexpr uint64_t SELECTED_MOVE_JOINT_NODE_BUDGET = 200000;
+
+/**
+ * The concurrent verifier: the same question asked of the leading root
+ * actions on the probe thread while the tree grows, so the joint solver has
+ * the move's wall time rather than a reserve. Work is dealt in slices so a
+ * leader that stops leading stops being searched; each action keeps its
+ * proof cache between slices. A proof marks the child a solved loss at once.
+ * The node ceiling is a bound on what one move may spend, not a target.
+ */
+constexpr int CONCURRENT_VERIFIER_TOP_K = 3;
+constexpr int CONCURRENT_VERIFIER_MIN_VISITS = 4;
+constexpr int CONCURRENT_VERIFIER_PROBE_MAX_MS = 30;
+constexpr uint64_t CONCURRENT_VERIFIER_SLICE_NODES = 50000;
+constexpr uint64_t CONCURRENT_VERIFIER_NODE_CEILING = 2000000;
 
 constexpr int selected_move_cert_reserve_ms(int moveTimeMs) {
     if (moveTimeMs <= 0) {

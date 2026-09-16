@@ -91,6 +91,20 @@ struct SelectedMoveCertStats {
     bool replaced = false;
 };
 
+/** What the concurrent verifier did and decided during one search. */
+struct ConcurrentVerifierStats {
+    uint64_t slices = 0;
+    uint64_t probes = 0;
+    uint64_t probeHits = 0;
+    uint64_t proven = 0;
+    uint64_t refuted = 0;
+    uint64_t nodes = 0;
+    uint64_t actions = 0;
+    /// Verdict on the action finally played: "proven", "refuted", "unknown",
+    /// or "unseen" when the verifier never reached it.
+    const char* leaderVerdict = "unseen";
+};
+
 enum class MateCertificateTier : uint8_t {
     NONE,
     CHECKS_ONLY,
