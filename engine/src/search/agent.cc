@@ -4989,14 +4989,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                   1, options.moveTimeMs
                          * SearchParams::MATE_SEARCH_MAX_TIME_PERCENT / 100))
             : MateSearchBudget::Clock::time_point{};
+    // The loss scan holds the main thread while the workers run, so it must
+    // be done by the time the tree is: the reserve for certifying the chosen
+    // move is spent after it, not by it.
     const MateSearchBudget::Clock::time_point rootLossScanDeadline =
         options.moveTimeMs > 0
-            ? rootScanDeadline + chrono::milliseconds(std::max(
-                  1, std::min(
-                         SearchParams::ROOT_LOSS_EXTRA_MAX_MS,
-                         options.moveTimeMs
-                             * SearchParams::ROOT_LOSS_EXTRA_TIME_PERCENT
-                             / 100)))
+            ? std::min(
+                  rootScanDeadline + chrono::milliseconds(std::max(
+                      1, std::min(
+                             SearchParams::ROOT_LOSS_EXTRA_MAX_MS,
+                             options.moveTimeMs
+                                 * SearchParams::ROOT_LOSS_EXTRA_TIME_PERCENT
+                                 / 100))),
+                  searchStart + chrono::milliseconds(treeMoveTimeMs))
             : MateSearchBudget::Clock::time_point{};
     // Charge the pre-pass for the clock it spends and credit it for the moves it
     // decides, once per search whichever way it exits.
