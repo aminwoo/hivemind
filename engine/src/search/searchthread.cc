@@ -197,7 +197,9 @@ TerminalOutcome classify_terminal_position(Board& board,
         allowMatedTeamToMove, waitingMate);
 }
 
-SearchThread::SearchThread() : transpositionTable(nullptr), currentBatchSize(0) {
+SearchThread::SearchThread()
+        : transpositionTable(nullptr), mateCandidateTable(nullptr),
+            currentBatchSize(0) {
     // Buffers are allocated lazily in ensureBufferSize() when run_iteration is called
 }
 
@@ -247,6 +249,10 @@ void SearchThread::set_inference_worker_index(size_t workerIndex) {
 
 void SearchThread::set_transposition_table(TranspositionTable* table) {
     transpositionTable = table;
+}
+
+void SearchThread::set_mate_candidate_table(MateCandidateTable* table) {
+    mateCandidateTable = table;
 }
 
 void SearchThread::set_runtime_config(const SearchParams::RuntimeConfig& config) {
@@ -1009,6 +1015,16 @@ LeafSelection SearchThread::select_and_expand(
             break;
         }
 
+        std::optional<MateCandidateHint> mateHint;
+        if (SearchParams::internal_mate_probe_bias_enabled(
+                runtimeConfig.internalMateProbeMode)
+            && mateCandidateTable) {
+            const uint64_t positionHash = currentNode->get_hash();
+            if (positionHash != 0) {
+                mateHint = mateCandidateTable->lookup(positionHash);
+            }
+        }
+
         // Grow the large Cartesian joint-action space as the node earns visits.
         if (currentNode->should_expand_new_child(runtimeConfig)) {
             // Expand first to atomically get the action
@@ -1059,7 +1075,8 @@ LeafSelection SearchThread::select_and_expand(
         // Standard PUCT selection among expanded children
         Node::ChildSelection selection =
             currentNode->select_child_and_apply_virtual_loss(
-                runtimeConfig, blockedNodes);
+                runtimeConfig, blockedNodes,
+                mateHint ? &mateHint->action : nullptr);
         if (!selection.child || selection.childIdx < 0) {
             if (!selection.pendingEvaluation
                 && currentNode->should_expand_new_child(runtimeConfig)) {

@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 #include "search/node.h"
+#include "search/mate_candidate.h"
 #include "nn/engine.h"
 #include "search/search_params.h"
 #include "search/transposition_table.h"
@@ -59,6 +60,78 @@ struct SearchOptions {
 struct RootEdgeStats {
     JointActionCandidate action;
     int visits = 0;
+};
+
+struct InternalMateProbeStats {
+    uint64_t childProbes = 0;
+    uint64_t grandchildProbes = 0;
+    uint64_t childHits = 0;
+    uint64_t grandchildHits = 0;
+    uint64_t childActionableHits = 0;
+    uint64_t grandchildActionableHits = 0;
+    uint64_t alreadyGeneratedHits = 0;
+    uint64_t promotionsSkipped = 0;
+    uint64_t alreadySolvedHits = 0;
+    uint64_t staleHits = 0;
+    uint64_t checksOnlyCertificates = 0;
+    uint64_t reducedPartnerCertificates = 0;
+    uint64_t jointCertificates = 0;
+    uint64_t nodes = 0;
+    uint64_t certificateNodes = 0;
+};
+
+/** What certifying the selected move cost and decided, for one search. */
+struct SelectedMoveCertStats {
+    uint64_t candidates = 0;
+    uint64_t probeHits = 0;
+    uint64_t certificates = 0;
+    uint64_t nodes = 0;
+    uint64_t certificateNodes = 0;
+    bool vetoed = false;
+    bool replaced = false;
+};
+
+namespace joint_mate {
+struct JointMateCache;
+}
+
+/**
+ * The verifier's standing on one root action. A proof or an exhaustive
+ * refutation within the bound is final for the search; anything cut short is
+ * UNKNOWN and stays eligible for another slice. The proof cache stays with
+ * the action so a later slice resumes from settled subtrees.
+ */
+struct RootActionVerdict {
+    enum class State { UNKNOWN, PROVEN_LOSS, REFUTED_AT_BOUND };
+    State state = State::UNKNOWN;
+    bool fairyProbed = false;
+    int slices = 0;
+    int plyToMate = 0;
+    uint64_t nodes = 0;
+    std::shared_ptr<joint_mate::JointMateCache> cache;
+};
+
+/** What the concurrent verifier did and decided during one search. */
+struct ConcurrentVerifierStats {
+    uint64_t slices = 0;
+    uint64_t probes = 0;
+    uint64_t probeHits = 0;
+    uint64_t proven = 0;
+    uint64_t refuted = 0;
+    uint64_t nodes = 0;
+    /// Nodes spent on the actions that ended proven, in total.
+    uint64_t provenNodes = 0;
+    uint64_t actions = 0;
+    /// Verdict on the action finally played: "proven", "refuted", "unknown",
+    /// or "unseen" when the verifier never reached it.
+    const char* leaderVerdict = "unseen";
+};
+
+enum class MateCertificateTier : uint8_t {
+    NONE,
+    CHECKS_ONLY,
+    REDUCED_PARTNER,
+    FULL_JOINT,
 };
 
 /** One joint ply retained from an exact mate proof. */
@@ -119,6 +192,7 @@ private:
     std::exception_ptr workerException_;
     std::shared_ptr<Node> rootNode;
     std::unique_ptr<TranspositionTable> transpositionTable;  // MCGS transposition table
+    MateCandidateTable mateCandidateHints_;
     int numThreads;                                          // Search threads per engine
     SearchParams::RuntimeConfig lastRuntimeConfig_;
     std::atomic<bool> isPondering_{false};                   // Whether current search is in ponder mode
@@ -155,6 +229,8 @@ private:
         uint64_t thinkNanos = 0;
     };
     RootScanStats rootScanStats_;
+    mutable std::mutex internalMateProbeStatsMutex_;
+    InternalMateProbeStats lastInternalMateProbeStats_;
     std::string root_scan_summary() const;
     
     // Garbage collection thread for async tree cleanup
@@ -222,6 +298,9 @@ public:
 
     /** Returns the evaluated Q-value of the root node after search. */
     float root_q() const;
+
+    /** Returns telemetry from the most recent internal mate-probe experiment. */
+    InternalMateProbeStats internal_mate_probe_stats() const;
 
     /**
      * @brief Node and time budget for the root forced-mate search.
@@ -365,6 +444,93 @@ public:
         const std::atomic<bool>* cancelled = nullptr);
 
     /**
+     * @brief Exact joint forced-mate proof for @p attackingTeam to move.
+     *
+     * The full two-board AND/OR solver: checking actions on either board,
+     * every defender reply, hands updated by each capture, sits by the clock
+     * rules. Proves at most @p maxAttackerMoves attacker moves. With
+     * @p shortestFirst it deepens from two and answers with the shortest
+     * mate it holds; without, it searches the full depth at once, which is
+     * far cheaper when any proof will do, as for a veto. Spent budget is
+     * UNKNOWN, never a claim. Leaves @p board as it found it; the proof's
+     * first action and length come back on success. A caller that keeps
+     * @p cache between calls resumes from the subtrees earlier calls
+     * settled; @p outRefutedAtBound reports that every depth up to the bound
+     * was refuted outright, with budget and time to spare. @p treeNode, the
+     * search tree's node for this position when it has one, supplies the
+     * network priors that order the proof's moves; the proof follows the
+     * tree down for as long as it has the positions.
+     */
+    static bool prove_joint_forced_mate(
+        Board& board, Stockfish::Color attackingTeam,
+        bool attackingTeamHasTimeAdvantage, int maxAttackerMoves,
+        MateSearchBudget& budget, JointActionCandidate& outAction,
+        int& outPlyToMate, std::vector<MateProofPly>* outLine = nullptr,
+        bool shortestFirst = true,
+        joint_mate::JointMateCache* cache = nullptr,
+        bool* outRefutedAtBound = nullptr,
+        const Node* treeNode = nullptr);
+
+    /**
+     * @brief One slice of verification for a root action.
+     *
+     * Plays @p action on @p board, then: a first slice asks Fairy for the
+     * opponents' single-board mate and certifies a hit exactly; later slices
+     * run the joint solver for up to @p sliceNodes with the verdict's own
+     * cache. A proof or a refutation with budget to spare settles the
+     * verdict; a slice cut short by nodes, @p deadline or @p cancelled leaves
+     * it UNKNOWN. Nodes spent are added to @p nodesSpent. Leaves @p board as
+     * it found it. Only meaningful when this team lacks the time advantage.
+     * @p actionNode is the tree's child for the action, whose priors order
+     * the joint proof.
+     */
+    static void verify_root_action_slice(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, RootActionVerdict& verdict,
+        uint64_t sliceNodes, int probeMs,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
+        uint64_t& nodesSpent, ConcurrentVerifierStats* stats = nullptr,
+        const Node* actionNode = nullptr,
+        int maxAttackerMoves =
+            SearchParams::SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES);
+
+    /**
+     * @brief Whether @p action hands the opponents a proven forced mate.
+     *
+     * Plays the action on @p board, asks Fairy-Stockfish for the opponents'
+     * mate from the position it leaves, and holds that line to the exact
+     * two-board certifier. Answers true only on a certificate, with the
+     * mate's length in @p outPlyToMate: a hit the certifier could not prove
+     * before @p deadline, or no hit at all, is a no. Without the time
+     * advantage the opponents cannot sit the other board through a line, so
+     * ahead on time this team is never vetoed. Leaves @p board as it found it.
+     */
+    static bool action_walks_into_certified_mate(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled,
+        int& outPlyToMate, SelectedMoveCertStats* stats = nullptr);
+
+    /**
+     * @brief A replacement for @p chosen when it walks into a certified mate.
+     *
+     * Empty when the chosen action survives the test, or when every
+     * alternative tried fails it too, where the chosen action is as good a
+     * try as any. Alternatives are the actions @p node visited, ranked by
+     * visits with children the solver already proved lost ranked last, and
+     * only the first few are tried before @p deadline. A child proven lost
+     * here is marked so in the tree, where tree reuse keeps the proof.
+     */
+    static std::optional<JointActionCandidate> certified_mate_free_alternative(
+        Board& board, const Node& node, const JointActionCandidate& chosen,
+        Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled = nullptr,
+        SelectedMoveCertStats* stats = nullptr);
+
+    /**
      * @brief Whether playing @p move on @p boardNum reaches that board's
      *        position for the third time, ending the game as a draw.
      *
@@ -390,6 +556,16 @@ public:
      * each mate lands rather than only when the last board's share is spent.
      * The out parameters hold the shortest mate found so far whenever it runs.
      */
+    static bool probe_position_mate(
+        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        uint64_t nodeBudget, int budgetMs,
+        const std::function<bool()>& abort,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        std::string& outPrincipalVariation,
+        const std::function<void()>& onMate = {},
+        bool avoidRepetition = false,
+        uint64_t* outNodes = nullptr);
+
     static bool probe_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         uint64_t nodeBudget, int budgetMs,
@@ -398,6 +574,21 @@ public:
         std::string& outPrincipalVariation,
         const std::function<void()>& onMate = {},
         bool avoidRepetition = false);
+
+    /**
+     * Proves that a specific Fairy candidate forces mate before publication.
+     * @p treeNode, the tree's node for @p board when it has one, lets the
+     * proof follow the tree and take its priors from the candidate's child.
+     */
+    static bool certify_mate_candidate(
+        Board& board, Stockfish::Color teamSide,
+        bool teamHasTimeAdvantage,
+        const JointActionCandidate& candidate,
+        int candidatePlyToMate,
+        MateSearchBudget& budget,
+        int& outPlyToMate,
+        MateCertificateTier& outTier,
+        const Node* treeNode = nullptr);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.

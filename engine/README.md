@@ -83,6 +83,64 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
 
+### Internal mate-probe experiment
+
+The `InternalMateProbe` UCI combo is disabled by default and separates the
+experiment's effects:
+
+| Mode          | Candidate telemetry | Selection bias | Exact solver update                      |
+| ------------- | ------------------- | -------------- | ---------------------------------------- |
+| `off`         | no                  | no             | no                                       |
+| `telemetry`   | yes                 | no             | no                                       |
+| `bias`        | yes                 | yes            | no                                       |
+| `certify`     | yes                 | yes            | only after exact two-board certification |
+| `certifyonly` | yes                 | no             | only after exact two-board certification |
+
+Use `setoption name InternalMateProbe value telemetry` to measure candidate
+hit rates without changing play. That mode preserves 90% of the Fairy probe's
+time for the established root probe. The strength-affecting `bias` and
+`certify` modes cap that initial root phase at 10%, allowing internal hints to
+arrive early enough to accumulate visits. All modes retain the shared node
+budget, with 90% of its nodes reserved for the root probe in every mode. For an
+untimed complete probe, the wall-clock cap does not apply, so the root probe
+still runs first and may consume its full node share. A Fairy hit remains in
+the hint table when exact certification fails; only successful certification
+may update MCTS solver state.
+
+`certifyonly` is the proof-only variant. A Fairy hit is neither promoted nor
+published as a hint, so an unproven line cannot influence the move; it goes
+straight to the exact certifier and only a certificate touches solver state.
+The other strength modes skip a hit whose root edge the search already scores
+as decided (|Q| above 0.8, about 5.4 pawns); `certifyonly` proves at any Q,
+since a position already scored as lost is where a move into a forced mate
+most needs telling apart from one that merely stays lost. It also probes with
+the clock as it stands rather than assuming the target team can sit, so a
+team behind on time is never credited with a single-board line.
+
+### Selected-move certification
+
+Independently of the experiment above, `CertifySelectedMove` (default `true`)
+holds the moves MCTS is likely to play to a proof when this team is behind on
+time. While the tree grows, the probe thread takes the leading root actions
+by visits, plays each on a private board, asks Fairy-Stockfish for the
+opponents' single-board mate from there (certified exactly before it counts)
+and, failing that, the exact joint solver for a cross-board one - checks on
+either board, pieces fed by capture - in slices, so an action that stops
+leading stops being searched. A proof marks the child a solved loss at once,
+which takes the action out of selection; an exhaustive refutation within
+the six-attacker-move bound is final for the search; anything cut short
+stays eligible for another slice. Each action keeps its proof cache between
+slices. The thread is bounded by the move time and a node ceiling.
+
+If the action finally chosen has no conclusive verdict - it took the lead
+too late, or its search was cut short - a small serial tail (3% of the move,
+at most 100ms, reserved off the front) asks the same question once more
+and falls back through the next-most-visited alternatives on a proof.
+Nothing runs when this team has the time advantage, since it may then sit
+the threatened board and no single-board line is forced. Verbose output
+reports both stages: `info string concurrent verifier: ...` and
+`info string selected move certification: ...`.
+
 On Windows, use a Developer PowerShell for Visual Studio and point CMake at
 the extracted TensorRT SDK and CUDA Runtime redistributable:
 
