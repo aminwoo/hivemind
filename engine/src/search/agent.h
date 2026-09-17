@@ -91,6 +91,25 @@ struct SelectedMoveCertStats {
     bool replaced = false;
 };
 
+namespace joint_mate {
+struct JointMateCache;
+}
+
+/**
+ * The verifier's standing on one root action. A proof or an exhaustive
+ * refutation within the bound is final for the search; anything cut short is
+ * UNKNOWN and stays eligible for another slice. The proof cache stays with
+ * the action so a later slice resumes from settled subtrees.
+ */
+struct RootActionVerdict {
+    enum class State { UNKNOWN, PROVEN_LOSS, REFUTED_AT_BOUND };
+    State state = State::UNKNOWN;
+    bool fairyProbed = false;
+    int slices = 0;
+    int plyToMate = 0;
+    std::shared_ptr<joint_mate::JointMateCache> cache;
+};
+
 /** What the concurrent verifier did and decided during one search. */
 struct ConcurrentVerifierStats {
     uint64_t slices = 0;
@@ -431,14 +450,38 @@ public:
      * mate it holds; without, it searches the full depth at once, which is
      * far cheaper when any proof will do, as for a veto. Spent budget is
      * UNKNOWN, never a claim. Leaves @p board as it found it; the proof's
-     * first action and length come back on success.
+     * first action and length come back on success. A caller that keeps
+     * @p cache between calls resumes from the subtrees earlier calls
+     * settled; @p outRefutedAtBound reports that every depth up to the bound
+     * was refuted outright, with budget and time to spare.
      */
     static bool prove_joint_forced_mate(
         Board& board, Stockfish::Color attackingTeam,
         bool attackingTeamHasTimeAdvantage, int maxAttackerMoves,
         MateSearchBudget& budget, JointActionCandidate& outAction,
         int& outPlyToMate, std::vector<MateProofPly>* outLine = nullptr,
-        bool shortestFirst = true);
+        bool shortestFirst = true,
+        joint_mate::JointMateCache* cache = nullptr,
+        bool* outRefutedAtBound = nullptr);
+
+    /**
+     * @brief One slice of verification for a root action.
+     *
+     * Plays @p action on @p board, then: a first slice asks Fairy for the
+     * opponents' single-board mate and certifies a hit exactly; later slices
+     * run the joint solver for up to @p sliceNodes with the verdict's own
+     * cache. A proof or a refutation with budget to spare settles the
+     * verdict; a slice cut short by nodes, @p deadline or @p cancelled leaves
+     * it UNKNOWN. Nodes spent are added to @p nodesSpent. Leaves @p board as
+     * it found it. Only meaningful when this team lacks the time advantage.
+     */
+    static void verify_root_action_slice(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, RootActionVerdict& verdict,
+        uint64_t sliceNodes, int probeMs,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
+        uint64_t& nodesSpent, ConcurrentVerifierStats* stats = nullptr);
 
     /**
      * @brief Whether @p action hands the opponents a proven forced mate.

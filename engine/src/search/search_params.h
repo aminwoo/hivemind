@@ -626,6 +626,8 @@ constexpr uint64_t SELECTED_MOVE_JOINT_NODE_BUDGET = 200000;
  * The node ceiling is a bound on what one move may spend, not a target.
  */
 constexpr int CONCURRENT_VERIFIER_TOP_K = 3;
+/// Slices the leader gets for each one given to the other ranks.
+constexpr int CONCURRENT_VERIFIER_LEADER_SHARE = 2;
 constexpr int CONCURRENT_VERIFIER_MIN_VISITS = 4;
 constexpr int CONCURRENT_VERIFIER_PROBE_MAX_MS = 30;
 constexpr uint64_t CONCURRENT_VERIFIER_SLICE_NODES = 50000;
@@ -675,6 +677,15 @@ constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
  * this; the cap is there for the ones that do not exist.
  */
 constexpr uint64_t JOINT_MATE_REDUCED_ATTEMPT_NODES = 4000;
+
+/**
+ * Widening at the joint solver's attacker nodes: the slice each forcing
+ * action gets in the first round, and how much it grows per round. Small
+ * enough that a check with an easy refutation is abandoned for the price of
+ * a few positions; the growth keeps the total re-search overhead geometric.
+ */
+constexpr uint64_t JOINT_MATE_WIDENING_BASE_NODES = 256;
+constexpr uint64_t JOINT_MATE_WIDENING_FACTOR = 4;
 
 // =============================================================================
 // Progressive Widening Parameters

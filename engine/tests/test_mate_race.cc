@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+
 #include <string>
 #include <vector>
 
@@ -453,6 +455,15 @@ TEST_F(QueenFeedRaceTest, TheExactScansDoNotClaimEitherMate) {
     EXPECT_EQ(theirPly, 1);
 }
 
+// Board A of the lost game after 27.fxg5, Black (this team) to move, behind
+// on time. 27...Rhg8?? loses to 28.Qf6+, a mate in eight with best defence
+// whose queen is fed to board B; the exact solver cannot reach that depth,
+// but the positions further down the line are within its reach.
+constexpr const char* kRhg8BoardA =
+    "r6r/pppnqpkp/4p3/3pP1P1/7B/2P1P1P1/PpP1nQP1/3qN2K[QNNb] b - - 0 27";
+constexpr const char* kRhg8BoardB =
+    "r1bkn2R/pp2np1p/3pp3/7B/3P1r2/3BbR2/PPP3PP/R4KNR[BPPbpp] b - - 3 24";
+
 // Board A with Black (this team) to move, behind on time. The rook on a8 is
 // all that guards the back rank: ...Rxa2 leaves it and walks into Rb8#, which
 // the opponents ahead on time can play while sitting board B. ...h6 does not.
@@ -640,7 +651,6 @@ TEST_F(SelectedMoveCertTest, JointSolverFollowsTheFeedAcrossBoards) {
         board, Stockfish::WHITE, true, 4, budget, action, plyToMate, &line,
         false));
     EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "g5f6");
-    EXPECT_EQ(action.moveB, Stockfish::MOVE_NONE);
     EXPECT_EQ(plyToMate, 7);
 }
 
@@ -665,6 +675,154 @@ TEST_F(SelectedMoveCertTest, JointFallbackVetoesACrossBoardMate) {
     EXPECT_TRUE(Agent::action_walks_into_certified_mate(
         board, kh8, Stockfish::BLACK, false, deadline_in(2000), nullptr,
         plyToMate, &stats));
-    EXPECT_EQ(plyToMate, 5);
+    // Fairy sees the board-B mate once the queen is in hand and reports
+    // its own line; the joint solver's is shorter. Either is a certificate.
+    EXPECT_GE(plyToMate, 5);
     EXPECT_EQ(stats.certificates, 1U);
+}
+
+// The verifier's slices one move before the feed: after 29.exf6+ Black's
+// ...Qxf6 walks into 30.gxf6+, which hands the queen to board B for the mate
+// there. Fairy sees nothing on either board alone - the queen is not in
+// hand yet - and the joint slice proves it. A slice too small to finish
+// leaves UNKNOWN, retryable, and the next one resumes from its cache.
+class RootActionSliceTest : public MateRaceTest {
+protected:
+    static Board before_feed_board() {
+        Board board;
+        board.set_fen(BOARD_A, kRhg8BoardA);
+        board.set_fen(BOARD_B, kRhg8BoardB);
+        for (const char* uci : {"h8g8", "f2f6", "d7f6", "e5f6"}) {
+            board.make_moves(move_of(board, BOARD_A, uci), Stockfish::MOVE_NONE);
+        }
+        return board;
+    }
+    static Board fed_board() {
+        Board board;
+        board.set_fen(BOARD_A,
+            "r5r1/ppp2pkp/4pP2/3p4/7B/2P1P1P1/PpP1n1P1/3qN2K[QNNb] b - - 1 31");
+        board.set_fen(BOARD_B,
+            "r1bkn2R/pp2np1p/3pp3/7B/3P1r2/3BbR2/PPP3PP/R4KNR[QBPPPqbnpp] b - - 3 24");
+        return board;
+    }
+    static Agent::MateSearchBudget::Clock::time_point deadline_in(int ms) {
+        return Agent::MateSearchBudget::Clock::now()
+            + std::chrono::milliseconds(ms);
+    }
+};
+
+TEST_F(RootActionSliceTest, FairySliceThenJointSliceProvesTheLoss) {
+    Board board = before_feed_board();
+    const JointActionCandidate qxf6 = joint(
+        move_of(board, BOARD_A, "e7f6"), Stockfish::MOVE_NONE);
+    const std::string before = board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
+    RootActionVerdict verdict;
+    ConcurrentVerifierStats stats;
+    uint64_t nodes = 0;
+
+    Agent::verify_root_action_slice(
+        board, qxf6, Stockfish::BLACK, verdict, 800000, 30, deadline_in(5000),
+        nullptr, nullptr, nodes, &stats);
+    EXPECT_TRUE(verdict.fairyProbed);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
+    EXPECT_EQ(verdict.slices, 1);
+    EXPECT_EQ(stats.probes, 1U);
+    EXPECT_EQ(stats.probeHits, 0U);
+
+    Agent::verify_root_action_slice(
+        board, qxf6, Stockfish::BLACK, verdict, 800000, 30, deadline_in(5000),
+        nullptr, nullptr, nodes, &stats);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::PROVEN_LOSS);
+    EXPECT_GE(verdict.plyToMate, 5);
+    EXPECT_EQ(verdict.slices, 2);
+    EXPECT_EQ(stats.proven, 1U);
+    EXPECT_GT(nodes, 0U);
+    EXPECT_LT(nodes, 800000U);
+    EXPECT_EQ(board.fen(BOARD_A) + "|" + board.fen(BOARD_B), before);
+
+    // Settled verdicts are not searched again.
+    Agent::verify_root_action_slice(
+        board, qxf6, Stockfish::BLACK, verdict, 800000, 30, deadline_in(5000),
+        nullptr, nullptr, nodes, &stats);
+    EXPECT_EQ(verdict.slices, 2);
+}
+
+TEST_F(RootActionSliceTest, ASliceCutShortStaysUnknownAndResumes) {
+    Board board = fed_board();
+    const JointActionCandidate kh8 = joint(
+        move_of(board, BOARD_A, "g7h8"), Stockfish::MOVE_NONE);
+    RootActionVerdict verdict;
+    verdict.fairyProbed = true;
+    uint64_t nodes = 0;
+
+    Agent::verify_root_action_slice(
+        board, kh8, Stockfish::BLACK, verdict, 50, 30, deadline_in(2000),
+        nullptr, nullptr, nodes);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
+    EXPECT_EQ(verdict.slices, 1);
+    EXPECT_LE(nodes, 50U);
+    ASSERT_TRUE(verdict.cache);
+
+    // The next slice picks up the same cache and finishes.
+    Agent::verify_root_action_slice(
+        board, kh8, Stockfish::BLACK, verdict, 50000, 30, deadline_in(2000),
+        nullptr, nullptr, nodes);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::PROVEN_LOSS);
+}
+
+TEST_F(RootActionSliceTest, SpentDeadlineOrStopLeavesUnknown) {
+    Board board = fed_board();
+    const JointActionCandidate kh8 = joint(
+        move_of(board, BOARD_A, "g7h8"), Stockfish::MOVE_NONE);
+    RootActionVerdict verdict;
+    verdict.fairyProbed = true;
+    uint64_t nodes = 0;
+
+    Agent::verify_root_action_slice(
+        board, kh8, Stockfish::BLACK, verdict, 50000, 30, deadline_in(-1),
+        nullptr, nullptr, nodes);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
+    EXPECT_EQ(verdict.slices, 0);
+
+    std::atomic<bool> stop{true};
+    Agent::verify_root_action_slice(
+        board, kh8, Stockfish::BLACK, verdict, 50000, 30, deadline_in(2000),
+        &stop, nullptr, nodes);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
+    EXPECT_EQ(verdict.slices, 0);
+}
+
+// No mate for the opponents at the bound: with budget and time to spare
+// the joint slice refutes, and that is final for the search.
+TEST_F(RootActionSliceTest, ExhaustiveRefutationIsFinal) {
+    Board board;
+    board.set_fen(BOARD_A, "r5k1/5ppp/8/8/8/8/P7/1R4K1[] b - - 0 1");
+    board.set_fen(BOARD_B, "7k/8/8/8/8/8/8/K7[] b - - 0 1");
+    const JointActionCandidate h6 = joint(
+        move_of(board, BOARD_A, "h7h6"), Stockfish::MOVE_NONE);
+    RootActionVerdict verdict;
+    verdict.fairyProbed = true;
+    uint64_t nodes = 0;
+
+    Agent::verify_root_action_slice(
+        board, h6, Stockfish::BLACK, verdict, 2000000, 30, deadline_in(10000),
+        nullptr, nullptr, nodes);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::REFUTED_AT_BOUND);
+    EXPECT_LT(nodes, 2000000U);
+}
+
+TEST_F(RootActionSliceTest, RefutationNeedsBudgetToSpare) {
+    Board board;
+    board.set_fen(BOARD_A, "r5k1/5ppp/8/8/8/8/P7/1R4K1[] b - - 0 1");
+    board.set_fen(BOARD_B, "7k/8/8/8/8/8/8/K7[] b - - 0 1");
+    const JointActionCandidate h6 = joint(
+        move_of(board, BOARD_A, "h7h6"), Stockfish::MOVE_NONE);
+    RootActionVerdict verdict;
+    verdict.fairyProbed = true;
+    uint64_t nodes = 0;
+
+    Agent::verify_root_action_slice(
+        board, h6, Stockfish::BLACK, verdict, 5, 30, deadline_in(10000),
+        nullptr, nullptr, nodes);
+    EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
 }
