@@ -107,6 +107,7 @@ struct RootActionVerdict {
     bool fairyProbed = false;
     int slices = 0;
     int plyToMate = 0;
+    uint64_t nodes = 0;
     std::shared_ptr<joint_mate::JointMateCache> cache;
 };
 
@@ -118,6 +119,8 @@ struct ConcurrentVerifierStats {
     uint64_t proven = 0;
     uint64_t refuted = 0;
     uint64_t nodes = 0;
+    /// Nodes spent on the actions that ended proven, in total.
+    uint64_t provenNodes = 0;
     uint64_t actions = 0;
     /// Verdict on the action finally played: "proven", "refuted", "unknown",
     /// or "unseen" when the verifier never reached it.
@@ -453,7 +456,10 @@ public:
      * first action and length come back on success. A caller that keeps
      * @p cache between calls resumes from the subtrees earlier calls
      * settled; @p outRefutedAtBound reports that every depth up to the bound
-     * was refuted outright, with budget and time to spare.
+     * was refuted outright, with budget and time to spare. @p treeNode, the
+     * search tree's node for this position when it has one, supplies the
+     * network priors that order the proof's moves; the proof follows the
+     * tree down for as long as it has the positions.
      */
     static bool prove_joint_forced_mate(
         Board& board, Stockfish::Color attackingTeam,
@@ -462,7 +468,8 @@ public:
         int& outPlyToMate, std::vector<MateProofPly>* outLine = nullptr,
         bool shortestFirst = true,
         joint_mate::JointMateCache* cache = nullptr,
-        bool* outRefutedAtBound = nullptr);
+        bool* outRefutedAtBound = nullptr,
+        const Node* treeNode = nullptr);
 
     /**
      * @brief One slice of verification for a root action.
@@ -474,6 +481,8 @@ public:
      * verdict; a slice cut short by nodes, @p deadline or @p cancelled leaves
      * it UNKNOWN. Nodes spent are added to @p nodesSpent. Leaves @p board as
      * it found it. Only meaningful when this team lacks the time advantage.
+     * @p actionNode is the tree's child for the action, whose priors order
+     * the joint proof.
      */
     static void verify_root_action_slice(
         Board& board, const JointActionCandidate& action,
@@ -481,7 +490,10 @@ public:
         uint64_t sliceNodes, int probeMs,
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
-        uint64_t& nodesSpent, ConcurrentVerifierStats* stats = nullptr);
+        uint64_t& nodesSpent, ConcurrentVerifierStats* stats = nullptr,
+        const Node* actionNode = nullptr,
+        int maxAttackerMoves =
+            SearchParams::SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES);
 
     /**
      * @brief Whether @p action hands the opponents a proven forced mate.

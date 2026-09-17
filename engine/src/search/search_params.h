@@ -686,6 +686,10 @@ constexpr uint64_t JOINT_MATE_REDUCED_ATTEMPT_NODES = 4000;
  */
 constexpr uint64_t JOINT_MATE_WIDENING_BASE_NODES = 256;
 constexpr uint64_t JOINT_MATE_WIDENING_FACTOR = 4;
+/// Least share of a round's per-action slice any action keeps when the
+/// tree's priors divide the round, so a line the network rates at nothing
+/// is still searched, only later.
+constexpr float JOINT_MATE_WIDENING_SHARE_FLOOR = 0.125f;
 
 // =============================================================================
 // Progressive Widening Parameters

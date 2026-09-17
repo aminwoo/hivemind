@@ -720,9 +720,11 @@ TEST_F(RootActionSliceTest, FairySliceThenJointSliceProvesTheLoss) {
     ConcurrentVerifierStats stats;
     uint64_t nodes = 0;
 
+    // No tree here, so the proof runs in generation order; bound four is
+    // what that affords. The live verifier orders by the tree's priors.
     Agent::verify_root_action_slice(
         board, qxf6, Stockfish::BLACK, verdict, 800000, 30, deadline_in(5000),
-        nullptr, nullptr, nodes, &stats);
+        nullptr, nullptr, nodes, &stats, nullptr, 4);
     EXPECT_TRUE(verdict.fairyProbed);
     EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
     EXPECT_EQ(verdict.slices, 1);
@@ -731,7 +733,7 @@ TEST_F(RootActionSliceTest, FairySliceThenJointSliceProvesTheLoss) {
 
     Agent::verify_root_action_slice(
         board, qxf6, Stockfish::BLACK, verdict, 800000, 30, deadline_in(5000),
-        nullptr, nullptr, nodes, &stats);
+        nullptr, nullptr, nodes, &stats, nullptr, 4);
     EXPECT_EQ(verdict.state, RootActionVerdict::State::PROVEN_LOSS);
     EXPECT_GE(verdict.plyToMate, 5);
     EXPECT_EQ(verdict.slices, 2);
@@ -743,7 +745,7 @@ TEST_F(RootActionSliceTest, FairySliceThenJointSliceProvesTheLoss) {
     // Settled verdicts are not searched again.
     Agent::verify_root_action_slice(
         board, qxf6, Stockfish::BLACK, verdict, 800000, 30, deadline_in(5000),
-        nullptr, nullptr, nodes, &stats);
+        nullptr, nullptr, nodes, &stats, nullptr, 4);
     EXPECT_EQ(verdict.slices, 2);
 }
 
@@ -757,7 +759,7 @@ TEST_F(RootActionSliceTest, ASliceCutShortStaysUnknownAndResumes) {
 
     Agent::verify_root_action_slice(
         board, kh8, Stockfish::BLACK, verdict, 50, 30, deadline_in(2000),
-        nullptr, nullptr, nodes);
+        nullptr, nullptr, nodes, nullptr, nullptr, 3);
     EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
     EXPECT_EQ(verdict.slices, 1);
     EXPECT_LE(nodes, 50U);
@@ -766,7 +768,7 @@ TEST_F(RootActionSliceTest, ASliceCutShortStaysUnknownAndResumes) {
     // The next slice picks up the same cache and finishes.
     Agent::verify_root_action_slice(
         board, kh8, Stockfish::BLACK, verdict, 50000, 30, deadline_in(2000),
-        nullptr, nullptr, nodes);
+        nullptr, nullptr, nodes, nullptr, nullptr, 3);
     EXPECT_EQ(verdict.state, RootActionVerdict::State::PROVEN_LOSS);
 }
 

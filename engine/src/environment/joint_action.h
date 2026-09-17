@@ -804,6 +804,26 @@ public:
     /**
      * @brief Get the number of candidates generated so far.
      */
+    /**
+     * @brief The network's prior for one move on one board, as this
+     *        generator was initialized with it; zero for a move it has not
+     *        got, such as one it was never given or a pass where none was
+     *        allowed.
+     */
+    float boardPrior(int boardNum, Stockfish::Move move) const {
+        const std::vector<Stockfish::Move>& actions = boardNum == 0
+            ? sortedActionsA : sortedActionsB;
+        const std::vector<float>& priors = boardNum == 0
+            ? sortedPriorsA : sortedPriorsB;
+        for (size_t index = 0; index < actions.size() && index < priors.size();
+             ++index) {
+            if (actions[index] == move) {
+                return priors[index];
+            }
+        }
+        return 0.0f;
+    }
+
     size_t generatedCount() const {
         return generatedCandidates.size();
     }

@@ -290,6 +290,42 @@ public:
     }
 
     /**
+     * @brief The network's prior for @p move on @p boardNum at this node, or
+     *        zero before the node is expanded or for a move it has no prior
+     *        for. The priors are fixed once the node is expanded.
+     */
+    float move_prior(int boardNum, Stockfish::Move move) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        if (!m_is_expanded.load(std::memory_order_acquire)) {
+            return 0.0f;
+        }
+        return candidateGenerator.boardPrior(boardNum, move);
+    }
+
+    /**
+     * @brief The child reached by the joint action (@p moveA, @p moveB), or
+     *        null when this node has not generated that action or has not
+     *        expanded its child.
+     */
+    std::shared_ptr<Node> child_for_action(Stockfish::Move moveA,
+                                           Stockfish::Move moveB) const {
+        std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        if (!m_is_expanded.load(std::memory_order_acquire)) {
+            return nullptr;
+        }
+        const size_t generated = candidateGenerator.generatedCount();
+        for (size_t index = 0; index < generated && index < children.size();
+             ++index) {
+            const JointActionCandidate& action =
+                candidateGenerator.getGenerated(index);
+            if (action.moveA == moveA && action.moveB == moveB) {
+                return children[index];
+            }
+        }
+        return nullptr;
+    }
+
+    /**
      * @brief Returns how many edges a PUCT selection scans at this node.
      *
      * Selection walks every visited edge plus at most one unvisited edge, all
