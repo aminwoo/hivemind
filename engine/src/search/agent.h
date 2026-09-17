@@ -575,7 +575,11 @@ public:
         const std::function<void()>& onMate = {},
         bool avoidRepetition = false);
 
-    /** Proves that a specific Fairy candidate forces mate before publication. */
+    /**
+     * Proves that a specific Fairy candidate forces mate before publication.
+     * @p treeNode, the tree's node for @p board when it has one, lets the
+     * proof follow the tree and take its priors from the candidate's child.
+     */
     static bool certify_mate_candidate(
         Board& board, Stockfish::Color teamSide,
         bool teamHasTimeAdvantage,
@@ -583,7 +587,8 @@ public:
         int candidatePlyToMate,
         MateSearchBudget& budget,
         int& outPlyToMate,
-        MateCertificateTier& outTier);
+        MateCertificateTier& outTier,
+        const Node* treeNode = nullptr);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.

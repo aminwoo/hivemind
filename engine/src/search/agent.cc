@@ -2609,7 +2609,8 @@ bool Agent::certify_mate_candidate(
     int candidatePlyToMate,
     MateSearchBudget& budget,
     int& outPlyToMate,
-    MateCertificateTier& outTier) {
+    MateCertificateTier& outTier,
+    const Node* treeNode) {
     outPlyToMate = 0;
     outTier = MateCertificateTier::NONE;
     if (!teamHasTimeAdvantage || candidatePlyToMate <= 0
@@ -2633,6 +2634,8 @@ bool Agent::certify_mate_candidate(
     const int candidateAttackerMoves = std::clamp(
         (candidatePlyToMate + 1) / 2, 1,
         SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES);
+    const std::shared_ptr<Node> candidateNode = tree_child_for(
+        treeNode, candidate.moveA, candidate.moveB);
     board.make_moves(candidate.moveA, candidate.moveB);
     const auto restore = [&] {
         board.unmake_moves(candidate.moveA, candidate.moveB);
@@ -2713,7 +2716,8 @@ bool Agent::certify_mate_candidate(
                 ? teamSide : ~teamSide;
             const JointMateProof reducedProof = search_reduced_partner_mate(
                 board, teamSide, activeBoard, attackerColor, ~teamSide,
-                std::max(0, candidateAttackerMoves - 1), 1, budget);
+                std::max(0, candidateAttackerMoves - 1), 1, budget, nullptr,
+                candidateNode.get());
             if (reducedProof.status == JointMateStatus::PROVEN) {
                 restore();
                 outPlyToMate = reducedProof.pliesToMate + 1;
@@ -2733,7 +2737,7 @@ bool Agent::certify_mate_candidate(
     const JointMateProof proof = search_joint_forced_mate(
         board, teamSide, teamHasTimeAdvantage, ~teamSide,
         std::max(0, candidateAttackerMoves - 1), 1,
-        budget, cache, false);
+        budget, cache, false, candidateNode.get());
     restore();
     if (proof.status != JointMateStatus::PROVEN) {
         return false;
@@ -2818,7 +2822,7 @@ void Agent::verify_root_action_slice(
             int certifiedPly = 0;
             proven = certify_mate_candidate(
                 board, ~teamSide, true, reply, replyPly, certBudget,
-                certifiedPly, tier);
+                certifiedPly, tier, actionNode);
             provenPly = certifiedPly;
             const uint64_t spent = SearchParams::SELECTED_MOVE_CERT_NODE_BUDGET
                 - certBudget.remainingNodes;
@@ -3774,7 +3778,8 @@ bool Agent::find_root_mate_impl(
              ++maxMateMoves) {
             const JointMateProof proof = search_joint_forced_mate(
                 board, teamSide, teamHasTimeAdvantage, teamSide,
-                maxMateMoves, 0, budget, cache, attackerWinsMateRace);
+                maxMateMoves, 0, budget, cache, attackerWinsMateRace,
+                stopOnSolvedRoot);
             if (proof.status == JointMateStatus::PROVEN) {
                 const bool isCapA = proof.action.moveA != Stockfish::MOVE_NONE
                     && board.is_capture(BOARD_A, proof.action.moveA);
@@ -5047,7 +5052,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                 *target.board, targetTeam,
                                 targetTeamHasTimeAdvantage,
                                 candidate, candidatePly, certificateBudget,
-                                certifiedPly, certificateTier);
+                                certifiedPly, certificateTier,
+                                targetNode.get());
                             internalProbeStats.certificateNodes +=
                                 certificateNodeBudget
                                 - certificateBudget.remainingNodes;
