@@ -91,7 +91,7 @@ constexpr size_t TT_MAX_SIZE = 1000000;
 /// Initial exploration constant for PUCT formula
 /// Higher values encourage more exploration
 /// CrazyAra default: 2.5
-constexpr float CPUCT_INIT = 2.5f;
+constexpr float CPUCT_INIT = 3.0f;
 
 /// Base value for dynamic CPUCT scaling
 /// CPUCT = log((N + CPUCT_BASE + 1) / CPUCT_BASE) + CPUCT_INIT
@@ -119,10 +119,10 @@ constexpr float Q_INIT = -1.0f;
 // =============================================================================
 
 /// Enable WDL-based expected value evaluation with dynamic draw contempt.
-constexpr bool ENABLE_WDL_EVAL = true;
+constexpr bool ENABLE_WDL_EVAL = false;
 
 /// Weight of WDL expected value vs direct scalar value (1.0 = pure WDL, 0.0 = pure scalar)
-constexpr float WDL_VALUE_WEIGHT = 0.25f;
+constexpr float WDL_VALUE_WEIGHT = 0.0f;
 
 /**
  * Discount factor per 100 plies remaining, favouring faster wins and delayed
@@ -427,6 +427,81 @@ constexpr bool mate_probe_can_end_search(int plyToMate) {
 // the check-only scans, so it gets its own flag.
 constexpr bool ENABLE_MATE_PROBE = true;
 
+// Experimental probing below the root. Each mode adds one effect so hit-rate,
+// playing-strength, and solver experiments can be measured independently.
+//
+// CERTIFY_ONLY is the proof-only variant: a Fairy hit neither promotes the
+// candidate nor publishes a hint, so an unproven line cannot influence the
+// move. It goes straight to the exact two-board certifier, and only a
+// certificate may touch solver state.
+enum class InternalMateProbeMode {
+    OFF,
+    TELEMETRY,
+    BIAS,
+    CERTIFY,
+    CERTIFY_ONLY,
+};
+constexpr InternalMateProbeMode INTERNAL_MATE_PROBE_MODE =
+    InternalMateProbeMode::OFF;
+
+constexpr bool internal_mate_probe_enabled(InternalMateProbeMode mode) {
+    return mode != InternalMateProbeMode::OFF;
+}
+
+constexpr bool internal_mate_probe_bias_enabled(InternalMateProbeMode mode) {
+    return mode == InternalMateProbeMode::BIAS
+        || mode == InternalMateProbeMode::CERTIFY;
+}
+
+constexpr bool internal_mate_probe_certification_enabled(
+    InternalMateProbeMode mode) {
+    return mode == InternalMateProbeMode::CERTIFY
+        || mode == InternalMateProbeMode::CERTIFY_ONLY;
+}
+
+/// Modes that change play, as opposed to measuring hit rates.
+constexpr bool internal_mate_probe_affects_play(InternalMateProbeMode mode) {
+    return internal_mate_probe_bias_enabled(mode)
+        || internal_mate_probe_certification_enabled(mode);
+}
+constexpr uint64_t INTERNAL_MATE_PROBE_NODE_BUDGET = 500000;
+constexpr int INTERNAL_MATE_PROBE_TOP_K = 3;
+constexpr int INTERNAL_MATE_PROBE_MIN_VISITS = 16;
+constexpr int INTERNAL_MATE_PROBE_ROOT_NODE_SHARE_PERCENT = 90;
+constexpr int INTERNAL_MATE_PROBE_TELEMETRY_ROOT_TIME_PERCENT = 90;
+constexpr int INTERNAL_MATE_PROBE_STRENGTH_ROOT_TIME_PERCENT = 10;
+constexpr int INTERNAL_MATE_PROBE_JOB_MAX_MS = 75;
+constexpr float INTERNAL_MATE_PROBE_DECIDED_Q = 0.8f;
+constexpr float INTERNAL_MATE_PROBE_BIAS = 0.35f;
+constexpr float INTERNAL_MATE_PROBE_BIAS_DECAY_VISITS = 32.0f;
+constexpr uint64_t INTERNAL_MATE_CERT_NODE_BUDGET = 200000;
+constexpr int INTERNAL_MATE_CERT_MAX_MS = 50;
+constexpr int INTERNAL_MATE_CERT_MAX_PARTNER_INTERVENTIONS = 24;
+
+// A speculative bias is only worth spending on a position the search still
+// considers open. An exact proof is worth having at any Q: a position the
+// search already scores as lost is exactly where a move that walks into a
+// forced mate must still be told apart from one that merely stays lost.
+constexpr bool internal_mate_probe_hit_is_actionable(
+    bool opponentMate, float rootQ) {
+    return opponentMate
+        ? rootQ > -INTERNAL_MATE_PROBE_DECIDED_Q
+        : rootQ < INTERNAL_MATE_PROBE_DECIDED_Q;
+}
+
+constexpr bool internal_mate_probe_hit_is_actionable(
+    InternalMateProbeMode mode, bool opponentMate, float rootQ) {
+    return mode == InternalMateProbeMode::CERTIFY_ONLY
+        || internal_mate_probe_hit_is_actionable(opponentMate, rootQ);
+}
+
+constexpr int internal_mate_probe_root_time_percent(
+    InternalMateProbeMode mode) {
+    return internal_mate_probe_affects_play(mode)
+        ? INTERNAL_MATE_PROBE_STRENGTH_ROOT_TIME_PERCENT
+        : INTERNAL_MATE_PROBE_TELEMETRY_ROOT_TIME_PERCENT;
+}
+
 /**
  * Share of the move time the root proof pre-pass may occupy. Both clock states
  * run the winning scan and the bounded loss scan.
@@ -437,6 +512,12 @@ constexpr bool ENABLE_MATE_PROBE = true;
  * seven-ply capture feed, ~210ms of a 1500ms move - fits with margin; a proof
  * that lands returns immediately and hands the rest of the move time back, so
  * the average cost is far below the cap.
+ *
+ * A node-limited search has no move time, so the same share is taken of its
+ * node target instead: the winning scan ends once the tree has searched this
+ * percentage of the nodes, and the loss scan ends when the tree is complete.
+ * Without that, a scan whose probes ran far over their per-node estimate held
+ * bestmove for minutes after a 20000-node tree had finished in two seconds.
  */
 constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
 
@@ -502,6 +583,70 @@ constexpr int MATE_PROBE_VERIFY_MAX_MS = 50;
 /// Replacements tried when the claimed win turns out to lose the race.
 constexpr int MATE_RACE_VETO_MAX_ALTERNATIVES = 4;
 
+/**
+ * Certification of the move about to be played.
+ *
+ * MCTS picks its move by visits and Q, neither of which is a proof that the
+ * position after it holds. When this team is behind on time the opponents
+ * may sit one board and play a single-board mate out on the other, which is
+ * the line Fairy-Stockfish finds and the exact two-board certifier proves.
+ * Once the search has settled, the chosen action is played on a copy and
+ * the opponents' reply probed and certified; a certificate vetoes the action
+ * and the next-most-visited alternative is held to the same test. An
+ * unproven hit changes nothing, so no heuristic ever enters the choice.
+ *
+ * The check runs after the tree has stopped growing, so its time is reserved
+ * out of the move time rather than added to it: a share of the allocation,
+ * capped, and only when this team lacks the time advantage, since ahead on
+ * time it may sit the threatened board and no single-board line is forced.
+ */
+constexpr bool ENABLE_SELECTED_MOVE_CERTIFICATION = true;
+/// The serial tail. The concurrent verifier below covers the leading actions
+/// while the tree grows, so this only has to catch a leader that arrived too
+/// late for it, and stays small.
+constexpr int SELECTED_MOVE_CERT_TIME_PERCENT = 3;
+constexpr int SELECTED_MOVE_CERT_MAX_MS = 100;
+/// Fairy search per candidate. Bounded by what is left of the reserve.
+constexpr uint64_t SELECTED_MOVE_PROBE_NODE_BUDGET = 500000;
+constexpr int SELECTED_MOVE_PROBE_MAX_MS = 75;
+/// Exact certification per Fairy hit, likewise bounded by the reserve.
+constexpr uint64_t SELECTED_MOVE_CERT_NODE_BUDGET = 200000;
+constexpr int SELECTED_MOVE_CERT_PER_CANDIDATE_MAX_MS = 50;
+/// Alternatives tried after the chosen action is proven lost.
+constexpr int SELECTED_MOVE_CERT_MAX_ALTERNATIVES = 4;
+/**
+ * When Fairy sees no single-board mate, the exact joint solver is asked for a
+ * cross-board one - checks on either board, pieces fed by capture - at the
+ * full depth in one pass, since any proof vetoes. Bounded by what is left of
+ * the reserve; UNKNOWN changes nothing.
+ */
+constexpr int SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES = 6;
+constexpr uint64_t SELECTED_MOVE_JOINT_NODE_BUDGET = 200000;
+
+/**
+ * The concurrent verifier: the same question asked of the leading root
+ * actions on the probe thread while the tree grows, so the joint solver has
+ * the move's wall time rather than a reserve. Work is dealt in slices so a
+ * leader that stops leading stops being searched; each action keeps its
+ * proof cache between slices. A proof marks the child a solved loss at once.
+ * The node ceiling is a bound on what one move may spend, not a target.
+ */
+constexpr int CONCURRENT_VERIFIER_TOP_K = 3;
+/// Slices the leader gets for each one given to the other ranks.
+constexpr int CONCURRENT_VERIFIER_LEADER_SHARE = 2;
+constexpr int CONCURRENT_VERIFIER_MIN_VISITS = 4;
+constexpr int CONCURRENT_VERIFIER_PROBE_MAX_MS = 30;
+constexpr uint64_t CONCURRENT_VERIFIER_SLICE_NODES = 50000;
+constexpr uint64_t CONCURRENT_VERIFIER_NODE_CEILING = 2000000;
+
+constexpr int selected_move_cert_reserve_ms(int moveTimeMs) {
+    if (moveTimeMs <= 0) {
+        return 0;
+    }
+    const int share = moveTimeMs * SELECTED_MOVE_CERT_TIME_PERCENT / 100;
+    return share < SELECTED_MOVE_CERT_MAX_MS ? share : SELECTED_MOVE_CERT_MAX_MS;
+}
+
 
 /// Probes between deadline samples. Keeps the clock read well under 1% of the
 /// cheapest probe while still stopping a joint scan within a few milliseconds.
@@ -531,6 +676,27 @@ constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 2000;
  */
 constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
 
+/**
+ * Nodes the joint solver lets a sat-partner-board attempt spend at one of its
+ * attacker nodes before falling back to the joint product. With checks
+ * ordered by evasions a mate that exists on one board is found well inside
+ * this; the cap is there for the ones that do not exist.
+ */
+constexpr uint64_t JOINT_MATE_REDUCED_ATTEMPT_NODES = 4000;
+
+/**
+ * Widening at the joint solver's attacker nodes: the slice each forcing
+ * action gets in the first round, and how much it grows per round. Small
+ * enough that a check with an easy refutation is abandoned for the price of
+ * a few positions; the growth keeps the total re-search overhead geometric.
+ */
+constexpr uint64_t JOINT_MATE_WIDENING_BASE_NODES = 256;
+constexpr uint64_t JOINT_MATE_WIDENING_FACTOR = 4;
+/// Least share of a round's per-action slice any action keeps when the
+/// tree's priors divide the round, so a line the network rates at nothing
+/// is still searched, only later.
+constexpr float JOINT_MATE_WIDENING_SHARE_FLOOR = 0.125f;
+
 // =============================================================================
 // Progressive Widening Parameters
 // =============================================================================
@@ -538,7 +704,7 @@ constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
 constexpr float PW_COEFFICIENT = 4.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
-constexpr float PW_EXPONENT = 0.4f;
+constexpr float PW_EXPONENT = 0.3f;
 
 // =============================================================================
 // Solver-aware Gumbel root search
@@ -579,6 +745,11 @@ struct RuntimeConfig {
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     bool enableMateProbe = ENABLE_MATE_PROBE;
+    bool certifySelectedMove = ENABLE_SELECTED_MOVE_CERTIFICATION;
+    InternalMateProbeMode internalMateProbeMode = INTERNAL_MATE_PROBE_MODE;
+    float internalMateProbeBias = INTERNAL_MATE_PROBE_BIAS;
+    float internalMateProbeBiasDecayVisits =
+        INTERNAL_MATE_PROBE_BIAS_DECAY_VISITS;
     float drawContempt = DRAW_CONTEMPT;
     bool enableDynamicFpu = ENABLE_DYNAMIC_FPU;
     float fpuReduction = FPU_REDUCTION;

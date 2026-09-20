@@ -392,7 +392,8 @@ void Node::advance_root_gumbel_round_locked(
 
 Node::ChildSelection Node::select_child_and_apply_virtual_loss(
     const SearchParams::RuntimeConfig& config,
-    const std::unordered_set<const Node*>* blockedNodes) {
+    const std::unordered_set<const Node*>* blockedNodes,
+    const JointActionCandidate* preferredAction) {
     // Gumbel root search advances its own scheduling state inside selection, so
     // that path keeps the exclusive lock. rootGumbelEnabled is fixed for the
     // duration of a search - configure_root_search runs before any worker is
@@ -526,6 +527,18 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
                 const float u_i = explorationBase * edge.prior
                     / (1.0f + static_cast<float>(n_effective));
                 score = q_i + u_i;
+                if (preferredAction) {
+                    const JointActionCandidate& candidate =
+                        candidateGenerator.getGenerated(i);
+                    if (candidate.moveA == preferredAction->moveA
+                        && candidate.moveB == preferredAction->moveB) {
+                        score += config.internalMateProbeBias
+                            / (1.0f + static_cast<float>(n_effective)
+                                / std::max(
+                                    config.internalMateProbeBiasDecayVisits,
+                                    1.0f));
+                    }
+                }
             }
 
             const bool isBetter = rootGumbelEnabled
@@ -554,14 +567,32 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
         } else {
             // All zero-visit edges share FPU and their U term is monotone in
             // prior, so only the highest-prior eligible one can win PUCT.
+            // A candidate bonus breaks that monotonicity, so compare its edge
+            // explicitly when it has not yet been visited.
             for (int childIdx : visitedEdges) {
                 if (childIdx >= 0
                     && static_cast<size_t>(childIdx) < limit) {
                     considerChild(static_cast<size_t>(childIdx));
                 }
             }
+            int preferredIdx = -1;
+            if (preferredAction) {
+                for (size_t index = 0; index < limit; ++index) {
+                    const JointActionCandidate& candidate =
+                        candidateGenerator.getGenerated(index);
+                    if (candidate.moveA == preferredAction->moveA
+                        && candidate.moveB == preferredAction->moveB) {
+                        preferredIdx = static_cast<int>(index);
+                        if (visitedEdgePositions[index] < 0) {
+                            considerChild(index);
+                        }
+                        break;
+                    }
+                }
+            }
             for (const UnvisitedEdge& edge : unvisitedEdges) {
                 if (edge.childIdx >= 0
+                    && edge.childIdx != preferredIdx
                     && static_cast<size_t>(edge.childIdx) < limit
                     && considerChild(static_cast<size_t>(edge.childIdx))) {
                     break;
