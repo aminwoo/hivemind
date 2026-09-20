@@ -200,6 +200,15 @@ private:
     // own, so it needs a stop signal that survives dispatch_workers setting
     // `running` back to true.
     std::atomic<bool> stopRequested_{false};
+    // Stop signals for the two root scans. Both latch on a stop request. A
+    // node-limited search has no move time for the scans to carve their
+    // windows out of, and their node budgets cannot bound them in time (see
+    // MateSearchBudget), so the tree's own progress serves as the clock: the
+    // winning scan's share ends once the tree has searched its pre-pass share
+    // of the target, and both scans end when the workers finish. A timed
+    // search keeps its wall-clock deadlines and never sets these itself.
+    std::atomic<bool> rootWinScanStop_{false};
+    std::atomic<bool> rootLossScanStop_{false};
     std::atomic<SearchInfo*> currentSearchInfo_{nullptr};    // Active search info pointer
     
     // Tree reuse support (CrazyAra-style). Retain every generated opponent
@@ -313,7 +322,9 @@ public:
      * enumerates board-move combinations and costs two orders of magnitude
      * more than a node of the single-board check scan. Timed searches
      * therefore also set a deadline, sampled every few probes so the clock
-     * read stays negligible next to the work it guards.
+     * read stays negligible next to the work it guards. Node-limited searches
+     * have no deadline to give and use `cancelled` instead, raised from the
+     * MCTS workers as the tree reaches the scan's share of the node target.
      */
     struct MateSearchBudget {
         using Clock = std::chrono::steady_clock;

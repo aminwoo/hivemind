@@ -26,6 +26,9 @@
 namespace {
 
 constexpr int BUILDER_OPTIMIZATION_LEVEL = 5;
+// Distinct from the generic failure codes so a supervisor's log shows why the
+// process vanished mid-search.
+constexpr int STICKY_CUDA_ERROR_EXIT_CODE = 70;
 constexpr std::string_view ENGINE_CACHE_SCHEMA = "hivemind-trt-cache-v5";
 constexpr std::string_view FP16_CONVERTER_SCHEMA = "onnxruntime-fp16-v1";
 
@@ -146,11 +149,45 @@ void preloadTensorRTBuilderResources() {
     });
 }
 
+// A sticky CUDA error (an illegal address, a launch failure, an ECC fault)
+// poisons the whole context: every later CUDA call in this process fails with
+// the same error, so the search can never produce a move again.  Returning
+// false from here would make the UCI loop answer "bestmove (none)" forever
+// while the supervising bot keeps retrying the unchanged position.  Exiting
+// is the only recovery; the bot restarts the engine when its pipe breaks.
+bool isStickyCudaError(cudaError_t result) {
+    switch (result) {
+    case cudaErrorIllegalAddress:
+    case cudaErrorLaunchFailure:
+    case cudaErrorLaunchTimeout:
+    case cudaErrorIllegalInstruction:
+    case cudaErrorMisalignedAddress:
+    case cudaErrorInvalidAddressSpace:
+    case cudaErrorInvalidPc:
+    case cudaErrorHardwareStackError:
+    case cudaErrorECCUncorrectable:
+    case cudaErrorAssert:
+    case cudaErrorUnknown:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool checkCuda(cudaError_t result, const char* operation) {
     if (result == cudaSuccess) {
         return true;
     }
     std::cerr << operation << " failed: " << cudaGetErrorString(result) << std::endl;
+    if (isStickyCudaError(result)) {
+        std::cerr << "CUDA context is unrecoverable; exiting so the engine can be restarted"
+                  << std::endl;
+        std::cout << "info string CUDA context is unrecoverable ("
+                  << cudaGetErrorString(result) << "); exiting" << std::endl;
+        // Skip destructors: they would issue more CUDA calls against the dead
+        // context while search workers are still running.
+        std::_Exit(STICKY_CUDA_ERROR_EXIT_CODE);
+    }
     return false;
 }
 
@@ -640,7 +677,9 @@ bool Engine::initializeResources() {
     m_executionStates.reserve(SearchParams::NUM_SEARCH_THREADS);
     for (int workerIndex = 0; workerIndex < SearchParams::NUM_SEARCH_THREADS; ++workerIndex) {
         auto state = std::make_unique<ExecutionState>();
-        if (!checkCuda(cudaStreamCreate(&state->stream), "cudaStreamCreate")) {
+        if (!checkCuda(cudaStreamCreateWithFlags(
+                &state->stream, cudaStreamNonBlocking),
+                "cudaStreamCreateWithFlags")) {
             return false;
         }
         if (m_jointFactorRank > 0 &&
@@ -688,6 +727,33 @@ bool Engine::initializeResources() {
             std::cerr << "Failed to bind joint policy factor outputs" << std::endl;
             return false;
         }
+
+        // TensorRT graph capture mutates execution-context state and its
+        // documented capture recipe uses global mode.  Doing this lazily in
+        // the search workers made all contexts capture concurrently; thread-
+        // local mode merely hid conflicting CUDA activity from the capture
+        // safety checks and could produce a graph with incomplete cross-stream
+        // dependencies.  Such a graph eventually surfaced as an Xid 31 MMU
+        // fault and poisoned every worker stream.  Initialize each context's
+        // graph here, serially, before any inference worker can use the engine.
+        if (!checkCuda(cudaMemsetAsync(
+                state->deviceObsBuffer, 0, inputSize, state->stream),
+                "cudaMemsetAsync(input warmup)") ||
+            !state->context->enqueueV3(state->stream) ||
+            !checkCuda(cudaStreamSynchronize(state->stream),
+                       "TensorRT warmup") ||
+            !checkCuda(cudaStreamBeginCapture(
+                           state->stream, cudaStreamCaptureModeGlobal),
+                       "cudaStreamBeginCapture") ||
+            !state->context->enqueueV3(state->stream) ||
+            !checkCuda(cudaStreamEndCapture(state->stream, &state->graph),
+                       "cudaStreamEndCapture") ||
+            !checkCuda(cudaGraphInstantiate(
+                           &state->graphInstance, state->graph, 0),
+                       "cudaGraphInstantiate")) {
+            return false;
+        }
+        state->graphCreated = true;
         m_executionStates.push_back(std::move(state));
     }
 
@@ -763,25 +829,10 @@ bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
         return false;
     }
 
-    if (!state.graphCreated) {
-        // Warmup execution to initialize internal TRT states
-        if (!state.context->enqueueV3(state.stream) ||
-            !checkCuda(cudaStreamSynchronize(state.stream), "TensorRT warmup")) {
-            return false;
-        }
-        
-        // Capture the kernel sequence
-        if (!checkCuda(cudaStreamBeginCapture(state.stream, cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture") ||
-            !state.context->enqueueV3(state.stream) ||
-            !checkCuda(cudaStreamEndCapture(state.stream, &state.graph), "cudaStreamEndCapture")) {
-            return false;
-        }
-        
-        // Instantiate the executable graph
-        if (!checkCuda(cudaGraphInstantiate(&state.graphInstance, state.graph, 0), "cudaGraphInstantiate")) {
-            return false;
-        }
-        state.graphCreated = true;
+    if (!state.graphCreated || !state.graphInstance) {
+        std::cerr << "TensorRT worker context " << workerIndex
+                  << " has no CUDA graph" << std::endl;
+        return false;
     }
     if (!checkCuda(cudaGraphLaunch(state.graphInstance, state.stream), "cudaGraphLaunch")) {
         return false;

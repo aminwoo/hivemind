@@ -4369,6 +4369,12 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                         localBoard, engine, teamHasTimeAdvantage);
                 }
             } else {
+                // The winning root scan may occupy the same share of a node
+                // search that MATE_SEARCH_MAX_TIME_PERCENT gives it of a timed
+                // one, measured in the tree's nodes rather than on the clock.
+                const size_t winScanNodes = targetNodes
+                    * static_cast<size_t>(SearchParams::MATE_SEARCH_MAX_TIME_PERCENT)
+                    / 100;
                 while (running &&
                        (isPondering_.load(std::memory_order_relaxed) ||
                         static_cast<size_t>(searchInfo->get_nodes_searched()) < targetNodes)) {
@@ -4379,6 +4385,11 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                     }
                     searchThread->run_iteration(
                         localBoard, engine, teamHasTimeAdvantage);
+                    if (!rootWinScanStop_.load(std::memory_order_relaxed)
+                        && static_cast<size_t>(searchInfo->get_nodes_searched())
+                            >= winScanNodes) {
+                        rootWinScanStop_.store(true, std::memory_order_release);
+                    }
                 }
             }
             if (SearchParams::ENABLE_MATE_EARLY_EXIT && rootNode
@@ -4400,6 +4411,13 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
             std::lock_guard lock(workerMutex_);
             completedWorkerCount_++;
             if (completedWorkerCount_ == activeWorkerCount_) {
+                if (workerMoveTimeMs_ <= 0) {
+                    // The tree is done, so a root scan still running on the
+                    // main thread is now nothing but latency before bestmove.
+                    // A timed search's scans already end within its move time.
+                    rootWinScanStop_.store(true, std::memory_order_release);
+                    rootLossScanStop_.store(true, std::memory_order_release);
+                }
                 workersDoneCv_.notify_one();
             }
         }
@@ -4522,6 +4540,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
     } else {
         stopRequested_.store(false, std::memory_order_release);
+        rootWinScanStop_.store(false, std::memory_order_release);
+        rootLossScanStop_.store(false, std::memory_order_release);
         lastRuntimeConfig_ = options.search;
     }
     if (engines.empty()) {
@@ -5528,7 +5548,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 rootMateAction, rootMatePly,
                 rootMateBudget, &mateContinuations_, nullptr, true,
                 rootScanDeadline, !immediateScanComplete, false,
-                &rootMatePv, &stopRequested_, nullptr, rootNode.get());
+                &rootMatePv, &rootWinScanStop_, nullptr, rootNode.get());
         if (scannedRootMate && loses_mate_race(*scanBoard, rootMateAction)) {
             // A capture feed is the scan's own shape for "mate next move", and
             // it is exactly the shape that hands the feed board back to an
@@ -5603,7 +5623,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             && find_root_loss_proofs(
                 *scanBoard, teamSide, teamHasTimeAdvantage,
                 rootLossProofs, rootLossBudget,
-                rootLossScanDeadline, &stopRequested_,
+                rootLossScanDeadline, &rootLossScanStop_,
                 &preferredRootActions, rootNode.get());
         if (scannedRootLoss) {
             const auto delaying = std::max_element(
@@ -6816,6 +6836,8 @@ void Agent::set_is_running(bool value) {
         // has not dispatched yet would otherwise set `running` back to true
         // after this and never see the stop.
         stopRequested_.store(true, std::memory_order_release);
+        rootWinScanStop_.store(true, std::memory_order_release);
+        rootLossScanStop_.store(true, std::memory_order_release);
         isPondering_.store(false, std::memory_order_release);
     }
     running = value;

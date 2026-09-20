@@ -91,7 +91,7 @@ constexpr size_t TT_MAX_SIZE = 1000000;
 /// Initial exploration constant for PUCT formula
 /// Higher values encourage more exploration
 /// CrazyAra default: 2.5
-constexpr float CPUCT_INIT = 2.5f;
+constexpr float CPUCT_INIT = 3.0f;
 
 /// Base value for dynamic CPUCT scaling
 /// CPUCT = log((N + CPUCT_BASE + 1) / CPUCT_BASE) + CPUCT_INIT
@@ -119,10 +119,10 @@ constexpr float Q_INIT = -1.0f;
 // =============================================================================
 
 /// Enable WDL-based expected value evaluation with dynamic draw contempt.
-constexpr bool ENABLE_WDL_EVAL = true;
+constexpr bool ENABLE_WDL_EVAL = false;
 
 /// Weight of WDL expected value vs direct scalar value (1.0 = pure WDL, 0.0 = pure scalar)
-constexpr float WDL_VALUE_WEIGHT = 0.25f;
+constexpr float WDL_VALUE_WEIGHT = 0.0f;
 
 /**
  * Discount factor per 100 plies remaining, favouring faster wins and delayed
@@ -512,6 +512,12 @@ constexpr int internal_mate_probe_root_time_percent(
  * seven-ply capture feed, ~210ms of a 1500ms move - fits with margin; a proof
  * that lands returns immediately and hands the rest of the move time back, so
  * the average cost is far below the cap.
+ *
+ * A node-limited search has no move time, so the same share is taken of its
+ * node target instead: the winning scan ends once the tree has searched this
+ * percentage of the nodes, and the loss scan ends when the tree is complete.
+ * Without that, a scan whose probes ran far over their per-node estimate held
+ * bestmove for minutes after a 20000-node tree had finished in two seconds.
  */
 constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
 
@@ -698,7 +704,7 @@ constexpr float JOINT_MATE_WIDENING_SHARE_FLOOR = 0.125f;
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
 constexpr float PW_COEFFICIENT = 4.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
-constexpr float PW_EXPONENT = 0.4f;
+constexpr float PW_EXPONENT = 0.3f;
 
 // =============================================================================
 // Solver-aware Gumbel root search
