@@ -65,3 +65,37 @@ TEST(OnnxUtilsTest, MissingFileHasNoSignature) {
     std::filesystem::remove(missingPath);
     EXPECT_TRUE(computeFileSignature(missingPath.string(), "config").empty());
 }
+
+TEST(OnnxUtilsTest, QuantizedModelPlansAreNamedInt8) {
+    const std::filesystem::path directory = std::filesystem::temp_directory_path();
+    const std::filesystem::path plain = directory / "hivemind_plain_test.onnx";
+    const std::filesystem::path quantized = directory / "hivemind_quantized_test.onnx";
+    {
+        std::ofstream(plain, std::ios::binary) << std::string(3 << 20, 'x') << "Conv";
+        // Place the op type across the scanner's 1 MiB chunk boundary.
+        std::ofstream(quantized, std::ios::binary)
+            << std::string((1 << 20) - 5, 'x') << "DequantizeLinear" << std::string(100, 'x');
+    }
+    EXPECT_FALSE(isQuantizedOnnx(plain.string()));
+    EXPECT_TRUE(isQuantizedOnnx(quantized.string()));
+    EXPECT_NE(getEnginePath(plain.string(), "fp16", 8, 0, "v3").find("_fp16_b8_"), std::string::npos);
+    EXPECT_NE(getEnginePath(quantized.string(), "fp16", 8, 0, "v3").find("_int8_b8_"), std::string::npos);
+
+    // The precision is not repeated when the model name already carries it,
+    // and only the true precision counts.
+    const std::filesystem::path namedInt8 = directory / "net-int8-v2.onnx";
+    const std::filesystem::path namedFp16 = directory / "net_fp16.onnx";
+    const std::filesystem::path misnamed = directory / "net-int8.onnx";
+    std::filesystem::copy_file(quantized, namedInt8, std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(plain, namedFp16, std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(plain, misnamed, std::filesystem::copy_options::overwrite_existing);
+    const auto name = [](const std::filesystem::path& path) {
+        return std::filesystem::path(getEnginePath(path.string(), "fp16", 8, 0, "v3")).filename().string();
+    };
+    EXPECT_EQ(name(namedInt8), "net-int8-v2_b8_gpu0_v3.engine");
+    EXPECT_EQ(name(namedFp16), "net_fp16_b8_gpu0_v3.engine");
+    EXPECT_EQ(name(misnamed), "net-int8_fp16_b8_gpu0_v3.engine");
+    for (const auto& path : {plain, quantized, namedInt8, namedFp16, misnamed}) {
+        std::filesystem::remove(path);
+    }
+}
