@@ -8,6 +8,7 @@
 #include "tools/nnue_data.h"
 #include "nnue/network.h"
 #include "search/alphabeta.h"
+#include "environment/planes.h"
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -335,6 +336,57 @@ int main(int argc, char* argv[]) {
             cerr << "gennnue failed: " << error.what() << endl;
             return EXIT_FAILURE;
         }
+    }
+
+    // dumpplanes writes the network input planes of FEN lines (float32,
+    // N x 74 x 8 x 8) with the engine's own encoder: calibration data for
+    // scripts/quantize_int8.py.
+    if (argc > 1 && string(argv[1]) == "dumpplanes") {
+        string fenFile, outputFile;
+        size_t every = 1;
+        size_t limit = 0;
+        for (int i = 2; i + 1 < argc; i += 2) {
+            const string option = argv[i];
+            if (option == "--fens") fenFile = argv[i + 1];
+            else if (option == "--output") outputFile = argv[i + 1];
+            else if (option == "--every") every = max<size_t>(1, stoull(argv[i + 1]));
+            else if (option == "--limit") limit = stoull(argv[i + 1]);
+            else {
+                cerr << "Unknown option " << option << endl;
+                return EXIT_FAILURE;
+            }
+        }
+        ifstream fens(fenFile);
+        ofstream out(outputFile, ios::binary);
+        if (!fens || !out) {
+            cerr << "Usage: dumpplanes --fens <file> --output <file> [--every n] [--limit n]" << endl;
+            return EXIT_FAILURE;
+        }
+        vector<float> planes(NB_INPUT_VALUES());
+        size_t index = 0;
+        size_t written = 0;
+        for (string line; getline(fens, line) && (limit == 0 || written < limit); ++index) {
+            if (index % every != 0) {
+                continue;
+            }
+            vector<string> fields;
+            stringstream stream(line);
+            for (string field; getline(stream, field, ';');) {
+                fields.push_back(field);
+            }
+            if (fields.size() != 4) {
+                continue;
+            }
+            Board board;
+            board.set(fields[0] + "|" + fields[1]);
+            board_to_planes(board, planes.data(),
+                            fields[2] == "w" ? Stockfish::WHITE : Stockfish::BLACK, fields[3] == "1");
+            out.write(reinterpret_cast<const char*>(planes.data()),
+                      static_cast<streamsize>(planes.size() * sizeof(float)));
+            ++written;
+        }
+        cout << "wrote " << written << " positions to " << outputFile << endl;
+        return EXIT_SUCCESS;
     }
 
     // nnueeval / absearchbench read "fenA;fenB;team(w|b);advantage(0|1)" lines,

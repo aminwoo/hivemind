@@ -83,6 +83,35 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
 
+### INT8 networks
+
+An INT8 copy of a network evaluates about 17% more positions per second in
+MCTS on an RTX 4070 (four batch-8 workers). At 100 ms per move it beat the FP16
+network 51-29 over 80 paired games (+98 Elo, 95% CI +41 to +161), while an
+FP16-vs-FP16 control scored 40-39-1. At 1 s per move it scored 22-16-2 over 40
+games (+53 Elo, 95% CI -4 to +112). A single inference stream gains nothing;
+the extra throughput comes from the workers overlapping.
+
+TensorRT 11 runs INT8 only from explicit quantize/dequantize nodes, so the
+network is quantized ahead of time with NVIDIA ModelOpt, calibrated on
+positions encoded by the engine itself:
+
+```bash
+python3 -m venv ~/.cache/hivemind-quantize
+~/.cache/hivemind-quantize/bin/pip install "nvidia-modelopt[onnx]"
+./build-ninja/hivemind dumpplanes --fens ../data/nnue/val/nnue_99_0_00000.fen \
+    --output calib.f32 --every 122
+~/.cache/hivemind-quantize/bin/python scripts/quantize_int8.py \
+    models/network.onnx calib.f32 models/network-int8.onnx
+./build-ninja/hivemind --model models/network-int8.onnx
+```
+
+The engine recognises a Q/DQ network and builds it at builder optimization
+level 3: at the default level 5, TensorRT 11 times a fused kernel for the
+cross-board blocks that faults on the device. Against FP16, the INT8 teacher
+agrees on the top move in 93% (board A) and 92% (board B) of positions, with
+a mean value difference of 0.023.
+
 ### Internal mate-probe experiment
 
 The `InternalMateProbe` UCI combo is disabled by default and separates the
