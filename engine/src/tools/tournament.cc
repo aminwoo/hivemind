@@ -1,4 +1,5 @@
 #include "tools/tournament.h"
+#include "search/alphabeta.h"
 
 #include <algorithm>
 #include <chrono>
@@ -481,15 +482,25 @@ std::string TournamentResult::confidenceMethod() const {
 }
 
 int run_tournament(
-    Engine& contender,
-    Engine& baseline,
+    Engine* contender,
+    Engine* baseline,
     const std::string& contenderName,
     const std::string& baselineName,
-    const TournamentConfig& config) {
+    const TournamentConfig& config,
+    ab::Searcher* alphaBetaContender,
+    ab::Searcher* alphaBetaBaseline) {
+    if ((!contender && !alphaBetaContender) || (!baseline && !alphaBetaBaseline)) {
+        throw std::invalid_argument("Tournament needs an engine or searcher on each side");
+    }
+    if ((alphaBetaContender && config.contenderAbMoveTimeMs <= 0 && config.contenderAbDepth <= 0)
+        || (alphaBetaBaseline && config.baselineAbMoveTimeMs <= 0 && config.baselineAbDepth <= 0)) {
+        throw std::invalid_argument("An alpha-beta side needs a movetime or depth");
+    }
     if (config.games == 0 || config.games % 2 != 0) {
         throw std::invalid_argument("Tournament games must be a positive even number");
     }
-    if ((config.nodes == 0) == (config.moveTimeMs <= 0) ||
+    const bool anyMcts = !alphaBetaContender || !alphaBetaBaseline;
+    if ((anyMcts && (config.nodes == 0) == (config.moveTimeMs <= 0)) ||
         config.maxMacroPlies == 0) {
         throw std::invalid_argument(
             "Tournament requires exactly one positive nodes or movetime limit");
@@ -545,8 +556,8 @@ int run_tournament(
     double currentPairPoints = 0.0;
     const std::vector<TournamentStartPosition> startPositions =
         load_tournament_positions(config.positionsFile);
-    Agent contenderAgent(config.contenderThreads);
-    Agent baselineAgent(config.baselineThreads);
+    Agent contenderAgent(alphaBetaContender ? 1 : config.contenderThreads);
+    Agent baselineAgent(alphaBetaBaseline ? 1 : config.baselineThreads);
 
     for (size_t gameIndex = 0; gameIndex < config.games; ++gameIndex) {
         Board board;
@@ -585,7 +596,40 @@ int run_tournament(
             }
 
             const bool contenderActing = team == contenderTeam;
-            Engine& actingEngine = contenderActing ? contender : baseline;
+            ab::Searcher* alphaBeta = contenderActing ? alphaBetaContender : alphaBetaBaseline;
+            if (alphaBeta) {
+                ab::Limits limits;
+                limits.moveTimeMs = contenderActing
+                    ? config.contenderAbMoveTimeMs : config.baselineAbMoveTimeMs;
+                const int depth = contenderActing ? config.contenderAbDepth : config.baselineAbDepth;
+                if (depth > 0) {
+                    limits.depth = depth;
+                }
+                const auto searchStart = std::chrono::steady_clock::now();
+                const ab::Result searched = alphaBeta->search(
+                    board, team, hasTimeAdvantage, limits);
+                TournamentPerformance& performance = contenderActing
+                    ? result.contenderPerformance : result.baselinePerformance;
+                ++performance.searches;
+                performance.nanoseconds += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - searchStart).count());
+                performance.nodes += searched.nodes;
+                if (!searched.hasMove) {
+                    winner = static_cast<int>(~team);
+                    termination = "no legal action";
+                    break;
+                }
+                JointActionCandidate action;
+                action.moveA = searched.best.a;
+                action.moveB = searched.best.b;
+                actions.push_back(action_uci(board, action));
+                board.make_moves(action.moveA, action.moveB);
+                team = ~team;
+                hasTimeAdvantage = !hasTimeAdvantage;
+                continue;
+            }
+            Engine& actingEngine = contenderActing ? *contender : *baseline;
             Agent& agent = contenderActing ? contenderAgent : baselineAgent;
             std::vector<Engine*> engines = {&actingEngine};
             agent.reset_search_state();

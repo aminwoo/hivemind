@@ -79,12 +79,15 @@ set(LIB_SOURCES
     # src/nn/engine.cc or engine_ort.cc is appended below per backend
     src/nn/onnx_utils.cc
     src/search/agent.cc
+    src/search/alphabeta.cc
+    src/nnue/network.cc
     src/search/mate_probe.cc
     src/search/node.cc
     src/search/searchthread.cc
     src/interface/uci.cc
     src/tools/benchmark.cc
     src/tools/selfplay.cc
+    src/tools/nnue_data.cc
     src/tools/tournament.cc
 )
 

@@ -12,6 +12,7 @@
 #include "Fairy-Stockfish/src/types.h"
 
 class Engine;
+namespace ab { class Searcher; }
 
 struct TournamentConfig {
     size_t games = 20;
@@ -45,6 +46,11 @@ struct TournamentConfig {
     float contenderQVetoDelta = SearchParams::Q_VETO_DELTA;
     float baselineQVetoDelta = SearchParams::Q_VETO_DELTA;
     std::filesystem::path positionsFile;
+    // Alpha-beta NNUE contender limits (used when run with an ab::Searcher).
+    int contenderAbMoveTimeMs = 0;
+    int contenderAbDepth = 0;
+    int baselineAbMoveTimeMs = 0;
+    int baselineAbDepth = 0;
     std::string contenderModelSignature;
     std::string baselineModelSignature;
     double sprtElo0 = 0.0;
@@ -150,9 +156,13 @@ struct TournamentResult {
     std::string confidenceMethod() const;
 };
 
+/// A side given an ab::Searcher plays alpha-beta with it, and its Engine is
+/// unused (it may be null).
 int run_tournament(
-    Engine& contender,
-    Engine& baseline,
+    Engine* contender,
+    Engine* baseline,
     const std::string& contenderName,
     const std::string& baselineName,
-    const TournamentConfig& config);
+    const TournamentConfig& config,
+    ab::Searcher* alphaBetaContender = nullptr,
+    ab::Searcher* alphaBetaBaseline = nullptr);

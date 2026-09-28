@@ -17,6 +17,7 @@ COMMANDS = {
     "analyze": ("hivemind.cli.analyze_training_data", "Inspect training positions"),
     "search": ("hivemind.cli.search_training_fen", "Search training data by FEN"),
     "inspect-loader": ("hivemind.cli.inspect_data_loader", "Inspect loaded and augmented samples"),
+    "nnue-train": ("hivemind.nnue.train", "Distill the teacher's value into an NNUE"),
     "verify-augmentation": ("hivemind.cli.verify_augmentation", "Display board-swap augmentation"),
 }
 

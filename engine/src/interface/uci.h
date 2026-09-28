@@ -13,6 +13,8 @@
 #include "search/searchthread.h"
 #include "search/agent.h"
 #include "nn/engine.h"
+#include "nnue/network.h"
+#include "search/alphabeta.h"
 
 class UCI {
 private:
@@ -42,6 +44,17 @@ private:
     int openingNoiseEpsilonPermille = 600;
     std::mt19937_64 openingNoiseGenerator;
 
+    // Alpha-beta search on the distilled NNUE (SearchMode alphabeta). It needs
+    // neither an ONNX model nor a GPU.
+    bool alphaBetaMode = false;
+    size_t hashMb = 16;
+    std::unique_ptr<nnue::Network> nnueNetwork;
+    std::unique_ptr<ab::Searcher> abSearcher;
+    ab::Options abOptions;
+    std::atomic<bool> abStop{false};
+
+    void go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite);
+
     // Rebuilds the engines (and the agent) with the current settings. The batch
     // size is baked into the TensorRT engine, so changing it means reloading.
     bool reload_engines();
@@ -61,6 +74,9 @@ public:
         const std::vector<int>& deviceIdsToUse,
         const std::string& networkPathToUse = {},
         int batchSizeToUse = SearchParams::BATCH_SIZE);
+
+    /// Loads an NNUE network and switches to alpha-beta search.
+    bool load_nnue(const std::string& path);
 
     void send_uci_response();
     void go(std::istringstream& is);

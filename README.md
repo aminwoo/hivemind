@@ -21,6 +21,7 @@ Hivemind is a neural network-based engine for [Bughouse chess](https://en.wikipe
 - **TensorRT Acceleration** - High-performance GPU inference using NVIDIA TensorRT
 - **UCI Protocol** - Standard Universal Chess Interface for GUI compatibility
 - **Self-Play Training** - RL training pipeline with self-play game generation
+- **Alpha-Beta NNUE Mode** - CPU alpha-beta search on an NNUE distilled from the network (`--nnue`, see [engine/README.md](engine/README.md#alpha-beta-nnue-engine))
 
 ## Project Structure
 

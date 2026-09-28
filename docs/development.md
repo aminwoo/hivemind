@@ -13,6 +13,7 @@ uv run hivemind fetch-network
 uv run hivemind infer --starting
 uv run hivemind train --help
 uv run hivemind prepare --help
+uv run hivemind nnue-train --help   # distil an NNUE for the alpha-beta engine
 uv run python -m pytest
 ```
 
