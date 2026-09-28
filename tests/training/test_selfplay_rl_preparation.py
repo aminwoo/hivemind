@@ -158,8 +158,8 @@ def test_split_conversion_rejects_output_containing_source(tmp_path):
     assert source_chunk.exists()
 
 
-def test_default_validation_fraction_is_ten_percent():
-    assert DEFAULT_RL_VALIDATION_FRACTION == 0.10
+def test_default_validation_fraction_is_five_percent():
+    assert DEFAULT_RL_VALIDATION_FRACTION == 0.05
 
 
 def test_default_rl_shards_are_bounded_for_dense_policy_memory():

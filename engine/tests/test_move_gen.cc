@@ -1111,14 +1111,16 @@ TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
     config.pwCoefficient = 1.0f;
     config.rootPwCoefficient = 4.0f;
 
+    // ceil(coefficient * visits^PW_EXPONENT) with the default exponent of 0.3.
+    ASSERT_FLOAT_EQ(config.pwExponent, 0.3f);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  1000, config.pwCoefficient, config.pwExponent), 16);
+                  1000, config.pwCoefficient, config.pwExponent), 8);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  1000, config.rootPwCoefficient, config.pwExponent), 64);
+                  1000, config.rootPwCoefficient, config.pwExponent), 32);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  10000, config.pwCoefficient, config.pwExponent), 40);
+                  10000, config.pwCoefficient, config.pwExponent), 16);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  10000, config.rootPwCoefficient, config.pwExponent), 160);
+                  10000, config.rootPwCoefficient, config.pwExponent), 64);
 }
 
 TEST(SearchConfigTest, MovesLeftDiscountingPrefersFastWinAndDistantLoss) {
@@ -1399,8 +1401,12 @@ TEST(NodeTest, AtomicVirtualLossDivertsNextSelection) {
     auto& [secondChild, secondIdx, secondReserved, secondPending] = secondSelection;
     ASSERT_NE(firstChild, nullptr);
     ASSERT_NE(secondChild, nullptr);
-    EXPECT_EQ(firstIdx, 0);
-    EXPECT_EQ(secondIdx, 1);
+    // Which child goes first depends on CPUCT against the first-play
+    // urgency of the unvisited sibling; the virtual loss must send the
+    // second selection to the other one either way.
+    EXPECT_NE(firstIdx, secondIdx);
+    EXPECT_TRUE(firstIdx == 0 || firstIdx == 1);
+    EXPECT_TRUE(secondIdx == 0 || secondIdx == 1);
     EXPECT_TRUE(firstReserved);
     EXPECT_TRUE(secondReserved);
     EXPECT_EQ(firstPending, nullptr);
