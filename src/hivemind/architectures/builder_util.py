@@ -236,10 +236,10 @@ class _PolicyHead(Module):
         :return: Activation maps of the block
         """
         if self.select_policy_from_plane:
-            return self.body(x).view(-1, self.nb_flatten)
+            return self.body(x).reshape(-1, self.nb_flatten)
         else:
             x = self.body(x)
-            x = self.body2(x).view(-1, self.nb_flatten)
+            x = self.body2(x).reshape(-1, self.nb_flatten)
             return self.body3(x)
 
 
@@ -307,7 +307,7 @@ class _ValueHead(Module):
         :return: Activation maps of the block
         """
         if not self.use_flat_inputs:
-            x = self.body(x).view(-1, self.nb_flatten)
+            x = self.body(x).reshape(-1, self.nb_flatten)
         if self.use_raw_features:
             raw_data = raw_data.view(-1, self.nb_flatten_raw)
             x = torch.cat((x, raw_data), dim=1)
