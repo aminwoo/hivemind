@@ -6,6 +6,7 @@
 #include "tools/benchmark.h"
 #include "tools/selfplay.h"
 #include "tools/nnue_data.h"
+#include "tools/search_diag.h"
 #include "nnue/network.h"
 #include "search/alphabeta.h"
 #include "environment/planes.h"
@@ -113,9 +114,15 @@ void printUsage(const char* progName) {
     cout << "    --fairy-stockfish-mate-nodes <n> (0 disables; default "
          << SearchParams::MATE_PROBE_ROOT_NODE_BUDGET << ")" << endl;
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
+    cout << "    --distill-output <dir> (also write HDST chunks of the search targets)" << endl;
+    cout << "    --distill-chunk-positions <n> --parallel-games <n> --root-scans <bool>" << endl;
+    cout << "    --training-chunks <bool> (write HVM5 chunks; default true)" << endl;
+    cout << "  searchdiag         Root candidates of searches at several node budgets, per FEN" << endl;
+    cout << "    --model <onnx> --fens <file> --output <jsonl> --budgets 50,200,800 --positions <n> --every <n>" << endl;
     cout << "  gennnue [options]  Generate NNUE distillation data from teacher-policy games" << endl;
     cout << "    --model <onnx> --positions <n> --threads <n> --batch-size <n> --output <dir>" << endl;
     cout << "    --seed <n> --max-macro-plies <n> --chunk-positions <n> --random-move-prob <x> --fens <bool>" << endl;
+    cout << "    --format nnue|distill (distill: packed planes + value/WDL/moves-left + legal-move policies)" << endl;
     cout << "  tournament [options] Run a paired model-vs-model tournament" << endl;
     cout << "    --contender <onnx> --baseline <onnx> --games <even-n>" << endl;
     cout << "    --nodes <n> or --movetime <ms>" << endl;
@@ -123,6 +130,9 @@ void printUsage(const char* progName) {
     cout << "    --output <dir> --seed <n> --max-macro-plies <n>" << endl;
     cout << "    --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
     cout << "    --contender-pw-coefficient <x> --baseline-pw-coefficient <x>" << endl;
+    cout << "    --contender-pw-exponent <x> --baseline-pw-exponent <x>" << endl;
+    cout << "    --contender-pw-mass <m0> --baseline-pw-mass <m0> (prior-mass widening; 0 = off)" << endl;
+    cout << "    --{contender,baseline}-pw-mass-exponent <x> --{contender,baseline}-pw-mass-cap <x>" << endl;
     cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
     cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
@@ -203,6 +213,47 @@ int main(int argc, char* argv[]) {
         return EXIT_SUCCESS;
     }
 
+    if (argc > 1 && string(argv[1]) == "searchdiag") {
+        SearchDiagConfig config;
+        string modelPath;
+        try {
+            for (int i = 2; i + 1 < argc; i += 2) {
+                const string option = argv[i];
+                const string value = argv[i + 1];
+                if (option == "--model" || option == "--network") modelPath = value;
+                else if (option == "--fens") config.fenFile = value;
+                else if (option == "--output") config.outputFile = value;
+                else if (option == "--positions") config.positions = stoull(value);
+                else if (option == "--every") config.every = stoull(value);
+                else if (option == "--budgets") {
+                    config.budgets.clear();
+                    stringstream budgets(value);
+                    for (string budget; getline(budgets, budget, ',');) config.budgets.push_back(stoull(budget));
+                }
+                else throw invalid_argument("Unknown searchdiag option: " + option);
+            }
+            if (config.fenFile.empty() || config.outputFile.empty() || config.budgets.empty()) {
+                throw invalid_argument("--fens, --output and --budgets are required");
+            }
+        } catch (const exception& error) {
+            cerr << "Invalid searchdiag arguments: " << error.what() << endl;
+            return EXIT_FAILURE;
+        }
+        const string onnxFile = resolveModelPath(modelPath);
+        Engine engine(0, SearchParams::BATCH_SIZE);
+        if (onnxFile.empty()
+            || !engine.loadNetwork(onnxFile, getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v3"))) {
+            cerr << "Failed to load a network" << endl;
+            return EXIT_FAILURE;
+        }
+        try {
+            return run_search_diag(engine, config);
+        } catch (const exception& error) {
+            cerr << "searchdiag failed: " << error.what() << endl;
+            return EXIT_FAILURE;
+        }
+    }
+
     // Check for perft benchmark flag
     if (argc > 1 && string(argv[1]) == "perft") {
         int depth = optional_count_argument(argc, argv, 5);
@@ -239,6 +290,11 @@ int main(int argc, char* argv[]) {
                 else if (option == "--node-random-factor") config.nodeRandomFactor = stod(value);
                 else if (option == "--fairy-stockfish-mate-nodes") config.fairyStockfishMateNodes = stoull(value);
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
+                else if (option == "--distill-output") config.distillOutputDirectory = value;
+                else if (option == "--root-scans") config.rootScans = parse_bool_argument(value);
+                else if (option == "--parallel-games") config.parallelGames = stoull(value);
+                else if (option == "--training-chunks") config.writeTrainingChunks = parse_bool_argument(value);
+                else if (option == "--distill-chunk-positions") config.distillChunkPositions = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
                 else if (option == "--batch-size") config.batchSize = stoi(value);
@@ -260,16 +316,21 @@ int main(int argc, char* argv[]) {
             cerr << "Self-play batch size must be between 1 and 1024" << endl;
             return EXIT_FAILURE;
         }
+        // With parallel games, every game gets its own engine (and so its own
+        // execution contexts) on each device.
+        const size_t enginesPerDevice = std::max<size_t>(1, config.parallelGames);
         for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
-            auto engine = make_unique<Engine>(deviceId, config.batchSize);
-            const string engineFile = getEnginePath(
-                onnxFile, "fp16", config.batchSize, deviceId, "v3");
-            if (!engine->loadNetwork(onnxFile, engineFile)) {
-                cerr << "Failed to load engine on device " << deviceId << endl;
-                continue;
+            for (size_t copy = 0; copy < enginesPerDevice; ++copy) {
+                auto engine = make_unique<Engine>(deviceId, config.batchSize);
+                const string engineFile = getEnginePath(
+                    onnxFile, "fp16", config.batchSize, deviceId, "v3");
+                if (!engine->loadNetwork(onnxFile, engineFile)) {
+                    cerr << "Failed to load engine on device " << deviceId << endl;
+                    return EXIT_FAILURE;
+                }
+                engines.push_back(engine.get());
+                ownedEngines.push_back(std::move(engine));
             }
-            engines.push_back(engine.get());
-            ownedEngines.push_back(std::move(engine));
         }
         if (engines.empty()) {
             cerr << "Failed to load an engine on any CUDA device" << endl;
@@ -310,6 +371,12 @@ int main(int argc, char* argv[]) {
                 else if (option == "--chunk-positions") config.chunkPositions = stoull(value);
                 else if (option == "--random-move-prob") config.randomMoveProbability = stod(value);
                 else if (option == "--fens") config.writeFens = parse_bool_argument(value);
+                else if (option == "--format") {
+                    if (value != "nnue" && value != "distill") {
+                        throw invalid_argument("--format must be nnue or distill");
+                    }
+                    config.distill = value == "distill";
+                }
                 else if (option == "--batch-size") batchSize = stoi(value);
                 else throw invalid_argument("Unknown gennnue option: " + option);
             }
@@ -528,6 +595,14 @@ int main(int argc, char* argv[]) {
                 }
                 else if (option == "--contender-root-pw-coefficient") config.contenderRootPwCoefficient = stof(value);
                 else if (option == "--baseline-root-pw-coefficient") config.baselineRootPwCoefficient = stof(value);
+                else if (option == "--contender-pw-exponent") config.contenderPwExponent = stof(value);
+                else if (option == "--baseline-pw-exponent") config.baselinePwExponent = stof(value);
+                else if (option == "--contender-pw-mass") config.contenderPwMassStart = stof(value);
+                else if (option == "--baseline-pw-mass") config.baselinePwMassStart = stof(value);
+                else if (option == "--contender-pw-mass-exponent") config.contenderPwMassExponent = stof(value);
+                else if (option == "--baseline-pw-mass-exponent") config.baselinePwMassExponent = stof(value);
+                else if (option == "--contender-pw-mass-cap") config.contenderPwMassCap = stof(value);
+                else if (option == "--baseline-pw-mass-cap") config.baselinePwMassCap = stof(value);
                 else if (option == "--contender-mcgs") config.contenderMcgs = parse_bool_argument(value);
                 else if (option == "--baseline-mcgs") config.baselineMcgs = parse_bool_argument(value);
                 else if (option == "--contender-transpositions") config.contenderTranspositions = parse_bool_argument(value);

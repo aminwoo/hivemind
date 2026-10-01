@@ -29,6 +29,15 @@ struct TournamentConfig {
     float baselinePwCoefficient = SearchParams::PW_COEFFICIENT;
     float contenderRootPwCoefficient = SearchParams::ROOT_PW_COEFFICIENT;
     float baselineRootPwCoefficient = SearchParams::ROOT_PW_COEFFICIENT;
+    float contenderPwExponent = SearchParams::PW_EXPONENT;
+    float baselinePwExponent = SearchParams::PW_EXPONENT;
+    // Prior-mass widening (start 0 = count-based widening only).
+    float contenderPwMassStart = SearchParams::PW_MASS_START;
+    float baselinePwMassStart = SearchParams::PW_MASS_START;
+    float contenderPwMassExponent = SearchParams::PW_MASS_EXPONENT;
+    float baselinePwMassExponent = SearchParams::PW_MASS_EXPONENT;
+    float contenderPwMassCap = SearchParams::PW_MASS_CAP;
+    float baselinePwMassCap = SearchParams::PW_MASS_CAP;
     bool contenderMcgs = SearchParams::ENABLE_MCGS;
     bool baselineMcgs = SearchParams::ENABLE_MCGS;
     bool contenderTranspositions = SearchParams::ENABLE_TRANSPOSITIONS;
@@ -69,6 +78,10 @@ struct TournamentConfig {
         searchConfig.pwCoefficient = pwCoefficientFor(isContender);
         searchConfig.rootPwCoefficient = isContender
             ? contenderRootPwCoefficient : baselineRootPwCoefficient;
+        searchConfig.pwExponent = isContender ? contenderPwExponent : baselinePwExponent;
+        searchConfig.pwMassStart = isContender ? contenderPwMassStart : baselinePwMassStart;
+        searchConfig.pwMassExponent = isContender ? contenderPwMassExponent : baselinePwMassExponent;
+        searchConfig.pwMassCap = isContender ? contenderPwMassCap : baselinePwMassCap;
         searchConfig.enableMCGS = isContender ? contenderMcgs : baselineMcgs;
         searchConfig.enableTranspositions = isContender
             ? contenderTranspositions : baselineTranspositions;

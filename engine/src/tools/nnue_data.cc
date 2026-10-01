@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -26,12 +27,14 @@
 #include "nn/engine.h"
 #include "nnue/features.h"
 #include "search/search_params.h"
+#include "tools/distill_data.h"
 
 namespace nnue_datagen {
 
 constexpr std::array<char, 4> NNUE_DATA_MAGIC = {'H', 'N', 'U', 'E'};
 constexpr uint32_t NNUE_DATA_VERSION = 1;
 constexpr int8_t OUTCOME_UNKNOWN = 2;
+using distill::half_bits;
 
 struct PositionRecord {
     std::array<uint16_t, nnue::MAX_ACTIVE_FEATURES> features{};
@@ -41,7 +44,59 @@ struct PositionRecord {
     float value = 0.0f;
     std::array<float, 3> wdl{};
     std::string fen;
+    // Distillation only: planes, moves left and policy (value, WDL, ply and
+    // outcome are filled in from the fields above when the chunk is written).
+    distill::Record distill;
 };
+
+std::array<float, 3> wdl_probabilities(const __half* logits) {
+    std::array<float, 3> probabilities;
+    float maxLogit = -1e30f;
+    for (int k = 0; k < 3; ++k) {
+        probabilities[k] = __half2float(logits[k]);
+        maxLogit = std::max(maxLogit, probabilities[k]);
+    }
+    float total = 0.0f;
+    for (float& probability : probabilities) {
+        probability = std::exp(probability - maxLogit);
+        total += probability;
+    }
+    for (float& probability : probabilities) {
+        probability /= total;
+    }
+    return probabilities;
+}
+
+/// The teacher's probabilities over all of one board's legal moves and the
+/// pass, normalised as the search does. Every legal move is kept, so the
+/// student can be trained with the same legal-only softmax. `mirrorPolicy` is
+/// the same board's policy with the boards swapped in the input; the two are
+/// averaged.
+std::vector<distill::PolicyEntry> teacher_policy(Board& board, int boardNumber, bool onTurn,
+                                                 const __half* policy, const __half* mirrorPolicy) {
+    std::vector<distill::PolicyEntry> entries;
+    if (!onTurn) {
+        return entries;
+    }
+    const std::vector<Stockfish::Move> actions = distill::policy_actions(board, boardNumber);
+    std::vector<float> probabilities =
+        get_normalized_probability(policy, actions, boardNumber, board);
+    const std::vector<float> mirror =
+        get_normalized_probability(mirrorPolicy, actions, boardNumber, board);
+    for (size_t index = 0; index < probabilities.size(); ++index) {
+        probabilities[index] = 0.5f * (probabilities[index] + mirror[index]);
+    }
+    const Stockfish::Color side = board.side_to_move(boardNumber);
+    entries.reserve(actions.size());
+    for (size_t index = 0; index < actions.size(); ++index) {
+        const int policyIndex = get_fast_policy_index(actions[index], side);
+        if (policyIndex >= 0) {
+            entries.push_back({static_cast<uint16_t>(policyIndex),
+                               half_bits(__float2half_rn(probabilities[index]))});
+        }
+    }
+    return entries;
+}
 
 /**
  * @brief Column-major chunk writer.
@@ -54,10 +109,10 @@ struct PositionRecord {
 class NnueChunkWriter {
 public:
     NnueChunkWriter(std::filesystem::path directory, std::string prefix,
-                    size_t chunkPositions, bool writeFens)
+                    size_t chunkPositions, bool writeFens, bool distill = false)
         : directory_(std::move(directory)), prefix_(std::move(prefix)),
           chunkPositions_(std::max<size_t>(1, chunkPositions)),
-          writeFens_(writeFens) {}
+          writeFens_(writeFens), distill_(distill) {}
 
     void append(PositionRecord&& record, int8_t outcome) {
         records_.push_back(std::move(record));
@@ -69,6 +124,10 @@ public:
 
     void flush() {
         if (records_.empty()) {
+            return;
+        }
+        if (distill_) {
+            flush_distill();
             return;
         }
         std::ostringstream name;
@@ -118,10 +177,30 @@ public:
     }
 
 private:
+    /// Distillation chunk (HDST, see tools/distill_data.h).
+    void flush_distill() {
+        std::ostringstream name;
+        name << prefix_ << '_' << std::setw(5) << std::setfill('0') << chunkIndex_++ << ".dst";
+        std::vector<distill::Record> records;
+        records.reserve(records_.size());
+        for (size_t index = 0; index < records_.size(); ++index) {
+            PositionRecord& source = records_[index];
+            distill::Record& record = records.emplace_back(std::move(source.distill));
+            record.value = source.value;
+            record.wdl = source.wdl;
+            record.ply = source.ply;
+            record.outcome = outcomes_[index];
+        }
+        distill::write_chunk(directory_ / name.str(), records);
+        records_.clear();
+        outcomes_.clear();
+    }
+
     std::filesystem::path directory_;
     std::string prefix_;
     size_t chunkPositions_;
     bool writeFens_;
+    bool distill_ = false;
     size_t chunkIndex_ = 0;
     std::vector<PositionRecord> records_;
     std::vector<int8_t> outcomes_;
@@ -285,9 +364,9 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
     const size_t batchSize = static_cast<size_t>(engine.getBatchSize());
     std::mt19937_64 rng(runSeed ^ (0x9e3779b97f4a7c15ULL * (workerIndex + 1)));
     std::ostringstream prefix;
-    prefix << "nnue_" << runSeed << '_' << workerIndex;
+    prefix << (config.distill ? "distill_" : "nnue_") << runSeed << '_' << workerIndex;
     NnueChunkWriter writer(config.outputDirectory, prefix.str(),
-                           config.chunkPositions, config.writeFens);
+                           config.chunkPositions, config.writeFens, config.distill);
 
     __half* observations = nullptr;
     if (!hm::alloc_pinned(reinterpret_cast<void**>(&observations),
@@ -296,6 +375,19 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
     }
     std::unique_ptr<__half, void (*)(__half*)> observationGuard(
         observations, [](__half* ptr) { hm::free_pinned(ptr); });
+
+    // Distillation targets average the teacher over both board orders. Swapping
+    // the boards is a symmetry of the game (each board's planes are from the
+    // team's point of view), but the teacher is not exactly symmetric, and a
+    // symmetric student can only learn the symmetric part.
+    __half* mirrorObservations = nullptr;
+    if (config.distill && !hm::alloc_pinned(reinterpret_cast<void**>(&mirrorObservations),
+                                            batchSize * NB_INPUT_VALUES() * sizeof(__half))) {
+        throw std::runtime_error("Unable to allocate pinned observations");
+    }
+    std::unique_ptr<__half, void (*)(__half*)> mirrorGuard(
+        mirrorObservations, [](__half* ptr) { if (ptr) hm::free_pinned(ptr); });
+    std::vector<__half> mirrorValue, mirrorPolicyA, mirrorPolicyB, mirrorWdl, mirrorMovesLeft;
 
     std::vector<GameSlot> slots(batchSize);
     for (GameSlot& slot : slots) {
@@ -336,6 +428,31 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
                             slot.team, slot.hasTimeAdvantage);
         }
         Engine::HalfInferenceOutputs outputs;
+        if (config.distill) {
+            constexpr size_t block = NB_INPUT_CHANNELS_PER_BOARD * 64;
+            for (size_t index = 0; index < batchSize; ++index) {
+                const __half* source = observations + index * NB_INPUT_VALUES();
+                __half* target = mirrorObservations + index * NB_INPUT_VALUES();
+                std::copy(source + block, source + 2 * block, target);
+                std::copy(source, source + block, target + block);
+            }
+            if (!engine.runInferenceHalf(mirrorObservations, outputs, workerIndex)) {
+                throw std::runtime_error("NNUE data inference failed");
+            }
+            // The next inference reuses the engine's output buffers.
+            auto keep = [batchSize](const __half* data, size_t width, std::vector<__half>& into) {
+                if (data) {
+                    into.assign(data, data + batchSize * width);
+                } else {
+                    into.clear();
+                }
+            };
+            keep(outputs.value, 1, mirrorValue);
+            keep(outputs.policyA, NB_POLICY_VALUES(), mirrorPolicyA);
+            keep(outputs.policyB, NB_POLICY_VALUES(), mirrorPolicyB);
+            keep(outputs.wdl, 3, mirrorWdl);
+            keep(outputs.movesLeft, 1, mirrorMovesLeft);
+        }
         if (!engine.runInferenceHalf(observations, outputs, workerIndex)) {
             throw std::runtime_error("NNUE data inference failed");
         }
@@ -345,25 +462,38 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
             Board& board = *slot.board;
 
             PositionRecord record;
-            record.featureCount = static_cast<uint8_t>(nnue::extract_features(
-                board, slot.team, slot.hasTimeAdvantage, record.features.data()));
+            if (config.distill) {
+                distill::pack_planes(observations + index * NB_INPUT_VALUES(), record.distill);
+                record.distill.movesLeft = outputs.movesLeft
+                    ? half_bits(__float2half_rn(0.5f * (__half2float(outputs.movesLeft[index])
+                                                        + __half2float(mirrorMovesLeft[index]))))
+                    : 0;
+                // Board A of the mirrored input is this position's board B.
+                record.distill.policy[0] = teacher_policy(
+                    board, BOARD_A, board.side_to_move(BOARD_A) == slot.team,
+                    outputs.policyA + index * NB_POLICY_VALUES(),
+                    mirrorPolicyB.data() + index * NB_POLICY_VALUES());
+                record.distill.policy[1] = teacher_policy(
+                    board, BOARD_B, board.side_to_move(BOARD_B) == ~slot.team,
+                    outputs.policyB + index * NB_POLICY_VALUES(),
+                    mirrorPolicyA.data() + index * NB_POLICY_VALUES());
+            } else {
+                record.featureCount = static_cast<uint8_t>(nnue::extract_features(
+                    board, slot.team, slot.hasTimeAdvantage, record.features.data()));
+            }
             record.team = static_cast<uint8_t>(team_index(slot.team));
             record.ply = static_cast<uint16_t>(std::min<size_t>(slot.macroPly, 65535));
             record.value = __half2float(outputs.value[index]);
             if (outputs.wdl) {
-                std::array<float, 3> logits;
-                float maxLogit = -1e30f;
-                for (int k = 0; k < 3; ++k) {
-                    logits[k] = __half2float(outputs.wdl[index * 3 + k]);
-                    maxLogit = std::max(maxLogit, logits[k]);
-                }
-                float total = 0.0f;
-                for (int k = 0; k < 3; ++k) {
-                    record.wdl[k] = std::exp(logits[k] - maxLogit);
-                    total += record.wdl[k];
-                }
-                for (float& probability : record.wdl) {
-                    probability /= total;
+                record.wdl = wdl_probabilities(outputs.wdl + index * 3);
+            }
+            if (config.distill) {
+                record.value = 0.5f * (record.value + __half2float(mirrorValue[index]));
+                if (outputs.wdl) {
+                    const std::array<float, 3> mirror = wdl_probabilities(mirrorWdl.data() + index * 3);
+                    for (int k = 0; k < 3; ++k) {
+                        record.wdl[k] = 0.5f * (record.wdl[k] + mirror[k]);
+                    }
                 }
             }
             if (config.writeFens) {

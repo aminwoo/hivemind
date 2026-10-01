@@ -162,6 +162,12 @@ void write_summary(
            << config.contenderRootPwCoefficient << ",\n"
            << "  \"baseline_root_pw_coefficient\": "
            << config.baselineRootPwCoefficient << ",\n"
+           << "  \"contender_pw_exponent\": " << config.contenderPwExponent << ",\n"
+           << "  \"baseline_pw_exponent\": " << config.baselinePwExponent << ",\n"
+           << "  \"contender_pw_mass\": [" << config.contenderPwMassStart << ", "
+           << config.contenderPwMassExponent << ", " << config.contenderPwMassCap << "],\n"
+           << "  \"baseline_pw_mass\": [" << config.baselinePwMassStart << ", "
+           << config.baselinePwMassExponent << ", " << config.baselinePwMassCap << "],\n"
            << "  \"contender_mcgs\": " << (config.contenderMcgs ? "true" : "false") << ",\n"
            << "  \"baseline_mcgs\": " << (config.baselineMcgs ? "true" : "false") << ",\n"
            << "  \"contender_transpositions\": " << (config.contenderTranspositions ? "true" : "false") << ",\n"
@@ -529,6 +535,22 @@ int run_tournament(
         || config.baselineRootPwCoefficient <= 0.0f) {
         throw std::invalid_argument("Tournament PW coefficients must be positive and finite");
     }
+    for (const float exponent : {config.contenderPwExponent, config.baselinePwExponent}) {
+        if (!std::isfinite(exponent) || exponent <= 0.0f || exponent > 1.0f) {
+            throw std::invalid_argument("Tournament PW exponents must be in (0, 1]");
+        }
+    }
+    for (const float start : {config.contenderPwMassStart, config.baselinePwMassStart}) {
+        if (!std::isfinite(start) || start < 0.0f || start >= 1.0f) {
+            throw std::invalid_argument("Tournament PW mass start must be in [0, 1)");
+        }
+    }
+    for (const float value : {config.contenderPwMassExponent, config.baselinePwMassExponent,
+                              config.contenderPwMassCap, config.baselinePwMassCap}) {
+        if (!std::isfinite(value) || value <= 0.0f) {
+            throw std::invalid_argument("Tournament PW mass exponent and cap must be positive");
+        }
+    }
     const auto finite_in_range = [](float value, float minimum, float maximum) {
         return std::isfinite(value) && value >= minimum && value <= maximum;
     };
@@ -585,13 +607,10 @@ int run_tournament(
         std::vector<std::string> actions;
 
         for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
-            if (board.is_checkmate(team, hasTimeAdvantage)) {
-                winner = static_cast<int>(~team);
-                termination = "checkmate";
-                break;
-            }
-            if (board.is_draw()) {
-                termination = "draw";
+            const GameStatus status = adjudicate_game(board, team, hasTimeAdvantage);
+            if (status != GameStatus::ONGOING) {
+                winner = adjudicated_winner(status, team);
+                termination = adjudicated_termination(status);
                 break;
             }
 
@@ -616,9 +635,7 @@ int run_tournament(
                         std::chrono::steady_clock::now() - searchStart).count());
                 performance.nodes += searched.nodes;
                 if (!searched.hasMove) {
-                    winner = static_cast<int>(~team);
-                    termination = "no legal action";
-                    break;
+                    throw std::runtime_error("Ongoing alpha-beta search returned no action");
                 }
                 JointActionCandidate action;
                 action.moveA = searched.best.a;
@@ -658,10 +675,13 @@ int run_tournament(
                 [](uint64_t sum, const RootEdgeStats& edge) {
                     return sum + edge.visits;
                 });
-            if (edges.empty()) {
-                winner = static_cast<int>(~team);
-                termination = "no legal action";
+            if (agent.search_status() != GameStatus::ONGOING) {
+                winner = adjudicated_winner(agent.search_status(), team);
+                termination = adjudicated_termination(agent.search_status());
                 break;
+            }
+            if (edges.empty()) {
+                throw std::runtime_error("Ongoing search returned no root edges");
             }
             actions.push_back(action_uci(board, action));
             board.make_moves(action.moveA, action.moveB);
@@ -669,11 +689,10 @@ int run_tournament(
             hasTimeAdvantage = !hasTimeAdvantage;
         }
 
-        if (winner < 0 && board.is_checkmate(team, hasTimeAdvantage)) {
-            winner = static_cast<int>(~team);
-            termination = "checkmate";
-        } else if (winner < 0 && board.is_draw()) {
-            termination = "draw";
+        const GameStatus finalStatus = adjudicate_game(board, team, hasTimeAdvantage);
+        if (winner < 0 && finalStatus != GameStatus::ONGOING) {
+            winner = adjudicated_winner(finalStatus, team);
+            termination = adjudicated_termination(finalStatus);
         }
 
         int contenderOutcome = 0;

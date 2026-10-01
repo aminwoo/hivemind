@@ -27,7 +27,12 @@ constexpr int BATCH_SIZE = 8;
 
 /// Number of search threads to run in parallel per inference engine
 /// Optimized for multi-core scaling with batched TensorRT engine
-constexpr int NUM_SEARCH_THREADS = 4;
+// Search workers per engine, each with its own TensorRT context and stream.
+// Set at configure time with -DHIVEMIND_SEARCH_WORKERS=<n>.
+#ifndef HIVEMIND_NUM_SEARCH_THREADS
+#define HIVEMIND_NUM_SEARCH_THREADS 4
+#endif
+constexpr int NUM_SEARCH_THREADS = HIVEMIND_NUM_SEARCH_THREADS;
 
 // =============================================================================
 // Virtual Loss Settings (aligned with CrazyAra)
@@ -702,9 +707,24 @@ constexpr float JOINT_MATE_WIDENING_SHARE_FLOOR = 0.125f;
 // =============================================================================
 
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
-constexpr float PW_COEFFICIENT = 4.0f;
+constexpr float PW_COEFFICIENT = 2.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.3f;
+
+/// Prior-mass widening (PW_MASS_START > 0 enables it; 0 falls back to the
+/// count formula alone): a node opens children, in prior order, until their
+/// joint priors cover
+///   m(N) = 1 - (1 - PW_MASS_START) * (N + 1)^-PW_MASS_EXPONENT
+/// of the policy, so a confident policy stays narrow and a flat one widens
+/// sooner. The count formula above, times PW_MASS_CAP, bounds it.
+///
+/// Off by default: with start 0.35 and exponent 0.175 (fitted to the median
+/// prior mass the count formula covers on teacher positions, so the typical
+/// width is unchanged and only redistributed) it scored 153-162-5 against
+/// count widening over 320 games at 100 ms (-10 Elo, 95% CI -48..+28).
+constexpr float PW_MASS_START = 0.0f;
+constexpr float PW_MASS_EXPONENT = 0.175f;
+constexpr float PW_MASS_CAP = 2.0f;
 
 // =============================================================================
 // Solver-aware Gumbel root search
@@ -760,6 +780,9 @@ struct RuntimeConfig {
     float pwCoefficient = PW_COEFFICIENT;
     float rootPwCoefficient = ROOT_PW_COEFFICIENT;
     float pwExponent = PW_EXPONENT;
+    float pwMassStart = PW_MASS_START;
+    float pwMassExponent = PW_MASS_EXPONENT;
+    float pwMassCap = PW_MASS_CAP;
     float qValueWeight = Q_VALUE_WEIGHT;
     float qVetoDelta = Q_VETO_DELTA;
     float rootDirichletAlpha = 0.0f;
@@ -799,6 +822,12 @@ inline int get_allowed_children(int visitCount,
     if (visitCount <= 0) return 1;
     return static_cast<int>(std::ceil(
         coefficient * std::pow(static_cast<float>(visitCount), exponent)));
+}
+
+/// Prior mass the expanded children must cover under prior-mass widening.
+inline float get_widening_mass_target(int visitCount, float start, float exponent) {
+    return 1.0f - (1.0f - start) * std::pow(static_cast<float>(std::max(0, visitCount)) + 1.0f,
+                                            -exponent);
 }
 
 inline bool has_insurmountable_visit_lead(float bestVisits,
