@@ -54,6 +54,8 @@ private:
     // Joint actions generated lazily in descending policy order
     JointCandidateGenerator candidateGenerator;
     int expandedCount = 0;
+    // Sum of the expanded children's joint priors (prior-mass widening).
+    float expandedPriorSum = 0.0f;
     
     // Keep the statistics updated together during selection and backup in one
     // compact record. The previous struct-of-arrays layout dirtied four
@@ -362,11 +364,19 @@ public:
         const float coefficient = m_depth.load(std::memory_order_relaxed) == 0
             ? config.rootPwCoefficient
             : config.pwCoefficient;
-        return candidateGenerator.hasNext()
-            && expandedCount < SearchParams::get_allowed_children(
-                m_visits.load(std::memory_order_relaxed) + virtualVisitSum,
-                coefficient,
-                config.pwExponent);
+        const int visits = m_visits.load(std::memory_order_relaxed) + virtualVisitSum;
+        const int countLimit = SearchParams::get_allowed_children(
+            visits, coefficient, config.pwExponent);
+        if (!candidateGenerator.hasNext()) {
+            return false;
+        }
+        if (config.pwMassStart <= 0.0f) {
+            return expandedCount < countLimit;
+        }
+        const int cap = static_cast<int>(std::ceil(config.pwMassCap * static_cast<float>(countLimit)));
+        return expandedCount < std::max(1, cap)
+            && expandedPriorSum < SearchParams::get_widening_mass_target(
+                visits, config.pwMassStart, config.pwMassExponent);
     }
 
     /**
@@ -468,6 +478,7 @@ public:
         }
         
         expandedCount++;
+        expandedPriorSum += candidate.jointPrior;
         if (outChildIdx) {
             *outChildIdx = expandedCount - 1;
         }
@@ -550,6 +561,7 @@ public:
                                   : config.jointPolicyTopK)),
                           config.jointPolicyResidualScale);
         expandedCount = 0;
+        expandedPriorSum = 0.0f;
         visitedPolicySum = 0.0f;
         unvisitedEdges.clear();
         visitedEdges.clear();
@@ -575,6 +587,7 @@ public:
             }
             
             expandedCount++;
+            expandedPriorSum += candidate.jointPrior;
             m_is_expanded.store(true, std::memory_order_release);
             std::shared_ptr<Node> parent = weak_from_this().lock();
             guard.unlock();

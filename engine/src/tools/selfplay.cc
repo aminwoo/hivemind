@@ -10,13 +10,19 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <atomic>
+#include <exception>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <numeric>
 #include <random>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "search/agent.h"
@@ -26,6 +32,8 @@
 #include "common/globals.h"
 #include "environment/planes.h"
 #include "common/utils.h"
+#include "tools/distill_data.h"
+#include "tools/selfplay_policy.h"
 
 namespace {
 
@@ -180,12 +188,6 @@ private:
     std::vector<TrainingSample> pending_;
 };
 
-uint64_t mix_seed(uint64_t seed, uint64_t value) {
-    value += 0x9e3779b97f4a7c15ULL;
-    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
-    return seed ^ (value ^ (value >> 31));
-}
 
 void apply_temperature(std::vector<float>& probabilities, double temperature) {
     if (probabilities.empty() || temperature <= 0.0) {
@@ -449,6 +451,48 @@ std::vector<SparsePolicyEntry> marginal_policy(
     return policy;
 }
 
+/// A board's search policy over all of its legal moves and the pass (zero for
+/// the ones the search did not visit), for distillation. Empty when the board
+/// is not on turn.
+std::vector<distill::PolicyEntry> distill_search_policy(
+    Board& board,
+    int boardNumber,
+    bool onTurn,
+    const std::vector<RootEdgeStats>& edges) {
+    std::vector<distill::PolicyEntry> entries;
+    if (!onTurn) {
+        return entries;
+    }
+    std::map<Stockfish::Move, uint64_t> visitsByMove;
+    uint64_t totalVisits = 0;
+    for (const RootEdgeStats& edge : edges) {
+        if (edge.visits <= 0) {
+            continue;
+        }
+        const Stockfish::Move move = boardNumber == BOARD_A ? edge.action.moveA : edge.action.moveB;
+        visitsByMove[move] += static_cast<uint64_t>(edge.visits);
+        totalVisits += static_cast<uint64_t>(edge.visits);
+    }
+    if (totalVisits == 0) {
+        throw std::runtime_error("Search returned no visited root edges");
+    }
+    const std::vector<Stockfish::Move> actions = distill::policy_actions(board, boardNumber);
+    entries.reserve(actions.size());
+    uint64_t covered = 0;
+    for (const Stockfish::Move move : actions) {
+        const auto found = visitsByMove.find(move);
+        const uint64_t visits = found == visitsByMove.end() ? 0 : found->second;
+        covered += visits;
+        entries.push_back({static_cast<uint16_t>(policy_index(board, boardNumber, move)),
+                           distill::half_bits(__float2half_rn(
+                               static_cast<float>(visits) / static_cast<float>(totalVisits)))});
+    }
+    if (covered != totalVisits) {
+        throw std::runtime_error("Search visited a move outside the legal policy moves");
+    }
+    return entries;
+}
+
 uint16_t joint_policy_index(Board& board, int boardNumber,
                             Stockfish::Move move) {
     if (move == Stockfish::MOVE_NONE) {
@@ -637,185 +681,319 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         || config.nodeRandomFactor >= 1.0) {
         throw std::invalid_argument("Invalid self-play exploration configuration");
     }
+    const size_t gameThreads = std::max<size_t>(1, config.parallelGames);
+    std::set<Engine*> uniqueEngines(engines.begin(), engines.end());
+    if (uniqueEngines.size() != engines.size() || uniqueEngines.count(nullptr)
+        || engines.size() < gameThreads) {
+        throw std::invalid_argument("Self-play requires a distinct engine per game thread");
+    }
+    if (std::filesystem::exists(config.outputDirectory)
+        && !std::filesystem::is_empty(config.outputDirectory)) {
+        throw std::invalid_argument("Self-play output directory must be fresh");
+    }
+    if (!config.distillOutputDirectory.empty()
+        && std::filesystem::exists(config.distillOutputDirectory)
+        && !std::filesystem::is_empty(config.distillOutputDirectory)) {
+        throw std::invalid_argument("Self-play distillation directory must be fresh");
+    }
     const uint64_t runId = config.seed != 0
         ? config.seed
         : static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count());
-    std::mt19937_64 randomEngine(runId);
     const std::filesystem::path trainingDirectory = config.outputDirectory / "training_data";
     std::filesystem::create_directories(config.outputDirectory);
     ChunkWriter chunkWriter(trainingDirectory, config.chunkSamples, runId);
     const std::filesystem::path pgnPath = config.outputDirectory / "games.pgn";
-    Engine& rawPolicyEngine = *engines.front();
-    RawPolicyEvaluator rawPolicyEvaluator(
-        static_cast<size_t>(rawPolicyEngine.getBatchSize()));
-
-    for (size_t gameIndex = 0; gameIndex < config.games; ++gameIndex) {
-        Board board;
-        Agent agent;
-        const int startingTeam = static_cast<int>(randomEngine() & 1ULL);
-        Stockfish::Color team = startingTeam == 0 ? Stockfish::WHITE : Stockfish::BLACK;
-        bool hasTimeAdvantage = false;
-        int winner = -1;
-        std::string termination = "macro-ply limit";
+    std::unique_ptr<distill::ChunkWriter> distillWriter;
+    if (!config.distillOutputDirectory.empty()) {
+        distillWriter = std::make_unique<distill::ChunkWriter>(
+            config.distillOutputDirectory, "search_" + std::to_string(runId),
+            config.distillChunkPositions);
+    }
+    // Games run in `parallelGames` threads, each with its own engine, so the
+    // GPU overlaps many small searches; outputs are serialised.
+    std::atomic<size_t> nextGame{0};
+    std::mutex outputMutex;
+    std::exception_ptr failure;
+    // Finished games waiting for every earlier game to be written (guarded by
+    // outputMutex), so the corpus order depends only on the seed.
+    struct FinishedGame {
         std::vector<TrainingSample> samples;
+        std::vector<distill::Record> distillRecords;
         std::vector<PgnMove> pgnMoves;
-        std::array<int, 2> moveNumbers = {1, 1};
-        const size_t initializationLength = sample_initialization_length(config, randomEngine);
-        bool rawInitializationActive = initializationLength > 0;
-        size_t rawPolicyMacroPlies = 0;
-        size_t rawPolicyEvents = 0;
-        const bool canResign = config.resignThreshold < 0.0f
-            && (config.resignDisableFraction <= 0.0
-                || std::uniform_real_distribution<double>(0.0, 1.0)(randomEngine) >= config.resignDisableFraction);
-        std::array<size_t, 2> consecutiveResignPlies = {0, 0};
+        int winner;
+        int startingTeam;
+        size_t rawPolicyMacroPlies;
+        size_t rawPolicyEvents;
+        std::string termination;
+    };
+    std::map<size_t, FinishedGame> finishedGames;
+    size_t nextOutput = 0;
+    const auto writeGame = [&](size_t gameNumber, FinishedGame& game) {
+        if (distillWriter) {
+            // Finished games give WDL (loss, draw, win) and moves-left targets
+            // (remaining team decisions, capped at 100, over 100, the scale
+            // the search assumes). A game cut off at the macro-ply limit has
+            // no real result: its WDL stays zero, which the trainer masks.
+            const bool finished = game.termination != "macro-ply limit";
+            for (size_t index = 0; index < game.distillRecords.size(); ++index) {
+                distill::Record& record = game.distillRecords[index];
+                record.outcome = game.samples[index].outcome;
+                if (finished) {
+                    record.wdl = {0.0f, 0.0f, 0.0f};
+                    record.wdl[static_cast<size_t>(game.samples[index].outcome + 1)] = 1.0f;
+                    const size_t remaining = std::min<size_t>(game.samples.size() - index, 100);
+                    record.movesLeft = distill::half_bits(
+                        __float2half_rn(static_cast<float>(remaining) / 100.0f));
+                }
+                distillWriter->append(std::move(record));
+            }
+        }
+        const size_t sampleCount = game.samples.size();
+        if (config.writeTrainingChunks) {
+            chunkWriter.append(std::move(game.samples));
+        }
+        append_pgn(
+            pgnPath, gameNumber + 1, game.pgnMoves, game.winner, game.startingTeam,
+            game.rawPolicyMacroPlies, game.rawPolicyEvents,
+            config.initialClockSeconds, game.termination);
+        std::cout << "selfplay game " << (gameNumber + 1) << '/' << config.games
+                  << " raw " << game.rawPolicyMacroPlies
+                  << " samples " << sampleCount
+                  << " events " << game.pgnMoves.size()
+                  << " termination " << game.termination << '\n';
+    };
+    auto playGames = [&](const std::vector<Engine*>& threadEngines) {
+        std::vector<__half> distillPlanes(NB_INPUT_VALUES());
+        Engine& rawPolicyEngine = *threadEngines.front();
+        RawPolicyEvaluator rawPolicyEvaluator(
+            static_cast<size_t>(rawPolicyEngine.getBatchSize()));
 
-        for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
-            if (board.is_checkmate(team, hasTimeAdvantage)) {
-                winner = team == Stockfish::WHITE ? 1 : 0;
-                termination = "checkmate";
+        for (;;) {
+            const size_t gameIndex = nextGame.fetch_add(1);
+            if (gameIndex >= config.games) {
                 break;
             }
-            if (board.is_draw()) {
-                termination = "draw";
-                break;
-            }
+            std::mt19937_64 randomEngine(selfplay_seed(runId, gameIndex));
+            Board board;
+            Agent agent;
+            const int startingTeam = static_cast<int>(randomEngine() & 1ULL);
+            Stockfish::Color team = startingTeam == 0 ? Stockfish::WHITE : Stockfish::BLACK;
+            bool hasTimeAdvantage = false;
+            int winner = -1;
+            std::string termination = "macro-ply limit";
+            std::vector<TrainingSample> samples;
+            std::vector<distill::Record> distillRecords;
+            std::vector<PgnMove> pgnMoves;
+            std::array<int, 2> moveNumbers = {1, 1};
+            const size_t initializationLength = sample_initialization_length(config, randomEngine);
+            bool rawInitializationActive = initializationLength > 0;
+            size_t rawPolicyMacroPlies = 0;
+            size_t rawPolicyEvents = 0;
+            const bool canResign = config.resignThreshold < 0.0f
+                && (config.resignDisableFraction <= 0.0
+                    || std::uniform_real_distribution<double>(0.0, 1.0)(randomEngine) >= config.resignDisableFraction);
+            std::array<size_t, 2> consecutiveResignPlies = {0, 0};
 
-            if (rawInitializationActive && macroPly < initializationLength) {
-                const JointActionCandidate rawAction = sample_raw_policy_action(
-                    rawPolicyEngine, rawPolicyEvaluator, board, team, hasTimeAdvantage,
-                    sample_raw_policy_temperature(config, randomEngine), randomEngine);
-                if (!action_leads_to_terminal(
-                        board, rawAction, team, hasTimeAdvantage)) {
-                    if (rawAction.moveA != Stockfish::MOVE_NONE) {
-                        append_pgn_move(
-                            board, BOARD_A, rawAction.moveA, moveNumbers, pgnMoves.size(),
-                            config.initialClockSeconds, pgnMoves);
-                        board.push_move(BOARD_A, rawAction.moveA);
+            for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
+                const GameStatus status = adjudicate_game(board, team, hasTimeAdvantage);
+                if (status != GameStatus::ONGOING) {
+                    winner = adjudicated_winner(status, team);
+                    termination = adjudicated_termination(status);
+                    break;
+                }
+
+                if (rawInitializationActive && macroPly < initializationLength) {
+                    const JointActionCandidate rawAction = sample_raw_policy_action(
+                        rawPolicyEngine, rawPolicyEvaluator, board, team, hasTimeAdvantage,
+                        sample_raw_policy_temperature(config, randomEngine), randomEngine);
+                    if (!action_leads_to_terminal(
+                            board, rawAction, team, hasTimeAdvantage)) {
+                        if (rawAction.moveA != Stockfish::MOVE_NONE) {
+                            append_pgn_move(
+                                board, BOARD_A, rawAction.moveA, moveNumbers, pgnMoves.size(),
+                                config.initialClockSeconds, pgnMoves);
+                            board.push_move(BOARD_A, rawAction.moveA);
+                        }
+                        if (rawAction.moveB != Stockfish::MOVE_NONE) {
+                            append_pgn_move(
+                                board, BOARD_B, rawAction.moveB, moveNumbers, pgnMoves.size(),
+                                config.initialClockSeconds, pgnMoves);
+                            board.push_move(BOARD_B, rawAction.moveB);
+                        }
+                        rawPolicyMacroPlies++;
+                        rawPolicyEvents = pgnMoves.size();
+                        team = ~team;
+                        hasTimeAdvantage = !hasTimeAdvantage;
+                        continue;
                     }
-                    if (rawAction.moveB != Stockfish::MOVE_NONE) {
-                        append_pgn_move(
-                            board, BOARD_B, rawAction.moveB, moveNumbers, pgnMoves.size(),
-                            config.initialClockSeconds, pgnMoves);
-                        board.push_move(BOARD_B, rawAction.moveB);
+                    rawInitializationActive = false;
+                }
+
+                TrainingSample sample;
+                sample.gameId = gameIndex;
+                sample.macroPly = static_cast<uint16_t>(std::min<size_t>(
+                    macroPly, std::numeric_limits<uint16_t>::max()));
+                sample.team = team == Stockfish::WHITE ? 0 : 1;
+                sample.hasTimeAdvantage = hasTimeAdvantage ? 1 : 0;
+                sample.planes = encode_planes(board, team, hasTimeAdvantage);
+
+                agent.reset_search_state();
+                SearchOptions searchOptions;
+                searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
+                searchOptions.search.enableMateProbe = config.fairyStockfishMateNodes > 0;
+                searchOptions.mateProbeNodes = config.fairyStockfishMateNodes;
+                searchOptions.completeMateProbe = config.fairyStockfishMateNodes > 0;
+                // Self-play policy targets and temperature sampling are visit-based.
+                // Keep that data-generation contract until it has a dedicated
+                // Gumbel-improved policy target rather than biased halving visits.
+                searchOptions.search.enableGumbelRootSearch = false;
+                if (!config.rootScans) {
+                    searchOptions.search.enableRootMateSearch = false;
+                    searchOptions.search.certifySelectedMove = false;
+                }
+                searchOptions.search.rootDirichletAlpha = config.dirichletAlpha;
+                searchOptions.search.rootDirichletEpsilon = config.dirichletEpsilon;
+                searchOptions.search.rootNoiseSeed = selfplay_seed(runId, gameIndex * config.maxMacroPlies + macroPly);
+                const JointActionCandidate choice = agent.run_search(
+                    board, threadEngines, team, hasTimeAdvantage, searchOptions);
+                std::vector<RootEdgeStats> edges = agent.root_edge_stats();
+                if (agent.search_status() != GameStatus::ONGOING) {
+                    winner = adjudicated_winner(agent.search_status(), team);
+                    termination = adjudicated_termination(agent.search_status());
+                    break;
+                }
+                if (edges.empty()) {
+                    throw std::runtime_error("Ongoing search returned no root edges");
+                }
+                const uint64_t actualVisits = std::accumulate(
+                    edges.begin(), edges.end(), uint64_t{0},
+                    [](uint64_t total, const RootEdgeStats& edge) {
+                        return total + static_cast<uint64_t>(std::max(0, edge.visits));
+                    });
+                sample.nodes = static_cast<uint32_t>(std::min<uint64_t>(
+                    actualVisits, std::numeric_limits<uint32_t>::max()));
+
+                edges = selfplay_policy_edges(edges, agent.root_type(), choice, agent.certified_choice());
+                const float rootQ = agent.root_q();
+                sample.rootQ = rootQ;
+                sample.policyA = marginal_policy(board, BOARD_A, edges);
+                sample.policyB = marginal_policy(board, BOARD_B, edges);
+                sample.jointPolicy = joint_policy(board, edges);
+                if (distillWriter) {
+                    // WDL stays zero: search has a value but no WDL distribution,
+                    // so these records carry no WDL or moves-left target.
+                    distill::Record record;
+                    board_to_planes(board, distillPlanes.data(), team, hasTimeAdvantage);
+                    distill::pack_planes(distillPlanes.data(), record);
+                    record.value = rootQ;
+                    record.ply = sample.macroPly;
+                    record.policy[0] = distill_search_policy(
+                        board, BOARD_A, board.side_to_move(BOARD_A) == team, edges);
+                    record.policy[1] = distill_search_policy(
+                        board, BOARD_B, board.side_to_move(BOARD_B) == ~team, edges);
+                    distillRecords.push_back(std::move(record));
+                }
+                samples.push_back(std::move(sample));
+
+                const size_t teamIdx = team == Stockfish::WHITE ? 0 : 1;
+                if (canResign) {
+                    if (rootQ <= config.resignThreshold) {
+                        consecutiveResignPlies[teamIdx]++;
+                        if (consecutiveResignPlies[teamIdx] >= config.resignConsecutivePlies) {
+                            winner = team == Stockfish::WHITE ? 1 : 0;
+                            termination = "resignation";
+                            break;
+                        }
+                    } else {
+                        consecutiveResignPlies[teamIdx] = 0;
                     }
-                    rawPolicyMacroPlies++;
-                    rawPolicyEvents = pgnMoves.size();
+                }
+
+                const JointActionCandidate action = select_action(
+                    edges, mcts_temperature(config, macroPly), randomEngine);
+                if (action.moveA == Stockfish::MOVE_NONE && action.moveB == Stockfish::MOVE_NONE) {
                     team = ~team;
                     hasTimeAdvantage = !hasTimeAdvantage;
                     continue;
                 }
-                rawInitializationActive = false;
-            }
 
-            TrainingSample sample;
-            sample.gameId = gameIndex;
-            sample.macroPly = static_cast<uint16_t>(std::min<size_t>(
-                macroPly, std::numeric_limits<uint16_t>::max()));
-            sample.team = team == Stockfish::WHITE ? 0 : 1;
-            sample.hasTimeAdvantage = hasTimeAdvantage ? 1 : 0;
-            sample.planes = encode_planes(board, team, hasTimeAdvantage);
-
-            agent.reset_search_state();
-            SearchOptions searchOptions;
-            searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
-            searchOptions.search.enableMateProbe = config.fairyStockfishMateNodes > 0;
-            searchOptions.mateProbeNodes = config.fairyStockfishMateNodes;
-            searchOptions.completeMateProbe = config.fairyStockfishMateNodes > 0;
-            // Self-play policy targets and temperature sampling are visit-based.
-            // Keep that data-generation contract until it has a dedicated
-            // Gumbel-improved policy target rather than biased halving visits.
-            searchOptions.search.enableGumbelRootSearch = false;
-            searchOptions.search.rootDirichletAlpha = config.dirichletAlpha;
-            searchOptions.search.rootDirichletEpsilon = config.dirichletEpsilon;
-            searchOptions.search.rootNoiseSeed = mix_seed(runId, gameIndex * config.maxMacroPlies + macroPly);
-            agent.run_search(board, engines, team, hasTimeAdvantage, searchOptions);
-            const std::vector<RootEdgeStats> edges = agent.root_edge_stats();
-            if (edges.empty()) {
-                winner = team == Stockfish::WHITE ? 1 : 0;
-                termination = "no legal action";
-                break;
-            }
-            const uint64_t actualVisits = std::accumulate(
-                edges.begin(), edges.end(), uint64_t{0},
-                [](uint64_t total, const RootEdgeStats& edge) {
-                    return total + static_cast<uint64_t>(std::max(0, edge.visits));
-                });
-            sample.nodes = static_cast<uint32_t>(std::min<uint64_t>(
-                actualVisits, std::numeric_limits<uint32_t>::max()));
-
-            const float rootQ = agent.root_q();
-            sample.rootQ = rootQ;
-            sample.policyA = marginal_policy(board, BOARD_A, edges);
-            sample.policyB = marginal_policy(board, BOARD_B, edges);
-            sample.jointPolicy = joint_policy(board, edges);
-            samples.push_back(std::move(sample));
-
-            const size_t teamIdx = team == Stockfish::WHITE ? 0 : 1;
-            if (canResign) {
-                if (rootQ <= config.resignThreshold) {
-                    consecutiveResignPlies[teamIdx]++;
-                    if (consecutiveResignPlies[teamIdx] >= config.resignConsecutivePlies) {
-                        winner = team == Stockfish::WHITE ? 1 : 0;
-                        termination = "resignation";
-                        break;
-                    }
-                } else {
-                    consecutiveResignPlies[teamIdx] = 0;
+                if (action.moveA != Stockfish::MOVE_NONE) {
+                    append_pgn_move(
+                        board, BOARD_A, action.moveA, moveNumbers, pgnMoves.size(),
+                        config.initialClockSeconds, pgnMoves);
+                    board.push_move(BOARD_A, action.moveA);
                 }
-            }
+                if (action.moveB != Stockfish::MOVE_NONE) {
+                    append_pgn_move(
+                        board, BOARD_B, action.moveB, moveNumbers, pgnMoves.size(),
+                        config.initialClockSeconds, pgnMoves);
+                    board.push_move(BOARD_B, action.moveB);
+                }
 
-            const JointActionCandidate action = select_action(
-                edges, mcts_temperature(config, macroPly), randomEngine);
-            if (action.moveA == Stockfish::MOVE_NONE && action.moveB == Stockfish::MOVE_NONE) {
                 team = ~team;
                 hasTimeAdvantage = !hasTimeAdvantage;
-                continue;
             }
 
-            if (action.moveA != Stockfish::MOVE_NONE) {
-                append_pgn_move(
-                    board, BOARD_A, action.moveA, moveNumbers, pgnMoves.size(),
-                    config.initialClockSeconds, pgnMoves);
-                board.push_move(BOARD_A, action.moveA);
-            }
-            if (action.moveB != Stockfish::MOVE_NONE) {
-                append_pgn_move(
-                    board, BOARD_B, action.moveB, moveNumbers, pgnMoves.size(),
-                    config.initialClockSeconds, pgnMoves);
-                board.push_move(BOARD_B, action.moveB);
+            const GameStatus finalStatus = adjudicate_game(board, team, hasTimeAdvantage);
+            if (winner < 0 && finalStatus != GameStatus::ONGOING) {
+                winner = adjudicated_winner(finalStatus, team);
+                termination = adjudicated_termination(finalStatus);
             }
 
-            team = ~team;
-            hasTimeAdvantage = !hasTimeAdvantage;
+            for (size_t index = 0; index < samples.size(); ++index) {
+                TrainingSample& sample = samples[index];
+                sample.outcome = winner < 0 ? 0 : (sample.team == winner ? 1 : -1);
+                sample.wdl = static_cast<uint8_t>(sample.outcome + 1);
+                sample.movesLeft = static_cast<uint16_t>(std::min<size_t>(
+                    samples.size() - index, std::numeric_limits<uint16_t>::max()));
+            }
+            // Hand the game to the writer; games are written in index order, but a
+            // finished thread starts its next game instead of waiting for earlier
+            // (possibly much longer) games to finish.
+            const std::lock_guard<std::mutex> lock(outputMutex);
+            if (failure) {
+                return;
+            }
+            finishedGames.emplace(gameIndex, FinishedGame{
+                std::move(samples), std::move(distillRecords), std::move(pgnMoves), winner,
+                startingTeam, rawPolicyMacroPlies, rawPolicyEvents, std::move(termination)});
+            for (auto next = finishedGames.find(nextOutput); next != finishedGames.end();
+                 next = finishedGames.find(nextOutput)) {
+                writeGame(next->first, next->second);
+                finishedGames.erase(next);
+                ++nextOutput;
+            }
         }
+    };
 
-        if (winner < 0 && board.is_checkmate(team, hasTimeAdvantage)) {
-            winner = team == Stockfish::WHITE ? 1 : 0;
-            termination = "checkmate";
-        } else if (winner < 0 && board.is_draw()) {
-            termination = "draw";
+    if (gameThreads == 1) {
+        playGames(engines);
+    } else {
+        std::vector<std::thread> threads;
+        for (size_t threadIndex = 0; threadIndex < gameThreads; ++threadIndex) {
+            threads.emplace_back([&, threadIndex] {
+                try {
+                    playGames({engines[threadIndex]});
+                } catch (...) {
+                    const std::lock_guard<std::mutex> lock(outputMutex);
+                    if (!failure) {
+                        failure = std::current_exception();
+                    }
+                    nextGame = config.games;  // stop the other threads
+                }
+            });
         }
-
-        for (size_t index = 0; index < samples.size(); ++index) {
-            TrainingSample& sample = samples[index];
-            sample.outcome = winner < 0 ? 0 : (sample.team == winner ? 1 : -1);
-            sample.wdl = static_cast<uint8_t>(sample.outcome + 1);
-            sample.movesLeft = static_cast<uint16_t>(std::min<size_t>(
-                samples.size() - index, std::numeric_limits<uint16_t>::max()));
+        for (std::thread& thread : threads) {
+            thread.join();
         }
-        const size_t sampleCount = samples.size();
-        chunkWriter.append(std::move(samples));
-        append_pgn(
-            pgnPath, gameIndex + 1, pgnMoves, winner, startingTeam,
-            rawPolicyMacroPlies, rawPolicyEvents,
-            config.initialClockSeconds, termination);
-        std::cout << "selfplay game " << (gameIndex + 1) << '/' << config.games
-                  << " raw " << rawPolicyMacroPlies
-                  << " samples " << sampleCount
-                  << " events " << pgnMoves.size()
-                  << " termination " << termination << '\n';
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
     }
 
     chunkWriter.finish();
+    if (distillWriter) {
+        distillWriter->flush();
+    }
     return 0;
 }

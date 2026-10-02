@@ -23,6 +23,7 @@ add_executable(
   test_node_concurrency.cc
   test_search_memory.cc
   test_root_scan_stop.cc
+  test_nnue.cc
 )
 target_link_libraries(hivemind_tests PRIVATE hivemind_lib gtest_main)
 

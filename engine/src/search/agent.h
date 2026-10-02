@@ -1,5 +1,6 @@
 #pragma once
 
+#include "environment/adjudication.h"
 #include <optional>
 #include <atomic>
 #include <chrono>
@@ -60,6 +61,8 @@ struct SearchOptions {
 struct RootEdgeStats {
     JointActionCandidate action;
     int visits = 0;
+    float q = 0.0f;  // edge Q from the root team's view
+    NodeType childType = NodeType::UNSOLVED;
 };
 
 struct InternalMateProbeStats {
@@ -157,6 +160,8 @@ struct RootLossProof {
  */
 class Agent {
 private:
+    GameStatus searchStatus_ = GameStatus::ONGOING;
+    bool certifiedChoice_ = false;
     struct RetainedRootCandidate {
         std::shared_ptr<Node> node;
         uint64_t positionHash = 0;
@@ -307,6 +312,9 @@ public:
 
     /** Returns the evaluated Q-value of the root node after search. */
     float root_q() const;
+    GameStatus search_status() const { return searchStatus_; }
+    NodeType root_type() const { return rootNode ? rootNode->get_node_type() : NodeType::UNSOLVED; }
+    bool certified_choice() const { return certifiedChoice_; }
 
     /** Returns telemetry from the most recent internal mate-probe experiment. */
     InternalMateProbeStats internal_mate_probe_stats() const;

@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
+#include "tools/selfplay.h"
+#include "tools/selfplay_policy.h"
+#include "tools/distill_data.h"
 #include <chrono>
+#include <map>
+#include <random>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -1111,14 +1116,16 @@ TEST(SearchConfigTest, ProgressiveWideningScheduleIsExplicit) {
     config.pwCoefficient = 1.0f;
     config.rootPwCoefficient = 4.0f;
 
+    // ceil(coefficient * visits^PW_EXPONENT) with the default exponent of 0.3.
+    ASSERT_FLOAT_EQ(config.pwExponent, 0.3f);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  1000, config.pwCoefficient, config.pwExponent), 16);
+                  1000, config.pwCoefficient, config.pwExponent), 8);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  1000, config.rootPwCoefficient, config.pwExponent), 64);
+                  1000, config.rootPwCoefficient, config.pwExponent), 32);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  10000, config.pwCoefficient, config.pwExponent), 40);
+                  10000, config.pwCoefficient, config.pwExponent), 16);
     EXPECT_EQ(SearchParams::get_allowed_children(
-                  10000, config.rootPwCoefficient, config.pwExponent), 160);
+                  10000, config.rootPwCoefficient, config.pwExponent), 64);
 }
 
 TEST(SearchConfigTest, MovesLeftDiscountingPrefersFastWinAndDistantLoss) {
@@ -1144,6 +1151,7 @@ TEST(SearchConfigTest, MovesLeftDiscountingPrefersFastWinAndDistantLoss) {
 TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
     SearchParams::RuntimeConfig config;
     config.pwCoefficient = 1.0f;
+    config.pwMassStart = 0.0f;  // the count formula alone
     Node node(Stockfish::WHITE);
     node.set_depth(1);
     std::vector<Stockfish::Move> actionsA = {
@@ -1172,6 +1180,59 @@ TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
 
     EXPECT_TRUE(node.has_unexpanded_joint_actions());
     EXPECT_FALSE(node.should_expand_new_child(config));
+}
+
+TEST(NodeTest, PriorMassWideningFollowsPolicyConfidence) {
+    // A confident policy covers the mass target with one child; a flat one
+    // needs more, up to the cap on the count formula.
+    SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 1.0f;
+    config.pwMassStart = 0.35f;
+    config.pwMassExponent = 0.175f;
+    config.pwMassCap = 2.0f;
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3), Stockfish::Move(4)};
+    std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
+
+    Node confident(Stockfish::WHITE);
+    confident.set_depth(1);
+    ASSERT_TRUE(confident.try_init_and_expand(
+        actionsA, actionsB, {0.9f, 0.05f, 0.03f, 0.02f}, {1.0f}, false, true, false, config));
+    confident.update(0, 0.0f);
+    confident.update(0, 0.0f);
+    EXPECT_FALSE(confident.should_expand_new_child(config));
+
+    Node flat(Stockfish::WHITE);
+    flat.set_depth(1);
+    ASSERT_TRUE(flat.try_init_and_expand(
+        actionsA, actionsB, {0.25f, 0.25f, 0.25f, 0.25f}, {1.0f}, false, true, false, config));
+    flat.update(0, 0.0f);
+    EXPECT_TRUE(flat.should_expand_new_child(config));
+    JointActionCandidate action;
+    ASSERT_NE(flat.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+    flat.update(1, 0.0f);
+    // Two children cover 0.5, above the target at two visits (~0.46).
+    EXPECT_FALSE(flat.should_expand_new_child(config));
+
+    // The cap, 2 x ceil(1 * N^0.3), bounds widening however far the target is.
+    config.pwMassStart = 0.99f;
+    std::vector<Stockfish::Move> manyA;
+    for (int move = 1; move <= 8; ++move) {
+        manyA.push_back(Stockfish::Move(move));
+    }
+    Node capped(Stockfish::WHITE);
+    capped.set_depth(1);
+    ASSERT_TRUE(capped.try_init_and_expand(
+        manyA, actionsB, std::vector<float>(8, 0.125f), {1.0f}, false, true, false, config));
+    capped.update(0, 0.0f);
+    for (int child = 1; child < 4; ++child) {
+        ASSERT_TRUE(capped.should_expand_new_child(config)) << child;
+        ASSERT_NE(capped.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+        capped.update(child, 0.0f);
+    }
+    // Four visits allow 2 x ceil(4^0.3) = 4 children; four are expanded.
+    ASSERT_TRUE(capped.has_unexpanded_joint_actions());
+    EXPECT_FALSE(capped.should_expand_new_child(config));
 }
 
 TEST(JointCandidateGeneratorTest, JointFactorsRescorePrefixAndPreserveFallback) {
@@ -1343,6 +1404,7 @@ TEST(NodeTest, RootProgressiveWideningExploresMoreCandidates) {
 TEST(NodeTest, RootVisitsGeneratedChildBeforeWidening) {
     Node node(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
+    config.pwMassStart = 0.0f;  // the count formula alone
     config.enableGumbelRootSearch = false;
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
@@ -1360,6 +1422,8 @@ TEST(NodeTest, RootVisitsGeneratedChildBeforeWidening) {
 }
 
 TEST(NodeTest, InFlightVisitAllowsBatchToWiden) {
+    SearchParams::RuntimeConfig config;
+    config.pwMassStart = 0.0f;  // the count formula alone
     Node node(Stockfish::WHITE);
     node.set_depth(1);
     std::vector<Stockfish::Move> actionsA = {
@@ -1367,12 +1431,12 @@ TEST(NodeTest, InFlightVisitAllowsBatchToWiden) {
 
     ASSERT_TRUE(node.try_init_and_expand(
         actionsA, {Stockfish::MOVE_NONE}, {0.8f, 0.15f, 0.05f}, {1.0f},
-        false, true, false, SearchParams::RuntimeConfig{}));
+        false, true, false, config));
     node.update_terminal(0.0f);
-    EXPECT_FALSE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_FALSE(node.should_expand_new_child(config));
 
     node.apply_virtual_loss(0);
-    EXPECT_TRUE(node.should_expand_new_child(SearchParams::RuntimeConfig{}));
+    EXPECT_TRUE(node.should_expand_new_child(config));
     node.remove_virtual_loss(0);
 }
 
@@ -1399,8 +1463,12 @@ TEST(NodeTest, AtomicVirtualLossDivertsNextSelection) {
     auto& [secondChild, secondIdx, secondReserved, secondPending] = secondSelection;
     ASSERT_NE(firstChild, nullptr);
     ASSERT_NE(secondChild, nullptr);
-    EXPECT_EQ(firstIdx, 0);
-    EXPECT_EQ(secondIdx, 1);
+    // Which child goes first depends on CPUCT against the first-play
+    // urgency of the unvisited sibling; the virtual loss must send the
+    // second selection to the other one either way.
+    EXPECT_NE(firstIdx, secondIdx);
+    EXPECT_TRUE(firstIdx == 0 || firstIdx == 1);
+    EXPECT_TRUE(secondIdx == 0 || secondIdx == 1);
     EXPECT_TRUE(firstReserved);
     EXPECT_TRUE(secondReserved);
     EXPECT_EQ(firstPending, nullptr);
@@ -1820,6 +1888,7 @@ TEST_F(EngineTest, ReservedCanonicalExpansionRestoresBoardAndEdgeState) {
 
     auto root = std::make_shared<Node>(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
+    config.pwMassStart = 0.0f;  // the count formula alone
     config.enableTranspositions = true;
     ASSERT_TRUE(root->try_init_and_expand(
         {legalMoves[0], legalMoves[1]}, {Stockfish::MOVE_NONE},
@@ -4442,4 +4511,95 @@ TEST(RequiredMoveBoard, RejectsOptionalPassesOnTheRequiredBoard) {
         rules, Stockfish::MOVE_NONE, moveB, false, false));
 
     g_requiredMoveBoard = REQUIRE_MOVE_NONE;
+}
+
+
+TEST_F(EngineTest, AdjudicationPreservesMateUntilARescueIsPlayed) {
+    Board board;
+    board.set("4k3/8/8/8/8/8/5PPP/4r1K1[] w - - 0 1|"
+              "r3k3/8/8/8/8/8/N7/4K3[] b - - 0 1");
+    EXPECT_EQ(adjudicate_game(board, Stockfish::WHITE, false), GameStatus::ONGOING);
+    const auto shuffle = find_move(board, BOARD_B, "a8b8");
+    ASSERT_NE(shuffle, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_B, shuffle);
+    EXPECT_EQ(adjudicate_game(board, Stockfish::BLACK, true), GameStatus::WIN);
+    EXPECT_EQ(adjudicated_winner(GameStatus::WIN, Stockfish::BLACK), 1);
+    Agent agent;
+    agent.run_search(board, {}, Stockfish::BLACK, true, SearchOptions{});
+    EXPECT_EQ(agent.search_status(), GameStatus::WIN);
+    EXPECT_TRUE(agent.root_edge_stats().empty());
+
+    board.set("4k3/8/8/8/8/8/5PPP/4r1K1[] w - - 0 1|"
+              "r3k3/8/8/8/8/8/N7/4K3[] b - - 0 1");
+    const auto rescue = find_move(board, BOARD_B, "a8a2");
+    ASSERT_NE(rescue, Stockfish::MOVE_NONE);
+    board.push_move(BOARD_B, rescue);
+    EXPECT_EQ(adjudicate_game(board, Stockfish::BLACK, true), GameStatus::ONGOING);
+}
+
+TEST_F(EngineTest, SelfplayPoliciesRespectSolverAndCertifiedChoices) {
+    Board board;
+    JointActionCandidate quiet, win, loss;
+    quiet.moveA = find_move(board, BOARD_A, "e2e4");
+    win.moveA = find_move(board, BOARD_A, "d2d4");
+    loss.moveA = find_move(board, BOARD_A, "a2a3");
+    std::vector<RootEdgeStats> edges = {
+        {quiet, 600, 0.0f, NodeType::UNSOLVED},
+        {win, 12, 1.0f, NodeType::LOSS},
+        {loss, 900, -1.0f, NodeType::WIN}};
+    auto eligible = selfplay_policy_edges(edges, NodeType::WIN, win, false);
+    ASSERT_EQ(eligible.size(), 1U);
+    EXPECT_EQ(eligible[0].action.moveA, win.moveA);
+    EXPECT_EQ(eligible[0].visits, 12);
+    eligible = selfplay_policy_edges(edges, NodeType::UNSOLVED, quiet, false);
+    ASSERT_EQ(eligible.size(), 2U);
+    EXPECT_EQ(eligible[0].action.moveA, quiet.moveA);
+    EXPECT_EQ(eligible[1].action.moveA, win.moveA);
+    eligible = selfplay_policy_edges(edges, NodeType::UNSOLVED, quiet, true);
+    ASSERT_EQ(eligible.size(), 1U);
+    EXPECT_EQ(eligible[0].action.moveA, quiet.moveA);
+    eligible = selfplay_policy_edges(edges, NodeType::LOSS, loss, false);
+    ASSERT_EQ(eligible.size(), 1U);
+    EXPECT_EQ(eligible[0].action.moveA, loss.moveA);
+    edges = {{loss, 0, -1.0f, NodeType::WIN}};
+    eligible = selfplay_policy_edges(edges, NodeType::UNSOLVED, loss, false);
+    EXPECT_EQ(eligible[0].visits, 1);
+}
+
+TEST(SelfplayTest, RejectsMissingOrSharedParallelEnginesBeforeWriting) {
+    SelfPlayConfig config;
+    config.parallelGames = 2;
+    auto* engine = reinterpret_cast<Engine*>(uintptr_t{1});
+    EXPECT_THROW(run_selfplay({engine}, config), std::invalid_argument);
+    EXPECT_THROW(run_selfplay({engine, engine}, config), std::invalid_argument);
+    EXPECT_THROW(run_selfplay({engine, nullptr}, config), std::invalid_argument);
+}
+
+TEST(SelfplayTest, GameSeedsDoNotDependOnWorkerAssignment) {
+    std::map<size_t, uint64_t> serial, reordered;
+    for (size_t game = 0; game < 6; ++game) {
+        std::mt19937_64 random(selfplay_seed(31, game));
+        serial[game] = random();
+    }
+    for (size_t game : {4U, 1U, 5U, 0U, 3U, 2U}) {
+        std::mt19937_64 random(selfplay_seed(31, game));
+        reordered[game] = random();
+    }
+    EXPECT_EQ(serial, reordered);
+    EXPECT_NE(serial[0], serial[1]);
+    EXPECT_NE(selfplay_seed(31, 0), selfplay_seed(32, 0));
+}
+
+TEST(SelfplayTest, DistillationWriterRejectsAnExistingRunPrefix) {
+    const auto path = std::filesystem::temp_directory_path()
+        / ("hivemind-distill-test-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(path);
+    {
+        distill::ChunkWriter writer(path, "search_31", 1);
+        writer.append(distill::Record{});
+    }
+    EXPECT_THROW(distill::ChunkWriter(path, "search_31", 1), std::runtime_error);
+    EXPECT_NO_THROW(distill::ChunkWriter(path, "search_32", 1));
+    std::filesystem::remove_all(path);
 }

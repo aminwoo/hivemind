@@ -5,6 +5,14 @@
 #include "nn/onnx_utils.h"
 #include "tools/benchmark.h"
 #include "tools/selfplay.h"
+#include "tools/nnue_data.h"
+#include "tools/search_diag.h"
+#include "nnue/network.h"
+#include "search/alphabeta.h"
+#include "environment/planes.h"
+#include <chrono>
+#include <fstream>
+#include <sstream>
 #include "tools/tournament.h"
 #include "search/search_params.h"
 #include "Fairy-Stockfish/src/bitboard.h"
@@ -92,6 +100,7 @@ void printUsage(const char* progName) {
     cout << "Options:" << endl;
     cout << "  --log <level>      Set log level: none, info, debug (default: none)" << endl;
     cout << "  --model <onnx>     Load this model in UCI mode (or --network, default: scans ./models)" << endl;
+    cout << "  --nnue <file>      Search with alpha-beta on this NNUE (no ONNX model or GPU needed)" << endl;
     cout << "  --batch-size <n>   Inference batch size in UCI mode (default: "
          << SearchParams::BATCH_SIZE << "; also settable with the BatchSize UCI option)" << endl;
     cout << "  bench [iters]      Run inference benchmark (accepts --model, --batch-size)" << endl;
@@ -105,6 +114,15 @@ void printUsage(const char* progName) {
     cout << "    --fairy-stockfish-mate-nodes <n> (0 disables; default "
          << SearchParams::MATE_PROBE_ROOT_NODE_BUDGET << ")" << endl;
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
+    cout << "    --distill-output <dir> (also write HDST chunks of the search targets)" << endl;
+    cout << "    --distill-chunk-positions <n> --parallel-games <n> --root-scans <bool>" << endl;
+    cout << "    --training-chunks <bool> (write HVM5 chunks; default true)" << endl;
+    cout << "  searchdiag         Root candidates of searches at several node budgets, per FEN" << endl;
+    cout << "    --model <onnx> --fens <file> --output <jsonl> --budgets 50,200,800 --positions <n> --every <n>" << endl;
+    cout << "  gennnue [options]  Generate NNUE distillation data from teacher-policy games" << endl;
+    cout << "    --model <onnx> --positions <n> --threads <n> --batch-size <n> --output <dir>" << endl;
+    cout << "    --seed <n> --max-macro-plies <n> --chunk-positions <n> --random-move-prob <x> --fens <bool>" << endl;
+    cout << "    --format nnue|distill (distill: packed planes + value/WDL/moves-left + legal-move policies)" << endl;
     cout << "  tournament [options] Run a paired model-vs-model tournament" << endl;
     cout << "    --contender <onnx> --baseline <onnx> --games <even-n>" << endl;
     cout << "    --nodes <n> or --movetime <ms>" << endl;
@@ -112,11 +130,20 @@ void printUsage(const char* progName) {
     cout << "    --output <dir> --seed <n> --max-macro-plies <n>" << endl;
     cout << "    --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
     cout << "    --contender-pw-coefficient <x> --baseline-pw-coefficient <x>" << endl;
+    cout << "    --contender-pw-exponent <x> --baseline-pw-exponent <x>" << endl;
+    cout << "    --contender-pw-mass <m0> --baseline-pw-mass <m0> (prior-mass widening; 0 = off)" << endl;
+    cout << "    --{contender,baseline}-pw-mass-exponent <x> --{contender,baseline}-pw-mass-cap <x>" << endl;
     cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
     cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
     cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
+    cout << "    --contender-nnue <file> (alpha-beta contender instead of --contender)" << endl;
+    cout << "    --contender-ab-movetime <ms> --contender-ab-depth <n> --contender-hash <mb>" << endl;
+    cout << "    --baseline-nnue <file> --baseline-ab-movetime <ms> --baseline-ab-depth <n>" << endl;
+    cout << "    --{contender,baseline}-ab-{check-extension,qsearch-checks} <bool>" << endl;
+    cout << "    --{contender,baseline}-ab-set name=value[,...] (lmp_base, lmp_scale, pv_lmp_scale," << endl;
+    cout << "      root_lmp_scale, lmr_divisor, qsearch_plies, rfp_margin, futility_margin)" << endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -186,6 +213,47 @@ int main(int argc, char* argv[]) {
         return EXIT_SUCCESS;
     }
 
+    if (argc > 1 && string(argv[1]) == "searchdiag") {
+        SearchDiagConfig config;
+        string modelPath;
+        try {
+            for (int i = 2; i + 1 < argc; i += 2) {
+                const string option = argv[i];
+                const string value = argv[i + 1];
+                if (option == "--model" || option == "--network") modelPath = value;
+                else if (option == "--fens") config.fenFile = value;
+                else if (option == "--output") config.outputFile = value;
+                else if (option == "--positions") config.positions = stoull(value);
+                else if (option == "--every") config.every = stoull(value);
+                else if (option == "--budgets") {
+                    config.budgets.clear();
+                    stringstream budgets(value);
+                    for (string budget; getline(budgets, budget, ',');) config.budgets.push_back(stoull(budget));
+                }
+                else throw invalid_argument("Unknown searchdiag option: " + option);
+            }
+            if (config.fenFile.empty() || config.outputFile.empty() || config.budgets.empty()) {
+                throw invalid_argument("--fens, --output and --budgets are required");
+            }
+        } catch (const exception& error) {
+            cerr << "Invalid searchdiag arguments: " << error.what() << endl;
+            return EXIT_FAILURE;
+        }
+        const string onnxFile = resolveModelPath(modelPath);
+        Engine engine(0, SearchParams::BATCH_SIZE);
+        if (onnxFile.empty()
+            || !engine.loadNetwork(onnxFile, getEnginePath(onnxFile, "fp16", SearchParams::BATCH_SIZE, 0, "v3"))) {
+            cerr << "Failed to load a network" << endl;
+            return EXIT_FAILURE;
+        }
+        try {
+            return run_search_diag(engine, config);
+        } catch (const exception& error) {
+            cerr << "searchdiag failed: " << error.what() << endl;
+            return EXIT_FAILURE;
+        }
+    }
+
     // Check for perft benchmark flag
     if (argc > 1 && string(argv[1]) == "perft") {
         int depth = optional_count_argument(argc, argv, 5);
@@ -222,6 +290,11 @@ int main(int argc, char* argv[]) {
                 else if (option == "--node-random-factor") config.nodeRandomFactor = stod(value);
                 else if (option == "--fairy-stockfish-mate-nodes") config.fairyStockfishMateNodes = stoull(value);
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
+                else if (option == "--distill-output") config.distillOutputDirectory = value;
+                else if (option == "--root-scans") config.rootScans = parse_bool_argument(value);
+                else if (option == "--parallel-games") config.parallelGames = stoull(value);
+                else if (option == "--training-chunks") config.writeTrainingChunks = parse_bool_argument(value);
+                else if (option == "--distill-chunk-positions") config.distillChunkPositions = stoull(value);
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
                 else if (option == "--batch-size") config.batchSize = stoi(value);
@@ -243,16 +316,21 @@ int main(int argc, char* argv[]) {
             cerr << "Self-play batch size must be between 1 and 1024" << endl;
             return EXIT_FAILURE;
         }
+        // With parallel games, every game gets its own engine (and so its own
+        // execution contexts) on each device.
+        const size_t enginesPerDevice = std::max<size_t>(1, config.parallelGames);
         for (int deviceId = 0; deviceId < deviceCount; ++deviceId) {
-            auto engine = make_unique<Engine>(deviceId, config.batchSize);
-            const string engineFile = getEnginePath(
-                onnxFile, "fp16", config.batchSize, deviceId, "v3");
-            if (!engine->loadNetwork(onnxFile, engineFile)) {
-                cerr << "Failed to load engine on device " << deviceId << endl;
-                continue;
+            for (size_t copy = 0; copy < enginesPerDevice; ++copy) {
+                auto engine = make_unique<Engine>(deviceId, config.batchSize);
+                const string engineFile = getEnginePath(
+                    onnxFile, "fp16", config.batchSize, deviceId, "v3");
+                if (!engine->loadNetwork(onnxFile, engineFile)) {
+                    cerr << "Failed to load engine on device " << deviceId << endl;
+                    return EXIT_FAILURE;
+                }
+                engines.push_back(engine.get());
+                ownedEngines.push_back(std::move(engine));
             }
-            engines.push_back(engine.get());
-            ownedEngines.push_back(std::move(engine));
         }
         if (engines.empty()) {
             cerr << "Failed to load an engine on any CUDA device" << endl;
@@ -273,9 +351,211 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (argc > 1 && string(argv[1]) == "gennnue") {
+        NnueDataConfig config;
+        filesystem::path modelPath;
+        int batchSize = 256;
+        try {
+            for (int i = 2; i < argc; ++i) {
+                const string option = argv[i];
+                if (i + 1 >= argc) {
+                    throw invalid_argument("Missing value for " + option);
+                }
+                const string value = argv[++i];
+                if (option == "--positions") config.positions = stoull(value);
+                else if (option == "--threads") config.threads = stoull(value);
+                else if (option == "--model" || option == "--network") modelPath = value;
+                else if (option == "--output") config.outputDirectory = value;
+                else if (option == "--seed") config.seed = stoull(value);
+                else if (option == "--max-macro-plies") config.maxMacroPlies = stoull(value);
+                else if (option == "--chunk-positions") config.chunkPositions = stoull(value);
+                else if (option == "--random-move-prob") config.randomMoveProbability = stod(value);
+                else if (option == "--fens") config.writeFens = parse_bool_argument(value);
+                else if (option == "--format") {
+                    if (value != "nnue" && value != "distill") {
+                        throw invalid_argument("--format must be nnue or distill");
+                    }
+                    config.distill = value == "distill";
+                }
+                else if (option == "--batch-size") batchSize = stoi(value);
+                else throw invalid_argument("Unknown gennnue option: " + option);
+            }
+            if (batchSize < 1 || batchSize > 1024) {
+                throw invalid_argument("--batch-size must be between 1 and 1024");
+            }
+        } catch (const exception& error) {
+            cerr << "Invalid gennnue arguments: " << error.what() << endl;
+            return EXIT_FAILURE;
+        }
+        const string onnxFile = resolveModelPath(modelPath.string());
+        if (onnxFile.empty()) {
+            cerr << "No ONNX model found; pass --model <onnx>" << endl;
+            return EXIT_FAILURE;
+        }
+        Engine engine(0, batchSize);
+        if (!engine.loadNetwork(onnxFile, getEnginePath(onnxFile, "fp16", batchSize, 0, "v3"))) {
+            cerr << "Failed to load engine" << endl;
+            return EXIT_FAILURE;
+        }
+        try {
+            return run_nnue_data(engine, config);
+        } catch (const exception& error) {
+            cerr << "gennnue failed: " << error.what() << endl;
+            return EXIT_FAILURE;
+        }
+    }
+
+    // dumpplanes writes the network input planes of FEN lines (float32,
+    // N x 74 x 8 x 8) with the engine's own encoder: calibration data for
+    // scripts/quantize_int8.py.
+    if (argc > 1 && string(argv[1]) == "dumpplanes") {
+        string fenFile, outputFile;
+        size_t every = 1;
+        size_t limit = 0;
+        for (int i = 2; i + 1 < argc; i += 2) {
+            const string option = argv[i];
+            if (option == "--fens") fenFile = argv[i + 1];
+            else if (option == "--output") outputFile = argv[i + 1];
+            else if (option == "--every") every = max<size_t>(1, stoull(argv[i + 1]));
+            else if (option == "--limit") limit = stoull(argv[i + 1]);
+            else {
+                cerr << "Unknown option " << option << endl;
+                return EXIT_FAILURE;
+            }
+        }
+        ifstream fens(fenFile);
+        ofstream out(outputFile, ios::binary);
+        if (!fens || !out) {
+            cerr << "Usage: dumpplanes --fens <file> --output <file> [--every n] [--limit n]" << endl;
+            return EXIT_FAILURE;
+        }
+        vector<float> planes(NB_INPUT_VALUES());
+        size_t index = 0;
+        size_t written = 0;
+        for (string line; getline(fens, line) && (limit == 0 || written < limit); ++index) {
+            if (index % every != 0) {
+                continue;
+            }
+            vector<string> fields;
+            stringstream stream(line);
+            for (string field; getline(stream, field, ';');) {
+                fields.push_back(field);
+            }
+            if (fields.size() != 4) {
+                continue;
+            }
+            Board board;
+            board.set(fields[0] + "|" + fields[1]);
+            board_to_planes(board, planes.data(),
+                            fields[2] == "w" ? Stockfish::WHITE : Stockfish::BLACK, fields[3] == "1");
+            out.write(reinterpret_cast<const char*>(planes.data()),
+                      static_cast<streamsize>(planes.size() * sizeof(float)));
+            ++written;
+        }
+        cout << "wrote " << written << " positions to " << outputFile << endl;
+        return EXIT_SUCCESS;
+    }
+
+    // nnueeval / absearchbench read "fenA;fenB;team(w|b);advantage(0|1)" lines,
+    // the format gennnue writes with --fens true.
+    if (argc > 1 && (string(argv[1]) == "nnueeval" || string(argv[1]) == "absearchbench")) {
+        const bool bench = string(argv[1]) == "absearchbench";
+        string nnueFile, fenFile;
+        size_t limit = bench ? 50 : 1000;
+        ab::Options benchOptions;
+        int depth = 6;
+        int moveTime = 0;
+        for (int i = 2; i + 1 < argc; i += 2) {
+            const string option = argv[i];
+            if (option == "--nnue") nnueFile = argv[i + 1];
+            else if (option == "--fens") fenFile = argv[i + 1];
+            else if (option == "--limit") limit = stoull(argv[i + 1]);
+            else if (option == "--depth") depth = stoi(argv[i + 1]);
+            else if (option == "--movetime") moveTime = stoi(argv[i + 1]);
+            else if (option == "--check-extension") benchOptions.checkExtension = parse_bool_argument(argv[i + 1]);
+            else if (option == "--qsearch-checks") benchOptions.quietChecksInQsearch = parse_bool_argument(argv[i + 1]);
+            else if (option == "--set") {
+                stringstream assignments(argv[i + 1]);
+                for (string assignment; getline(assignments, assignment, ',');) {
+                    if (!benchOptions.set(assignment)) {
+                        cerr << "Unknown alpha-beta option: " << assignment << endl;
+                        return EXIT_FAILURE;
+                    }
+                }
+            }
+            else {
+                cerr << "Unknown option " << option << endl;
+                return EXIT_FAILURE;
+            }
+        }
+        nnue::Network network;
+        string error;
+        if (!network.load(nnueFile, &error)) {
+            cerr << error << endl;
+            return EXIT_FAILURE;
+        }
+        ifstream fens(fenFile);
+        if (!fens) {
+            cerr << "Cannot open " << fenFile << endl;
+            return EXIT_FAILURE;
+        }
+        ab::Searcher searcher(network, 64);
+        searcher.options = benchOptions;
+        uint64_t totalNodes = 0;
+        double totalSeconds = 0.0;
+        int depthSum = 0;
+        string line;
+        size_t count = 0;
+        while (count < limit && getline(fens, line)) {
+            vector<string> fields;
+            stringstream stream(line);
+            for (string field; getline(stream, field, ';');) {
+                fields.push_back(field);
+            }
+            if (fields.size() != 4) {
+                continue;
+            }
+            Board board;
+            board.set(fields[0] + "|" + fields[1]);
+            const Stockfish::Color team = fields[2] == "w" ? Stockfish::WHITE : Stockfish::BLACK;
+            const bool advantage = fields[3] == "1";
+            ++count;
+            if (!bench) {
+                cout << network.evaluate(board, team, advantage) << '\n';
+                continue;
+            }
+            searcher.clear();
+            ab::Limits limits;
+            limits.depth = depth;
+            limits.moveTimeMs = moveTime;
+            const auto start = chrono::steady_clock::now();
+            const ab::Result result = searcher.search(board, team, advantage, limits);
+            totalSeconds += chrono::duration<double>(chrono::steady_clock::now() - start).count();
+            totalNodes += result.nodes;
+            depthSum += result.depth;
+        }
+        if (bench) {
+            cout << "positions " << count << " nodes " << totalNodes
+                 << " seconds " << totalSeconds
+                 << " nps " << static_cast<uint64_t>(totalNodes / max(1e-9, totalSeconds))
+                 << " mean depth " << static_cast<double>(depthSum) / max<size_t>(1, count) << endl;
+            const auto& st = searcher.stats;
+            cout << "main " << st.mainNodes << " ttcuts " << st.ttCuts << " rfp " << st.rfpCuts
+                 << " legalPairs " << st.legalPairs << " mainPairs " << st.mainPairs
+                 << " q " << st.qNodes << " qCaptures " << st.qCaptures
+                 << " evasionNodes " << st.evasionNodes << " evasionPairs " << st.evasionPairs << endl;
+        }
+        return EXIT_SUCCESS;
+    }
+
     if (argc > 1 && string(argv[1]) == "tournament") {
         TournamentConfig config;
         filesystem::path contenderPath;
+        string contenderNnuePath;
+        string baselineNnuePath;
+        size_t contenderHashMb = 64;
+        ab::Options contenderOptions;
+        ab::Options baselineOptions;
         filesystem::path baselinePath;
         try {
             for (int i = 2; i < argc; ++i) {
@@ -315,6 +595,14 @@ int main(int argc, char* argv[]) {
                 }
                 else if (option == "--contender-root-pw-coefficient") config.contenderRootPwCoefficient = stof(value);
                 else if (option == "--baseline-root-pw-coefficient") config.baselineRootPwCoefficient = stof(value);
+                else if (option == "--contender-pw-exponent") config.contenderPwExponent = stof(value);
+                else if (option == "--baseline-pw-exponent") config.baselinePwExponent = stof(value);
+                else if (option == "--contender-pw-mass") config.contenderPwMassStart = stof(value);
+                else if (option == "--baseline-pw-mass") config.baselinePwMassStart = stof(value);
+                else if (option == "--contender-pw-mass-exponent") config.contenderPwMassExponent = stof(value);
+                else if (option == "--baseline-pw-mass-exponent") config.baselinePwMassExponent = stof(value);
+                else if (option == "--contender-pw-mass-cap") config.contenderPwMassCap = stof(value);
+                else if (option == "--baseline-pw-mass-cap") config.baselinePwMassCap = stof(value);
                 else if (option == "--contender-mcgs") config.contenderMcgs = parse_bool_argument(value);
                 else if (option == "--baseline-mcgs") config.baselineMcgs = parse_bool_argument(value);
                 else if (option == "--contender-transpositions") config.contenderTranspositions = parse_bool_argument(value);
@@ -335,41 +623,97 @@ int main(int argc, char* argv[]) {
                 else if (option == "--sprt-elo1") config.sprtElo1 = stod(value);
                 else if (option == "--sprt-alpha") config.sprtAlpha = stod(value);
                 else if (option == "--sprt-beta") config.sprtBeta = stod(value);
+                else if (option == "--contender-nnue") contenderNnuePath = value;
+                else if (option == "--contender-ab-movetime") config.contenderAbMoveTimeMs = stoi(value);
+                else if (option == "--contender-ab-depth") config.contenderAbDepth = stoi(value);
+                else if (option == "--contender-hash") contenderHashMb = stoull(value);
+                else if (option == "--baseline-nnue") baselineNnuePath = value;
+                else if (option == "--baseline-ab-movetime") config.baselineAbMoveTimeMs = stoi(value);
+                else if (option == "--baseline-ab-depth") config.baselineAbDepth = stoi(value);
+                else if (option == "--contender-ab-check-extension") contenderOptions.checkExtension = parse_bool_argument(value);
+                else if (option == "--baseline-ab-check-extension") baselineOptions.checkExtension = parse_bool_argument(value);
+                else if (option == "--contender-ab-qsearch-checks") contenderOptions.quietChecksInQsearch = parse_bool_argument(value);
+                else if (option == "--baseline-ab-qsearch-checks") baselineOptions.quietChecksInQsearch = parse_bool_argument(value);
+                else if (option == "--contender-ab-set" || option == "--baseline-ab-set") {
+                    ab::Options& target = option == "--contender-ab-set" ? contenderOptions : baselineOptions;
+                    stringstream assignments(value);
+                    for (string assignment; getline(assignments, assignment, ',');) {
+                        if (!target.set(assignment)) {
+                            throw invalid_argument("Unknown alpha-beta option: " + assignment);
+                        }
+                    }
+                }
                 else throw invalid_argument("Unknown tournament option: " + option);
             }
         } catch (const exception& error) {
             cerr << "Invalid tournament arguments: " << error.what() << endl;
             return EXIT_FAILURE;
         }
-        if (contenderPath.empty() || baselinePath.empty()) {
-            cerr << "Tournament requires --contender <onnx> and --baseline <onnx>" << endl;
+        const bool alphaBetaContender = !contenderNnuePath.empty();
+        const bool alphaBetaBaseline = !baselineNnuePath.empty();
+        if ((contenderPath.empty() && !alphaBetaContender)
+            || (baselinePath.empty() && !alphaBetaBaseline)) {
+            cerr << "Tournament requires --contender <onnx> (or --contender-nnue <file>)"
+                    " and --baseline <onnx>" << endl;
             return EXIT_FAILURE;
         }
 
-        Engine contender(0, config.contenderBatchSize);
-        Engine baseline(0, config.baselineBatchSize);
-        const string contenderEngine = getEnginePath(
-            contenderPath.string(), "fp16", config.contenderBatchSize, 0, "v3");
-        const string baselineEngine = getEnginePath(
-            baselinePath.string(), "fp16", config.baselineBatchSize, 0, "v3");
-        if (!contender.loadNetwork(contenderPath.string(), contenderEngine)) {
-            cerr << "Failed to load contender model" << endl;
-            return EXIT_FAILURE;
+        unique_ptr<Engine> contender;
+        nnue::Network contenderNetwork;
+        unique_ptr<ab::Searcher> contenderSearcher;
+        if (alphaBetaContender) {
+            string error;
+            if (!contenderNetwork.load(contenderNnuePath, &error)) {
+                cerr << "Failed to load contender NNUE: " << error << endl;
+                return EXIT_FAILURE;
+            }
+            contenderSearcher = make_unique<ab::Searcher>(contenderNetwork, contenderHashMb);
+            contenderSearcher->options = contenderOptions;
+            contenderPath = contenderNnuePath;
+        } else {
+            contender = make_unique<Engine>(0, config.contenderBatchSize);
+            const string contenderEngine = getEnginePath(
+                contenderPath.string(), "fp16", config.contenderBatchSize, 0, "v3");
+            if (!contender->loadNetwork(contenderPath.string(), contenderEngine)) {
+                cerr << "Failed to load contender model" << endl;
+                return EXIT_FAILURE;
+            }
         }
-        if (!baseline.loadNetwork(baselinePath.string(), baselineEngine)) {
-            cerr << "Failed to load baseline model" << endl;
-            return EXIT_FAILURE;
+        unique_ptr<Engine> baseline;
+        nnue::Network baselineNetwork;
+        unique_ptr<ab::Searcher> baselineSearcher;
+        if (alphaBetaBaseline) {
+            string error;
+            if (!baselineNetwork.load(baselineNnuePath, &error)) {
+                cerr << "Failed to load baseline NNUE: " << error << endl;
+                return EXIT_FAILURE;
+            }
+            baselineSearcher = make_unique<ab::Searcher>(baselineNetwork, contenderHashMb);
+            baselineSearcher->options = baselineOptions;
+            baselinePath = baselineNnuePath;
+        } else {
+            baseline = make_unique<Engine>(0, config.baselineBatchSize);
+            const string baselineEngine = getEnginePath(
+                baselinePath.string(), "fp16", config.baselineBatchSize, 0, "v3");
+            if (!baseline->loadNetwork(baselinePath.string(), baselineEngine)) {
+                cerr << "Failed to load baseline model" << endl;
+                return EXIT_FAILURE;
+            }
         }
         config.contenderModelSignature = computeFileSignature(
             contenderPath.string(), "hivemind-tournament-model");
         config.baselineModelSignature = computeFileSignature(
             baselinePath.string(), "hivemind-tournament-model");
         try {
+            const string contenderName = alphaBetaContender
+                ? contenderPath.stem().string() + "-alphabeta"
+                : contenderPath.stem().string() + "-b" + std::to_string(config.contenderBatchSize);
+            const string baselineName = alphaBetaBaseline
+                ? baselinePath.stem().string() + "-alphabeta"
+                : baselinePath.stem().string() + "-b" + std::to_string(config.baselineBatchSize);
             return run_tournament(
-                contender, baseline,
-                contenderPath.stem().string() + "-b" + std::to_string(config.contenderBatchSize),
-                baselinePath.stem().string() + "-b" + std::to_string(config.baselineBatchSize),
-                config);
+                contender.get(), baseline.get(), contenderName, baselineName,
+                config, contenderSearcher.get(), baselineSearcher.get());
         } catch (const exception& error) {
             cerr << "Tournament failed: " << error.what() << endl;
             return EXIT_FAILURE;
@@ -377,12 +721,13 @@ int main(int argc, char* argv[]) {
     }
 
     filesystem::path modelPath;
+    string nnuePath;
     int uciBatchSize = SearchParams::BATCH_SIZE;
     try {
         for (int i = 1; i < argc; ++i) {
             const string option = argv[i];
             if (option != "--model" && option != "--network"
-                && option != "--batch-size") {
+                && option != "--batch-size" && option != "--nnue") {
                 throw invalid_argument("Unknown UCI option: " + option);
             }
             if (i + 1 >= argc) {
@@ -394,6 +739,8 @@ int main(int argc, char* argv[]) {
                 if (uciBatchSize < 1 || uciBatchSize > 1024) {
                     throw invalid_argument("--batch-size must be between 1 and 1024");
                 }
+            } else if (option == "--nnue") {
+                nnuePath = value;
             } else {
                 modelPath = value;
             }
@@ -409,7 +756,13 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Hivemind " << HIVEMIND_VERSION << std::endl;
 
-    if (!uci.initializeEngines(deviceIds, modelPath.string(), uciBatchSize)) {
+    // With --nnue alone the engine runs alpha-beta on the CPU and never
+    // touches an ONNX model or GPU.
+    if ((nnuePath.empty() || !modelPath.empty())
+        && !uci.initializeEngines(deviceIds, modelPath.string(), uciBatchSize)) {
+        return EXIT_FAILURE;
+    }
+    if (!nnuePath.empty() && !uci.load_nnue(nnuePath)) {
         return EXIT_FAILURE;
     }
     uci.loop();

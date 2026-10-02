@@ -1,4 +1,5 @@
 #include "nn/onnx_utils.h"
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -60,13 +61,50 @@ std::string findLatestOnnxFile(const std::string& directory) {
     return latestFile;
 }
 
+bool isQuantizedOnnx(const std::string& onnxPath) {
+    // Q/DQ op types are stored as plain strings in the protobuf; the common
+    // suffix matches both "QuantizeLinear" and "DequantizeLinear". Chunks
+    // overlap by the needle length so a match cannot straddle them.
+    static constexpr std::string_view NEEDLE = "uantizeLinear";
+    std::ifstream file(onnxPath, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    std::vector<char> buffer(1 << 20);
+    size_t carried = 0;
+    while (file) {
+        file.read(buffer.data() + carried, static_cast<std::streamsize>(buffer.size() - carried));
+        const size_t available = carried + static_cast<size_t>(file.gcount());
+        if (std::string_view(buffer.data(), available).find(NEEDLE) != std::string_view::npos) {
+            return true;
+        }
+        carried = std::min(available, NEEDLE.size() - 1);
+        std::copy(buffer.begin() + static_cast<std::ptrdiff_t>(available - carried),
+                  buffer.begin() + static_cast<std::ptrdiff_t>(available), buffer.begin());
+    }
+    return false;
+}
+
 std::string getEnginePath(const std::string& onnxPath, const std::string& precision,
                           int batchSize, int deviceId, const std::string& version) {
     fs::path onnx = fs::weakly_canonical(onnxPath);
     std::string modelName = onnx.stem().string();
     std::string directory = onnx.parent_path().string();
+    // A quantized network runs its convolutions and matrix products in INT8
+    // (FP16 elsewhere); name its plan for that rather than the FP16 default.
+    const std::string tag = precision == "fp16" && isQuantizedOnnx(onnxPath) ? "int8" : precision;
+    // A model already named for its precision ("net-int8", "net_fp16") does
+    // not need the tag a second time.
+    auto isSeparator = [](char c) { return c == '-' || c == '_' || c == '.'; };
+    bool named = false;
+    for (size_t at = modelName.find(tag); at != std::string::npos && !named;
+         at = modelName.find(tag, at + 1)) {
+        const size_t end = at + tag.size();
+        named = (at == 0 || isSeparator(modelName[at - 1]))
+            && (end == modelName.size() || isSeparator(modelName[end]));
+    }
     
-    std::string engineName = modelName + "_" + precision + "_b" + std::to_string(batchSize) 
+    std::string engineName = modelName + (named ? "" : "_" + tag) + "_b" + std::to_string(batchSize) 
                            + "_gpu" + std::to_string(deviceId) + "_" + version + ".engine";
     
     return directory.empty() ? engineName : directory + "/" + engineName;

@@ -4544,68 +4544,34 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootLossScanStop_.store(false, std::memory_order_release);
         lastRuntimeConfig_ = options.search;
     }
+    
+    certifiedChoice_ = false;
+    searchStatus_ = adjudicate_game(board, teamSide, teamHasTimeAdvantage);
+    if (searchStatus_ != GameStatus::ONGOING) {
+        if (!options.background) {
+            nextRootCandidates_.clear();
+        }
+        if (options.verbose) {
+            cout << "bestmove (none)" << endl;
+        }
+        return result;
+    }
+
     if (engines.empty()) {
         cerr << "Cannot search without an inference engine" << endl;
         return result;
     }
-    
+
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
-    const bool canWait = is_double_sit_legal(
-        teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn);
 
-    // Nothing retained from an earlier move can be adopted from a position with
-    // no move to make, and leaving stale candidates behind would let the
-    // permanent brain start from one.
+    const bool mustPlayDespiteTeamMate = !teamHasTimeAdvantage
+        && board.is_checkmate(teamSide, teamHasTimeAdvantage);
     const auto drop_retained_candidates = [this, &options] {
         if (!options.background) {
             nextRootCandidates_.clear();
         }
     };
-
-    const bool teamHasPlayableMove =
-        (boardAOnTurn && !board.legal_moves(BOARD_A).empty())
-        || (boardBOnTurn && !board.legal_moves(BOARD_B).empty());
-    const bool opponentIsMated =
-        board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
-    const bool teamIsMated =
-        board.is_checkmate(teamSide, teamHasTimeAdvantage);
-
-    // A mate on the other team is not necessarily terminal at this root. If
-    // we are down on time (or both boards are on turn), we still owe a move;
-    // a capture can hand the checked player a blocking piece and undo the
-    // mate. Let the root mate scan choose an action that preserves it instead
-    // of returning MOVE_NONE before any joint action is considered.
-    const bool mustPlayDespiteOpponentMate =
-        opponentIsMated && !canWait && teamHasPlayableMove;
-
-    // The server, not this combined-board search, decides when a live game has
-    // actually stopped. If our partner board is already mated but this
-    // team still has a legal move elsewhere, search that move instead of
-    // abandoning the seat with bestmove (none). The root classifier makes the
-    // matching one-ply best-effort exception so the neural policy can rank the
-    // available moves before ordinary terminal handling resumes below it.
-    const bool mustPlayDespiteTeamMate =
-        !teamHasTimeAdvantage && teamIsMated && teamHasPlayableMove;
-
-    if ((opponentIsMated && !mustPlayDespiteOpponentMate)
-        || (teamIsMated && !mustPlayDespiteTeamMate)
-        || board.is_draw()) {
-        drop_retained_candidates();
-        if (options.verbose) {
-            cout << "bestmove (none)" << endl;
-        }
-        return result;
-    }
-
-    // A team with no real board move may still have the legal wait action.
-    if (!teamHasPlayableMove && !canWait) {
-        drop_retained_candidates();
-        if (options.verbose) {
-            cout << "bestmove (none)" << endl;
-        }
-        return result;
-    }
 
     // Determine effective move time
     int moveTimeMs = options.moveTimeMs;
@@ -6242,6 +6208,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             "playing an alternative" << endl;
                 }
                 result = *safer;
+                certifiedChoice_ = true;
             }
 
             // A root the search left unsolved chose this action on visits
@@ -6289,6 +6256,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         &certStats);
                 if (mateFree) {
                     result = *mateFree;
+                    certifiedChoice_ = true;
                 }
                 if (options.verbose) {
                     const auto certMs = chrono::duration_cast<
@@ -6524,7 +6492,7 @@ void Agent::run_permanent_brain(Board& board, const vector<Engine*>& engines,
 
 vector<RootEdgeStats> Agent::root_edge_stats() const {
     vector<RootEdgeStats> stats;
-    if (!rootNode || !rootNode->is_expanded()) {
+    if (searchStatus_ != GameStatus::ONGOING || !rootNode || !rootNode->is_expanded()) {
         return stats;
     }
 
@@ -6532,7 +6500,11 @@ vector<RootEdgeStats> Agent::root_edge_stats() const {
     const size_t edgeCount = min(visits.size(), rootNode->get_num_generated());
     stats.reserve(edgeCount);
     for (size_t index = 0; index < edgeCount; ++index) {
-        stats.push_back({rootNode->get_joint_action(static_cast<int>(index)), visits[index]});
+        stats.push_back({rootNode->get_joint_action(static_cast<int>(index)), visits[index],
+                         rootNode->get_child_q(static_cast<int>(index)),
+                         rootNode->get_child(static_cast<int>(index))
+                             ? rootNode->get_child(static_cast<int>(index))->get_node_type()
+                             : NodeType::UNSOLVED});
     }
     return stats;
 }

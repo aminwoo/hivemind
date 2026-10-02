@@ -12,6 +12,7 @@
 #include "Fairy-Stockfish/src/types.h"
 
 class Engine;
+namespace ab { class Searcher; }
 
 struct TournamentConfig {
     size_t games = 20;
@@ -28,6 +29,15 @@ struct TournamentConfig {
     float baselinePwCoefficient = SearchParams::PW_COEFFICIENT;
     float contenderRootPwCoefficient = SearchParams::ROOT_PW_COEFFICIENT;
     float baselineRootPwCoefficient = SearchParams::ROOT_PW_COEFFICIENT;
+    float contenderPwExponent = SearchParams::PW_EXPONENT;
+    float baselinePwExponent = SearchParams::PW_EXPONENT;
+    // Prior-mass widening (start 0 = count-based widening only).
+    float contenderPwMassStart = SearchParams::PW_MASS_START;
+    float baselinePwMassStart = SearchParams::PW_MASS_START;
+    float contenderPwMassExponent = SearchParams::PW_MASS_EXPONENT;
+    float baselinePwMassExponent = SearchParams::PW_MASS_EXPONENT;
+    float contenderPwMassCap = SearchParams::PW_MASS_CAP;
+    float baselinePwMassCap = SearchParams::PW_MASS_CAP;
     bool contenderMcgs = SearchParams::ENABLE_MCGS;
     bool baselineMcgs = SearchParams::ENABLE_MCGS;
     bool contenderTranspositions = SearchParams::ENABLE_TRANSPOSITIONS;
@@ -45,6 +55,11 @@ struct TournamentConfig {
     float contenderQVetoDelta = SearchParams::Q_VETO_DELTA;
     float baselineQVetoDelta = SearchParams::Q_VETO_DELTA;
     std::filesystem::path positionsFile;
+    // Alpha-beta NNUE contender limits (used when run with an ab::Searcher).
+    int contenderAbMoveTimeMs = 0;
+    int contenderAbDepth = 0;
+    int baselineAbMoveTimeMs = 0;
+    int baselineAbDepth = 0;
     std::string contenderModelSignature;
     std::string baselineModelSignature;
     double sprtElo0 = 0.0;
@@ -63,6 +78,10 @@ struct TournamentConfig {
         searchConfig.pwCoefficient = pwCoefficientFor(isContender);
         searchConfig.rootPwCoefficient = isContender
             ? contenderRootPwCoefficient : baselineRootPwCoefficient;
+        searchConfig.pwExponent = isContender ? contenderPwExponent : baselinePwExponent;
+        searchConfig.pwMassStart = isContender ? contenderPwMassStart : baselinePwMassStart;
+        searchConfig.pwMassExponent = isContender ? contenderPwMassExponent : baselinePwMassExponent;
+        searchConfig.pwMassCap = isContender ? contenderPwMassCap : baselinePwMassCap;
         searchConfig.enableMCGS = isContender ? contenderMcgs : baselineMcgs;
         searchConfig.enableTranspositions = isContender
             ? contenderTranspositions : baselineTranspositions;
@@ -150,9 +169,13 @@ struct TournamentResult {
     std::string confidenceMethod() const;
 };
 
+/// A side given an ab::Searcher plays alpha-beta with it, and its Engine is
+/// unused (it may be null).
 int run_tournament(
-    Engine& contender,
-    Engine& baseline,
+    Engine* contender,
+    Engine* baseline,
     const std::string& contenderName,
     const std::string& baselineName,
-    const TournamentConfig& config);
+    const TournamentConfig& config,
+    ab::Searcher* alphaBetaContender = nullptr,
+    ab::Searcher* alphaBetaBaseline = nullptr);

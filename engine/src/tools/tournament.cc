@@ -1,4 +1,5 @@
 #include "tools/tournament.h"
+#include "search/alphabeta.h"
 
 #include <algorithm>
 #include <chrono>
@@ -161,6 +162,12 @@ void write_summary(
            << config.contenderRootPwCoefficient << ",\n"
            << "  \"baseline_root_pw_coefficient\": "
            << config.baselineRootPwCoefficient << ",\n"
+           << "  \"contender_pw_exponent\": " << config.contenderPwExponent << ",\n"
+           << "  \"baseline_pw_exponent\": " << config.baselinePwExponent << ",\n"
+           << "  \"contender_pw_mass\": [" << config.contenderPwMassStart << ", "
+           << config.contenderPwMassExponent << ", " << config.contenderPwMassCap << "],\n"
+           << "  \"baseline_pw_mass\": [" << config.baselinePwMassStart << ", "
+           << config.baselinePwMassExponent << ", " << config.baselinePwMassCap << "],\n"
            << "  \"contender_mcgs\": " << (config.contenderMcgs ? "true" : "false") << ",\n"
            << "  \"baseline_mcgs\": " << (config.baselineMcgs ? "true" : "false") << ",\n"
            << "  \"contender_transpositions\": " << (config.contenderTranspositions ? "true" : "false") << ",\n"
@@ -481,15 +488,25 @@ std::string TournamentResult::confidenceMethod() const {
 }
 
 int run_tournament(
-    Engine& contender,
-    Engine& baseline,
+    Engine* contender,
+    Engine* baseline,
     const std::string& contenderName,
     const std::string& baselineName,
-    const TournamentConfig& config) {
+    const TournamentConfig& config,
+    ab::Searcher* alphaBetaContender,
+    ab::Searcher* alphaBetaBaseline) {
+    if ((!contender && !alphaBetaContender) || (!baseline && !alphaBetaBaseline)) {
+        throw std::invalid_argument("Tournament needs an engine or searcher on each side");
+    }
+    if ((alphaBetaContender && config.contenderAbMoveTimeMs <= 0 && config.contenderAbDepth <= 0)
+        || (alphaBetaBaseline && config.baselineAbMoveTimeMs <= 0 && config.baselineAbDepth <= 0)) {
+        throw std::invalid_argument("An alpha-beta side needs a movetime or depth");
+    }
     if (config.games == 0 || config.games % 2 != 0) {
         throw std::invalid_argument("Tournament games must be a positive even number");
     }
-    if ((config.nodes == 0) == (config.moveTimeMs <= 0) ||
+    const bool anyMcts = !alphaBetaContender || !alphaBetaBaseline;
+    if ((anyMcts && (config.nodes == 0) == (config.moveTimeMs <= 0)) ||
         config.maxMacroPlies == 0) {
         throw std::invalid_argument(
             "Tournament requires exactly one positive nodes or movetime limit");
@@ -518,6 +535,22 @@ int run_tournament(
         || config.baselineRootPwCoefficient <= 0.0f) {
         throw std::invalid_argument("Tournament PW coefficients must be positive and finite");
     }
+    for (const float exponent : {config.contenderPwExponent, config.baselinePwExponent}) {
+        if (!std::isfinite(exponent) || exponent <= 0.0f || exponent > 1.0f) {
+            throw std::invalid_argument("Tournament PW exponents must be in (0, 1]");
+        }
+    }
+    for (const float start : {config.contenderPwMassStart, config.baselinePwMassStart}) {
+        if (!std::isfinite(start) || start < 0.0f || start >= 1.0f) {
+            throw std::invalid_argument("Tournament PW mass start must be in [0, 1)");
+        }
+    }
+    for (const float value : {config.contenderPwMassExponent, config.baselinePwMassExponent,
+                              config.contenderPwMassCap, config.baselinePwMassCap}) {
+        if (!std::isfinite(value) || value <= 0.0f) {
+            throw std::invalid_argument("Tournament PW mass exponent and cap must be positive");
+        }
+    }
     const auto finite_in_range = [](float value, float minimum, float maximum) {
         return std::isfinite(value) && value >= minimum && value <= maximum;
     };
@@ -545,8 +578,8 @@ int run_tournament(
     double currentPairPoints = 0.0;
     const std::vector<TournamentStartPosition> startPositions =
         load_tournament_positions(config.positionsFile);
-    Agent contenderAgent(config.contenderThreads);
-    Agent baselineAgent(config.baselineThreads);
+    Agent contenderAgent(alphaBetaContender ? 1 : config.contenderThreads);
+    Agent baselineAgent(alphaBetaBaseline ? 1 : config.baselineThreads);
 
     for (size_t gameIndex = 0; gameIndex < config.games; ++gameIndex) {
         Board board;
@@ -574,18 +607,46 @@ int run_tournament(
         std::vector<std::string> actions;
 
         for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
-            if (board.is_checkmate(team, hasTimeAdvantage)) {
-                winner = static_cast<int>(~team);
-                termination = "checkmate";
-                break;
-            }
-            if (board.is_draw()) {
-                termination = "draw";
+            const GameStatus status = adjudicate_game(board, team, hasTimeAdvantage);
+            if (status != GameStatus::ONGOING) {
+                winner = adjudicated_winner(status, team);
+                termination = adjudicated_termination(status);
                 break;
             }
 
             const bool contenderActing = team == contenderTeam;
-            Engine& actingEngine = contenderActing ? contender : baseline;
+            ab::Searcher* alphaBeta = contenderActing ? alphaBetaContender : alphaBetaBaseline;
+            if (alphaBeta) {
+                ab::Limits limits;
+                limits.moveTimeMs = contenderActing
+                    ? config.contenderAbMoveTimeMs : config.baselineAbMoveTimeMs;
+                const int depth = contenderActing ? config.contenderAbDepth : config.baselineAbDepth;
+                if (depth > 0) {
+                    limits.depth = depth;
+                }
+                const auto searchStart = std::chrono::steady_clock::now();
+                const ab::Result searched = alphaBeta->search(
+                    board, team, hasTimeAdvantage, limits);
+                TournamentPerformance& performance = contenderActing
+                    ? result.contenderPerformance : result.baselinePerformance;
+                ++performance.searches;
+                performance.nanoseconds += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - searchStart).count());
+                performance.nodes += searched.nodes;
+                if (!searched.hasMove) {
+                    throw std::runtime_error("Ongoing alpha-beta search returned no action");
+                }
+                JointActionCandidate action;
+                action.moveA = searched.best.a;
+                action.moveB = searched.best.b;
+                actions.push_back(action_uci(board, action));
+                board.make_moves(action.moveA, action.moveB);
+                team = ~team;
+                hasTimeAdvantage = !hasTimeAdvantage;
+                continue;
+            }
+            Engine& actingEngine = contenderActing ? *contender : *baseline;
             Agent& agent = contenderActing ? contenderAgent : baselineAgent;
             std::vector<Engine*> engines = {&actingEngine};
             agent.reset_search_state();
@@ -614,10 +675,13 @@ int run_tournament(
                 [](uint64_t sum, const RootEdgeStats& edge) {
                     return sum + edge.visits;
                 });
-            if (edges.empty()) {
-                winner = static_cast<int>(~team);
-                termination = "no legal action";
+            if (agent.search_status() != GameStatus::ONGOING) {
+                winner = adjudicated_winner(agent.search_status(), team);
+                termination = adjudicated_termination(agent.search_status());
                 break;
+            }
+            if (edges.empty()) {
+                throw std::runtime_error("Ongoing search returned no root edges");
             }
             actions.push_back(action_uci(board, action));
             board.make_moves(action.moveA, action.moveB);
@@ -625,11 +689,10 @@ int run_tournament(
             hasTimeAdvantage = !hasTimeAdvantage;
         }
 
-        if (winner < 0 && board.is_checkmate(team, hasTimeAdvantage)) {
-            winner = static_cast<int>(~team);
-            termination = "checkmate";
-        } else if (winner < 0 && board.is_draw()) {
-            termination = "draw";
+        const GameStatus finalStatus = adjudicate_game(board, team, hasTimeAdvantage);
+        if (winner < 0 && finalStatus != GameStatus::ONGOING) {
+            winner = adjudicated_winner(finalStatus, team);
+            termination = adjudicated_termination(finalStatus);
         }
 
         int contenderOutcome = 0;

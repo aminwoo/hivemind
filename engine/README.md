@@ -83,6 +83,35 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
 
+### INT8 networks
+
+An INT8 copy of a network evaluates about 17% more positions per second in
+MCTS on an RTX 4070 (four batch-8 workers). At 100 ms per move it beat the FP16
+network 51-29 over 80 paired games (+98 Elo, 95% CI +41 to +161), while an
+FP16-vs-FP16 control scored 40-39-1. At 1 s per move it scored 22-16-2 over 40
+games (+53 Elo, 95% CI -4 to +112). A single inference stream gains nothing;
+the extra throughput comes from the workers overlapping.
+
+TensorRT 11 runs INT8 only from explicit quantize/dequantize nodes, so the
+network is quantized ahead of time with NVIDIA ModelOpt, calibrated on
+positions encoded by the engine itself:
+
+```bash
+python3 -m venv ~/.cache/hivemind-quantize
+~/.cache/hivemind-quantize/bin/pip install "nvidia-modelopt[onnx]"
+./build-ninja/hivemind dumpplanes --fens ../data/nnue/val/nnue_99_0_00000.fen \
+    --output calib.f32 --every 122
+~/.cache/hivemind-quantize/bin/python scripts/quantize_int8.py \
+    models/network.onnx calib.f32 models/network-int8.onnx
+./build-ninja/hivemind --model models/network-int8.onnx
+```
+
+The engine recognises a Q/DQ network and builds it at builder optimization
+level 3: at the default level 5, TensorRT 11 times a fused kernel for the
+cross-board blocks that faults on the device. Against FP16, the INT8 teacher
+agrees on the top move in 93% (board A) and 92% (board B) of positions, with
+a mean value difference of 0.023.
+
 ### Internal mate-probe experiment
 
 The `InternalMateProbe` UCI combo is disabled by default and separates the
@@ -223,6 +252,77 @@ full-search NPS for each contestant and every effective search parameter.
 
 cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"
+
+## Alpha-beta NNUE engine
+
+A second search mode replaces MCTS with alpha-beta over an NNUE value network
+distilled from an ONNX teacher. It runs on the CPU, so a build with either
+backend can use it without a GPU or a model file:
+
+```bash
+./build-ninja/hivemind --nnue ../artifacts/nnue/h512v2/best.nnue
+```
+
+The UCI options `NNUEFile` (loads a network and switches mode) and
+`SearchMode` (`mcts` or `alphabeta`) select it at runtime; `go` accepts
+`movetime`, `nodes`, `depth`, and `infinite`, and `bestmove` uses the same
+`(moveA,moveB)` joint notation as MCTS. `Threads` runs Lazy SMP helpers that
+share the transposition table, and `ABParams` takes comma-separated
+`name=value` search parameters (`lmp_base`, `lmp_scale`, `pv_lmp_scale`,
+`root_lmp_scale`, `lmr_divisor`, `qsearch_plies`, `rfp_margin`,
+`futility_margin`, `qsearch_checks`, `check_extension`, `pair_ordering`,
+`mate_probe`, `threads`).
+
+When the team holds the time advantage, the Fairy-Stockfish root mate probe
+that MCTS uses runs on its own thread beside the search. A mate that survives
+the probe's two-board replay and the mate-race veto stops the search and is
+played; `mate_probe=false` disables it.
+
+Each team turn is searched as two nested choices by the same player, first on
+board A and then on board B, with board B's options taken from the position
+before board A's move. Terminal positions use the engine's own bughouse mate,
+blockable-mate, and repetition rules. Pairs are pruned on the product of the
+two boards' move-order ranks, and quiescence covers single-board captures plus
+checks on its first turn.
+
+### Distilling a network
+
+1. Generate teacher-labelled positions. Games sample the teacher's raw policy
+   with per-game temperature and occasional random moves; every position is
+   stored with its sparse features and the teacher's value and WDL:
+
+   ```bash
+   ./build-ninja/hivemind gennnue --model teacher.onnx --positions 60000000 \
+       --threads 4 --batch-size 256 --seed 1001 --output ../data/nnue/train
+   ./build-ninja/hivemind gennnue --model teacher.onnx --positions 500000 \
+       --seed 99 --fens true --output ../data/nnue/val
+   ```
+
+2. Train and export (`best.nnue` is written whenever validation improves).
+   Pools larger than device memory rotate a random window of chunks per epoch;
+   half of the positions have boards A and B swapped, an exact symmetry:
+
+   ```bash
+   uv run hivemind nnue-train --data data/nnue/train --val data/nnue/val \
+       --out artifacts/nnue/run --hidden 512 --epochs 40
+   ```
+
+3. Check that the engine reproduces the trainer's outputs, then measure
+   strength. `absearchbench` reports depth and nodes on FEN lines, and the
+   tournament accepts an alpha-beta side through `--contender-nnue` or
+   `--baseline-nnue` (search parameters via `--{contender,baseline}-ab-set`):
+
+   ```bash
+   ./build-ninja/hivemind nnueeval --nnue best.nnue --fens ../data/nnue/val/<chunk>.fen
+   ./build-ninja/hivemind tournament --contender-nnue best.nnue \
+       --contender-ab-movetime 500 --baseline teacher.onnx --nodes 128 \
+       --games 40 --positions openings.tsv --output tournament_results/nnue
+   ```
+
+The feature layout is defined once in `src/nnue/features.h` and mirrored in
+`src/hivemind/nnue/features.py`; `tests/test_nnue.cc` checks the team mirror
+and board-swap permutations and that incremental accumulator updates match a
+full refresh.
 
 ## TensorRT release bundles
 

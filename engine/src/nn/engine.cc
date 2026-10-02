@@ -1,4 +1,6 @@
 #include "nn/engine.h"
+
+#include <unordered_map>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -26,6 +28,7 @@
 namespace {
 
 constexpr int BUILDER_OPTIMIZATION_LEVEL = 5;
+constexpr int QUANTIZED_BUILDER_OPTIMIZATION_LEVEL = 3;
 // Distinct from the generic failure codes so a supervisor's log shows why the
 // process vanished mid-search.
 constexpr int STICKY_CUDA_ERROR_EXIT_CODE = 70;
@@ -444,14 +447,39 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
 
     // A network is usable as-is only when every tensor is already FP16; a single
     // FP32 tensor means the model still has to go through the FP16 converter.
+    // INT8 Q/DQ models are the one exception: the ONNX parser gives each
+    // quantize node an FP32 zero-point constant of its own, which only feeds
+    // the Q/DQ layer and is folded away when the plan is built.
     auto networkIsFp16 = [&](bool reportFp32) {
         size_t fp16TensorCount = 0;
-        auto inspect = [&](nvinfer1::ITensor* tensor, const char* origin) {
+        std::unordered_map<const nvinfer1::ITensor*, bool> feedsOnlyQuantization;
+        for (int layerIndex = 0; layerIndex < network->getNbLayers(); ++layerIndex) {
+            nvinfer1::ILayer* layer = network->getLayer(layerIndex);
+            const bool quantization = layer->getType() == nvinfer1::LayerType::kQUANTIZE
+                || layer->getType() == nvinfer1::LayerType::kDEQUANTIZE;
+            for (int inputIndex = 0; inputIndex < layer->getNbInputs(); ++inputIndex) {
+                const nvinfer1::ITensor* input = layer->getInput(inputIndex);
+                if (!input) {
+                    continue;
+                }
+                auto [entry, inserted] = feedsOnlyQuantization.try_emplace(input, quantization);
+                if (!inserted) {
+                    entry->second = entry->second && quantization;
+                }
+            }
+        }
+        auto inspect = [&](nvinfer1::ITensor* tensor, const char* origin,
+                           const nvinfer1::ILayer* producer = nullptr) {
             if (!tensor) {
                 return true;
             }
             if (tensor->getType() == nvinfer1::DataType::kHALF) {
                 fp16TensorCount++;
+            } else if (tensor->getType() == nvinfer1::DataType::kFLOAT
+                       && producer && producer->getType() == nvinfer1::LayerType::kCONSTANT
+                       && feedsOnlyQuantization.contains(tensor)
+                       && feedsOnlyQuantization.at(tensor)) {
+                return true;
             } else if (tensor->getType() == nvinfer1::DataType::kFLOAT) {
                 if (reportFp32) {
                     std::cerr << "Refusing to build a non-FP16 TensorRT plan: tensor "
@@ -476,7 +504,7 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
         for (int layerIndex = 0; layerIndex < network->getNbLayers(); ++layerIndex) {
             nvinfer1::ILayer* layer = network->getLayer(layerIndex);
             for (int outputIndex = 0; outputIndex < layer->getNbOutputs(); ++outputIndex) {
-                if (!inspect(layer->getOutput(outputIndex), layer->getName())) {
+                if (!inspect(layer->getOutput(outputIndex), layer->getName(), layer)) {
                     return false;
                 }
             }
@@ -521,7 +549,22 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
         return false;
     }
     
-    config->setBuilderOptimizationLevel(BUILDER_OPTIMIZATION_LEVEL);
+    // At level 5, TensorRT 11 times a fused kernel for the cross-board blocks
+    // of an INT8 Q/DQ network that faults on the device (CUDA error 716),
+    // leaving the context unusable. Level 3 builds those networks correctly.
+    int quantizationLayers = 0;
+    for (int layerIndex = 0; layerIndex < network->getNbLayers(); ++layerIndex) {
+        const nvinfer1::LayerType type = network->getLayer(layerIndex)->getType();
+        if (type == nvinfer1::LayerType::kQUANTIZE || type == nvinfer1::LayerType::kDEQUANTIZE) {
+            ++quantizationLayers;
+        }
+    }
+    if (quantizationLayers > 0) {
+        std::cout << "INT8 network (" << quantizationLayers << " Q/DQ layers): builder optimization level "
+                  << QUANTIZED_BUILDER_OPTIMIZATION_LEVEL << std::endl;
+    }
+    config->setBuilderOptimizationLevel(quantizationLayers > 0
+        ? QUANTIZED_BUILDER_OPTIMIZATION_LEVEL : BUILDER_OPTIMIZATION_LEVEL);
     
     const char* inputName = network->getInput(0)->getName();
     nvinfer1::Dims dims{};

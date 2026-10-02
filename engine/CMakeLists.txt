@@ -20,6 +20,7 @@ option(HIVEMIND_USE_CCACHE "Use ccache when available" ON)
 option(HIVEMIND_NATIVE_ARCH "Optimize for the build machine's CPU" ON)
 option(HIVEMIND_USE_PEXT "Use BMI2 PEXT for sliding attacks (benchmark first; slower on most CPUs tested)" OFF)
 option(HIVEMIND_ORT_FP16 "Use native FP16 tensors with the ONNX Runtime backend" OFF)
+set(HIVEMIND_SEARCH_WORKERS 4 CACHE STRING "Search workers per engine, each with its own TensorRT context")
 option(HIVEMIND_PORTABLE_BUNDLE "Use relocatable runtime search paths for release packaging" OFF)
 
 # Set C++ version and optimization level. Keep compiler flags portable: GNU
@@ -38,7 +39,8 @@ if(HIVEMIND_USE_CCACHE)
 endif()
 
 # Fast local builds trade some runtime optimization for much shorter compile/link times.
-set(HIVEMIND_COMMON_DEFINITIONS NDEBUG NNUE_EMBEDDING_OFF)
+set(HIVEMIND_COMMON_DEFINITIONS NDEBUG NNUE_EMBEDDING_OFF
+    HIVEMIND_NUM_SEARCH_THREADS=${HIVEMIND_SEARCH_WORKERS})
 if(MSVC)
     set(HIVEMIND_COMMON_FLAGS /W4 /O2)
 else()
@@ -79,12 +81,17 @@ set(LIB_SOURCES
     # src/nn/engine.cc or engine_ort.cc is appended below per backend
     src/nn/onnx_utils.cc
     src/search/agent.cc
+    src/search/alphabeta.cc
+    src/nnue/network.cc
     src/search/mate_probe.cc
     src/search/node.cc
     src/search/searchthread.cc
     src/interface/uci.cc
     src/tools/benchmark.cc
     src/tools/selfplay.cc
+    src/tools/nnue_data.cc
+    src/tools/distill_data.cc
+    src/tools/search_diag.cc
     src/tools/tournament.cc
 )
 
