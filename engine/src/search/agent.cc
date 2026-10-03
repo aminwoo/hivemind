@@ -4464,7 +4464,7 @@ void Agent::reset_search_state() {
     mateContinuations_.clear();
     lastSearchHash_ = 0;
     if (transpositionTable) {
-        transpositionTable->clear();
+        gcThread_.enqueue(transpositionTable->detach());
     }
     if (oldRoot) {
         gcThread_.enqueue(std::move(oldRoot));
@@ -4672,7 +4672,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // MCGS: discard nodes outside the signature-verified reused graph, then
     // re-index that graph so new transpositions merge into retained nodes.
     if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
-        transpositionTable->clear();
+        // Released on the GC thread: clearing in place costs tens of
+        // milliseconds before the first mate check can run.
+        gcThread_.enqueue(transpositionTable->detach());
         if (reusedRoot) {
             reindex_reused_subtree(rootNode);
         } else {
@@ -6424,7 +6426,17 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Index the retained subtree only after bestmove is on the wire: the walk
     // records a board signature per position, which is not work to spend
     // inside the move time.
-    if (SearchParams::ENABLE_TREE_REUSE) {
+    //
+    // A ponder that was stopped rather than hit guessed the reply wrong, so
+    // every position below its chosen move is unreachable. Indexing them
+    // anyway costs the real search, which is already waiting to join this
+    // thread, around ten milliseconds before it can even check for a mate.
+    const bool missedPonder = options.isPonder
+        && stopRequested_.load(std::memory_order_acquire);
+    if (SearchParams::ENABLE_TREE_REUSE && missedPonder) {
+        nextRootCandidates_.clear();
+        lastSearchHash_ = 0;
+    } else if (SearchParams::ENABLE_TREE_REUSE) {
         if (options.background) {
             // No move is played from a background root - the position we are
             // next asked about lies below it - so retain the root itself.

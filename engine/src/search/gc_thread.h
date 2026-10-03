@@ -32,10 +32,12 @@ public:
      *
      * A search tree is hundreds of megabytes, so an unbounded queue means a
      * producer that outruns this thread keeps every tree it discarded resident
-     * at once. Two - one draining, one waiting - lets the common case enqueue
-     * without ever blocking while capping what a burst can hold.
+     * at once. A discarded search hands over two items - its tree and its
+     * transposition table entries - so four is one search draining and one
+     * waiting: the common case enqueues without ever blocking while a burst
+     * stays capped.
      */
-    static constexpr size_t kDefaultCapacity = 2;
+    static constexpr size_t kDefaultCapacity = 4;
 
     /// Least time between malloc_trim calls, which walk every arena.
     static constexpr std::chrono::seconds kTrimInterval{5};
@@ -45,7 +47,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::condition_variable roomCv_;
-    std::queue<std::shared_ptr<Node>> deleteQueue_;
+    std::queue<std::shared_ptr<void>> deleteQueue_;
     size_t capacity_{kDefaultCapacity};
     std::atomic<bool> running_{false};
     std::atomic<bool> terminate_{false};
@@ -79,7 +81,7 @@ private:
         // it waits for pending deletions, and testing the flag out here made
         // it abandon a queue that still had trees in it.
         while (true) {
-            std::shared_ptr<Node> nodeToDelete;
+            std::shared_ptr<void> nodeToDelete;
             bool drained = false;
 
             {
@@ -161,7 +163,9 @@ public:
      * The node and all its children will be deleted asynchronously.
      * @param node The root of the subtree to delete
      */
-    void enqueue(std::shared_ptr<Node> node) {
+    // Accepts any discarded object, not only a subtree: detached
+    // transposition table entries are released here too.
+    void enqueue(std::shared_ptr<void> node) {
         if (!node) return;
 
         // Freeing off-thread hides the latency; it must not also hide how much
