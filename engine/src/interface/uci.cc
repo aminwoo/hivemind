@@ -238,11 +238,14 @@ void UCI::go(std::istringstream& is) {
     int depth = 0;
     bool infinite = false;
     bool isPonder = false;
+    bool isBackground = false;
     
     // Parse go parameters
     while (is >> token) {
         if (token == "ponder") {
             isPonder = true;
+        } else if (token == "background") {
+            isBackground = true;
         } else if (token == "movetime") {
             is >> moveTime;
         } else if (token == "nodes") {
@@ -289,6 +292,26 @@ void UCI::go(std::istringstream& is) {
     }
     opts.enablePonder = ponderEnabled;
     opts.search = current_search_config();
+
+    // "go background": the opponents are to move at the current position, so
+    // this is the permanent brain, rooted at the position the front end
+    // actually reached. It prints no bestmove and runs until the next
+    // position, go or stop.
+    if (isBackground) {
+        agent->clear_stop_request();
+        mainSearchThread = new std::thread([this, enginePtrs, opts]() {
+            try {
+                agent->run_background_search(
+                    board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+            } catch (const std::exception& error) {
+                std::cerr << "Background search failed: " << error.what() << std::endl;
+            } catch (...) {
+                std::cerr << "Background search failed with an unknown exception" << std::endl;
+            }
+            ongoingSearch.store(false, std::memory_order_release);
+        });
+        return;
+    }
 
     // Dirichlet noise is applied when a root is first expanded. Discard an
     // already searched/noised retained root during the opening so every move
