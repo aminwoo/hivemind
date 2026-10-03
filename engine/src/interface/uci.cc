@@ -298,6 +298,10 @@ void UCI::go(std::istringstream& is) {
     // actually reached. It prints no bestmove and runs until the next
     // position, go or stop.
     if (isBackground) {
+        if (!backgroundSearchEnabled) {
+            ongoingSearch.store(false, std::memory_order_release);
+            return;
+        }
         agent->clear_stop_request();
         mainSearchThread = new std::thread([this, enginePtrs, opts]() {
             try {
@@ -470,6 +474,11 @@ void UCI::setoption(std::istringstream& is) {
             ponderEnabled = (value == "true");
             std::cout << "info string Ponder set to " << value << std::endl;
         }
+    } else if (name == "BackgroundSearch") {
+        if (value == "true" || value == "false") {
+            backgroundSearchEnabled = (value == "true");
+            std::cout << "info string Ponder set to " << value << std::endl;
+        }
     } else if (name == "OpeningNoise") {
         if (value == "true" || value == "false") {
             openingNoiseEnabled = value == "true";
@@ -621,6 +630,7 @@ void UCI::send_uci_response() {
          << " min 1 max 1024" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
+    cout << "option name BackgroundSearch type check default true" << endl;
     cout << "option name OpeningNoise type check default false" << endl;
     cout << "option name OpeningNoisePlies type spin default 16 min 0 max 200" << endl;
     cout << "option name OpeningNoiseAlphaPermille type spin default 100 min 1 max 10000" << endl;
