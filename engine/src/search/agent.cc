@@ -6438,7 +6438,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // every position below its chosen move is unreachable. Indexing them
     // anyway costs the real search, which is already waiting to join this
     // thread, around ten milliseconds before it can even check for a mate.
-    const bool missedPonder = options.isPonder
+    // The permanent brain also runs as a ponder, to ignore the clock, but it
+    // guessed nothing: it is always stopped, and its index is the whole point.
+    const bool missedPonder = options.isPonder && !options.background
         && stopRequested_.load(std::memory_order_acquire);
     if (SearchParams::ENABLE_TREE_REUSE && missedPonder) {
         nextRootCandidates_.clear();
