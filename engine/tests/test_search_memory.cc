@@ -1,6 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <future>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "search/gc_thread.h"
@@ -145,4 +151,155 @@ TEST(GCThreadTest, FreesInlineWhenNoWorkerCanDrain) {
     std::weak_ptr<Node> afterStopObserver = afterStop;
     gc.enqueue(std::move(afterStop));
     EXPECT_TRUE(afterStopObserver.expired());
+}
+
+namespace {
+
+/// An item whose destructor holds a GC thread until the test releases it.
+class Gate {
+public:
+    std::shared_ptr<void> item() {
+        return std::shared_ptr<int>(new int(0), [this](int* value) {
+            std::unique_lock lock(mutex_);
+            ++entered_;
+            cv_.notify_all();
+            cv_.wait(lock, [this] { return released_; });
+            delete value;
+        });
+    }
+    bool wait_entered(int count) {
+        std::unique_lock lock(mutex_);
+        return cv_.wait_for(lock, std::chrono::seconds(5),
+                            [&] { return entered_ >= count; });
+    }
+    void release() {
+        std::lock_guard lock(mutex_);
+        released_ = true;
+        cv_.notify_all();
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    int entered_ = 0;
+    bool released_ = false;
+};
+
+/// True when enqueue returns without waiting for a GC thread to free room.
+bool enqueue_returns_promptly(GCThread& gc, std::shared_ptr<void> item,
+                              bool critical,
+                              const std::atomic<bool>* cancelled) {
+    auto done = std::async(std::launch::async, [&, item]() mutable {
+        gc.enqueue(std::move(item), critical, cancelled);
+    });
+    return done.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+}
+
+}  // namespace
+
+// A search on the path to a move must not wait for a backlog to drain: the
+// soft cap only holds back producers that can afford to wait.
+TEST(GCThreadTest, CriticalProducerPassesTheSoftCap) {
+    GCThread gc;
+    gc.set_workers(1);
+    gc.set_capacity(1);
+    gc.start();
+
+    Gate gate;
+    gc.enqueue(gate.item());
+    ASSERT_TRUE(gate.wait_entered(1));  // The only worker is now held.
+    auto filler = std::make_shared<Node>(Stockfish::WHITE);
+    std::weak_ptr<Node> fillerObserver = filler;
+    gc.enqueue(std::move(filler));      // Queue is at capacity.
+
+    auto urgent = std::make_shared<Node>(Stockfish::WHITE);
+    std::weak_ptr<Node> urgentObserver = urgent;
+    EXPECT_TRUE(enqueue_returns_promptly(gc, std::move(urgent), true, nullptr));
+    EXPECT_EQ(gc.pending_count(), 2u);  // Queued, not freed inline.
+
+    gate.release();
+    gc.stop();
+    EXPECT_TRUE(fillerObserver.expired());
+    EXPECT_TRUE(urgentObserver.expired());
+}
+
+// A background search is stopped for the position the next search needs, so
+// its stop flag must end a wait for room - and the item still gets freed.
+TEST(GCThreadTest, CancelledWaitStillQueuesTheItem) {
+    GCThread gc;
+    gc.set_workers(1);
+    gc.set_capacity(1);
+    gc.start();
+
+    Gate gate;
+    gc.enqueue(gate.item());
+    ASSERT_TRUE(gate.wait_entered(1));
+    gc.enqueue(std::make_shared<Node>(Stockfish::WHITE));
+
+    std::atomic<bool> stopRequested{false};
+    auto background = std::make_shared<Node>(Stockfish::WHITE);
+    std::weak_ptr<Node> backgroundObserver = background;
+    auto waiting = std::async(std::launch::async, [&, background]() mutable {
+        gc.enqueue(std::move(background), false, &stopRequested);
+    });
+    background.reset();
+    EXPECT_EQ(waiting.wait_for(std::chrono::milliseconds(50)),
+              std::future_status::timeout);  // Held back by the soft cap.
+    stopRequested.store(true);
+    EXPECT_EQ(waiting.wait_for(std::chrono::seconds(2)),
+              std::future_status::ready);
+    EXPECT_EQ(gc.pending_count(), 2u);
+
+    gate.release();
+    gc.stop();
+    EXPECT_TRUE(backgroundObserver.expired());
+}
+
+#if defined(__GLIBC__)
+// malloc_trim locks the arenas search workers allocate from, so it must wait
+// for the engine to go idle rather than run whenever the queue drains.
+TEST(GCThreadTest, TrimsOnlyOnceNoSearchIsRunning) {
+    GCThread gc;
+    gc.start();
+    {
+        const GCThread::BusyScope search(gc);
+        gc.enqueue(std::make_shared<Node>(Stockfish::WHITE));
+        std::this_thread::sleep_for(GCThread::kIdleBeforeTrim * 3 / 2);
+        EXPECT_EQ(gc.trim_count(), 0u);  // Drained, but a search is running.
+    }
+    const auto deadline = std::chrono::steady_clock::now()
+        + GCThread::kIdleBeforeTrim * 4;
+    while (gc.trim_count() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(gc.trim_count(), 1u);  // Idle long enough: freed memory returned.
+    gc.stop();
+}
+
+// With nothing freed there is nothing to return, idle or not.
+TEST(GCThreadTest, DoesNotTrimWithNothingFreed) {
+    GCThread gc;
+    gc.start();
+    { const GCThread::BusyScope search(gc); }
+    std::this_thread::sleep_for(GCThread::kIdleBeforeTrim * 3 / 2);
+    EXPECT_EQ(gc.trim_count(), 0u);
+    gc.stop();
+}
+#endif
+
+// One thread cannot keep up with a search discarding a large tree and table
+// every move; the workers must free concurrently, not take turns.
+TEST(GCThreadTest, WorkersFreeInParallel) {
+    GCThread gc;
+    gc.set_workers(2);
+    gc.start();
+
+    Gate gate;
+    gc.enqueue(gate.item());
+    gc.enqueue(gate.item());
+    EXPECT_TRUE(gate.wait_entered(2));
+
+    gate.release();
+    gc.stop();
+    EXPECT_EQ(gc.pending_count(), 0u);
 }

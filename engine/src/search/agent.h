@@ -262,7 +262,17 @@ private:
                           int moveTimeMs,
                           size_t workerCount);
     void wait_for_workers();
-    void reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot);
+    void reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot,
+                                bool background);
+    /**
+     * @brief Hand a discarded tree or table to the GC threads.
+     *
+     * A foreground search is on the path to a move, so it never waits for a
+     * backlog short of the hard cap. A background search waits for room, but
+     * its stop flag ends the wait: the position it is stopped for is waiting
+     * on this thread.
+     */
+    void discard(std::shared_ptr<void> item, bool background);
     void retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
                                  Board& board,
                                  bool teamHasTimeAdvantage);
@@ -727,7 +737,8 @@ public:
      */
     std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash,
                                          Stockfish::Color teamSide,
-                                         const std::string& signature);
+                                         const std::string& signature,
+                                         bool background);
     
     /**
      * @brief Store next-root candidates for tree reuse.

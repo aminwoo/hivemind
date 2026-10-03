@@ -185,6 +185,17 @@ public:
     ~SearchThread(); 
 
     void set_search_info(SearchInfo* info);
+    /**
+     * @brief Drop this worker's references into the tree it just searched.
+     *
+     * The trajectory buffer and batch contexts hold shared_ptrs to the last
+     * iteration's nodes, the root among them. Left in place they outlive the
+     * agent's own reference, so the GC thread's release is not the last one
+     * and the next search frees the old tree here instead, synchronously,
+     * when it first clears them: half a second or more on a large tree, and
+     * a stop waits for all of it.
+     */
+    void release_tree_references();
     void set_root_node(const std::shared_ptr<Node>& node);
     void set_transposition_table(TranspositionTable* table);
     void set_mate_candidate_table(MateCandidateTable* table);

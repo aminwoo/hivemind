@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -126,6 +127,34 @@ public:
         misses_.store(0, std::memory_order_relaxed);
         insertions_.store(0, std::memory_order_relaxed);
         rejections_.store(0, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief Empty the table in O(shards), handing the old entries back.
+     *
+     * clear() releases every entry in place. After a search that is hundreds
+     * of thousands of node references, which costs tens of milliseconds on
+     * the path to the next move - long enough to delay even a mate in one.
+     * This swaps each shard's map for an empty one with the same bucket
+     * count, so the caller can release the old entries off that path.
+     *
+     * @return The detached entries; destroying it releases them.
+     */
+    std::shared_ptr<void> detach() {
+        using Map = std::unordered_map<uint64_t, std::shared_ptr<Node>>;
+        auto detached = std::make_shared<std::array<Map, kNumShards>>();
+        for (size_t i = 0; i < kNumShards; ++i) {
+            auto& shard = shards_[i];
+            std::unique_lock lock(shard.mutex);
+            const size_t buckets = shard.table.bucket_count();
+            (*detached)[i].swap(shard.table);
+            shard.table.rehash(buckets);
+        }
+        hits_.store(0, std::memory_order_relaxed);
+        misses_.store(0, std::memory_order_relaxed);
+        insertions_.store(0, std::memory_order_relaxed);
+        rejections_.store(0, std::memory_order_relaxed);
+        return detached;
     }
 
     /**

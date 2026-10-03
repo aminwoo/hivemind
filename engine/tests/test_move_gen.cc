@@ -39,7 +39,7 @@ public:
     static void reindex_reused_subtree(
         Agent& agent, const std::shared_ptr<Node>& root) {
         agent.transpositionTable->clear();
-        agent.reindex_reused_subtree(root);
+        agent.reindex_reused_subtree(root, false);
     }
 
     static std::shared_ptr<Node> lookup(Agent& agent, uint64_t hash) {
@@ -2470,7 +2470,7 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
         actualPosition.search_hash_key(
             Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
-        Agent::board_signature(actualPosition));
+        Agent::board_signature(actualPosition), false);
     EXPECT_EQ(reused, replyNodes[1]);
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
@@ -2550,7 +2550,7 @@ TEST_F(EngineTest, TreeReuseIndexesPositionsThreeJointPliesDeep) {
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
         deepPosition.search_hash_key(
             Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
-        Agent::board_signature(deepPosition));
+        Agent::board_signature(deepPosition), false);
     EXPECT_EQ(reused, deepNode);
 }
 
@@ -2581,7 +2581,7 @@ TEST_F(EngineTest, TreeReuseRejectsUnrelatedPositionAtSameDepth) {
     EXPECT_EQ(agent.try_reuse_tree(
                   elsewhere.search_hash_key(
                       Stockfish::BLACK, !teamHasTimeAdvantage), Stockfish::BLACK,
-                  Agent::board_signature(elsewhere)),
+                  Agent::board_signature(elsewhere), false),
               nullptr);
 }
 
