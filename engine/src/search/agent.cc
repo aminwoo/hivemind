@@ -4399,6 +4399,9 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                 searchThread->finish_pending_iteration(
                     localBoard, engine, teamHasTimeAdvantage);
             }
+            // The agent still owns the tree here, so this only drops
+            // reference counts; the GC thread then holds the last one.
+            searchThread->release_tree_references();
         } catch (...) {
             std::lock_guard lock(workerMutex_);
             if (!workerException_) {
@@ -4464,10 +4467,10 @@ void Agent::reset_search_state() {
     mateContinuations_.clear();
     lastSearchHash_ = 0;
     if (transpositionTable) {
-        gcThread_.enqueue(transpositionTable->detach());
+        discard(transpositionTable->detach(), false);
     }
     if (oldRoot) {
-        gcThread_.enqueue(std::move(oldRoot));
+        discard(std::move(oldRoot), false);
     }
 }
 
@@ -4600,7 +4603,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // Try to reuse tree from previous search (if enabled)
     std::shared_ptr<Node> reusedRoot = nullptr;
     if (SearchParams::ENABLE_TREE_REUSE) {
-        reusedRoot = try_reuse_tree(positionHash, teamSide, positionSignature);
+        reusedRoot = try_reuse_tree(
+            positionHash, teamSide, positionSignature, options.background);
     }
     if (reusedRoot && mustPlayDespiteTeamMate
         && reusedRoot->get_node_type() == NodeType::LOSS) {
@@ -4674,9 +4678,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     if (options.search.enableMCGS && options.search.enableTranspositions && transpositionTable) {
         // Released on the GC thread: clearing in place costs tens of
         // milliseconds before the first mate check can run.
-        gcThread_.enqueue(transpositionTable->detach());
+        discard(transpositionTable->detach(), options.background);
         if (reusedRoot) {
-            reindex_reused_subtree(rootNode);
+            reindex_reused_subtree(rootNode, options.background);
         } else {
             transpositionTable->insertOrGet(positionHash, rootNode);
         }
@@ -6897,7 +6901,13 @@ std::string Agent::board_signature(Board& board) {
     return board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
 }
 
-void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
+void Agent::discard(std::shared_ptr<void> item, bool background) {
+    gcThread_.enqueue(std::move(item), !background,
+                      background ? &stopRequested_ : nullptr);
+}
+
+void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot,
+                                   bool background) {
     if (!transpositionTable || !reusedRoot) {
         return;
     }
@@ -6907,8 +6917,13 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
     // acquire one owner only when inserting the node into the table.
     std::vector<Node*> pending = {reusedRoot.get()};
     std::unordered_set<const Node*> visited;
+    // A background search is stopped for the position the next search needs,
+    // and that search is waiting on this thread. Nodes left unindexed stay
+    // reusable through ordinary edges, as they do past the node cap.
     while (!pending.empty()
-           && visited.size() < SearchParams::TREE_REUSE_REINDEX_MAX_NODES) {
+           && visited.size() < SearchParams::TREE_REUSE_REINDEX_MAX_NODES
+           && !(background
+                && stopRequested_.load(std::memory_order_acquire))) {
         Node* node = pending.back();
         pending.pop_back();
         if (!node || !visited.insert(node).second) {
@@ -6925,7 +6940,8 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot) {
 
 std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
                                             Stockfish::Color teamSide,
-                                            const std::string& signature) {
+                                            const std::string& signature,
+                                            bool background) {
     // The hash locates the candidate; the signature is what admits it. Retained
     // edges were generated against that exact board, and a stale pocket would
     // make reused drops illegal.
@@ -6942,7 +6958,7 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
     }
 
     if (rootNode && rootNode != reused) {
-        gcThread_.enqueue(rootNode);
+        discard(rootNode, background);
     }
 
     nextRootCandidates_.clear();

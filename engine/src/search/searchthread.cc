@@ -238,6 +238,16 @@ void SearchThread::set_search_info(SearchInfo* info) {
     searchInfo = info;
 }
 
+void SearchThread::release_tree_references() {
+    if (pendingBatchIndex >= 0) {
+        throw std::logic_error("Cannot release tree references with inference pending");
+    }
+    trajectoryBuffer.clear();
+    for (SearchBatch& batch : batches) {
+        batch.contexts.clear();
+    }
+}
+
 void SearchThread::set_root_node(const std::shared_ptr<Node>& node) {
     root = node.get();
     rootOwner = node;
