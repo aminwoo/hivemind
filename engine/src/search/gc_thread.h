@@ -52,6 +52,31 @@ public:
     /// Least time between malloc_trim calls, which walk every arena.
     static constexpr std::chrono::seconds kTrimInterval{5};
 
+    /**
+     * @brief How long no search may have run before a trim.
+     *
+     * malloc_trim locks each arena while it walks it, and a search worker
+     * allocating from that arena waits - on an L40S, a 237 ms trim held a
+     * worker for 150 ms and the move went out 124 ms late. During a game some
+     * search is nearly always running (the move, a ponder, the permanent
+     * brain), so trimming waits until the engine has been idle this long.
+     * Memory freed meanwhile still goes back to glibc and is reused for the
+     * next tree; only returning it to the OS is deferred.
+     */
+    static constexpr std::chrono::milliseconds kIdleBeforeTrim{1000};
+
+    /// Marks a search as running for its lifetime; trimming waits for none.
+    class BusyScope {
+    public:
+        explicit BusyScope(GCThread& gc) : gc_(gc) { gc_.begin_busy(); }
+        ~BusyScope() { gc_.end_busy(); }
+        BusyScope(const BusyScope&) = delete;
+        BusyScope& operator=(const BusyScope&) = delete;
+
+    private:
+        GCThread& gc_;
+    };
+
 private:
     std::vector<std::thread> workers_;
     size_t workerCount_{kDefaultWorkers};
@@ -61,29 +86,31 @@ private:
     std::queue<std::shared_ptr<void>> deleteQueue_;
     size_t capacity_{kDefaultCapacity};
     size_t freeing_{0};  // Items taken off the queue and still being freed.
+    size_t busy_{0};     // Searches running (BusyScope).
+    bool trimPending_{false};  // Freed memory not yet returned to the OS.
+    std::chrono::steady_clock::time_point lastBusyEnd_{};
+    size_t trims_{0};
     std::atomic<bool> running_{false};
     std::atomic<bool> terminate_{false};
     std::chrono::steady_clock::time_point lastTrim_{};
 
     /**
-     * @brief Return the freed arenas to the OS, at most once per interval.
+     * @brief Whether to return the freed arenas to the OS now.
      *
      * Freeing a tree hands its chunks back to glibc, not to the kernel: with a
      * thread per search worker the per-thread arenas keep them, and RSS stays
-     * at the high-water mark of the largest tree the process ever held. This
-     * runs on a GC thread with nothing waiting on it, which is the one place
-     * the walk costs nothing. The caller holds mutex_, so only one thread at
-     * a time decides to trim.
+     * at the high-water mark of the largest tree the process ever held. The
+     * walk runs on a GC thread, but it locks each arena as it goes, so it waits
+     * for everything handed over to be freed and for the engine to go idle.
+     * The caller holds mutex_, so only one thread at a time decides to trim.
      */
-    bool should_trim_locked() {
+    bool should_trim_locked(std::chrono::steady_clock::time_point now) const {
 #if defined(__GLIBC__)
-        const auto now = std::chrono::steady_clock::now();
-        if (now - lastTrim_ < kTrimInterval) {
-            return false;
-        }
-        lastTrim_ = now;
-        return true;
+        return trimPending_ && deleteQueue_.empty() && freeing_ == 0
+            && busy_ == 0 && now - lastBusyEnd_ >= kIdleBeforeTrim
+            && now - lastTrim_ >= kTrimInterval;
 #else
+        (void)now;
         return false;
 #endif
     }
@@ -97,21 +124,50 @@ private:
         // it abandon a queue that still had trees in it.
         while (true) {
             std::shared_ptr<void> nodeToDelete;
+            bool trim = false;
 
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this] {
-                    return !deleteQueue_.empty() || terminate_.load(std::memory_order_relaxed);
-                });
-
-                if (terminate_.load(std::memory_order_relaxed) && deleteQueue_.empty()) {
-                    break;
+                while (deleteQueue_.empty()
+                       && !terminate_.load(std::memory_order_relaxed)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (should_trim_locked(now)) {
+                        trim = true;
+                        trimPending_ = false;
+                        lastTrim_ = now;
+                        break;
+                    }
+                    if (trimPending_ && busy_ == 0 && freeing_ == 0) {
+                        // Wake when the idle period or the trim interval ends.
+                        // A thread still freeing notifies when it is done.
+                        cv_.wait_until(lock, std::max(
+                            lastBusyEnd_ + kIdleBeforeTrim,
+                            lastTrim_ + kTrimInterval));
+                    } else {
+                        cv_.wait(lock);
+                    }
                 }
 
-                nodeToDelete = std::move(deleteQueue_.front());
-                deleteQueue_.pop();
-                ++freeing_;
+                if (!trim) {
+                    if (terminate_.load(std::memory_order_relaxed) && deleteQueue_.empty()) {
+                        break;
+                    }
+
+                    nodeToDelete = std::move(deleteQueue_.front());
+                    deleteQueue_.pop();
+                    ++freeing_;
+                }
             }
+
+            if (trim) {
+#if defined(__GLIBC__)
+                malloc_trim(0);
+#endif
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++trims_;
+                continue;
+            }
+
             // A producer waiting for room can proceed as soon as the slot is
             // free, which is now rather than after this item is freed.
             roomCv_.notify_all();
@@ -119,21 +175,29 @@ private:
             // Release the node outside the lock (actual deletion happens here)
             nodeToDelete.reset();
 
-            bool trim = false;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 --freeing_;
-                // Trim once everything handed over is gone, not between items
-                // another thread is still freeing.
-                trim = deleteQueue_.empty() && freeing_ == 0
-                    && should_trim_locked();
+                trimPending_ = true;
             }
-#if defined(__GLIBC__)
-            if (trim) {
-                malloc_trim(0);
-            }
-#endif
+            // Whichever thread is idle re-evaluates whether a trim is due.
+            cv_.notify_one();
         }
+    }
+
+    void begin_busy() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++busy_;
+    }
+
+    void end_busy() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (busy_ > 0 && --busy_ == 0) {
+                lastBusyEnd_ = std::chrono::steady_clock::now();
+            }
+        }
+        cv_.notify_one();
     }
 
 public:
@@ -271,6 +335,14 @@ public:
     size_t pending_count() const {
         std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
         return deleteQueue_.size();
+    }
+
+    /**
+     * @brief How many times freed memory has been returned to the OS.
+     */
+    size_t trim_count() const {
+        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
+        return trims_;
     }
 
     /**

@@ -4527,6 +4527,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
                                         const SearchOptions& options) {
     std::unique_lock searchLock(searchMutex_);
+    // Freed memory goes back to the OS only once no search has run for a
+    // while: the trim locks the arenas these workers allocate from.
+    const GCThread::BusyScope gcBusy(gcThread_);
     {
         std::lock_guard statsLock(internalMateProbeStatsMutex_);
         lastInternalMateProbeStats_ = {};

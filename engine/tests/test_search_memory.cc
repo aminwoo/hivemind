@@ -6,6 +6,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "search/gc_thread.h"
@@ -253,6 +254,38 @@ TEST(GCThreadTest, CancelledWaitStillQueuesTheItem) {
     gc.stop();
     EXPECT_TRUE(backgroundObserver.expired());
 }
+
+#if defined(__GLIBC__)
+// malloc_trim locks the arenas search workers allocate from, so it must wait
+// for the engine to go idle rather than run whenever the queue drains.
+TEST(GCThreadTest, TrimsOnlyOnceNoSearchIsRunning) {
+    GCThread gc;
+    gc.start();
+    {
+        const GCThread::BusyScope search(gc);
+        gc.enqueue(std::make_shared<Node>(Stockfish::WHITE));
+        std::this_thread::sleep_for(GCThread::kIdleBeforeTrim * 3 / 2);
+        EXPECT_EQ(gc.trim_count(), 0u);  // Drained, but a search is running.
+    }
+    const auto deadline = std::chrono::steady_clock::now()
+        + GCThread::kIdleBeforeTrim * 4;
+    while (gc.trim_count() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(gc.trim_count(), 1u);  // Idle long enough: freed memory returned.
+    gc.stop();
+}
+
+// With nothing freed there is nothing to return, idle or not.
+TEST(GCThreadTest, DoesNotTrimWithNothingFreed) {
+    GCThread gc;
+    gc.start();
+    { const GCThread::BusyScope search(gc); }
+    std::this_thread::sleep_for(GCThread::kIdleBeforeTrim * 3 / 2);
+    EXPECT_EQ(gc.trim_count(), 0u);
+    gc.stop();
+}
+#endif
 
 // One thread cannot keep up with a search discarding a large tree and table
 // every move; the workers must free concurrently, not take turns.
