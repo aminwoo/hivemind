@@ -34,6 +34,8 @@ public:
     static bool has_search(const UCI& uci) {
         return uci.mainSearchThread != nullptr || uci.ongoingSearch.load();
     }
+
+    static Board& board(UCI& uci) { return uci.board; }
 };
 
 namespace {
@@ -219,6 +221,50 @@ TEST_F(UCIOpeningNoiseTest, BackgroundCommandDoesNotFallThroughToAlphaBeta) {
     EXPECT_TRUE(output.empty());
     EXPECT_TRUE(errors.empty());
     EXPECT_FALSE(UCIOpeningNoiseTestPeer::has_search(uci));
+}
+
+TEST_F(UCIOpeningNoiseTest, SingleBoardPositionUsesStandardUciMoveHistory) {
+    UCI uci;
+    set_option(uci, "UCI_Variant", "chess");
+    std::istringstream start("startpos moves e2e4 d7d5 e4d5");
+    uci.position(start);
+    Board& board = UCIOpeningNoiseTestPeer::board(uci);
+    EXPECT_EQ(board.variant, Board::Variant::CHESS);
+    EXPECT_EQ(board.game_ply(BOARD_A), 3);
+    EXPECT_EQ(board.count_in_hand(BOARD_A, Stockfish::WHITE, Stockfish::PAWN), 0);
+
+    set_option(uci, "UCI_Variant", "crazyhouse");
+    std::istringstream fen("fen rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1 moves e2e4 d7d5 e4d5 g8f6 P@e4");
+    uci.position(fen);
+    EXPECT_EQ(board.game_ply(BOARD_A), 5);
+    EXPECT_EQ(board.count_in_hand(BOARD_A, Stockfish::WHITE, Stockfish::PAWN), 0);
+    EXPECT_EQ(Stockfish::type_of(board.last_move(BOARD_A)), Stockfish::DROP);
+
+    set_option(uci, "UCI_Variant", "bughouse");
+    std::istringstream bughouse("startpos moves 1e2e4 2d2d4");
+    uci.position(bughouse);
+    EXPECT_EQ(board.game_ply(BOARD_A), 1);
+    EXPECT_EQ(board.game_ply(BOARD_B), 1);
+}
+
+TEST_F(UCIOpeningNoiseTest, VariantDefaultsUseZeroDrawContemptAndCorrectStartingRules) {
+    UCI uci;
+    for (const auto& variant : {"bughouse", "chess", "crazyhouse", "antichess", "chess960", "atomic", "3check"}) {
+        set_option(uci, "UCI_Variant", variant);
+        EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci).drawContempt, 0.0f);
+        std::istringstream start("startpos moves e2e4");
+        if (std::string(variant) != "bughouse") uci.position(start);
+    }
+    Board& board = UCIOpeningNoiseTestPeer::board(uci);
+    EXPECT_EQ(board.pos[BOARD_A]->checks_remaining(Stockfish::WHITE), 3);
+    set_option(uci, "UCI_Variant", "chess");
+    set_option(uci, "UCI_Chess960", "true");
+    std::istringstream castle("fen 4k3/8/8/8/8/8/8/RK5R w HA - 0 1 moves b1h1");
+    uci.position(castle);
+    EXPECT_EQ(board.variant, Board::Variant::CHESS960);
+    EXPECT_EQ(board.pos[BOARD_A]->square<Stockfish::KING>(Stockfish::WHITE), Stockfish::SQ_G1);
+    set_option(uci, "UCI_Chess960", "false");
+    EXPECT_EQ(board.variant, Board::Variant::CHESS);
 }
 
 }  // namespace

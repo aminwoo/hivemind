@@ -56,6 +56,10 @@ private:
     std::unique_ptr<ab::Searcher> abSearcher;
     ab::Options abOptions;
     std::atomic<bool> abStop{false};
+    std::atomic<bool> singleStop{false};
+    std::atomic<bool> singlePonder{false};
+
+    void go_single_board(int moveTime, size_t nodes, int depth, bool infinite, bool ponder);
 
     void go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite);
 

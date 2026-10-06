@@ -16,6 +16,7 @@
 #include "environment/planes.h"
 #include "common/utils.h"
 #include "common/globals.h"
+#include "search/single_board.h"
 
 using namespace std;
 
@@ -151,6 +152,8 @@ void UCI::go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite) {
 
 void UCI::stop() {
     abStop.store(true);
+    singleStop.store(true);
+    singlePonder.store(false);
     if (agent) {
         agent->set_is_running(false);
     }
@@ -183,7 +186,9 @@ void UCI::position(istringstream& is) {
     // Set the board position
     if (token == "startpos") {
         // Use a predefined starting FEN for the initial position.
-        board.set("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1|rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        board.set(board.is_single_board() ? board.initial_fen()
+            : board.startingFen + "|" + board.startingFen);
+        is >> token;
     }
     else if (token == "fen") {
         // Build the FEN string until we hit "moves" or end of stream
@@ -193,25 +198,22 @@ void UCI::position(istringstream& is) {
         }
         board.set(fen);
         
-        if (token == "moves") {
-            is.seekg(-6, std::ios_base::cur);  
-        }
     }
     else {
         return;
     }
     
-    if (is >> token && token == "moves") {
+    if (token == "moves") {
         // Parse move list (if any)
         int moveCount = 0;
         while (is >> token) {
-            if (token.empty() || token[0] < '1' || token[0] > '2') {
+            if (!board.is_single_board() && (token.empty() || token[0] < '1' || token[0] > '2')) {
                 std::cerr << "Error: Invalid board indicator in move '" << token 
                           << "' at move " << (moveCount + 1) << std::endl;
                 break;
             }
-            int boardNum = token[0] - '1'; // '1' becomes 0, '2' becomes 1.
-            std::string moveStr = token.substr(1); // Extract move string without board indicator
+            int boardNum = board.is_single_board() ? BOARD_A : token[0] - '1';
+            std::string moveStr = board.is_single_board() ? token : token.substr(1);
             Stockfish::Move m = Stockfish::UCI::to_move(*board.pos[boardNum], moveStr);
             if (m == Stockfish::MOVE_NONE) {
                 std::cerr << "Error: Invalid move '" << moveStr << "' on board " 
@@ -239,6 +241,7 @@ void UCI::go(std::istringstream& is) {
     bool infinite = false;
     bool isPonder = false;
     bool isBackground = false;
+    int whiteTime = 0, blackTime = 0, whiteIncrement = 0, blackIncrement = 0;
     
     // Parse go parameters
     while (is >> token) {
@@ -254,13 +257,34 @@ void UCI::go(std::istringstream& is) {
             is >> depth;
         } else if (token == "infinite") {
             infinite = true;
+        } else if (token == "wtime") {
+            is >> whiteTime;
+        } else if (token == "btime") {
+            is >> blackTime;
+        } else if (token == "winc") {
+            is >> whiteIncrement;
+        } else if (token == "binc") {
+            is >> blackIncrement;
         }
     }
     
     stop();
     // Background work belongs to the MCTS tree. Never let this command fall
     // through to an alpha-beta search and emit an unsolicited bestmove.
-    if (isBackground && (!backgroundSearchEnabled || alphaBetaMode)) {
+    if (isBackground && (!backgroundSearchEnabled || alphaBetaMode || board.is_single_board())) {
+        return;
+    }
+    if (board.is_single_board()) {
+        if (moveTime == 0 && nodes == 0 && !infinite && !isPonder) {
+            const bool white = board.side_to_move(BOARD_A) == Stockfish::WHITE;
+            const int remaining = white ? whiteTime : blackTime;
+            const int increment = white ? whiteIncrement : blackIncrement;
+            if (remaining > 0) {
+                moveTime = std::clamp(remaining / 30 + increment * 3 / 4,
+                                      1, std::max(1, remaining - 50));
+            }
+        }
+        go_single_board(moveTime, nodes, depth, infinite, isPonder);
         return;
     }
     if (alphaBetaMode) {
@@ -357,6 +381,52 @@ void UCI::go(std::istringstream& is) {
     }
 }
 
+void UCI::go_single_board(int moveTime, size_t nodes, int depth, bool infinite, bool ponder) {
+    if (engines.empty()) {
+        std::cerr << "Error: Single-board search requires an ONNX model" << std::endl;
+        std::cout << "bestmove 0000" << std::endl;
+        return;
+    }
+    single_board::Limits limits;
+    limits.nodes = nodes;
+    limits.maxDepth = depth > 0 ? depth : 128;
+    limits.moveTimeMs = infinite ? 0 : nodes > 0 && moveTime == 0 ? 0
+        : moveTime > 0 ? moveTime : 1000;
+    singleStop.store(false);
+    singlePonder.store(ponder);
+    ongoingSearch.store(true);
+    mainSearchThread = new std::thread([this, limits, infinite]() {
+        try {
+            const auto start = std::chrono::steady_clock::now();
+            const auto result = single_board::search(board, *engines.front(), limits, singleStop);
+            while (!singleStop.load() && (infinite || singlePonder.load())) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            const auto elapsed = std::max<int64_t>(1, std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count());
+            std::ostringstream output;
+            output << "info depth " << result.depth << " nodes " << result.nodes
+                   << " time " << elapsed << " nps " << result.nodes * 1000 / elapsed;
+            if (result.mateInOne) output << " score mate 1";
+            else output << " score cp " << static_cast<int>(400 * std::atanh(std::clamp(result.value, -0.999f, 0.999f)));
+            output << " pv";
+            Board pvBoard(board);
+            for (Stockfish::Move move : result.pv) {
+                if (!pvBoard.is_legal_move(BOARD_A, move)) break;
+                output << ' ' << pvBoard.uci_move(BOARD_A, move);
+                pvBoard.push_move(BOARD_A, move);
+            }
+            output << "\nbestmove " << (result.move == Stockfish::MOVE_NONE
+                ? "0000" : board.uci_move(BOARD_A, result.move));
+            std::cout << output.str() << std::endl;
+        } catch (const std::exception& error) {
+            std::cerr << "Single-board search failed: " << error.what() << std::endl;
+            std::cout << "info string single-board search failed\nbestmove 0000" << std::endl;
+        }
+        ongoingSearch.store(false);
+    });
+}
+
 SearchParams::RuntimeConfig UCI::current_search_config() {
     SearchParams::RuntimeConfig config = searchConfig;
     const int currentPly = std::max(
@@ -380,6 +450,7 @@ SearchParams::RuntimeConfig UCI::current_search_config() {
 }
 
 void UCI::ponderhit() {
+    singlePonder.store(false);
     if (agent && ongoingSearch.load(std::memory_order_acquire)) {
         agent->ponderhit();
     }
@@ -397,7 +468,27 @@ void UCI::setoption(std::istringstream& is) {
     if (token != "value") return;
     std::string value;
     is >> value;
-    if (name == "Hash") {
+    if (name == "UCI_Variant") {
+        Board::Variant variant;
+        if (value == "chess" || value == "standard") variant = Board::Variant::CHESS;
+        else if (value == "crazyhouse") variant = Board::Variant::CRAZYHOUSE;
+        else if (value == "antichess") variant = Board::Variant::ANTICHESS;
+        else if (value == "chess960" || value == "fischerandom") variant = Board::Variant::CHESS960;
+        else if (value == "atomic") variant = Board::Variant::ATOMIC;
+        else if (value == "3check" || value == "threeCheck" || value == "threecheck") variant = Board::Variant::THREE_CHECK;
+        else if (value == "bughouse") variant = Board::Variant::BUGHOUSE;
+        else {
+            std::cout << "info string unsupported UCI_Variant " << value << std::endl;
+            return;
+        }
+        board.set_variant(variant);
+        if (agent) agent->reset_search_state();
+        if (abSearcher) abSearcher->clear();
+    } else if (name == "UCI_Chess960") {
+        if (board.variant == Board::Variant::CHESS || board.variant == Board::Variant::CHESS960) {
+            board.set_variant(value == "true" ? Board::Variant::CHESS960 : Board::Variant::CHESS);
+        }
+    } else if (name == "Hash") {
         // Parse hash size in MB (1 - 33554432 MB)
         size_t sizeMB = std::stoull(value);
         
@@ -622,6 +713,8 @@ void UCI::send_uci_response() {
     cout << "id name hivemind" << endl;
     cout << "id author aminwoo\n" << endl;
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
+    cout << "option name UCI_Variant type combo default bughouse var bughouse var chess var crazyhouse var antichess var chess960 var atomic var 3check" << endl;
+    cout << "option name UCI_Chess960 type check default false" << endl;
     cout << "option name SearchMode type combo default "
          << (alphaBetaMode ? "alphabeta" : "mcts") << " var mcts var alphabeta" << endl;
     cout << "option name NNUEFile type string default <empty>" << endl;
@@ -788,7 +881,7 @@ void UCI::loop() {
 
         try {
             if (token == "uci")             send_uci_response();
-            else if (token == "isready")  { cout << "livenodes " << Node::live_count() << endl; cout << "readyok" << endl; }
+            else if (token == "isready")  { cout << "info string livenodes " << Node::live_count() << endl; cout << "readyok" << endl; }
             else if (token == "go")         go(is);
             else if (token == "ponderhit")  ponderhit();
             else if (token == "setoption")  setoption(is);

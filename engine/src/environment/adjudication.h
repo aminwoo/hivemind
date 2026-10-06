@@ -18,6 +18,15 @@ enum class GameStatus { ONGOING, WIN, LOSS, DRAW, NO_LEGAL_ACTION };
  * still have the legal wait action; only with neither is it out of actions.
  */
 inline GameStatus adjudicate_game(Board& board, Stockfish::Color team, bool timeAdvantage) {
+    if (board.is_single_board()) {
+        float value;
+        if (board.single_board_terminal_value(value)) {
+            if (value == 0.0f) return GameStatus::DRAW;
+            const bool win = value > 0.0f;
+            return win == (team == board.side_to_move(BOARD_A)) ? GameStatus::WIN : GameStatus::LOSS;
+        }
+        return GameStatus::ONGOING;
+    }
     const bool aOnTurn = board.side_to_move(BOARD_A) == team;
     const bool bOnTurn = board.side_to_move(BOARD_B) == ~team;
     const bool canWait = is_double_sit_legal(timeAdvantage, aOnTurn, bOnTurn);

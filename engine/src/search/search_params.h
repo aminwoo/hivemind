@@ -165,7 +165,7 @@ constexpr float MOVES_LEFT_DISCOUNT = 0.05f;
  * - 0.05: Light contempt (slightly prefer wins over draws)
  * - 0.10: Moderate contempt (more aggressive)
  */
-constexpr float DRAW_CONTEMPT = 0.0f;
+constexpr float DRAW_CONTEMPT = 0.0f; // Neutral draws by default in every variant.
 
 // =============================================================================
 // Q-Value Weighted Move Selection Parameters (CrazyAra 2019)
