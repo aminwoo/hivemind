@@ -18,6 +18,22 @@ public:
     static void set_board(UCI& uci, const std::string& dualFen) {
         uci.board.set(dualFen);
     }
+
+    static bool background_enabled(const UCI& uci) {
+        return uci.backgroundSearchEnabled;
+    }
+
+    static bool ponder_enabled(const UCI& uci) {
+        return uci.ponderEnabled;
+    }
+
+    static void use_alphabeta(UCI& uci) {
+        uci.alphaBetaMode = true;
+    }
+
+    static bool has_search(const UCI& uci) {
+        return uci.mainSearchThread != nullptr || uci.ongoingSearch.load();
+    }
 };
 
 namespace {
@@ -137,6 +153,9 @@ TEST_F(UCIOpeningNoiseTest, AdvertisesOptionsInUciHandshake) {
     std::cout.rdbuf(previous);
 
     EXPECT_NE(output.str().find(
+        "option name BackgroundSearch type check default true"),
+        std::string::npos);
+    EXPECT_NE(output.str().find(
         "option name OpeningNoise type check default false"),
         std::string::npos);
     EXPECT_NE(output.str().find(
@@ -152,6 +171,54 @@ TEST_F(UCIOpeningNoiseTest, AdvertisesOptionsInUciHandshake) {
         "option name InternalMateProbe type combo default off "
         "var off var telemetry var bias var certify"),
         std::string::npos);
+}
+
+TEST_F(UCIOpeningNoiseTest, BackgroundOptionIsIndependentOfPonder) {
+    UCI uci;
+    EXPECT_TRUE(UCIOpeningNoiseTestPeer::background_enabled(uci));
+
+    testing::internal::CaptureStdout();
+    set_option(uci, "BackgroundSearch", "false");
+    const std::string output = testing::internal::GetCapturedStdout();
+    EXPECT_NE(output.find("info string BackgroundSearch set to false"),
+              std::string::npos);
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::background_enabled(uci));
+    EXPECT_TRUE(UCIOpeningNoiseTestPeer::ponder_enabled(uci));
+
+    set_option(uci, "BackgroundSearch", "true");
+    set_option(uci, "Ponder", "false");
+    EXPECT_TRUE(UCIOpeningNoiseTestPeer::background_enabled(uci));
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::ponder_enabled(uci));
+}
+
+TEST_F(UCIOpeningNoiseTest, DisabledBackgroundCommandDoesNotSearchOrNeedEngines) {
+    UCI uci;
+    set_option(uci, "BackgroundSearch", "false");
+    testing::internal::CaptureStdout();
+    testing::internal::CaptureStderr();
+    std::istringstream input("background");
+    uci.go(input);
+    const std::string output = testing::internal::GetCapturedStdout();
+    const std::string errors = testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(output.empty());
+    EXPECT_TRUE(errors.empty());
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::has_search(uci));
+}
+
+TEST_F(UCIOpeningNoiseTest, BackgroundCommandDoesNotFallThroughToAlphaBeta) {
+    UCI uci;
+    UCIOpeningNoiseTestPeer::use_alphabeta(uci);
+    testing::internal::CaptureStdout();
+    testing::internal::CaptureStderr();
+    std::istringstream input("background");
+    uci.go(input);
+    const std::string output = testing::internal::GetCapturedStdout();
+    const std::string errors = testing::internal::GetCapturedStderr();
+
+    EXPECT_TRUE(output.empty());
+    EXPECT_TRUE(errors.empty());
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::has_search(uci));
 }
 
 }  // namespace

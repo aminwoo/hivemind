@@ -766,6 +766,37 @@ public:
                              const JointActionCandidate& playedAction,
                              const SearchOptions& options);
 
+    /**
+     * @brief Clear a stop latched by earlier commands.
+     *
+     * Every setoption and position stops the running search, and the stop
+     * stays latched so a background search that has not yet dispatched still
+     * sees it. A background search the front end starts deliberately must not
+     * inherit that stop; a stop arriving after this latches again as usual.
+     */
+    void clear_stop_request();
+
+    /**
+     * @brief Search the opponents' replies from a position they are to move in.
+     *
+     * The permanent brain, rooted where the caller says rather than where this
+     * engine's own move would lead. A front end that played a different move -
+     * an opening book, a safety substitution - restarts it from the position
+     * actually on the board; one that played this engine's move restarts it on
+     * the same root, which the stopped search retained, so its tree carries
+     * over. Returns when the next position, go, or stop arrives, or when the
+     * background caps are reached. Emits no bestmove: no move is played here.
+     *
+     * @param board The position after our team's move, the opponents to play.
+     * @param teamSide Our team, which is not on move at board.
+     * @param teamHasTimeAdvantage Our team's time advantage.
+     */
+    void run_background_search(Board& board,
+                               const std::vector<Engine*>& engines,
+                               Stockfish::Color teamSide,
+                               bool teamHasTimeAdvantage,
+                               const SearchOptions& options);
+
 private:
     struct SingleBoardMateCacheEntry {
         Stockfish::Move move = Stockfish::MOVE_NONE;

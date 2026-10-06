@@ -238,11 +238,14 @@ void UCI::go(std::istringstream& is) {
     int depth = 0;
     bool infinite = false;
     bool isPonder = false;
+    bool isBackground = false;
     
     // Parse go parameters
     while (is >> token) {
         if (token == "ponder") {
             isPonder = true;
+        } else if (token == "background") {
+            isBackground = true;
         } else if (token == "movetime") {
             is >> moveTime;
         } else if (token == "nodes") {
@@ -255,6 +258,11 @@ void UCI::go(std::istringstream& is) {
     }
     
     stop();
+    // Background work belongs to the MCTS tree. Never let this command fall
+    // through to an alpha-beta search and emit an unsolicited bestmove.
+    if (isBackground && (!backgroundSearchEnabled || alphaBetaMode)) {
+        return;
+    }
     if (alphaBetaMode) {
         go_alphabeta(moveTime, nodes, depth, infinite);
         return;
@@ -289,6 +297,26 @@ void UCI::go(std::istringstream& is) {
     }
     opts.enablePonder = ponderEnabled;
     opts.search = current_search_config();
+
+    // "go background": the opponents are to move at the current position, so
+    // this is the permanent brain, rooted at the position the front end
+    // actually reached. It prints no bestmove and runs until the next
+    // position, go or stop.
+    if (isBackground) {
+        agent->clear_stop_request();
+        mainSearchThread = new std::thread([this, enginePtrs, opts]() {
+            try {
+                agent->run_background_search(
+                    board, enginePtrs, teamSide, teamHasTimeAdvantage, opts);
+            } catch (const std::exception& error) {
+                std::cerr << "Background search failed: " << error.what() << std::endl;
+            } catch (...) {
+                std::cerr << "Background search failed with an unknown exception" << std::endl;
+            }
+            ongoingSearch.store(false, std::memory_order_release);
+        });
+        return;
+    }
 
     // Dirichlet noise is applied when a root is first expanded. Discard an
     // already searched/noised retained root during the opening so every move
@@ -447,6 +475,11 @@ void UCI::setoption(std::istringstream& is) {
             ponderEnabled = (value == "true");
             std::cout << "info string Ponder set to " << value << std::endl;
         }
+    } else if (name == "BackgroundSearch") {
+        if (value == "true" || value == "false") {
+            backgroundSearchEnabled = (value == "true");
+            std::cout << "info string BackgroundSearch set to " << value << std::endl;
+        }
     } else if (name == "OpeningNoise") {
         if (value == "true" || value == "false") {
             openingNoiseEnabled = value == "true";
@@ -598,6 +631,7 @@ void UCI::send_uci_response() {
          << " min 1 max 1024" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
+    cout << "option name BackgroundSearch type check default true" << endl;
     cout << "option name OpeningNoise type check default false" << endl;
     cout << "option name OpeningNoisePlies type spin default 16 min 0 max 200" << endl;
     cout << "option name OpeningNoiseAlphaPermille type spin default 100 min 1 max 10000" << endl;

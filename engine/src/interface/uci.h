@@ -35,6 +35,10 @@ private:
     std::atomic<bool> ongoingSearch{false};
     int multiPV = 1;  // Number of principal variations to display
     bool ponderEnabled = true;  // Whether to output ponder move and accept ponder search
+    // Whether "go background" starts a search. Listed in the uci response so
+    // a front end can tell this build accepts the command at all: an older
+    // one would read it as a plain go and answer with a bestmove.
+    bool backgroundSearchEnabled = true;
     SearchParams::RuntimeConfig searchConfig;
     // Optional early-game diversity for normal UCI play. A zero/noise-free
     // RuntimeConfig remains the default so existing users stay deterministic.

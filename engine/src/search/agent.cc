@@ -6438,7 +6438,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // every position below its chosen move is unreachable. Indexing them
     // anyway costs the real search, which is already waiting to join this
     // thread, around ten milliseconds before it can even check for a mate.
-    const bool missedPonder = options.isPonder
+    // The permanent brain also runs as a ponder, to ignore the clock, but it
+    // guessed nothing: it is always stopped, and its index is the whole point.
+    const bool missedPonder = options.isPonder && !options.background
         && stopRequested_.load(std::memory_order_acquire);
     if (SearchParams::ENABLE_TREE_REUSE && missedPonder) {
         nextRootCandidates_.clear();
@@ -6481,6 +6483,27 @@ void Agent::run_permanent_brain(Board& board, const vector<Engine*>& engines,
 
     Board nextBoard(board);
     nextBoard.make_moves(playedAction.moveA, playedAction.moveB);
+    run_background_search(
+        nextBoard, engines, teamSide, teamHasTimeAdvantage, options);
+}
+
+void Agent::clear_stop_request() {
+    stopRequested_.store(false, std::memory_order_release);
+    rootWinScanStop_.store(false, std::memory_order_release);
+    rootLossScanStop_.store(false, std::memory_order_release);
+}
+
+void Agent::run_background_search(Board& board,
+                                  const vector<Engine*>& engines,
+                                  Stockfish::Color teamSide,
+                                  bool teamHasTimeAdvantage,
+                                  const SearchOptions& options) {
+    if (!SearchParams::ENABLE_PERMANENT_BRAIN
+        || !SearchParams::ENABLE_TREE_REUSE
+        || engines.empty()
+        || stopRequested_.load(std::memory_order_acquire)) {
+        return;
+    }
 
     SearchOptions backgroundOptions;
     backgroundOptions.search = options.search;
@@ -6500,7 +6523,7 @@ void Agent::run_permanent_brain(Board& board, const vector<Engine*>& engines,
     // own team to play, which is exactly how the subtree reads once our next
     // root adopts it.
     try {
-        run_search(nextBoard, engines, ~teamSide, !teamHasTimeAdvantage,
+        run_search(board, engines, ~teamSide, !teamHasTimeAdvantage,
                    backgroundOptions);
     } catch (const std::exception& error) {
         cout << "info string permanent brain stopped: " << error.what() << endl;

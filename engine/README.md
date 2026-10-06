@@ -83,6 +83,22 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
 
+### Background search for UCI frontends
+
+MCTS keeps searching the opponents' replies after emitting `bestmove`. Stopping
+that background search retains its tree for reuse on the next move.
+
+If a frontend plays a different move, such as an opening-book move, send the
+actual position followed by `go background` to restart this work there. Keep
+`Team` and `TimeAdvantage` set for our team; the engine searches the opponents'
+side internally. The command emits no `bestmove` and ends on the next
+`position`, `go`, or `stop`, or when the background limits are reached.
+
+Check for `option name BackgroundSearch type check default true` in the UCI
+handshake before using the command. Setting `BackgroundSearch` to `false`
+disables explicit `go background` commands; automatic background work after
+normal MCTS searches continues. In alpha-beta mode, `go background` is ignored.
+
 ### INT8 networks
 
 An INT8 copy of a network evaluates about 17% more positions per second in
