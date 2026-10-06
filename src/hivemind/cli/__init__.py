@@ -5,6 +5,7 @@ from importlib import import_module
 import sys
 
 COMMANDS = {
+    "lichess-bot": ("hivemind.cli.lichess_bot", "Accept Chess, Crazyhouse, Antichess, Chess960, Atomic, and Three-check challenges"),
     "build-engine": ("hivemind.cli.build_engine", "Configure and build the C++ engine"),
     "infer": ("hivemind.cli.infer_from_fen", "Evaluate a pair of FENs with ONNX"),
     "checkpoint": ("hivemind.inference.checkpoint", "Run PyTorch checkpoint inference"),

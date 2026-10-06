@@ -1,0 +1,16 @@
+[Unit]
+Description=Hivemind Lichess variant BOT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hivemind
+ExecStart=%h/hivemind/.venv/bin/python -m hivemind lichess-bot --engine %h/hivemind/engine/build-ninja/hivemind --model %h/hivemind/engine/models/twin-s-noattn.onnx --token-file %h/.config/hivemind/lichess.token
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+
+[Install]
+WantedBy=default.target

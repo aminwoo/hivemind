@@ -30,6 +30,37 @@ namespace {
         v->nnueAlias = "nn-";
         return v;
     }
+    // Lichess rules, adapted from upstream Fairy-Stockfish's definitions.
+    Variant* antichess_variant() {
+        Variant* v = chess_variant_base()->init();
+        v->remove_piece(KING);
+        v->add_piece(COMMONER, 'k');
+        v->promotionPieceTypes = { QUEEN, ROOK, BISHOP, KNIGHT, COMMONER };
+        v->startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1";
+        v->castling = false;
+        v->stalemateValue = VALUE_MATE;
+        v->extinctionValue = VALUE_MATE;
+        v->extinctionPieceTypes = { ALL_PIECES };
+        v->mustCapture = true;
+        return v;
+    }
+    Variant* atomic_variant() {
+        Variant* v = chess_variant_base()->init();
+        v->remove_piece(KING);
+        v->add_piece(COMMONER, 'k');
+        v->castlingKingPiece = COMMONER;
+        v->extinctionValue = -VALUE_MATE;
+        v->extinctionPieceTypes = { COMMONER };
+        v->extinctionPseudoRoyal = true;
+        v->blastOnCapture = true;
+        return v;
+    }
+    Variant* threecheck_variant() {
+        Variant* v = chess_variant_base()->init();
+        v->startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 3+3 0 1";
+        v->checkCounting = true;
+        return v;
+    }
     // Crazyhouse
     Variant* crazyhouse_variant() {
         Variant* v = chess_variant_base()->init();
@@ -56,6 +87,9 @@ void VariantMap::init() {
     add("crazyhouse", crazyhouse_variant());
     add("chess", chess_variant());
     add("normal", chess_variant());
+    add("antichess", antichess_variant());
+    add("atomic", atomic_variant());
+    add("3check", threecheck_variant());
 }
 
 void VariantMap::add(std::string s, Variant* v) {

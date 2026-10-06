@@ -27,6 +27,28 @@
  */
 class Board {
     public: 
+        enum class Variant { BUGHOUSE, CHESS, CRAZYHOUSE, ANTICHESS, CHESS960, ATOMIC, THREE_CHECK };
+        Variant variant = Variant::BUGHOUSE;
+        bool is_single_board() const { return variant != Variant::BUGHOUSE; }
+        const char* variant_name() const {
+            switch (variant) {
+                case Variant::CHESS: case Variant::CHESS960: return "chess";
+                case Variant::CRAZYHOUSE: return "crazyhouse";
+                case Variant::ANTICHESS: return "antichess";
+                case Variant::ATOMIC: return "atomic";
+                case Variant::THREE_CHECK: return "3check";
+                default: return "bughouse";
+            }
+        }
+        bool is_chess960() const { return variant == Variant::CHESS960; }
+        const std::string& initial_fen() const {
+            return Stockfish::variants.at(variant_name())->startFen;
+        }
+        const Stockfish::Variant* native_variant(int board_num) const {
+            return Stockfish::variants.at(is_single_board() && board_num == BOARD_B
+                ? "bughouse" : variant_name());
+        }
+        void set_variant(Variant selected);
         std::unique_ptr<Stockfish::Position> pos[2]; ///< Array of board positions.
         Stockfish::StateListPtr states[2];             ///< Array of state history pointers.
         const std::string startingFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"; ///< Standard starting position in FEN notation.
@@ -38,6 +60,7 @@ class Board {
         uint64_t repetitionFingerprint[2] = {0, 0};
 
         Board();
+        explicit Board(Variant selected);
         Board(const Board& board);
 
         /**
@@ -65,6 +88,9 @@ class Board {
             combined = mix_hash(combined, repetitionFingerprint[0]);
             combined = mix_hash(combined, repetitionFingerprint[1]);
             // XOR in time advantage key if team is up on time
+            if (is_single_board()) {
+                combined = mix_hash(combined, static_cast<uint64_t>(variant));
+            }
             return teamHasTimeAdvantage ? (combined ^ Stockfish::Zobrist::timeAdvantage) : combined;
         }
 
@@ -88,7 +114,11 @@ class Board {
             // rights and the en passant file. Pockets stay excluded. This runs
             // on every move made in the search, so it must not build a string.
             const Stockfish::Position& position = *pos[board_num];
-            uint64_t key = position.board_key();
+            // Crazyhouse repetition includes pockets and promoted markers.
+            // Chess promotions are ordinary pieces once on the board.
+            uint64_t key = variant == Variant::CRAZYHOUSE
+                ? position.key() : position.board_key();
+            if (is_single_board() && variant != Variant::CRAZYHOUSE) return key;
             Stockfish::Bitboard promoted = position.promotedPieces;
             while (promoted) {
                 key ^= Stockfish::Zobrist::boardPromoted[
@@ -218,7 +248,8 @@ class Board {
          */
         void set_fen(int board_num, std::string fen) {
             states[board_num] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-            pos[board_num]->set(Stockfish::variants.find("bughouse")->second, fen, false, &states[board_num]->back(), Stockfish::Threads.main());
+            pos[board_num]->set(native_variant(board_num), fen,
+                board_num == BOARD_A && is_chess960(), &states[board_num]->back(), Stockfish::Threads.main());
             // Reset position history for this board
             clear_position_history(board_num);
             record_position(board_num);
@@ -294,6 +325,12 @@ class Board {
          * @return Stockfish::Bitboard Bitboard for the pieces.
          */
         Stockfish::Bitboard pieces(int board_num, Stockfish::Color c, Stockfish::PieceType pt) {
+            // Native Antichess and Atomic use COMMONER for their king. The
+            // shared network still represents these pieces in its king plane.
+            if (board_num == BOARD_A && pt == Stockfish::KING
+                && (variant == Variant::ANTICHESS || variant == Variant::ATOMIC)) {
+                pt = Stockfish::COMMONER;
+            }
             return pos[board_num]->pieces(c, pt); 
         }
 
@@ -477,7 +514,8 @@ class Board {
          * @return true if either board has reached a draw condition.
          */
         bool is_draw(int ply = 0) {
-            return is_draw_on_board(0, ply) || is_draw_on_board(1, ply); 
+            return is_draw_on_board(0, ply)
+                || (!is_single_board() && is_draw_on_board(1, ply));
         }
 
         /**
@@ -491,7 +529,7 @@ class Board {
          */
         bool is_draw(const std::array<int, 2>& board_search_plies) {
             return is_draw_on_board(BOARD_A, board_search_plies[BOARD_A])
-                || is_draw_on_board(BOARD_B, board_search_plies[BOARD_B]);
+                || (!is_single_board() && is_draw_on_board(BOARD_B, board_search_plies[BOARD_B]));
         }
 
         /**
@@ -520,6 +558,11 @@ class Board {
          * @return true if the board has reached a draw condition.
          */
         bool is_draw_on_board(int board_num, int ply = 0) {
+            if (is_single_board()) {
+                if (board_num != BOARD_A) return false;
+                float value;
+                return single_board_terminal_value(value) && value == 0.0f;
+            }
             // Check 50-move rule using Fairy-Stockfish's built-in detection
             if (pos[board_num]->rule50_count() >= 100) {
                 return true;
@@ -529,4 +572,7 @@ class Board {
             const int threshold = ply > 0 ? 2 : 3;
             return repetition_count(board_num) >= threshold;
         }
+
+        bool is_insufficient_material() const;
+        bool single_board_terminal_value(float& value);
 };

@@ -235,7 +235,7 @@ void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSid
 #endif
     PlaneData<T> planeData(board, inputPlanes, teamSide);
     
-    // Process Board 0 (Channels 0-31)
+    // Process Board 0 (Channels 0-36)
     set_plane_pieces_board(planeData, 0);           
     set_plane_pockets_board(planeData, 0);          
     set_plane_promoted_pieces_board(planeData, 0);  
@@ -243,10 +243,12 @@ void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSid
     set_plane_color_info_board(planeData, 0);       
     planeData.set_plane_to_value(1.0f);             // Constant plane
     set_plane_castling_rights_board(planeData, 0);  
-    planeData.set_plane_to_value(hasTimeAdvantage ? 1.0f : 0.0f); 
+    planeData.set_plane_to_value(!board.is_single_board() && hasTimeAdvantage ? 1.0f : 0.0f);
     set_plane_history_board(planeData, 0);
-    
-    // Process Board 1
+
+    // Single-board variants keep Board B at the starting position. Encode it
+    // with the usual opposite-team perspective, including its metadata.
+    // Process Board 1 (Channels 37-73)
     set_plane_pieces_board(planeData, 1);           
     set_plane_pockets_board(planeData, 1);          
     set_plane_promoted_pieces_board(planeData, 1);  
@@ -254,7 +256,7 @@ void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSid
     set_plane_color_info_board(planeData, 1);       
     planeData.set_plane_to_value(1.0f);             // Constant plane
     set_plane_castling_rights_board(planeData, 1);  
-    planeData.set_plane_to_value(hasTimeAdvantage ? 1.0f : 0.0f);
+    planeData.set_plane_to_value(!board.is_single_board() && hasTimeAdvantage ? 1.0f : 0.0f);
     set_plane_history_board(planeData, 1);
 }
 
