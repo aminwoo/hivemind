@@ -1,5 +1,32 @@
 ## Inference backends
 
+Hivemind supports Bughouse, Chess, Crazyhouse, Antichess, Chess960, Atomic,
+and Three-check with the same ONNX network.
+Use `--model engine/models/twin-s-noattn.onnx` from the repository root for all
+variants. The default UCI variant is Bughouse; select single-board play with
+`setoption name UCI_Variant value chess`, `crazyhouse`, `antichess`, `chess960`,
+`atomic`, or `3check`. Chess960 also accepts the standard combination of
+`UCI_Variant=chess` and `UCI_Chess960=true`, with king-to-rook castling notation.
+
+Single-board variants accept standard UCI positions and moves, including
+castling, en passant, all promotions, and Crazyhouse drops such as `N@f3`.
+Their `bestmove` is a single move; Bughouse keeps its dual-FEN positions,
+board-prefixed move history, and joint `(moveA,moveB)` output. Single-board
+play uses a neural PUCT search with legal moves and terminal rules from
+Fairy-Stockfish, without Bughouse sitting or partner capture feeds. Its active
+position occupies board A's 37 input planes; board B's 37 planes encode a
+fixed starting position with White to move, empty pockets, and full castling
+rights, using the usual opposite-team perspective. Both time-advantage planes
+are zero. Draw contempt defaults to zero. Rook, bishop, and Antichess king
+promotions share the queen promotion's policy prior but are evaluated as their
+actual resulting positions.
+
+The network was trained for Bughouse. This input adaptation adds rule-correct
+single-board play without another network; playing strength in these variants
+has not been established by a rating test. Antichess and Atomic kings use the
+existing king input planes. Three-check counters are tracked by the rules and
+search but have no dedicated input planes in this Bughouse-trained model.
+
 Download the [published network](https://huggingface.co/aminwoo/bughouse-twin-s)
 from the repository root with `python tools/fetch_network.py`. Files are verified
 and installed into `engine/models`. See the [network setup instructions](../README.md#download-the-network)

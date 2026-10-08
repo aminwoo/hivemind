@@ -25,6 +25,17 @@ std::string trim(const std::string &s) {
 // Sets the board state using a FEN string.
 // The FEN is expected to have two parts separated by a '|' character.
 void Board::set(std::string fen) {
+    if (is_single_board()) {
+        if (fen.find('|') != std::string::npos) {
+            throw std::invalid_argument("Single-board variants expect one FEN");
+        }
+        set_fen(BOARD_A, trim(fen));
+        set_fen(BOARD_B, startingFen);
+        return;
+    }
+    if (fen.find('|') == std::string::npos) {
+        throw std::invalid_argument("Bughouse expects two FENs separated by |");
+    }
     std::stringstream ss(fen);
     std::string line; 
     getline(ss, line, '|');
@@ -47,23 +58,132 @@ void Board::set(std::string fen) {
 }
 
 // Default constructor: initializes the board positions and sets them to the starting FEN.
-Board::Board() {
+Board::Board() : Board(Variant::BUGHOUSE) {}
+
+Board::Board(Variant selected) : variant(selected) {
     pos[0] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
     pos[1] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
 
-    states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    pos[0]->set(Stockfish::variants.find("bughouse")->second, startingFen, false, &states[0]->back(), Stockfish::Threads.main());
+    set_fen(BOARD_A, initial_fen());
+    set_fen(BOARD_B, startingFen);
+}
 
-    states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
-    pos[1]->set(Stockfish::variants.find("bughouse")->second, startingFen, false, &states[1]->back(), Stockfish::Threads.main());
-    
-    // Initialize position history with starting positions
-    record_position(0);
-    record_position(1);
+void Board::set_variant(Variant selected) {
+    variant = selected;
+    if (is_single_board()) {
+        set(initial_fen());
+    } else {
+        set(startingFen + "|" + startingFen);
+    }
+}
+
+bool Board::is_insufficient_material() const {
+    using namespace Stockfish;
+    if (!is_single_board()) return false;
+    const auto& position = *pos[BOARD_A];
+    if (variant == Variant::CRAZYHOUSE) {
+        // Lichess Crazyhouse never adjudicates insufficient material.
+        return false;
+    }
+    const auto occupied = position.pieces();
+    const auto bishops = position.pieces(BISHOP);
+    const auto pawns = position.pieces(PAWN);
+    const auto kings = position.pieces(KING) | position.pieces(COMMONER);
+    const bool oppositeBishops = (bishops & DarkSquares) && (bishops & ~DarkSquares);
+    if (variant == Variant::THREE_CHECK) return occupied == kings;
+
+    // Lichess also recognizes blocked pawn/bishop structures in Antichess
+    // and Atomic. Test pawn mobility for both colors under the native rules.
+    auto blockedPawns = [&](Bitboard subset) {
+        if (!subset) return true;
+        for (Color color : {WHITE, BLACK}) {
+            auto remaining = subset & position.pieces(color);
+            if (!remaining) continue;
+            std::string fen = position.fen(false, true);
+            fen[fen.find(' ') + 1] = color == WHITE ? 'w' : 'b';
+            StateInfo state{};
+            Position scratch;
+            scratch.set(position.variant(), fen, false, &state, Threads.main());
+            for (const auto& move : MoveList<LEGAL>(scratch)) {
+                if (type_of(move) != DROP && (remaining & square_bb(from_sq(move)))) return false;
+            }
+            while (remaining) {
+                const auto square = pop_lsb(remaining);
+                const int next = static_cast<int>(square) + (color == WHITE ? 8 : -8);
+                if (next < 0 || next >= 64 || !(pawns & square_bb(Square(next)))) return false;
+            }
+        }
+        return true;
+    };
+    if (variant == Variant::ANTICHESS) {
+        if (occupied != (bishops | pawns)) return false;
+        const auto whiteBishops = bishops & position.pieces(WHITE);
+        const auto blackBishops = bishops & position.pieces(BLACK);
+        auto oneColor = [&](Bitboard pieces) {
+            return pieces && (!(pieces & DarkSquares) || !(pieces & ~DarkSquares));
+        };
+        if (!oneColor(whiteBishops) || !oneColor(blackBishops)
+            || bool(whiteBishops & DarkSquares) == bool(blackBishops & DarkSquares)) return false;
+        for (Color color : {WHITE, BLACK}) {
+            const auto enemyBishops = bishops & position.pieces(~color);
+            const auto attackableColor = enemyBishops & DarkSquares ? DarkSquares : ~DarkSquares;
+            if (pawns & position.pieces(color) & attackableColor) return false;
+        }
+        return blockedPawns(pawns);
+    }
+    if (variant == Variant::ATOMIC) {
+        const int count = position.count<ALL_PIECES>();
+        bool insufficient;
+        if (position.count<ALL_PIECES>(WHITE) >= 2 && position.count<ALL_PIECES>(BLACK) >= 2) {
+            insufficient = occupied == (kings | bishops) && count <= 4 && oppositeBishops;
+        } else if (occupied == (kings | position.pieces(KNIGHT))) {
+            insufficient = count <= 4;
+        } else {
+            insufficient = occupied == (kings | bishops | position.pieces(KNIGHT) | position.pieces(ROOK))
+                && !oppositeBishops && count <= 3;
+        }
+        if (insufficient) return true;
+        if (occupied != (kings | bishops | pawns) || !blockedPawns(pawns)) return false;
+        if (!bishops) return true;
+        const auto square = lsb(bishops);
+        const Color side = color_of(position.piece_on(square));
+        const bool dark = bool(square_bb(square) & DarkSquares);
+        const auto bishopColor = dark ? DarkSquares : ~DarkSquares;
+        return !(bishops & ~position.pieces(side)) && !(bishops & ~bishopColor)
+            && !(pawns & position.pieces(~side) & bishopColor);
+    }
+    if (position.count<Stockfish::PAWN>() || position.count<Stockfish::ROOK>()
+        || position.count<Stockfish::QUEEN>()) return false;
+    if (position.count<Stockfish::ALL_PIECES>() <= 3) return true;
+    if (position.count<Stockfish::KNIGHT>()) return false;
+    return !(bishops & Stockfish::DarkSquares) || !(bishops & ~Stockfish::DarkSquares);
+}
+
+bool Board::single_board_terminal_value(float& value) {
+    if (!is_single_board()) return false;
+    auto& position = *pos[BOARD_A];
+    Stockfish::Value nativeValue;
+    if (position.is_immediate_game_end(nativeValue)) {
+        value = nativeValue > Stockfish::VALUE_DRAW ? 1.0f
+            : nativeValue < Stockfish::VALUE_DRAW ? -1.0f : 0.0f;
+        return true;
+    }
+    if (!has_any_legal_move(BOARD_A)) {
+        nativeValue = position.checkers() ? position.checkmate_value() : position.stalemate_value();
+        value = nativeValue > Stockfish::VALUE_DRAW ? 1.0f
+            : nativeValue < Stockfish::VALUE_DRAW ? -1.0f : 0.0f;
+        return true;
+    }
+    if ((variant != Variant::CRAZYHOUSE && rule50_count(BOARD_A) >= 100)
+        || repetition_count(BOARD_A) >= 3 || is_insufficient_material()) {
+        value = 0.0f;
+        return true;
+    }
+    return false;
 }
 
 // Copy constructor: copies state history and reinitializes positions from the provided board.
-Board::Board(const Board& board) {
+Board::Board(const Board& board) : variant(board.variant) {
     pos[0] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
     pos[1] = std::unique_ptr<Stockfish::Position>(new Stockfish::Position);
 
@@ -74,8 +194,8 @@ Board::Board(const Board& board) {
     states[0] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
     states[1] = Stockfish::StateListPtr(new std::deque<Stockfish::StateInfo>(1));
 
-    pos[0]->set(Stockfish::variants.find("bughouse")->second, board.pos[0]->fen(false, true), false, &states[0]->back(), Stockfish::Threads.main());
-    pos[1]->set(Stockfish::variants.find("bughouse")->second, board.pos[1]->fen(false, true), false, &states[1]->back(), Stockfish::Threads.main());
+    pos[0]->set(native_variant(0), board.pos[0]->fen(false, true), board.pos[0]->is_chess960(), &states[0]->back(), Stockfish::Threads.main());
+    pos[1]->set(native_variant(1), board.pos[1]->fen(false, true), board.pos[1]->is_chess960(), &states[1]->back(), Stockfish::Threads.main());
     
     // Copy position history
     positionHistory[0] = board.positionHistory[0];
@@ -94,7 +214,7 @@ void Board::push_move(int board_num, Stockfish::Move move) {
     states[board_num]->emplace_back();
     pos[board_num]->do_move(move, states[board_num]->back());
     Stockfish::Piece p = states[board_num]->back().pieceToHand; 
-    if (p) {
+    if (p && !is_single_board()) {
         pos[1 - board_num]->add_to_hand_with_key(p);
     }
     // Record position for repetition detection
@@ -103,6 +223,9 @@ void Board::push_move(int board_num, Stockfish::Move move) {
 }
 
 bool Board::is_legal_move(int board_num, Stockfish::Move move) const {
+    if (is_single_board() && (board_num != BOARD_A || move == Stockfish::MOVE_NONE)) {
+        return false;
+    }
     if (move == Stockfish::MOVE_NONE) {
         return true;
     }
@@ -114,6 +237,9 @@ bool Board::is_legal_move(int board_num, Stockfish::Move move) const {
 }
 
 bool Board::has_any_legal_move(int board_num) const {
+    if (is_single_board() && board_num != BOARD_A) {
+        return false;
+    }
     const Stockfish::Position& position = *pos[board_num];
     if (position.is_immediate_game_end()) {
         return false;
@@ -154,7 +280,7 @@ bool Board::has_any_legal_move(int board_num) const {
 void Board::pop_move(int board_num) {
     Stockfish::Move m = states[board_num]->back().move; 
     Stockfish::Piece p = states[board_num]->back().pieceToHand; 
-    if (p) {
+    if (p && !is_single_board()) {
         pos[1 - board_num]->remove_from_hand_with_key(p);
     }
     pos[board_num]->undo_move(m); 
@@ -184,11 +310,14 @@ bool is_unplayable_promotion(Stockfish::Move move) {
 }  // namespace
 
 std::vector<Stockfish::Move> Board::legal_moves(int board_num) {
+    if (is_single_board() && (board_num != BOARD_A || pos[board_num]->is_immediate_game_end())) {
+        return {};
+    }
     const Stockfish::MoveList<Stockfish::LEGAL> candidates(*pos[board_num]);
     std::vector<Stockfish::Move> legal_moves;
     legal_moves.reserve(candidates.size());
     for (const Stockfish::ExtMove& move : candidates) {
-        if (!is_unplayable_promotion(move)) {
+        if (is_single_board() || !is_unplayable_promotion(move)) {
             legal_moves.emplace_back(move);
         }
     }
@@ -196,6 +325,9 @@ std::vector<Stockfish::Move> Board::legal_moves(int board_num) {
 }
 
 std::vector<Stockfish::Move> Board::checking_moves(int board_num) const {
+    if (is_single_board() && board_num != BOARD_A) {
+        return {};
+    }
     const Stockfish::Position& position = *pos[board_num];
     std::vector<Stockfish::Move> checks;
     if (position.is_immediate_game_end()) {
@@ -211,7 +343,7 @@ std::vector<Stockfish::Move> Board::checking_moves(int board_num) const {
         : Stockfish::generate<Stockfish::NON_EVASIONS>(position, candidates);
     for (const Stockfish::ExtMove* candidate = candidates; candidate != end; ++candidate) {
         if (!position.virtual_drop(*candidate)
-            && !is_unplayable_promotion(*candidate)
+            && (is_single_board() || !is_unplayable_promotion(*candidate))
             && position.gives_check(*candidate)
             && position.legal(*candidate)) {
             checks.push_back(*candidate);
@@ -222,6 +354,15 @@ std::vector<Stockfish::Move> Board::checking_moves(int board_num) const {
 
 // Returns a list of legal moves for the specified side by checking both boards.
 std::vector<std::pair<int, Stockfish::Move>> Board::legal_moves(Stockfish::Color side, bool teamHasTimeAdvantage) {
+    if (is_single_board()) {
+        std::vector<std::pair<int, Stockfish::Move>> moves;
+        if (side == side_to_move(BOARD_A)) {
+            for (Stockfish::Move move : legal_moves(BOARD_A)) {
+                moves.emplace_back(BOARD_A, move);
+            }
+        }
+        return moves;
+    }
     std::vector<std::pair<int, Stockfish::Move>> moves;
 
     // If checkmate, return an empty move list.
@@ -256,6 +397,10 @@ bool Board::is_checkmate(Stockfish::Color side,
                          bool teamHasTimeAdvantage,
                          LegalMoveCache* legalMoveCache,
                          bool assumePartnerCanBlock) {
+    if (is_single_board()) {
+        return side == side_to_move(BOARD_A) && is_in_check(BOARD_A)
+            && !has_any_legal_move(BOARD_A);
+    }
     const bool isOnTurnOnA = pos[BOARD_A]->side_to_move() == side;
     const bool isOnTurnOnB = pos[BOARD_B]->side_to_move() == ~side;
 
@@ -332,6 +477,9 @@ bool Board::is_checkmate(Stockfish::Color side,
 // checked_side: the color of the player being checked on that board
 // teamHasTimeAdvantage: if true, partner may be able to capture in the future even if not their turn
 bool Board::can_partner_provide_blocking_piece(int board_in_check, Stockfish::Color checked_side, bool teamHasTimeAdvantage, bool assumePartnerCanBlock) {
+    if (is_single_board()) {
+        return false;
+    }
     int partner_board = (board_in_check == BOARD_A) ? BOARD_B : BOARD_A;
     Stockfish::Color partner_side = ~checked_side;  // Partner plays opposite color
     
