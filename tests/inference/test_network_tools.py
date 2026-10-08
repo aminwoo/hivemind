@@ -89,3 +89,10 @@ def test_corrupt_download_preserves_existing_file_and_cleans_temporary(tmp_path,
         downloader.fetch_network("test", tmp_path)
     assert path.read_bytes() == b"existing"
     assert list(tmp_path.iterdir()) == [path]
+
+
+def test_twin_checkpoint_installs_where_training_continues_it():
+    from hivemind.network import ARTIFACTS, DESTINATIONS, TWIN_CHECKPOINT_PATH
+
+    assert ARTIFACTS["checkpoint"].revision == ARTIFACTS["onnx"].revision
+    assert DESTINATIONS["checkpoint"] == TWIN_CHECKPOINT_PATH

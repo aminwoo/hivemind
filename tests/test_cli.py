@@ -1,6 +1,7 @@
 """CLI dispatch and workspace path behavior independent of training data."""
 
 from types import SimpleNamespace
+import os
 import sys
 
 import pytest
@@ -81,3 +82,42 @@ def test_engine_command_prefers_the_coreml_network_on_macos(tmp_path, monkeypatc
     assert engine.default_model() == tmp_path / "net-coreml.onnx"
     monkeypatch.setattr(engine.sys, "platform", "linux")
     assert engine.default_model() == network
+
+
+def test_engine_command_prefers_the_tensorrt_build(tmp_path, monkeypatch):
+    from hivemind.cli import engine
+
+    tensorrt = tmp_path / "build-ninja" / "hivemind"
+    onnxruntime = tmp_path / "build-ort" / "hivemind"
+    monkeypatch.setattr(engine, "ENGINE_CANDIDATES", (tensorrt, onnxruntime))
+    assert engine.default_engine() is None
+    onnxruntime.parent.mkdir()
+    onnxruntime.touch()
+    assert engine.default_engine() == onnxruntime
+    tensorrt.parent.mkdir()
+    tensorrt.touch()
+    os.utime(tensorrt, (0, 0))
+    assert engine.default_engine() == tensorrt
+
+
+def test_train_plan_matches_the_rl_loop():
+    from hivemind.cli.train import plan
+
+    # rl-it6: 7,705,551 new positions x1.5 and 23,096,955 replayed x0.5.
+    assert plan(7_705_551, 23_096_955, 1.5, 0.5, 1024) == (22566, 0.4998)
+    assert plan(1000, 0, 1.5, 0.5, 1024) == (2, 0.0)
+
+
+def test_selfplay_runs_on_a_one_worker_copy(tmp_path):
+    from hivemind.cli.selfplay import one_worker_copy, refresh_copy
+
+    model = tmp_path / "net.onnx"
+    model.write_bytes(b"it4")
+    copy = one_worker_copy(model)
+    assert copy == tmp_path / "net-sp1.onnx"
+    assert one_worker_copy(copy) == copy
+    refresh_copy(model, copy)
+    assert copy.read_bytes() == b"it4"
+    model.write_bytes(b"it6")
+    refresh_copy(model, copy)
+    assert copy.read_bytes() == b"it6"

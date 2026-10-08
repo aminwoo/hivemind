@@ -60,7 +60,9 @@ python tools/fetch_onnxruntime.py
 | `python scripts/infer_from_fen.py` | `uv run hivemind infer` |
 | `python scripts/evaluate_model.py` | `uv run hivemind evaluate` |
 | `python scripts/train_from_games_parquet.py` | `uv run hivemind prepare` |
-| `python src/training/train_loop.py` | `uv run hivemind train` |
+| `python src/training/train_loop.py` | `uv run hivemind rise-train` |
+| `uv run hivemind train` (RISE) | `uv run hivemind rise-train` |
+| `uv run hivemind selfplay` (RISE) | `uv run hivemind rise-selfplay` |
 | `python -m src.main` | `uv run hivemind checkpoint` |
 | `python tools/uci_drive.py` | `python engine/scripts/uci_drive.py` |
 | `src/training/weights/` | `artifacts/training/weights/` |
