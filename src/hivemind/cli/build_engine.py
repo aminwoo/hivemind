@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 
 from hivemind.paths import PROJECT_ROOT
 
@@ -27,7 +28,8 @@ def main() -> int:
     parser.add_argument(
         "--backend",
         choices=("tensorrt", "onnxruntime"),
-        help="override the inference backend",
+        help="override the inference backend (default: onnxruntime on macOS, "
+        "which has no TensorRT; otherwise CMake's tensorrt)",
     )
     parser.add_argument("--jobs", type=_positive_int, help="parallel build jobs")
     parser.add_argument("--tensorrt-dir", type=Path, help="TensorRT installation root")
@@ -45,8 +47,12 @@ def main() -> int:
         parser.error(f"C++ engine source not found at {engine_dir}")
 
     configure = ["cmake", "--preset", args.preset]
-    if args.backend:
-        configure.append(f"-DHIVEMIND_BACKEND={args.backend}")
+    backend = args.backend or ("onnxruntime" if sys.platform == "darwin" else None)
+    if backend:
+        configure.append(f"-DHIVEMIND_BACKEND={backend}")
+    if sys.platform == "darwin":
+        # The C++ tests have not been built on macOS (see engine/README.md).
+        configure.append("-DBUILD_TESTING=OFF")
     if args.tensorrt_dir:
         configure.append(f"-DTensorRT_DIR={args.tensorrt_dir.expanduser().resolve()}")
     if args.cuda_root:
