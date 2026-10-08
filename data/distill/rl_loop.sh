@@ -26,6 +26,7 @@ NEW_PASSES=1.5
 REPLAY_PASSES=0.5
 PARALLEL=6
 MATCH_GAMES=160
+BATCH_SIZE=1024
 OPENINGS=$ROOT/data/distill/openings.tsv
 RUNS=$ROOT/data/distill/runs
 # Process names (exact) that mean a game is running: Steam starts every game
@@ -39,7 +40,7 @@ GENERATOR_SP1=$ROOT/engine/models/twin-s-noattn-sp1.onnx
 GENERATOR_PT=$ROOT/artifacts/distill/twin-s-noattn/best.pt
 FIXED=$ROOT/engine/models/twin-s-noattn-it0.onnx
 usage="Usage: $0 [--first N] [--last N] [--games N] [--segment-games N] [--val-games N] [--window N]
-          [--new-passes X] [--replay-passes X] [--parallel-games N] [--match-games N] [--openings TSV]"
+          [--new-passes X] [--replay-passes X] [--parallel-games N] [--match-games N] [--batch-size N] [--openings TSV]"
 while (($#)); do
     (($# >= 2)) || { echo "$usage" >&2; exit 1; }
     case "$1" in
@@ -53,12 +54,13 @@ while (($#)); do
         --replay-passes) REPLAY_PASSES=$2 ;;
         --parallel-games) PARALLEL=$2 ;;
         --match-games) MATCH_GAMES=$2 ;;
+        --batch-size) BATCH_SIZE=$2 ;;
         --openings) OPENINGS=$2 ;;
         *) echo "$usage" >&2; exit 1 ;;
     esac
     shift 2
 done
-for n in "$LAST" "$GAMES" "$SEGMENT" "$VAL_GAMES" "$WINDOW" "$PARALLEL" "$MATCH_GAMES" ${FIRST:+"$FIRST"}; do
+for n in "$LAST" "$GAMES" "$SEGMENT" "$VAL_GAMES" "$WINDOW" "$PARALLEL" "$MATCH_GAMES" "$BATCH_SIZE" ${FIRST:+"$FIRST"}; do
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "$usage" >&2; exit 1; }
 done
 [[ "$NEW_PASSES" =~ ^[0-9]*\.?[0-9]+$ && "$REPLAY_PASSES" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "$usage" >&2; exit 1; }
@@ -163,17 +165,18 @@ train() {
     for ((m = N - 1; m >= 1 && m >= N - WINDOW; m--)); do
         while read -r dir; do old+=("$dir"); done < <(train_dirs "$m")
     done
-    plan=$(py - "$NEW_PASSES" "$REPLAY_PASSES" "${#new[@]}" "${new[@]}" "${old[@]}" <<'PY'
+    plan=$(py - "$NEW_PASSES" "$REPLAY_PASSES" "$BATCH_SIZE" "${#new[@]}" "${new[@]}" "${old[@]}" <<'PY'
 import math
 import sys
 from hivemind.distill.data import chunk_paths, chunk_positions
-new_passes, replay_passes, count = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
-dirs = sys.argv[4:]
+new_passes, replay_passes = float(sys.argv[1]), float(sys.argv[2])
+batch_size, count = int(sys.argv[3]), int(sys.argv[4])
+dirs = sys.argv[5:]
 new = sum(chunk_positions(p) for p in chunk_paths(dirs[:count]))
 old = sum(chunk_positions(p) for p in chunk_paths(dirs[count:])) if dirs[count:] else 0
 samples_new, samples_old = new_passes * new, replay_passes * old
 assert new > 0
-print(math.ceil((samples_new + samples_old) / 1024), round(samples_old / (samples_new + samples_old), 4), new, old)
+print(math.ceil((samples_new + samples_old) / batch_size), round(samples_old / (samples_new + samples_old), 4), new, old)
 PY
     ) || return 1
     read -r steps fraction npos opos <<< "$plan"
@@ -181,11 +184,12 @@ PY
     aside "$out" "$A/C.log" || return 1
     wait_for_quiet
     log "it$N training: $steps steps from $init, $npos new positions x$NEW_PASSES," \
-        "$opos replay positions x$REPLAY_PASSES (replay share $fraction, ${#old[@]} dirs)"
+        "$opos replay positions x$REPLAY_PASSES (replay share $fraction, ${#old[@]} dirs, batch $BATCH_SIZE)"
     if ! PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True OMP_NUM_THREADS=2 .venv/bin/hivemind distill-train \
             --init "$init" --search-fraction 1 --val data/distill/val \
             --search-data "${new[@]}" --search-val "$IT/search/val" "${replay[@]}" \
             --steps "$steps" --lr 1e-4 --eval-every "$(( steps / 4 > 0 ? steps / 4 : 1 ))" \
+            --batch-size "$BATCH_SIZE" --eval-batch-size "$BATCH_SIZE" \
             --search-window-chunks 2 --replay-window-chunks 2 --export last --seed "$N" \
             --search-value-weight 0 --search-wdl-weight 1 --search-moves-left-weight 0.1 \
             --out "$out" > "$A/C.log" 2>&1; then

@@ -160,6 +160,17 @@ def test_failed_segment_is_retried_then_resumed_without_redoing_finished_ones(lo
     assert {'seg00', 'seg01', 'seg02', 'iteration'} <= set(stages(path, 2))
 
 
+def test_smaller_batch_preserves_training_passes(loop):
+    path, run = loop
+    result = run('--last', '2', '--batch-size', '16')
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = json.loads((path / 'data/distill/runs/rl-it2/arms/C/args.json').read_text())
+    # 80 planned samples require five batches of 16, with evaluation also bounded.
+    assert args[args.index('--steps') + 1] == '5'
+    assert args[args.index('--batch-size') + 1] == '16'
+    assert args[args.index('--eval-batch-size') + 1] == '16'
+
+
 def test_stop_file_exits_before_the_next_stage(loop):
     path, run = loop
     (path / 'data/distill/runs').mkdir(parents=True, exist_ok=True)
