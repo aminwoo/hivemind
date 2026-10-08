@@ -65,6 +65,13 @@ public:
      */
     static constexpr std::chrono::milliseconds kIdleBeforeTrim{1000};
 
+    /// Whether freed memory can be returned to the OS: malloc_trim is glibc's.
+#if defined(__GLIBC__)
+    static constexpr bool kCanTrim = true;
+#else
+    static constexpr bool kCanTrim = false;
+#endif
+
     /// Marks a search as running for its lifetime; trimming waits for none.
     class BusyScope {
     public:
@@ -178,7 +185,11 @@ private:
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 --freeing_;
-                trimPending_ = true;
+                // Without malloc_trim no trim is ever due. A pending one would
+                // never clear, and the idle wait above would spin on a
+                // deadline already past, holding mutex_ so a search starting
+                // on this agent (BusyScope) could wait on it forever.
+                trimPending_ = kCanTrim;
             }
             // Whichever thread is idle re-evaluates whether a trim is due.
             cv_.notify_one();

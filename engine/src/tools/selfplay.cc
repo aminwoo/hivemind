@@ -760,7 +760,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                   << " raw " << game.rawPolicyMacroPlies
                   << " samples " << sampleCount
                   << " events " << game.pgnMoves.size()
-                  << " termination " << game.termination << '\n';
+                  << " termination " << game.termination << '\n'
+                  // Piped to `hivemind contribute`, which counts these lines.
+                  << std::flush;
     };
     auto playGames = [&](const std::vector<Engine*>& threadEngines) {
         std::vector<__half> distillPlanes(NB_INPUT_VALUES());
