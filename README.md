@@ -55,7 +55,8 @@ See [the development guide](docs/development.md) for commands and migration note
 
 - CMake 3.16+
 - C++23 compatible compiler
-- Windows or Linux with ONNX Runtime (portable CPU build), or
+- Windows, Linux or macOS with ONNX Runtime (portable CPU build; on macOS the
+  network runs on the Apple GPU through Core ML), or
 - Windows or Linux with CUDA 13+ and TensorRT 10.14+ (NVIDIA GPU build)
 
 ### Training (Python)

@@ -9,12 +9,13 @@ to explicitly select the network for your backend.
 The engine builds against either of two backends, selected with
 `-DHIVEMIND_BACKEND=`:
 
-|                      | `tensorrt` (default)                  | `onnxruntime`                   |
-| -------------------- | ------------------------------------- | ------------------------------- |
-| Requires             | CUDA 13+, TensorRT 10.14+, NVIDIA GPU | ONNX Runtime                    |
-| Platforms            | Linux / Windows + NVIDIA              | Linux / macOS / Windows         |
-| Precision            | FP16                                  | FP32 recommended; FP16 optional |
-| Redistributable size | ~2 GB                                 | ~85 MB uncompressed             |
+|                      | `tensorrt` (default)                  | `onnxruntime`                                  |
+| -------------------- | ------------------------------------- | ---------------------------------------------- |
+| Requires             | CUDA 13+, TensorRT 10.14+, NVIDIA GPU | ONNX Runtime                                   |
+| Platforms            | Linux / Windows + NVIDIA              | Linux / macOS / Windows                        |
+| Runs the network on  | NVIDIA GPU                            | CPU; Apple GPU through Core ML on macOS        |
+| Precision            | FP16                                  | CPU: FP32 recommended; Core ML: FP16 network   |
+| Redistributable size | ~2 GB                                 | ~85 MB uncompressed                            |
 
 The TensorRT path is the default and is unchanged — existing build commands
 behave exactly as before. The ONNX Runtime path is opt-in and exists so the
@@ -59,6 +60,61 @@ cmake --build engine/build-ort --config Release --parallel
 The executable and `onnxruntime.dll` are written to
 `engine/build-ort/Release`. MSVC builds use native compiler options; no CUDA,
 Unix shell, or POSIX compatibility layer is needed.
+
+### Running on the Apple GPU (macOS)
+
+On macOS the same backend runs the network on the GPU through ONNX Runtime's
+Core ML provider, which the macOS runtime from `tools/fetch_onnxruntime.py`
+includes; the CPU is left to the search. Keep the published FP16 network
+rather than the FP32 conversion, and prepare it once for Core ML:
+
+```bash
+xcode-select --install
+brew install cmake ninja
+python3 tools/fetch_onnxruntime.py
+python3 tools/fetch_network.py
+python3 -m venv .venv && .venv/bin/pip install numpy onnx
+.venv/bin/python engine/scripts/convert_onnx_coreml.py \
+  engine/models/hivemind-it04-crossboard-risev33-loss1.556-p82.0.onnx \
+  engine/models/hivemind-coreml.onnx
+cmake -S engine -B engine/build-ort -G Ninja \
+    -DHIVEMIND_BACKEND=onnxruntime \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTING=OFF
+cmake --build engine/build-ort -j "$(sysctl -n hw.ncpu)"
+./engine/build-ort/hivemind --model engine/models/hivemind-coreml.onnx
+```
+
+The engine then reports `info string backend ONNX Runtime (Core ML GPU)`.
+`-DBUILD_TESTING=OFF` skips the C++ tests, which have not been built on
+macOS.
+
+As exported, a network splits into several Core ML partitions, because Core
+ML has no kernel for a few of its ops: the Neg and Abs in twin-s's value head,
+and the crossboard network's Neg and the Expand in each of its
+squeeze-excitation blocks. Every split adds a GPU-to-CPU round trip per
+batch. The conversion replaces these ops with exact equivalents (the outputs
+are bit-identical), so the whole graph is one partition. The engine warns
+when it is given a network that has not been converted.
+
+The engine also pins the batch dimension, since Core ML compiles for fixed
+shapes, and gives each search worker its own Core ML session: ONNX Runtime
+runs one prediction at a time per Core ML model, so separate sessions let the
+workers' batches overlap on the GPU, as TensorRT's per-worker contexts do.
+
+`HIVEMIND_COREML` selects the compute units: `gpu` (the default), `all` (lets
+Core ML also use the Neural Engine), `ane`, or `off` for the CPU provider.
+`hivemind bench` runs one worker at a time, so compare settings by the
+search's nps instead:
+
+```bash
+(printf 'uci\nisready\nposition startpos\ngo movetime 10000\n'; sleep 12; echo quit) |
+    HIVEMIND_COREML=all ./engine/build-ort/hivemind \
+    --model engine/models/hivemind-coreml.onnx | grep ' nps ' | tail -1
+```
+
+The GPU may also prefer larger batches than the default of 8; try
+`--batch-size 16` and `32`.
 
 ### Building the TensorRT backend
 

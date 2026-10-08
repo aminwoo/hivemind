@@ -47,7 +47,8 @@ public:
  * Two backends implement this interface and the search code cannot tell them
  * apart:
  *   * TensorRT (engine.cc)      — FP16, CUDA graphs, pinned async streams.
- *   * ONNX Runtime (engine_ort.cc) — FP16/FP32, portable CPU runtime.
+ *   * ONNX Runtime (engine_ort.cc) — FP16/FP32, portable CPU runtime, or the
+ *     Apple GPU through Core ML on macOS.
  *
  * Both honour the same contract: `enqueueInferenceHalf` starts one batch for a
  * worker and returns immediately, `synchronizeInferenceHalf` waits for it and
@@ -97,7 +98,7 @@ public:
      */
     int getBatchSize() const { return m_batchSize; }
 
-    /// Human-readable backend name, e.g. "TensorRT" or "ONNX Runtime (CPU)".
+    /// Human-readable backend name, e.g. "TensorRT" or "ONNX Runtime".
     static const char* backendName();
 
 private:
