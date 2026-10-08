@@ -169,10 +169,11 @@ of the current working directory. Without explicit path, the engine searches `./
 # Run move generation benchmark
 ./hivemind perft 5
 
-# Run self-play with training defaults (800 MCTS nodes, 100k Fairy-Stockfish
-# mate nodes per position); extra flags pass through to the engine
-uv run hivemind selfplay --games 1000
-uv run hivemind selfplay --games 1000 --nodes 400 --mate-nodes 0 --seed 7
+# Run RISE self-play with training defaults (800 MCTS nodes, 100k
+# Fairy-Stockfish mate nodes per position); extra flags pass through to the
+# engine. For twin-s self-play, see Training.
+uv run hivemind rise-selfplay --games 1000
+uv run hivemind rise-selfplay --games 1000 --nodes 400 --mate-nodes 0 --seed 7
 
 # Or call the engine directly
 ./engine/build-ninja/hivemind selfplay \
@@ -291,16 +292,104 @@ results to `summary.json`. Set `--dirichlet-epsilon 0` for deterministic games.
 
 ### Training
 
+The default network, twin-s, improves by reinforcement learning from its own
+games. One command runs the whole loop, forever:
+
+```bash
+uv run hivemind rl-loop
+```
+
+Each iteration plays 100,000 self-play games and 1,000 validation games with
+the current generator, trains on them plus a replay of the previous three
+iterations' games, and plays 200 games at 100 ms per move against the
+generator. The new network replaces the generator unless it scores below 50%.
+Every iteration's network and training checkpoint are uploaded to Hugging Face
+as `twin-s-noattn-itN.onnx` and `twin-s-noattn-itN.pt`, and a promoted one as
+`twin-s-noattn.onnx` and `twin-s-noattn.pt`, when `hf auth login` has logged
+this machine in to an account that can write to the repository (`--repo`);
+otherwise they stay local. Progress goes to
+`data/distill/runs/rl-loop.log`. Every finished stage is recorded under
+`data/distill/runs/rl-itN/stages`, so rerunning the command resumes where it
+stopped; `touch data/distill/runs/rl-loop.stop` stops it between stages.
+Matches open from the 100 positions in `engine/openings.tsv`.
+`hivemind fetch-network` keeps installing the network and checkpoint pinned
+in `src/hivemind/network.py`; update that pin to publish a promotion.
+
+#### Sharing self-play with other machines
+
+Self-play is most of each iteration, and any number of machines can share it.
+Start the loop with `--distributed`, and run `contribute` on every other
+machine:
+
+```bash
+uv run hivemind rl-loop --distributed   # the training machine
+uv run hivemind contribute              # each contributing machine
+```
+
+The loop publishes a work order in the Hugging Face dataset
+`aminwoo/bughouse-twin-s-selfplay` (created private; `--exchange` names
+another, or a directory every machine can reach). A contributor downloads the
+generator the order names, plays 1,000-game batches with the loop's settings,
+and submits each as a pull request, so any logged-in Hugging Face account can
+contribute (`hf auth login`). The loop collects and merges the batches,
+keeps playing 1,000-game segments itself (unless `--no-local-selfplay`), and
+trains once the iteration has its games. Batches that arrive later still
+count, as replay data for later iterations; while the loop trains and plays
+its matches, contributors wait for the next order. Contributors need an
+engine built with one search worker per game, as `hivemind contribute --help`
+shows; on macOS that is the ONNX Runtime backend, and the contributor runs
+the generator through Core ML. Each batch adds about 85 MB to the dataset.
+
+`selfplay` and `train` run the stages of one iteration by hand:
+
+```bash
+# 100,000 games in 10,000-game segments (seed 1000 * iteration + segment),
+# then 1,000 validation games (seed 1000 * iteration + 999)
+uv run hivemind selfplay --seed 7000 --output data/distill/rl/it7/seg00
+uv run hivemind selfplay --seed 7001 --output data/distill/rl/it7/seg01
+...
+uv run hivemind selfplay --games 1000 --seed 7999 --output data/distill/rl/it7/val
+
+# Continue the generator's checkpoint on the new games, replaying the
+# previous three iterations'
+uv run hivemind train --seed 7 \
+  --data data/distill/rl/it7/seg* --val data/distill/rl/it7/val \
+  --replay data/distill/rl/it{4,5,6}/seg* --out artifacts/distill/rl/it7
+```
+
+Self-play searches 800 nodes ±5% per move with no mate search and no
+resignation, and plays 6 games at once on an engine built with one search
+worker per game:
+
+```bash
+cmake -S engine -B engine/build-sp1 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DHIVEMIND_SEARCH_WORKERS=1
+cmake --build engine/build-sp1 --target hivemind
+```
+
+It loads the network from a `-sp1` copy next to it, so this engine and the UCI
+engine keep separate TensorRT caches. Each output directory receives HDST
+chunks of the search targets, with the PGN in its `games` subdirectory.
+Training continues `artifacts/distill/twin-s-noattn/best.pt` unless given
+`--init`, downloading the published network's checkpoint there when it is
+missing (`uv run hivemind fetch-network --variant checkpoint` does the same); it learns policy from root visits and WDL and moves-left from game
+results, with no teacher data, at lr 1e-4 over 1.5 passes of the new games
+and 0.5 of each replayed one, and exports the last weights as `last.pt` and
+`distill-twin-s-v3.0.onnx`.
+
+The RISE architectures, including the crossboard teacher twin-s was distilled
+from, train with `rise-train`:
+
 ```bash
 # Supervised learning on human games
-uv run hivemind train --mode sl
+uv run hivemind rise-train --mode sl
 
 # Train the explicit cross-board coordination architecture from scratch
-uv run hivemind train --mode sl \
+uv run hivemind rise-train --mode sl \
   --architecture crossboard-risev33
 
 # Train the staged dual-stream architecture with persistent latent memory
-uv run hivemind train --mode sl \
+uv run hivemind rise-train --mode sl \
   --architecture dualstream-memory-risev33
 
 # Generate an isolated >=2250 corpus and train cross-board RISEv3 on it
@@ -314,7 +403,7 @@ uv run hivemind prepare \
   --batch-size 256
 
 # RL training directly from native HVM5 self-play data
-uv run hivemind train --mode rl --checkpoint artifacts/training/weights/rl/model-rl-final.tar --selfplay-dir engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
+uv run hivemind rise-train --mode rl --checkpoint artifacts/training/weights/rl/model-rl-final.tar --selfplay-dir engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
 ```
 
 RL training reads `engine/selfplay_games/training_data` by default, creates a
@@ -333,7 +422,7 @@ new attention and policy heads.
 
 ```bash
 # Train on iteration 3 with CrazyAra-style replay from iteration 2
-uv run hivemind train --mode rl \
+uv run hivemind rise-train --mode rl \
   --checkpoint artifacts/training/weights/rl/model-rl-final.tar \
   --selfplay-dir engine/selfplay_games/iteration-3 \
   --replay-dir engine/selfplay_games/iteration-2 \

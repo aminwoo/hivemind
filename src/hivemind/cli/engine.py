@@ -9,6 +9,8 @@ import sys
 from hivemind.network import DEFAULT_ONNX_PATH
 from hivemind.paths import PROJECT_ROOT
 
+# In order of preference: the TensorRT build runs on the GPU, while the ONNX
+# Runtime build only accelerates through Core ML and is CPU-only elsewhere.
 ENGINE_CANDIDATES = (
     PROJECT_ROOT / "engine" / "build-ninja" / "hivemind",
     PROJECT_ROOT / "engine" / "build-ort" / "hivemind",
@@ -16,9 +18,8 @@ ENGINE_CANDIDATES = (
 
 
 def default_engine():
-    """The most recently built engine, or None when none has been built."""
-    built = [path for path in ENGINE_CANDIDATES if path.is_file()]
-    return max(built, key=lambda path: path.stat().st_mtime, default=None)
+    """The preferred built engine, or None when none has been built."""
+    return next((path for path in ENGINE_CANDIDATES if path.is_file()), None)
 
 
 def default_model():
