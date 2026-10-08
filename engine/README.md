@@ -1,6 +1,6 @@
 ## Inference backends
 
-Download the [published network](https://huggingface.co/aminwoo/bughouse-rise-v3)
+Download the [published network](https://huggingface.co/aminwoo/bughouse-twin-s)
 from the repository root with `python tools/fetch_network.py`. Files are verified
 and installed into `engine/models`. See the [network setup instructions](../README.md#download-the-network)
 for native FP16, CPU conversion, and training checkpoints. Pass `--model PATH`
@@ -75,14 +75,14 @@ python3 tools/fetch_onnxruntime.py
 python3 tools/fetch_network.py
 python3 -m venv .venv && .venv/bin/pip install numpy onnx
 .venv/bin/python engine/scripts/convert_onnx_coreml.py \
-  engine/models/hivemind-it04-crossboard-risev33-loss1.556-p82.0.onnx \
-  engine/models/hivemind-coreml.onnx
+  engine/models/twin-s-noattn.onnx \
+  engine/models/twin-s-noattn-coreml.onnx
 cmake -S engine -B engine/build-ort -G Ninja \
     -DHIVEMIND_BACKEND=onnxruntime \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF
 cmake --build engine/build-ort -j "$(sysctl -n hw.ncpu)"
-./engine/build-ort/hivemind --model engine/models/hivemind-coreml.onnx
+./engine/build-ort/hivemind --model engine/models/twin-s-noattn-coreml.onnx
 ```
 
 The engine then reports `info string backend ONNX Runtime (Core ML GPU)`.
@@ -110,7 +110,7 @@ search's nps instead:
 ```bash
 (printf 'uci\nisready\nposition startpos\ngo movetime 10000\n'; sleep 12; echo quit) |
     HIVEMIND_COREML=all ./engine/build-ort/hivemind \
-    --model engine/models/hivemind-coreml.onnx | grep ' nps ' | tail -1
+    --model engine/models/twin-s-noattn-coreml.onnx | grep ' nps ' | tail -1
 ```
 
 The GPU may also prefer larger batches than the default of 8; try

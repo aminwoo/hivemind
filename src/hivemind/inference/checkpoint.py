@@ -81,7 +81,7 @@ def main():
 
     # Check if model file exists
     if not Path(model_path).exists():
-        parser.error(f"Model file {model_path} not found; run python tools/fetch_network.py --variant checkpoint")
+        parser.error(f"Model file {model_path} not found; run python tools/fetch_network.py --variant crossboard-checkpoint")
     
     print("Loading RiseV3 model...")
     

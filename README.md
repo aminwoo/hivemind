@@ -16,7 +16,7 @@ Hivemind is a neural network-based engine for [Bughouse chess](https://en.wikipe
 
 ### Key Features
 
-- **Neural Network Policy & Value Estimation** - Uses the RISEv3 architecture for move prediction and position evaluation
+- **Neural Network Policy & Value Estimation** - The default network, twin-s, is a small two-board network distilled from a RISEv3 teacher and improved by self-play RL
 - **Monte Carlo Graph Search (MCGS)** - Shares nodes across transpositions for improved search efficiency
 - **TensorRT Acceleration** - High-performance GPU inference using NVIDIA TensorRT
 - **UCI Protocol** - Standard Universal Chess Interface for GUI compatibility
@@ -67,31 +67,38 @@ See [the development guide](docs/development.md) for commands and migration note
 
 ## Download the Network
 
-Published weights are hosted at [aminwoo/bughouse-rise-v3](https://huggingface.co/aminwoo/bughouse-rise-v3).
+The default network is twin-s, hosted at
+[aminwoo/bughouse-twin-s](https://huggingface.co/aminwoo/bughouse-twin-s): the
+network promoted by self-play RL iteration 4, which beat the distilled
+iteration 0 by +93 Elo at 100 ms per move and searches about three times as
+many nodes per second as the crossboard RISEv3 teacher it was distilled from.
+That teacher is still published at
+[aminwoo/bughouse-rise-v3](https://huggingface.co/aminwoo/bughouse-rise-v3).
 The downloader pins a release revision and verifies its SHA-256 checksum:
 
 ```bash
-python tools/fetch_network.py                       # ONNX with FP32 input/output
-python tools/fetch_network.py --variant fp16        # Native FP16 input/output
-python tools/fetch_network.py --variant checkpoint  # PyTorch training checkpoint
+python tools/fetch_network.py                                  # twin-s, FP32 input/output
+python tools/fetch_network.py --variant crossboard             # crossboard teacher
+python tools/fetch_network.py --variant crossboard-fp16        # teacher, native FP16 input/output
+python tools/fetch_network.py --variant crossboard-checkpoint  # teacher's PyTorch training checkpoint
 ```
 
 Files go into `engine/models`, which the engine searches automatically. Use
 `--model PATH` to select a specific file when multiple networks are present.
-Both published ONNX variants contain FP16 weights internally. For the portable
-CPU backend, convert the standard download once:
+The published ONNX networks contain FP16 weights internally. For the portable
+CPU backend, convert the download once:
 
 ```bash
 python engine/scripts/convert_onnx_fp32.py \
-  engine/models/hivemind-it04-crossboard-risev33-loss1.556-p82.0.onnx \
-  engine/models/hivemind-fp32.onnx
+  engine/models/twin-s-noattn.onnx \
+  engine/models/twin-s-noattn-fp32.onnx
 ```
 
 Python inference defaults to the standard downloaded ONNX file:
 
 ```bash
 hivemind infer --starting
-hivemind checkpoint --device cpu  # Requires --variant checkpoint above
+hivemind checkpoint --device cpu  # Requires --variant crossboard-checkpoint above
 ```
 
 Training and checkpoint inference share architecture options in
