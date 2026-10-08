@@ -783,6 +783,8 @@ struct RuntimeConfig {
     float pwMassStart = PW_MASS_START;
     float pwMassExponent = PW_MASS_EXPONENT;
     float pwMassCap = PW_MASS_CAP;
+    float rootPwMassStart = -1.0f; // Negative inherits the internal mass target.
+    bool pwMassNormalize = false; // Experimental coverage of legal joint prior mass.
     float qValueWeight = Q_VALUE_WEIGHT;
     float qVetoDelta = Q_VETO_DELTA;
     float rootDirichletAlpha = 0.0f;

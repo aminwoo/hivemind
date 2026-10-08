@@ -38,6 +38,12 @@ struct TournamentConfig {
     float baselinePwMassExponent = SearchParams::PW_MASS_EXPONENT;
     float contenderPwMassCap = SearchParams::PW_MASS_CAP;
     float baselinePwMassCap = SearchParams::PW_MASS_CAP;
+    float contenderRootPwMassStart = -1.0f;
+    float baselineRootPwMassStart = -1.0f;
+    bool contenderPwMassNormalize = false;
+    bool baselinePwMassNormalize = false;
+    float contenderCpuctInit = SearchParams::CPUCT_INIT;
+    float baselineCpuctInit = SearchParams::CPUCT_INIT;
     bool contenderMcgs = SearchParams::ENABLE_MCGS;
     bool baselineMcgs = SearchParams::ENABLE_MCGS;
     bool contenderTranspositions = SearchParams::ENABLE_TRANSPOSITIONS;
@@ -82,6 +88,9 @@ struct TournamentConfig {
         searchConfig.pwMassStart = isContender ? contenderPwMassStart : baselinePwMassStart;
         searchConfig.pwMassExponent = isContender ? contenderPwMassExponent : baselinePwMassExponent;
         searchConfig.pwMassCap = isContender ? contenderPwMassCap : baselinePwMassCap;
+        searchConfig.rootPwMassStart = isContender ? contenderRootPwMassStart : baselineRootPwMassStart;
+        searchConfig.pwMassNormalize = isContender ? contenderPwMassNormalize : baselinePwMassNormalize;
+        searchConfig.cpuctInit = isContender ? contenderCpuctInit : baselineCpuctInit;
         searchConfig.enableMCGS = isContender ? contenderMcgs : baselineMcgs;
         searchConfig.enableTranspositions = isContender
             ? contenderTranspositions : baselineTranspositions;

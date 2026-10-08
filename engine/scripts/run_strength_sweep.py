@@ -27,6 +27,13 @@ PARAMETERS = {
     "wdl-eval": str,
     "pw-coefficient": float,
     "root-pw-coefficient": float,
+    "pw-exponent": float,
+    "pw-mass": float,
+    "root-pw-mass": float,
+    "pw-mass-exponent": float,
+    "pw-mass-cap": float,
+    "pw-mass-normalize": str,
+    "cpuct-init": float,
     "wdl-weight": float,
     "moves-left-discount": float,
     "q-value-weight": float,
@@ -58,6 +65,9 @@ def parse_args() -> argparse.Namespace:
                         help="repeatable Cartesian axis, e.g. threads=1,2,4")
     parser.add_argument("--baseline", type=assignment, action="append", default=[])
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--dirichlet-alpha", type=float, default=0.3)
+    parser.add_argument("--dirichlet-epsilon", type=float, default=0.0,
+                        help="root noise per move; default off for strength tests")
     parser.add_argument("--sprt-elo0", type=float, default=0.0)
     parser.add_argument("--sprt-elo1", type=float, default=0.0)
     parser.add_argument("--sprt-alpha", type=float, default=0.05)
@@ -76,6 +86,42 @@ def normalize(name: str, value: str) -> str:
     return str(converter(value))
 
 
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def parameter_flags(side: str, settings: dict[str, str]) -> list[str]:
+    # The legacy coefficient flag also sets the root coefficient. Always
+    # apply an explicit root override last, regardless of axis order.
+    names = sorted(settings, key=lambda name: (name == "root-pw-coefficient", name))
+    return [item for name in names for item in (f"--{side}-{name}", settings[name])]
+
+
+def completed_run(run_dir: Path, identity: str) -> dict | None:
+    marker = run_dir / "completed.json"
+    summary = run_dir / "summary.json"
+    if not marker.exists() or not summary.exists():
+        return None
+    try:
+        saved = json.loads(marker.read_text())
+        if saved.get("identity") != identity or saved.get("summary_sha256") != file_digest(summary):
+            return None
+        return json.loads(summary.read_text())
+    except (OSError, ValueError, AttributeError):
+        # A crash while writing an older checkpoint must restart that match.
+        return None
+
+
+def write_json(path: Path, data: dict) -> None:
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, indent=2) + "\n")
+    temporary.replace(path)
+
+
 def main() -> int:
     args = parse_args()
     axes: list[tuple[str, list[str]]] = []
@@ -90,6 +136,9 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, object]] = []
     baseline_model = args.baseline_model or args.model
+    fingerprints = {"engine": file_digest(args.engine), "model": file_digest(args.model),
+                    "baseline_model": file_digest(baseline_model),
+                    "positions": file_digest(args.positions) if args.positions else None}
     for values in itertools.product(*(values for _, values in axes)):
         contender = dict(zip((name for name, _ in axes), values))
         identity = json.dumps({
@@ -104,39 +153,45 @@ def main() -> int:
             "seed": args.seed,
             "sprt": [args.sprt_elo0, args.sprt_elo1,
                      args.sprt_alpha, args.sprt_beta],
+            "noise": [args.dirichlet_alpha, args.dirichlet_epsilon],
+            "sha256": fingerprints,
         }, sort_keys=True)
         run_id = hashlib.sha256(identity.encode()).hexdigest()[:10]
         run_dir = args.output / run_id
         summary_path = run_dir / "summary.json"
-        if args.resume and summary_path.exists():
-            runs.append(json.loads(summary_path.read_text()))
-            continue
-
-        command = [str(args.engine), "tournament",
-                   "--contender", str(args.model),
-                   "--baseline", str(baseline_model),
-                   "--games", str(args.games),
-                   "--output", str(run_dir),
-                   "--seed", str(args.seed)]
-        command += (["--nodes", str(args.nodes)] if args.nodes is not None
-                    else ["--movetime", str(args.movetime)])
-        if args.positions:
-            command += ["--positions", str(args.positions)]
-        if args.sprt_elo1 > args.sprt_elo0:
-            command += ["--sprt-elo0", str(args.sprt_elo0),
-                        "--sprt-elo1", str(args.sprt_elo1),
-                        "--sprt-alpha", str(args.sprt_alpha),
-                        "--sprt-beta", str(args.sprt_beta)]
-        for side, settings in (("contender", contender), ("baseline", baseline)):
-            for name, value in settings.items():
-                command += [f"--{side}-{name}", value]
-
-        subprocess.run(command, check=True)
-        summary = json.loads(summary_path.read_text())
+        summary = completed_run(run_dir, identity) if args.resume else None
+        if summary is None:
+            command = [str(args.engine.resolve()), "tournament",
+                       "--contender", str(args.model),
+                       "--baseline", str(baseline_model),
+                       "--games", str(args.games),
+                       "--output", str(run_dir),
+                       "--seed", str(args.seed),
+                       "--dirichlet-alpha", str(args.dirichlet_alpha),
+                       "--dirichlet-epsilon", str(args.dirichlet_epsilon)]
+            command += (["--nodes", str(args.nodes)] if args.nodes is not None
+                        else ["--movetime", str(args.movetime)])
+            if args.positions:
+                command += ["--positions", str(args.positions)]
+            if args.sprt_elo1 > args.sprt_elo0:
+                command += ["--sprt-elo0", str(args.sprt_elo0),
+                            "--sprt-elo1", str(args.sprt_elo1),
+                            "--sprt-alpha", str(args.sprt_alpha),
+                            "--sprt-beta", str(args.sprt_beta)]
+            for side, settings in (("contender", contender), ("baseline", baseline)):
+                command += parameter_flags(side, settings)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "invocation.json").write_text(json.dumps(
+                {"identity": json.loads(identity), "command": command}, indent=2) + "\n")
+            subprocess.run(command, check=True)
+            summary = json.loads(summary_path.read_text())
+            if summary["games"] != args.games and summary["sprt"]["decision"] == "continue":
+                raise RuntimeError(f"incomplete tournament: {run_dir}")
+            write_json(run_dir / "completed.json",
+                       {"identity": identity, "summary_sha256": file_digest(summary_path)})
         summary["sweep_parameters"] = contender
         runs.append(summary)
-        (args.output / "sweep.json").write_text(
-            json.dumps({"axes": dict(axes), "runs": runs}, indent=2) + "\n")
+        write_json(args.output / "sweep.json", {"axes": dict(axes), "runs": runs})
     return 0
 
 

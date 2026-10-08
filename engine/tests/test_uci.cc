@@ -111,6 +111,29 @@ TEST_F(UCIOpeningNoiseTest, SelectedMoveCertificationIsOnByDefault) {
                      .certifySelectedMove);
 }
 
+TEST_F(UCIOpeningNoiseTest, ConfiguresMassWideningAndExplorationWithoutChangingDefaults) {
+    UCI uci;
+    const auto defaults = UCIOpeningNoiseTestPeer::current_search_config(uci);
+    EXPECT_FLOAT_EQ(defaults.pwMassStart, 0.0f);
+    EXPECT_FLOAT_EQ(defaults.rootPwMassStart, -1.0f);
+    EXPECT_FALSE(defaults.pwMassNormalize);
+    set_option(uci, "PWMassStartPermille", "350");
+    set_option(uci, "RootPWMassStartPermille", "650");
+    set_option(uci, "PWMassExponentPermille", "100");
+    set_option(uci, "PWMassCapPermille", "1500");
+    set_option(uci, "PWMassNormalize", "true");
+    set_option(uci, "CPUCTInitPermille", "2000");
+    const auto config = UCIOpeningNoiseTestPeer::current_search_config(uci);
+    EXPECT_FLOAT_EQ(config.pwMassStart, 0.35f);
+    EXPECT_FLOAT_EQ(config.rootPwMassStart, 0.65f);
+    EXPECT_FLOAT_EQ(config.pwMassExponent, 0.10f);
+    EXPECT_FLOAT_EQ(config.pwMassCap, 1.5f);
+    EXPECT_TRUE(config.pwMassNormalize);
+    EXPECT_FLOAT_EQ(config.cpuctInit, 2.0f);
+    set_option(uci, "RootPWMassStartPermille", "-1");
+    EXPECT_FLOAT_EQ(UCIOpeningNoiseTestPeer::current_search_config(uci).rootPwMassStart, -1.0f);
+}
+
 TEST_F(UCIOpeningNoiseTest, AppliesConfiguredNoiseInsideOpeningHorizon) {
     UCI uci;
     set_option(uci, "OpeningNoise", "true");

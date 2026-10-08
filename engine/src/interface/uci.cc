@@ -518,6 +518,24 @@ void UCI::setoption(std::istringstream& is) {
         int permille = std::clamp(std::stoi(value), 1, 1000);
         searchConfig.pwExponent = static_cast<float>(permille) / 1000.0f;
         std::cout << "info string PWExponentPermille set to " << permille << std::endl;
+    } else if (name == "PWMassStartPermille" || name == "RootPWMassStartPermille") {
+        const bool root = name == "RootPWMassStartPermille";
+        const int permille = std::clamp(std::stoi(value), root ? -1 : 0, 999);
+        (root ? searchConfig.rootPwMassStart : searchConfig.pwMassStart) =
+            permille < 0 ? -1.0f : static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string " << name << " set to " << permille << std::endl;
+    } else if (name == "PWMassExponentPermille" || name == "PWMassCapPermille"
+               || name == "CPUCTInitPermille") {
+        const int permille = std::clamp(std::stoi(value), 1, 10000);
+        float& setting = name == "PWMassExponentPermille" ? searchConfig.pwMassExponent
+            : name == "PWMassCapPermille" ? searchConfig.pwMassCap : searchConfig.cpuctInit;
+        setting = static_cast<float>(permille) / 1000.0f;
+        std::cout << "info string " << name << " set to " << permille << std::endl;
+    } else if (name == "PWMassNormalize") {
+        if (value == "true" || value == "false") {
+            searchConfig.pwMassNormalize = value == "true";
+            std::cout << "info string PWMassNormalize set to " << value << std::endl;
+        }
     } else if (name == "MateProbe") {
         if (value == "true" || value == "false") {
             searchConfig.enableMateProbe = value == "true";
@@ -646,6 +664,16 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::ROOT_PW_COEFFICIENT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name PWExponentPermille type spin default "
          << static_cast<int>(SearchParams::PW_EXPONENT * 1000.0f) << " min 1 max 1000" << endl;
+    cout << "option name PWMassStartPermille type spin default "
+         << static_cast<int>(SearchParams::PW_MASS_START * 1000.0f) << " min 0 max 999" << endl;
+    cout << "option name RootPWMassStartPermille type spin default -1 min -1 max 999" << endl;
+    cout << "option name PWMassExponentPermille type spin default "
+         << static_cast<int>(SearchParams::PW_MASS_EXPONENT * 1000.0f) << " min 1 max 10000" << endl;
+    cout << "option name PWMassCapPermille type spin default "
+         << static_cast<int>(SearchParams::PW_MASS_CAP * 1000.0f) << " min 1 max 10000" << endl;
+    cout << "option name PWMassNormalize type check default false" << endl;
+    cout << "option name CPUCTInitPermille type spin default "
+         << static_cast<int>(SearchParams::CPUCT_INIT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
     cout << "option name CertifySelectedMove type check default "
