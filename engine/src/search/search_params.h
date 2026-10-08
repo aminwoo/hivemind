@@ -707,7 +707,10 @@ constexpr float JOINT_MATE_WIDENING_SHARE_FLOOR = 0.125f;
 // =============================================================================
 
 /// Allowed children: ceil(PW_COEFFICIENT * visits^PW_EXPONENT).
-constexpr float PW_COEFFICIENT = 2.0f;
+/// Internal coefficient 1 beat 2 with the root held at 4 over 2,000 games
+/// at 30 ms/move (+8.69 Elo, paired 95% CI +4.28..+13.10). Adopted from
+/// screening at the user's request; independent validation was not run.
+constexpr float PW_COEFFICIENT = 1.0f;
 constexpr float ROOT_PW_COEFFICIENT = 4.0f;
 constexpr float PW_EXPONENT = 0.3f;
 
