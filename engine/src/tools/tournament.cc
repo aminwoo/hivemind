@@ -168,6 +168,12 @@ void write_summary(
            << config.contenderPwMassExponent << ", " << config.contenderPwMassCap << "],\n"
            << "  \"baseline_pw_mass\": [" << config.baselinePwMassStart << ", "
            << config.baselinePwMassExponent << ", " << config.baselinePwMassCap << "],\n"
+           << "  \"contender_root_pw_mass\": " << config.contenderRootPwMassStart << ",\n"
+           << "  \"baseline_root_pw_mass\": " << config.baselineRootPwMassStart << ",\n"
+           << "  \"contender_pw_mass_normalize\": " << (config.contenderPwMassNormalize ? "true" : "false") << ",\n"
+           << "  \"baseline_pw_mass_normalize\": " << (config.baselinePwMassNormalize ? "true" : "false") << ",\n"
+           << "  \"contender_cpuct_init\": " << config.contenderCpuctInit << ",\n"
+           << "  \"baseline_cpuct_init\": " << config.baselineCpuctInit << ",\n"
            << "  \"contender_mcgs\": " << (config.contenderMcgs ? "true" : "false") << ",\n"
            << "  \"baseline_mcgs\": " << (config.baselineMcgs ? "true" : "false") << ",\n"
            << "  \"contender_transpositions\": " << (config.contenderTranspositions ? "true" : "false") << ",\n"
@@ -546,9 +552,15 @@ int run_tournament(
         }
     }
     for (const float value : {config.contenderPwMassExponent, config.baselinePwMassExponent,
-                              config.contenderPwMassCap, config.baselinePwMassCap}) {
+                              config.contenderPwMassCap, config.baselinePwMassCap,
+                              config.contenderCpuctInit, config.baselineCpuctInit}) {
         if (!std::isfinite(value) || value <= 0.0f) {
-            throw std::invalid_argument("Tournament PW mass exponent and cap must be positive");
+            throw std::invalid_argument("Tournament PW mass exponent, cap and CPUCT must be positive and finite");
+        }
+    }
+    for (float start : {config.contenderRootPwMassStart, config.baselineRootPwMassStart}) {
+        if (!std::isfinite(start) || (start != -1.0f && (start < 0.0f || start >= 1.0f))) {
+            throw std::invalid_argument("Tournament root mass start must be -1 or in [0, 1)");
         }
     }
     const auto finite_in_range = [](float value, float minimum, float maximum) {

@@ -168,14 +168,52 @@ def test_training_on_search_data_alone(tmp_path, monkeypatch):
     _write_chunk(tmp_path / "search" / "c.dst", rng, n=32)
     _write_chunk(tmp_path / "val.dst", rng, n=16)
     monkeypatch.setattr(train, "export", lambda *args, **kwargs: None)
+    evaluation_batches = []
+    real_evaluate = train.evaluate
+
+    def recording_evaluate(model, dataset, weights, batch_size):
+        evaluation_batches.append(batch_size)
+        return real_evaluate(model, dataset, weights, batch_size=batch_size)
+
+    monkeypatch.setattr(train, "evaluate", recording_evaluate)
+    monkeypatch.setattr(sys, "argv", [
+        "distill-train",
+        "--search-data", str(tmp_path / "search"), "--search-val", str(tmp_path / "val.dst"),
+        "--search-fraction", "1", "--size", "twin-s", "--batch-size", "8", "--steps", "3",
+        "--eval-every", "3", "--eval-batch-size", "4", "--train-probe", "8",
+        "--no-compile", "--out", str(tmp_path / "out")])
+    train.main()
+    history = json.loads((tmp_path / "out" / "history.json").read_text())
+    assert history and (tmp_path / "out" / "last.pt").exists()
+    assert evaluation_batches == [4, 4]
+    assert history[-1]['selection_loss'] == history[-1]['search_loss']
+
+
+def test_selfplay_checkpoint_ignores_teacher_validation_loss(tmp_path, monkeypatch):
+    import sys
+    from hivemind.distill import train
+
+    rng = np.random.default_rng(16)
+    (tmp_path / "search").mkdir()
+    _write_chunk(tmp_path / "search/c.dst", rng, n=32)
+    _write_chunk(tmp_path / "val.dst", rng, n=16)
+    teacher_losses = iter([100.0, 1.0, 0.0])
+    selfplay_losses = iter([1.0, 2.0, 3.0])
+
+    def fake_evaluate(model, dataset, weights, batch_size):
+        return {"loss": next(selfplay_losses if dataset.source else teacher_losses)}
+
+    monkeypatch.setattr(train, "evaluate", fake_evaluate)
+    monkeypatch.setattr(train, "export", lambda *args, **kwargs: None)
     monkeypatch.setattr(sys, "argv", [
         "distill-train", "--val", str(tmp_path / "val.dst"),
         "--search-data", str(tmp_path / "search"), "--search-val", str(tmp_path / "val.dst"),
         "--search-fraction", "1", "--size", "twin-s", "--batch-size", "8", "--steps", "3",
-        "--eval-every", "3", "--train-probe", "8", "--no-compile", "--out", str(tmp_path / "out")])
+        "--eval-every", "1", "--train-probe", "0", "--no-compile", "--out", str(tmp_path / "out")])
     train.main()
-    history = json.loads((tmp_path / "out" / "history.json").read_text())
-    assert history and (tmp_path / "out" / "last.pt").exists()
+    best = torch.load(tmp_path / "out/best.pt", map_location="cpu", weights_only=True)
+    assert best['step'] == 1
+    assert best['selection_loss'] == 1.0
 
 
 def test_replay_data_takes_its_share_of_each_batch(tmp_path, monkeypatch):

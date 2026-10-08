@@ -370,13 +370,16 @@ public:
         if (!candidateGenerator.hasNext()) {
             return false;
         }
-        if (config.pwMassStart <= 0.0f) {
+        const float massStart = m_depth.load(std::memory_order_relaxed) == 0
+            && config.rootPwMassStart >= 0.0f ? config.rootPwMassStart : config.pwMassStart;
+        const float legalMass = config.pwMassNormalize ? candidateGenerator.legal_prior_mass() : 1.0f;
+        if (massStart <= 0.0f || legalMass <= 0.0f) {
             return expandedCount < countLimit;
         }
         const int cap = static_cast<int>(std::ceil(config.pwMassCap * static_cast<float>(countLimit)));
         return expandedCount < std::max(1, cap)
-            && expandedPriorSum < SearchParams::get_widening_mass_target(
-                visits, config.pwMassStart, config.pwMassExponent);
+            && expandedPriorSum < legalMass * SearchParams::get_widening_mass_target(
+                visits, massStart, config.pwMassExponent);
     }
 
     /**

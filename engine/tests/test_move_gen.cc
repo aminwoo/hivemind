@@ -1235,6 +1235,111 @@ TEST(NodeTest, PriorMassWideningFollowsPolicyConfidence) {
     EXPECT_FALSE(capped.should_expand_new_child(config));
 }
 
+TEST(JointCandidateGeneratorTest, LegalMassMatchesEnumerationAcrossSittingRules) {
+    const auto savedRequiredBoard = g_requiredMoveBoard;
+    const std::vector<Stockfish::Move> actions = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::MOVE_NONE};
+    const std::vector<uint8_t> captures = {0, 1, 0};
+    const std::vector<float> priorsA = {0.15f, 0.25f, 0.60f};
+    const std::vector<float> priorsB = {0.20f, 0.30f, 0.50f};
+    for (const auto required : {REQUIRE_MOVE_NONE, REQUIRE_MOVE_BOARD_A, REQUIRE_MOVE_BOARD_B}) {
+        g_requiredMoveBoard = required;
+        for (const bool onA : {false, true}) {
+            for (const bool onB : {false, true}) {
+                for (const bool advantage : {false, true}) {
+                    JointCandidateGenerator generator;
+                    generator.initialize(actions, actions, priorsA, priorsB,
+                                         advantage, onA, onB, captures, captures);
+                    const JointActionRules rules{onA, onB, advantage, onA, onB};
+                    double expected = 0.0;
+                    for (size_t a = 0; a < actions.size(); ++a) {
+                        for (size_t b = 0; b < actions.size(); ++b) {
+                            if (is_joint_action_legal(rules, actions[a], actions[b], captures[a], captures[b])) {
+                                expected += priorsA[a] * priorsB[b];
+                            }
+                        }
+                    }
+                    EXPECT_NEAR(generator.legal_prior_mass(), expected, 1e-6);
+                }
+            }
+        }
+    }
+    g_requiredMoveBoard = savedRequiredBoard;
+}
+
+TEST(NodeTest, NormalizedMassExcludesIllegalDoubleSitProbability) {
+    SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 1.0f;
+    config.pwMassStart = 0.35f;
+    Node node(Stockfish::WHITE);
+    node.set_depth(1);
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2), Stockfish::MOVE_NONE},
+        {Stockfish::MOVE_NONE}, {0.18f, 0.02f, 0.80f}, {1.0f},
+        false, true, false, config));
+    node.update(0, 0.0f);
+    node.update(0, 0.0f);
+    EXPECT_TRUE(node.should_expand_new_child(config));
+    config.pwMassNormalize = true;
+    EXPECT_FALSE(node.should_expand_new_child(config));
+}
+
+TEST(NodeTest, RootMassTargetCanOverrideOrInheritInternalTarget) {
+    SearchParams::RuntimeConfig config;
+    config.pwMassStart = 0.20f;
+    config.pwMassExponent = 0.01f;
+    Node node(Stockfish::WHITE);
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2)}, {Stockfish::MOVE_NONE},
+        {0.60f, 0.40f}, {1.0f}, false, true, false, config));
+    node.update(0, 0.0f);
+    EXPECT_FALSE(node.should_expand_new_child(config));
+    config.rootPwMassStart = 0.90f;
+    EXPECT_TRUE(node.should_expand_new_child(config));
+    node.set_depth(1);
+    EXPECT_FALSE(node.should_expand_new_child(config));
+    node.set_depth(0);
+    config.rootPwMassStart = 0.0f;
+    EXPECT_TRUE(node.should_expand_new_child(config));
+    config.rootPwMassStart = -1.0f;
+    EXPECT_FALSE(node.should_expand_new_child(config));
+}
+
+TEST(NodeTest, ZeroLegalMassFallsBackToVisitCount) {
+    SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 1.0f;
+    config.pwMassStart = 0.35f;
+    config.pwMassNormalize = true;
+    Node node(Stockfish::WHITE);
+    node.set_depth(1);
+    ASSERT_TRUE(node.try_init_and_expand(
+        {Stockfish::Move(1), Stockfish::Move(2)}, {Stockfish::MOVE_NONE},
+        {0.0f, 0.0f}, {1.0f}, false, true, false, config));
+    node.update(0, 0.0f);
+    node.update(0, 0.0f);
+    EXPECT_TRUE(node.should_expand_new_child(config));
+}
+
+TEST(JointCandidateGeneratorTest, LearnedResidualPreservesTotalLegalMass) {
+    JointCandidateGenerator generator;
+    const std::vector<Stockfish::Move> actions = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::MOVE_NONE};
+    // Quiet/sit combinations and double sit are illegal. A capture/sit
+    // combination remains legal. Learned factors reorder a proper prefix.
+    generator.initialize(actions, actions, {0.6f, 0.3f, 0.1f}, {0.5f, 0.3f, 0.2f},
+                         false, true, true, {0, 1, 0}, {0, 1, 0},
+                         {0.0f, 4.0f, 1.0f}, {0.0f, 1.0f, 2.0f}, 1, 2, 1.0f);
+    double generatedMass = 0.0;
+    while (generator.hasNext()) {
+        generatedMass += generator.getNext().jointPrior;
+    }
+    EXPECT_NEAR(generator.legal_prior_mass(), 0.81, 1e-6);
+    EXPECT_NEAR(generatedMass, generator.legal_prior_mass(), 1e-6);
+    // Reinitializing an exhausted generator must replace its cached mass.
+    generator.initialize({}, {}, {}, {}, false, false, false);
+    EXPECT_FLOAT_EQ(generator.legal_prior_mass(), 0.0f);
+}
+
 TEST(JointCandidateGeneratorTest, JointFactorsRescorePrefixAndPreserveFallback) {
     JointCandidateGenerator generator;
     const std::vector<Stockfish::Move> actionsA = {

@@ -9,6 +9,11 @@
 // `enqueue`/`synchronize` overlap is preserved with a worker thread per
 //     search thread, which is what keeps batch N's inference running while the
 //     search walks the tree for batch N+1.
+//
+// On macOS the network runs on the GPU through ORT's Core ML provider when
+// the runtime has it; HIVEMIND_COREML selects the compute units (gpu, all,
+// ane) or turns it off. Networks should first go through
+// engine/scripts/convert_onnx_coreml.py, or Core ML runs them in pieces.
 
 #include "nn/engine.h"
 
@@ -17,10 +22,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <future>
 #include <stdexcept>
+#include <unordered_map>
 
 #include "environment/constants.h"
 #include "search/search_params.h"
@@ -37,6 +44,84 @@ std::string lowered(std::string name) {
         return static_cast<char>(std::tolower(c));
     });
     return name;
+}
+
+// Core ML compute units for MLComputeUnits; `units` is null when Core ML is
+// unavailable or disabled, which leaves the CPU provider.
+struct CoreMLUnits {
+    const char* units = nullptr;
+    const char* label = "";
+};
+
+CoreMLUnits coreml_units() {
+    const auto providers = Ort::GetAvailableProviders();
+    if (std::find(providers.begin(), providers.end(),
+                  "CoreMLExecutionProvider") == providers.end()) {
+        return {};
+    }
+    const char* env = std::getenv("HIVEMIND_COREML");
+    const std::string choice = lowered(env && *env ? env : "gpu");
+    if (choice == "off" || choice == "cpu" || choice == "0") return {};
+    if (choice == "all") return {"ALL", "GPU and Neural Engine"};
+    if (choice == "ane") return {"CPUAndNeuralEngine", "Neural Engine"};
+    if (choice != "gpu") {
+        std::cout << "info string warning unknown HIVEMIND_COREML value '"
+                  << choice << "'; using gpu" << std::endl;
+    }
+    return {"CPUAndGPU", "GPU"};
+}
+
+// Core ML compiles for fixed shapes, and the graph derives reshape targets
+// from the batch dimension. Pinning that dimension lets ORT fold the shape
+// arithmetic away so the whole network stays in one Core ML partition.
+std::string batch_dimension_name(const std::filesystem::path& model) {
+    Ort::SessionOptions options;
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
+    const Ort::Session probe(ort_env(), model.c_str(), options);
+    // The shape info is a view into the type info, which must outlive it.
+    const Ort::TypeInfo type = probe.GetInputTypeInfo(0);
+    const auto info = type.GetTensorTypeAndShapeInfo();
+    const auto shape = info.GetShape();
+    const auto symbols = info.GetSymbolicDimensions();
+    if (shape.empty() || shape[0] >= 0 || symbols.empty() || !symbols[0]) {
+        return {};
+    }
+    return symbols[0];
+}
+
+std::vector<std::unique_ptr<Ort::Session>> coreml_sessions(
+    const Ort::SessionOptions& cpuOptions, const std::filesystem::path& model,
+    const CoreMLUnits& coreml, int batchSize, int count) {
+    Ort::SessionOptions options = cpuOptions.Clone();
+    // The CPU only casts the input and outputs here. A one-thread pool keeps
+    // idle spinning workers from taking thermal headroom from the GPU and
+    // the search threads, which matters on a fanless MacBook Air.
+    options.SetIntraOpNumThreads(1);
+    const std::string batchName = batch_dimension_name(model);
+    if (!batchName.empty()) {
+        Ort::ThrowOnError(Ort::GetApi().AddFreeDimensionOverrideByName(
+            options, batchName.c_str(), batchSize));
+    }
+    options.AppendExecutionProvider("CoreML", {
+        {"ModelFormat", "MLProgram"},
+        {"MLComputeUnits", coreml.units},
+        {"RequireStaticInputShapes", "1"},
+        {"SpecializationStrategy", "FastPrediction"},
+    });
+
+    // ORT serialises predictions on one Core ML model, so each search worker
+    // gets its own. Their batches then overlap on the GPU the way TensorRT's
+    // per-worker execution contexts do.
+    std::vector<std::future<std::unique_ptr<Ort::Session>>> pending;
+    for (int i = 0; i < count; ++i) {
+        pending.push_back(std::async(std::launch::async, [&options, &model] {
+            return std::make_unique<Ort::Session>(ort_env(), model.c_str(),
+                                                  options);
+        }));
+    }
+    std::vector<std::unique_ptr<Ort::Session>> sessions;
+    for (auto& session : pending) sessions.push_back(session.get());
+    return sessions;
 }
 
 // The exported graph names its heads differently across training runs
@@ -61,10 +146,13 @@ struct Engine::OrtState {
         std::vector<std::vector<__half>> convertedOutputs;
         std::future<bool> pending;
         bool hasPending = false;
+        Ort::Session* session = nullptr;
     };
 
     Ort::SessionOptions options;
-    std::unique_ptr<Ort::Session> session;
+    // One shared session on the CPU, one per worker on Core ML.
+    std::vector<std::unique_ptr<Ort::Session>> sessions;
+    std::string provider = "CPU";
     Ort::MemoryInfo memoryInfo =
         Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
@@ -87,7 +175,7 @@ struct Engine::OrtState {
     int jointFactorsBIdx = -1;
 };
 
-const char* Engine::backendName() { return "ONNX Runtime (CPU)"; }
+const char* Engine::backendName() { return "ONNX Runtime"; }
 
 Engine::Engine(int deviceId, int batchSize)
     : m_deviceId(deviceId),
@@ -123,21 +211,50 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         state.options.SetExecutionMode(ORT_SEQUENTIAL);
 
         const std::filesystem::path modelPath(onnxFile);
-        state.session = std::make_unique<Ort::Session>(
-            ort_env(), modelPath.c_str(), state.options);
+        const int workerCount = std::max(1, SearchParams::NUM_SEARCH_THREADS);
+        const CoreMLUnits coreml = coreml_units();
+        if (coreml.units) {
+            try {
+                state.sessions = coreml_sessions(state.options, modelPath, coreml,
+                                                 m_batchSize, workerCount);
+                state.provider = std::string("Core ML ") + coreml.label;
+            } catch (const Ort::Exception& e) {
+                std::cout << "info string warning Core ML failed to load the "
+                             "network, using the CPU: "
+                          << e.what() << std::endl;
+                state.sessions.clear();
+            }
+        }
+        if (state.sessions.empty()) {
+            state.sessions.push_back(std::make_unique<Ort::Session>(
+                ort_env(), modelPath.c_str(), state.options));
+            state.provider = "CPU";
+        }
+        const bool onCoreML = state.provider != "CPU";
+        const Ort::Session& session = *state.sessions.front();
 
         Ort::AllocatorWithDefaultOptions allocator;
 
-        if (state.session->GetInputCount() != 1) {
+        if (session.GetInputCount() != 1) {
             std::cerr << "Expected exactly one network input, found "
-                      << state.session->GetInputCount() << std::endl;
+                      << session.GetInputCount() << std::endl;
             return false;
         }
 
-        auto inputName = state.session->GetInputNameAllocated(0, allocator);
+        auto inputName = session.GetInputNameAllocated(0, allocator);
         m_inputName = inputName.get();
 
-        const auto inputType = state.session->GetInputTypeInfo(0)
+        if (onCoreML &&
+            !session.GetModelMetadata().LookupCustomMetadataMapAllocated(
+                "hivemind_coreml", allocator)) {
+            std::cout << "info string warning this network has not been "
+                         "prepared for Core ML and will bounce between the "
+                         "GPU and CPU; convert it with "
+                         "engine/scripts/convert_onnx_coreml.py"
+                      << std::endl;
+        }
+
+        const auto inputType = session.GetInputTypeInfo(0)
                                    .GetTensorTypeAndShapeInfo()
                                    .GetElementType();
         if (inputType != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
@@ -154,19 +271,19 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         }
 #endif
         state.usesFp16 = inputType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
-        if (state.usesFp16) {
+        if (state.usesFp16 && !onCoreML) {
             std::cout
                 << "info string warning FP16 inference is usually slow on CPU; "
                    "convert the model with engine/scripts/convert_onnx_fp32.py"
                 << std::endl;
         }
 
-        const size_t outputCount = state.session->GetOutputCount();
+        const size_t outputCount = session.GetOutputCount();
         state.outputNameStorage.reserve(outputCount);
         for (size_t i = 0; i < outputCount; ++i) {
-            auto name = state.session->GetOutputNameAllocated(i, allocator);
+            auto name = session.GetOutputNameAllocated(i, allocator);
             state.outputNameStorage.emplace_back(name.get());
-            const auto type = state.session->GetOutputTypeInfo(i)
+            const auto type = session.GetOutputTypeInfo(i)
                                   .GetTensorTypeAndShapeInfo()
                                   .GetElementType();
             if (type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16 &&
@@ -222,7 +339,7 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         m_jointFactorRank = 0;
         if (state.jointFactorsAIdx >= 0) {
             const auto shape =
-                state.session->GetOutputTypeInfo(state.jointFactorsAIdx)
+                session.GetOutputTypeInfo(state.jointFactorsAIdx)
                     .GetTensorTypeAndShapeInfo()
                     .GetShape();
             // [batch, rank, vocabulary]
@@ -231,9 +348,9 @@ bool Engine::loadNetwork(const std::string& onnxFile,
             }
         }
 
-        const int workerCount = std::max(1, SearchParams::NUM_SEARCH_THREADS);
         state.workers.resize(workerCount);
-        for (auto& worker : state.workers) {
+        for (size_t i = 0; i < state.workers.size(); ++i) {
+            auto& worker = state.workers[i];
             const size_t inputElements =
                 static_cast<size_t>(m_batchSize) * NB_INPUT_VALUES();
             if (state.usesFp16) {
@@ -242,14 +359,18 @@ bool Engine::loadNetwork(const std::string& onnxFile,
                 worker.inputFloat.resize(inputElements);
             }
             worker.convertedOutputs.resize(outputCount);
+            worker.session = state.sessions[i % state.sessions.size()].get();
         }
 
-        std::cout << "info string backend " << backendName() << " model "
-                  << onnxFile << " batch " << m_batchSize << " workers "
-                  << workerCount << " precision "
+        std::cout << "info string backend " << backendName() << " ("
+                  << state.provider << ") model " << onnxFile << " batch "
+                  << m_batchSize << " workers " << workerCount << " sessions "
+                  << state.sessions.size() << " precision "
                   << (state.usesFp16 ? "fp16" : "fp32")
                   << " intra-op threads "
-                  << (intraOp == 0 ? "auto" : std::to_string(intraOp))
+                  << (onCoreML ? std::string("1")
+                      : intraOp == 0 ? std::string("auto")
+                                     : std::to_string(intraOp))
                   << std::endl;
         return true;
     } catch (const Ort::Exception& e) {
@@ -263,7 +384,7 @@ bool Engine::loadNetwork(const std::string& onnxFile,
 }
 
 bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
-    if (!obs || !m_ort || !m_ort->session ||
+    if (!obs || !m_ort || m_ort->sessions.empty() ||
         workerIndex >= m_ort->workers.size()) {
         return false;
     }
@@ -302,7 +423,7 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
                     worker.inputFloat.size(), shape.data(), shape.size());
             }
 
-            worker.outputs = state.session->Run(
+            worker.outputs = worker.session->Run(
                 Ort::RunOptions{nullptr}, state.inputNames.data(), &input, 1,
                 state.outputNames.data(), state.outputNames.size());
             return true;

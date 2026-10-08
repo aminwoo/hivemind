@@ -131,7 +131,8 @@ def main():
     parser.add_argument("--data", nargs="*", default=[],
                         help="Teacher (raw) HDST chunks; omit with --search-fraction 1 to train on "
                              "self-play alone")
-    parser.add_argument("--val", nargs="+", required=True)
+    parser.add_argument("--val", nargs="+", default=[],
+                        help="Teacher validation chunks; optional for self-play-only training")
     parser.add_argument("--search-data", nargs="+", default=[], help="Search (selfplay) HDST chunks")
     parser.add_argument("--search-val", nargs="+", default=[])
     parser.add_argument("--search-fraction", type=float, default=None,
@@ -171,6 +172,8 @@ def main():
     parser.add_argument("--block", default="bottleneck", choices=["bottleneck", "dense"])
     parser.add_argument("--se-every", type=int, default=4, help="ECA every this many blocks (0 = none)")
     parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--eval-batch-size", type=int, default=2048,
+                        help="Positions per validation batch; reduce when GPU memory is limited")
     parser.add_argument("--epochs", type=float, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
@@ -182,6 +185,8 @@ def main():
     parser.add_argument("--no-compile", action="store_true",
                         help="Skip torch.compile of the residual blocks (about 1.5x slower)")
     args = parser.parse_args()
+    if args.batch_size < 1 or args.eval_batch_size < 1:
+        parser.error("--batch-size and --eval-batch-size must be positive")
 
     torch.manual_seed(args.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -212,6 +217,10 @@ def main():
     if raw_rows < 0 or (raw_rows == 0) != (not pool) or (not pool and not search_pool):
         raise SystemExit("--data is needed unless --search-fraction is 1 with --search-data, "
                          "and is unused then")
+    if raw_rows and not args.val:
+        raise SystemExit("--val is required when training on teacher data")
+    if not raw_rows and not args.search_val:
+        raise SystemExit("--search-val is required for self-play-only training")
     replay_pool = chunk_paths(args.replay_data)
     replay_rows = round(args.batch_size * args.replay_fraction) if replay_pool else 0
     if bool(replay_pool) != (args.replay_fraction > 0):
@@ -247,7 +256,8 @@ def main():
             batch = concat_batches(batch, part)
         return batch
 
-    val = DistillDataset([read_chunk(p) for p in chunk_paths(args.val)], device)
+    val = (DistillDataset([read_chunk(p) for p in chunk_paths(args.val)], device)
+           if args.val else None)
     # A fixed slice of the training data, scored like the validation set: the
     # gap between the two says whether more data would help.
     train_probe = (DistillDataset([head_chunk(read_chunk((pool or search_pool)[0]), args.train_probe)], device,
@@ -255,7 +265,8 @@ def main():
                    if args.train_probe else None)
     search_val = (DistillDataset([read_chunk(p) for p in chunk_paths(args.search_val)], device, source=1)
                   if args.search_val else None)
-    print(f"train {len(pool)} chunks ({positions} positions, window {window}), val {len(val)}", flush=True)
+    print(f"train {len(pool)} chunks ({positions} positions, window {window}), "
+          f"val {len(val) if val is not None else 0}", flush=True)
     if search_pool:
         print(f"search {len(search_pool)} chunks ({search_positions} positions), "
               f"{search_rows}/{args.batch_size} of each batch, val {len(search_val) if search_val else 0}",
@@ -306,26 +317,30 @@ def main():
         schedule.step()
 
         if step % args.eval_every == 0 or step == total_steps:
-            metrics = evaluate(model, val, weights)
+            metrics = (evaluate(model, val, weights, batch_size=args.eval_batch_size)
+                       if val is not None else {})
             if train_probe is not None:
-                probe = evaluate(model, train_probe, weights)
+                probe = evaluate(model, train_probe, weights, batch_size=args.eval_batch_size)
                 metrics.update(train_loss=probe["loss"], train_top1_a=probe["top1_a"],
                                train_value_mae=probe["value_mae"])
             if search_val is not None:
-                search_metrics = evaluate(model, search_val, weights)
+                search_metrics = evaluate(model, search_val, weights, batch_size=args.eval_batch_size)
                 metrics.update({f"search_{k}": v for k, v in search_metrics.items()})
-                # Source weights are fixed coefficients, independent of batch proportions.
-                metrics["selection_loss"] = (metrics["loss"]
-                                             + (search_metrics["loss"] if search_rows else 0.0))
+                # Self-play-only runs select exclusively on their own targets.
+                # Mixed runs retain the fixed sum of source validation losses.
+                metrics["selection_loss"] = (search_metrics["loss"] if not raw_rows else
+                                             metrics["loss"] +
+                                             (search_metrics["loss"] if search_rows else 0.0))
             metrics.update(epoch=round(step / steps_per_epoch, 2), lr=schedule.get_last_lr()[0],
                            seconds=round(time.time() - started))
             history.append(metrics)
             print(json.dumps({k: round(v, 5) if isinstance(v, float) else v for k, v in metrics.items()}),
                   flush=True)
-            selection = metrics.get("selection_loss", metrics["loss"])
+            selection = metrics["selection_loss"] if "selection_loss" in metrics else metrics["loss"]
             if selection < best:
                 best = selection
-                torch.save({"model": model.state_dict(), "size": size, "variant": variant},
+                torch.save({"model": model.state_dict(), "size": size, "variant": variant,
+                            "step": step, "selection_loss": selection},
                            args.out / "best.pt")
 
     torch.save({"model": model.state_dict(), "size": size, "variant": variant}, args.out / "last.pt")

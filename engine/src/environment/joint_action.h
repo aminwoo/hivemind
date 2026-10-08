@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -236,6 +237,7 @@ private:
     
     // Turn, time and pass context used to reject illegal joint actions
     JointActionRules rules;
+    float legalPriorMass = 0.0f;
 
     void pushCandidate(size_t idxA, size_t idxB) {
         if (idxA >= sortedActionsA.size() || idxB >= sortedActionsB.size()) {
@@ -408,6 +410,10 @@ private:
 public:
     JointCandidateGenerator() = default;
 
+    // Learned residuals redistribute mass within their legal prefix, so the
+    // factorized legal total also applies after rescoring that prefix.
+    float legal_prior_mass() const { return legalPriorMass; }
+
     bool promote(Stockfish::Move moveA, Stockfish::Move moveB) {
         if (promotedCandidate) {
             return false;
@@ -564,6 +570,31 @@ public:
         };
         rules.boardACanMove = isAOnTurn && hasRealMove(actionsA);
         rules.boardBCanMove = isBOnTurn && hasRealMove(actionsB);
+
+        // Legality depends only on sit/quiet/capture categories. Sum nine
+        // category products instead of enumerating every move pair.
+        auto categoryMass = [](const auto& actions, const auto& priors, const auto& captures) {
+            std::array<double, 3> mass{};
+            for (size_t i = 0; i < actions.size(); ++i) {
+                const int category = actions[i] == Stockfish::MOVE_NONE ? 0
+                    : i < captures.size() && captures[i] ? 2 : 1;
+                mass[category] += priors[i];
+            }
+            return mass;
+        };
+        const auto massA = categoryMass(actionsA, priorsA, capturesA);
+        const auto massB = categoryMass(actionsB, priorsB, capturesB);
+        double legalMass = 0.0;
+        for (int a = 0; a < 3; ++a) {
+            for (int b = 0; b < 3; ++b) {
+                if (is_joint_action_legal(rules,
+                        a ? Stockfish::Move(1) : Stockfish::MOVE_NONE,
+                        b ? Stockfish::Move(1) : Stockfish::MOVE_NONE, a == 2, b == 2)) {
+                    legalMass += massA[a] * massB[b];
+                }
+            }
+        }
+        legalPriorMass = static_cast<float>(legalMass);
         
         if (actionsA.empty() || actionsB.empty()) {
             return;

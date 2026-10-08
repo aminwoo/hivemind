@@ -20,7 +20,39 @@ from hivemind.inference.onnx import load_onnx_model, run_onnx
 from hivemind.network import DEFAULT_ONNX_PATH
 from hivemind.domain.board import BughouseBoard
 from hivemind.domain.board2planes import board2planes
-from hivemind.domain.move2planes import make_map
+from hivemind.domain.move2planes import make_map, mirrorMove
+
+LABELS = make_map()
+# The first index of each label, as the engine's POLICY_INDEX keeps it; the
+# 64 "pass" entries resolve to index 0.
+LABEL_INDEX = {}
+for _index, _label in enumerate(LABELS):
+    LABEL_INDEX.setdefault(_label, _index)
+PASS_INDEX = LABEL_INDEX["pass"]
+
+
+def legal_policy_indices(board, board_num, team_side):
+    """Policy indices of the actions this team may take on one board.
+
+    The engine applies its softmax over these alone, and networks trained
+    the same way (twin-s) leave every other logit untrained, so ranking the
+    full policy vector would surface illegal moves.
+    """
+    chess_board = board.boards[board_num]
+    team_color = team_side if board_num == 0 else not team_side
+    if chess_board.turn != team_color:
+        return [PASS_INDEX]
+    # A team ahead on time may sit on a board where it is to move.
+    indices = {PASS_INDEX} if board.time_advantage(team_side) > 0 else set()
+    for move in chess_board.legal_moves:
+        if chess_board.turn == chess.BLACK:
+            move = mirrorMove(move)
+        uci = move.uci()
+        # Queen, rook and bishop promotions share the plain move's entry.
+        if len(uci) == 5 and uci[-1] != "n":
+            uci = uci[:-1]
+        indices.add(LABEL_INDEX[uci])
+    return sorted(indices)
 
 
 def infer_from_fens(session, fen_a, fen_b, team_side=chess.WHITE, top_k=10):
@@ -56,25 +88,25 @@ def infer_from_fens(session, fen_a, fen_b, team_side=chess.WHITE, top_k=10):
     policy_a_logits = outputs[1][0]
     policy_b_logits = outputs[2][0]
     
-    # Apply softmax to convert logits to probabilities
-    def softmax(x):
-        x = np.asarray(x, dtype=np.float32)
-        exp_x = np.exp(x - np.max(x))  # Subtract max for numerical stability
-        return exp_x / exp_x.sum()
-    
-    policy_a = softmax(policy_a_logits)
-    policy_b = softmax(policy_b_logits)
-    
-    # Get move labels
-    labels = make_map()
-    
+    # Softmax over the legal actions only, as the engine does
+    def legal_softmax(logits, legal):
+        logits = np.asarray(logits, dtype=np.float32)
+        policy = np.zeros_like(logits)
+        legal_logits = logits[legal]
+        exp_x = np.exp(legal_logits - np.max(legal_logits))
+        policy[legal] = exp_x / exp_x.sum()
+        return policy
+
+    policy_a = legal_softmax(policy_a_logits, legal_policy_indices(board, 0, team_side))
+    policy_b = legal_softmax(policy_b_logits, legal_policy_indices(board, 1, team_side))
+
     # Get top moves for Board A
     top_indices_a = np.argsort(policy_a)[-top_k:][::-1]
-    top_moves_a = [(labels[idx], policy_a[idx]) for idx in top_indices_a]
-    
+    top_moves_a = [(LABELS[idx], policy_a[idx]) for idx in top_indices_a]
+
     # Get top moves for Board B
     top_indices_b = np.argsort(policy_b)[-top_k:][::-1]
-    top_moves_b = [(labels[idx], policy_b[idx]) for idx in top_indices_b]
+    top_moves_b = [(LABELS[idx], policy_b[idx]) for idx in top_indices_b]
     
     return {
         'value': value,

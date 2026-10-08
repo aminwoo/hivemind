@@ -13,6 +13,7 @@ from hivemind.config.train_config import TrainObjects
 from hivemind.inference.onnx import run_onnx
 from hivemind.inference.onnx_graph import topologically_sort_graph
 from hivemind.cli import fetch_network as downloader
+from hivemind.network import Artifact
 
 
 @pytest.mark.parametrize("tensor_type,dtype", [
@@ -63,7 +64,8 @@ def test_training_objects_do_not_share_mutable_settings():
 
 def test_download_verifies_and_reuses_existing_artifact(tmp_path, monkeypatch):
     payload = b"test network"
-    monkeypatch.setitem(downloader.ARTIFACTS, "test", ("network.onnx", hashlib.sha256(payload).hexdigest()))
+    monkeypatch.setitem(downloader.ARTIFACTS, "test", Artifact(
+        "owner/repo", "abc123", "network.onnx", hashlib.sha256(payload).hexdigest()))
     calls = []
 
     def open_url(url, timeout):
@@ -74,13 +76,14 @@ def test_download_verifies_and_reuses_existing_artifact(tmp_path, monkeypatch):
     path = downloader.fetch_network("test", tmp_path)
     assert path.read_bytes() == payload
     assert downloader.fetch_network("test", tmp_path) == path
-    assert len(calls) == 1
+    assert calls == ["https://huggingface.co/owner/repo/resolve/abc123/network.onnx"]
 
 
 def test_corrupt_download_preserves_existing_file_and_cleans_temporary(tmp_path, monkeypatch):
     path = tmp_path / "network.onnx"
     path.write_bytes(b"existing")
-    monkeypatch.setitem(downloader.ARTIFACTS, "test", (path.name, "incorrect digest"))
+    monkeypatch.setitem(downloader.ARTIFACTS, "test", Artifact(
+        "owner/repo", "abc123", path.name, "incorrect digest"))
     monkeypatch.setattr(downloader, "urlopen", lambda *a, **kw: io.BytesIO(b"corrupt"))
     with pytest.raises(ValueError, match="SHA-256 mismatch"):
         downloader.fetch_network("test", tmp_path)

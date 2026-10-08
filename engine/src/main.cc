@@ -133,6 +133,8 @@ void printUsage(const char* progName) {
     cout << "    --contender-pw-exponent <x> --baseline-pw-exponent <x>" << endl;
     cout << "    --contender-pw-mass <m0> --baseline-pw-mass <m0> (prior-mass widening; 0 = off)" << endl;
     cout << "    --{contender,baseline}-pw-mass-exponent <x> --{contender,baseline}-pw-mass-cap <x>" << endl;
+    cout << "    --{contender,baseline}-root-pw-mass <m0> (-1 inherits internal target)" << endl;
+    cout << "    --{contender,baseline}-pw-mass-normalize <bool> --{contender,baseline}-cpuct-init <x>" << endl;
     cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
     cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
@@ -603,6 +605,12 @@ int main(int argc, char* argv[]) {
                 else if (option == "--baseline-pw-mass-exponent") config.baselinePwMassExponent = stof(value);
                 else if (option == "--contender-pw-mass-cap") config.contenderPwMassCap = stof(value);
                 else if (option == "--baseline-pw-mass-cap") config.baselinePwMassCap = stof(value);
+                else if (option == "--contender-root-pw-mass") config.contenderRootPwMassStart = stof(value);
+                else if (option == "--baseline-root-pw-mass") config.baselineRootPwMassStart = stof(value);
+                else if (option == "--contender-pw-mass-normalize") config.contenderPwMassNormalize = parse_bool_argument(value);
+                else if (option == "--baseline-pw-mass-normalize") config.baselinePwMassNormalize = parse_bool_argument(value);
+                else if (option == "--contender-cpuct-init") config.contenderCpuctInit = stof(value);
+                else if (option == "--baseline-cpuct-init") config.baselineCpuctInit = stof(value);
                 else if (option == "--contender-mcgs") config.contenderMcgs = parse_bool_argument(value);
                 else if (option == "--baseline-mcgs") config.baselineMcgs = parse_bool_argument(value);
                 else if (option == "--contender-transpositions") config.contenderTranspositions = parse_bool_argument(value);

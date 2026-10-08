@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 from urllib.request import urlopen
 
-from hivemind.network import ARTIFACTS, MODEL_DIRECTORY, MODEL_REPOSITORY, MODEL_REVISION
+from hivemind.network import ARTIFACTS, MODEL_DIRECTORY
 
 
 def file_digest(path):
@@ -16,12 +16,12 @@ def file_digest(path):
 
 
 def fetch_network(variant="onnx", output_dir=MODEL_DIRECTORY):
-    filename, expected_digest = ARTIFACTS[variant]
+    repository, revision, filename, expected_digest = ARTIFACTS[variant]
     destination = Path(output_dir) / filename
     if destination.is_file() and file_digest(destination) == expected_digest:
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
-    url = f"https://huggingface.co/{MODEL_REPOSITORY}/resolve/{MODEL_REVISION}/{filename}"
+    url = f"https://huggingface.co/{repository}/resolve/{revision}/{filename}"
     temporary = None
     try:
         with urlopen(url, timeout=60) as response:
