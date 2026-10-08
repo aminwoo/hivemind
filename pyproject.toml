@@ -27,7 +27,14 @@ dependencies = [
 onnx-export = ["onnxsim>=0.4.36"]
 
 [[tool.uv.index]]
+name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+# CUDA wheels on Linux and Windows; macOS has none, so it uses PyPI's build.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform != 'darwin'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform != 'darwin'" }]
 
 [dependency-groups]
 dev = [

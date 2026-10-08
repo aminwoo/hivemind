@@ -55,3 +55,29 @@ def test_editable_workspace_does_not_follow_working_directory(tmp_path, monkeypa
 
 def test_training_outputs_are_outside_source_tree():
     assert paths.TRAINING_OUTPUT_DIR == paths.PROJECT_ROOT / "artifacts/training"
+
+
+def test_no_command_starts_the_engine(monkeypatch):
+    captured = {}
+
+    def import_command(name):
+        captured["module"] = name
+        return SimpleNamespace(main=lambda: 0)
+
+    monkeypatch.setattr(cli, "import_module", import_command)
+    assert cli.main([]) == 0
+    assert captured["module"] == "hivemind.cli.engine"
+
+
+def test_engine_command_prefers_the_coreml_network_on_macos(tmp_path, monkeypatch):
+    from hivemind.cli import engine
+
+    network = tmp_path / "net.onnx"
+    network.touch()
+    monkeypatch.setattr(engine, "DEFAULT_ONNX_PATH", network)
+    monkeypatch.setattr(engine.sys, "platform", "darwin")
+    assert engine.default_model() == network
+    (tmp_path / "net-coreml.onnx").touch()
+    assert engine.default_model() == tmp_path / "net-coreml.onnx"
+    monkeypatch.setattr(engine.sys, "platform", "linux")
+    assert engine.default_model() == network
