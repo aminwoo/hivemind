@@ -171,10 +171,6 @@ private:
         std::shared_ptr<Node> node;
         uint64_t positionHash = 0;
         std::string signature;
-        // The clock the retained subtree was searched under. A later search
-        // finds the node by the coarse reuse key, and trusts its proofs only
-        // when its own clock is this one exactly.
-        TimeState time;
     };
 
     struct MateContinuation {
@@ -846,29 +842,18 @@ public:
      * @brief Try to reuse the search tree from a previous search.
      *
      * Checks whether the current position matches a saved next-root candidate.
-     * @param reuseKey Board::search_reuse_key of the current position.
+     * Under a clock the search hash includes the exact lead, so a subtree is
+     * only adopted by a position whose clock is the one it was searched
+     * under: every node's legal actions and proofs hold as they stand.
+     * @param positionHash Search hash of the current position.
      * @param teamSide Team to play at the current position.
      * @param signature Exact board signature of the current position.
-     * @param rootTime Clock state of the current position.
-     * @param outExactClock Set to whether the subtree was searched under
-     *        exactly @p rootTime. When it was not, the caller must not trust
-     *        the subtree's proofs or merge its nodes by hash.
      * @return Shared pointer to reusable root, or nullptr if no reuse possible
      */
-    std::shared_ptr<Node> try_reuse_tree(uint64_t reuseKey,
+    std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash,
                                          Stockfish::Color teamSide,
                                          const std::string& signature,
-                                         const TimeState& rootTime,
-                                         bool background,
-                                         bool* outExactClock = nullptr);
-
-    /**
-     * @brief Forget every proof in a subtree adopted under a different clock.
-     *
-     * Visits, values and edges stay; solved node types and mate distances go,
-     * so nothing proved under the old lead is acted on under the new one.
-     */
-    static void clear_reused_proofs(const std::shared_ptr<Node>& reusedRoot);
+                                         bool background);
     
     /**
      * @brief Store next-root candidates for tree reuse.

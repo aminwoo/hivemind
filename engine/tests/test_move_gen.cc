@@ -72,6 +72,16 @@ public:
             board, teamSide, time, action, plyToMate);
     }
 
+    /** The reverse scan's form: the attacker wins any mate race. */
+    static bool find_root_mate_winning_races(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        JointActionCandidate& action, int& plyToMate) {
+        return Agent::find_root_mate_impl(
+            board, teamSide, time, action, plyToMate,
+            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            Agent::MateSearchBudget::Clock::time_point{}, true, true);
+    }
+
     static bool find_root_mate_with_pv(
         Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& action, int& plyToMate,
@@ -2595,15 +2605,14 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
         actualPosition.search_hash_key(
             Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
-        Agent::board_signature(actualPosition),
-        TimeState::legacy(Stockfish::WHITE, teamHasTimeAdvantage), false);
+        Agent::board_signature(actualPosition), false);
     EXPECT_EQ(reused, replyNodes[1]);
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
     EXPECT_EQ(reused->get_end_in_ply(), 3);
 }
 
-TEST_F(EngineTest, TreeReuseFindsAClockedNodeByClassAndReportsAChangedClock) {
+TEST_F(EngineTest, TreeReuseNeedsTheClockTheTreeWasSearchedUnder) {
     Board board;
     // White to move on board A alone: its own move is free. Black then has
     // both boards and pays 200 ms for its reply, so White's next root sits
@@ -2627,50 +2636,42 @@ TEST_F(EngineTest, TreeReuseFindsAClockedNodeByClassAndReportsAChangedClock) {
         {reply}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
         false, true, true, SearchParams::RuntimeConfig{}));
     const std::shared_ptr<Node> replyNode = opponentNode->get_children().front();
-    replyNode->mark_as_win(3);
 
     Board nextRoot(afterOwnMove);
     nextRoot.make_moves(reply, Stockfish::MOVE_NONE);
-    const TimeState predicted =
-        TimeState::clocked(Stockfish::WHITE, 500, 100, 200);
-    const auto store = [&](Agent& agent) {
+    const auto reuse = [&](const TimeState& now) {
+        Agent agent;
         AgentTreeReuseTestPeer::set_root(agent, root);
         agent.store_next_root_candidates(board, rootTime);
-    };
-    const auto reuse = [&](Agent& agent, const TimeState& now, bool& exact) {
         return agent.try_reuse_tree(
-            nextRoot.search_reuse_key(Stockfish::WHITE, now), Stockfish::WHITE,
-            Agent::board_signature(nextRoot), now, false, &exact);
+            nextRoot.search_hash_key(Stockfish::WHITE, now), Stockfish::WHITE,
+            Agent::board_signature(nextRoot), false);
     };
 
-    {
-        Agent agent;
-        store(agent);
-        bool exact = false;
-        EXPECT_EQ(reuse(agent, predicted, exact), replyNode);
-        EXPECT_TRUE(exact);
-    }
-    {
-        // 450 ms is the same class as the predicted 500 ms: the node is
-        // found, but its proofs belong to another clock.
-        Agent agent;
-        store(agent);
-        bool exact = true;
-        const TimeState drifted =
-            TimeState::clocked(Stockfish::WHITE, 450, 100, 200);
-        EXPECT_EQ(reuse(agent, drifted, exact), replyNode);
-        EXPECT_FALSE(exact);
-        Agent::clear_reused_proofs(replyNode);
-        EXPECT_EQ(replyNode->get_node_type(), NodeType::UNSOLVED);
-    }
-    {
-        // Behind on time changes who may sit at the root itself.
-        Agent agent;
-        store(agent);
-        bool exact = true;
-        EXPECT_EQ(reuse(agent, TimeState::clocked(Stockfish::WHITE, -500, 100, 200),
-                        exact),
-                  nullptr);
+    EXPECT_EQ(reuse(TimeState::clocked(Stockfish::WHITE, 500, 100, 200)), replyNode);
+    // 50 ms of drift is the same class, but deeper down it can change who may
+    // sit, so the retained nodes' actions no longer hold.
+    EXPECT_EQ(reuse(TimeState::clocked(Stockfish::WHITE, 450, 100, 200)), nullptr);
+}
+
+TEST_F(EngineTest, CaptureFeedMateMustSurviveTheRecaptureThatSuppliesABlocker) {
+    // Rxa4 feeds a rook for a first-rank drop mate on board B, but Black,
+    // then on turn on board A, can take back with Qxa4 and hand White on B
+    // a rook to block with: no mate. (Position from the Codex review.)
+    Board board;
+    board.set(
+        "5r1k/6pp/8/4p3/r2q4/8/8/R6K[] w - - 0 1"
+        "|"
+        "4k3/8/8/8/8/8/6PP/7K[] b - - 0 1");
+    for (const TimeState& time : {TimeState::legacy(Stockfish::WHITE, true),
+                                  TimeState::clocked(Stockfish::WHITE, 50, 100, 100)}) {
+        JointActionCandidate action;
+        int plyToMate = 0;
+        const bool found = AgentTreeReuseTestPeer::find_root_mate_winning_races(
+            board, Stockfish::WHITE, time, action, plyToMate);
+        EXPECT_FALSE(found && plyToMate == 1
+                     && board.uci_move(BOARD_A, action.moveA) == "a1a4")
+            << "claimed the capture feed as mate in one";
     }
 }
 
@@ -2747,8 +2748,7 @@ TEST_F(EngineTest, TreeReuseIndexesPositionsThreeJointPliesDeep) {
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
         deepPosition.search_hash_key(
             Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
-        Agent::board_signature(deepPosition),
-        TimeState::legacy(Stockfish::WHITE, teamHasTimeAdvantage), false);
+        Agent::board_signature(deepPosition), false);
     EXPECT_EQ(reused, deepNode);
 }
 
@@ -2779,9 +2779,7 @@ TEST_F(EngineTest, TreeReuseRejectsUnrelatedPositionAtSameDepth) {
     EXPECT_EQ(agent.try_reuse_tree(
                   elsewhere.search_hash_key(
                       Stockfish::BLACK, !teamHasTimeAdvantage), Stockfish::BLACK,
-                  Agent::board_signature(elsewhere),
-                  TimeState::legacy(Stockfish::BLACK, !teamHasTimeAdvantage),
-                  false),
+                  Agent::board_signature(elsewhere), false),
               nullptr);
 }
 

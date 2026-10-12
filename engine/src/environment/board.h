@@ -107,8 +107,8 @@ class Board {
          * Search-node identity under a clock state. A legacy state hashes
          * exactly as its flag does; a clocked one adds the exact lead and both
          * move times, since two leads that differ by any amount can give
-         * different sit rights a few actions later. Transpositions, proofs and
-         * hints are keyed by this.
+         * different sit rights a few actions later. Transpositions, tree
+         * reuse, proofs and hints are all keyed by this.
          */
         unsigned long search_hash_key(Stockfish::Color teamToPlay,
                                       const TimeState& time) {
@@ -116,24 +116,6 @@ class Board {
                 return search_hash_key(teamToPlay, time.can_sit(teamToPlay));
             }
             return mix_hash(search_hash_key(teamToPlay, false), time.exact_key());
-        }
-
-        /**
-         * Key under which a retained subtree is found again by the next
-         * search. The lead drifts by the real time that passes between two
-         * searches, so a clocked state is looked up by its coarse lead class
-         * (TimeState::lead_class); the caller compares the exact clocks before
-         * trusting anything the subtree proved. Legacy states key as their
-         * search hash.
-         */
-        unsigned long search_reuse_key(Stockfish::Color teamToPlay,
-                                       const TimeState& time) {
-            if (!time.is_clocked()) {
-                return search_hash_key(teamToPlay, time.can_sit(teamToPlay));
-            }
-            return mix_hash(search_hash_key(teamToPlay, false),
-                            0x434c4f434b000000ULL
-                                | static_cast<uint64_t>(time.lead_class(teamToPlay)));
         }
 
         /** Whether @p team is on turn on both boards, so both its clocks run. */

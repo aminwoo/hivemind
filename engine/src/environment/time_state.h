@@ -125,14 +125,13 @@ public:
     }
 
     /**
-     * @brief Coarse lead class, the key under which tree reuse finds a node.
+     * @brief Coarse lead class: which team may sit, and the size of its lead
+     * on a log2 scale in its own move times.
      *
-     * The side that may sit is exact, since it decides which actions are
-     * legal at the node itself. The size of its lead counts on a log2 scale
-     * in its own move times, so the few hundred milliseconds that pass between
-     * two searches rarely move a retained position to a different class.
-     * Deeper down, leads in one class can differ in sign, so nodes are only
-     * merged on the exact key.
+     * Nothing in the search keys on it; nodes are identified by the exact
+     * clock (exact_key), since leads in one class can differ in sign a few
+     * actions later. A front end can use it to judge whether a lead that has
+     * drifted is worth a new search.
      */
     uint32_t lead_class(Stockfish::Color team) const {
         const int32_t lead = lead_ms(team);

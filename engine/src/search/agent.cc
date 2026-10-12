@@ -430,11 +430,12 @@ constexpr int OPPONENT_PROOF_HORIZON_MOVES = std::max(
 
 /**
  * Actions the attacker may play in the root scan's single-board proofs, which
- * sit the partner board for the whole line: a capture feed, then up to
- * MATE_SEARCH_MAX_ATTACKER_MOVES checks.
+ * sit the partner board for the whole line: a capture feed, up to
+ * MATE_SEARCH_MAX_ATTACKER_MOVES checks, and the mating move on the waiting
+ * board that a single-board proof may end with.
  */
 constexpr int SAT_PARTNER_PROOF_ACTIONS =
-    SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES + 1;
+    SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES + 2;
 
 /**
  * @brief Performs a fast 1-ply checkmate scan at the root before starting MCTS.
@@ -1703,9 +1704,16 @@ bool team_is_in_check(Board& board, Stockfish::Color team) {
         || (board.side_to_move(BOARD_B) == ~team && board.is_in_check(BOARD_B));
 }
 
+/**
+ * A capture whose piece the partner drops at once for mate. The drop is
+ * judged as a bughouse mate under the clock the capture leaves: the victims
+ * may be saved by a blocker their own partner can capture, now or, if they
+ * may wait, later.
+ */
 bool find_immediate_capture_feed_mate(
     Board& board,
     Stockfish::Color attackingTeam,
+    const TimeState& time,
     bool attackerWinsMateRace,
     Agent::MateSearchBudget& budget,
     MateJointAction& outAction) {
@@ -1716,6 +1724,9 @@ bool find_immediate_capture_feed_mate(
     if (!attackerWinsMateRace || !boardAOnTurn || !boardBOnTurn) {
         return false;
     }
+    // On turn on both boards, the capture is charged; the drop that follows
+    // is the partner's move on the other board within the same action.
+    const bool victimsMaySit = time.after(attackingTeam, true).can_sit(~attackingTeam);
 
     constexpr std::array<Stockfish::PieceType, 5> handPieceTypes{
         Stockfish::PAWN, Stockfish::KNIGHT, Stockfish::BISHOP,
@@ -1762,7 +1773,7 @@ bool find_immediate_capture_feed_mate(
                     }
                     board.push_move(targetBoard, drop);
                     foundMate = board.is_in_check(targetBoard)
-                        && board.legal_moves(targetBoard).empty();
+                        && board.is_checkmate(~attackingTeam, victimsMaySit);
                     board.pop_move(targetBoard);
                     if (foundMate) {
                         break;
@@ -1883,7 +1894,7 @@ JointMateProof search_joint_forced_mate(
     if (attackerToPlay) {
         MateJointAction feedMateAction;
         if (find_immediate_capture_feed_mate(
-            board, attackingTeam, attackerWinsMateRace,
+            board, attackingTeam, time, attackerWinsMateRace,
             budget, feedMateAction)) {
             const JointMateProof result{
                 JointMateStatus::PROVEN, 1, feedMateAction,
@@ -2800,10 +2811,11 @@ bool Agent::certify_mate_candidate(
         treeNode, candidate.moveA, candidate.moveB);
     // The single-board and sat-board tiers let this team sit the partner
     // board at every move of the line and never the defenders: true of the
-    // clock only while the lead covers every move. The joint tier follows
-    // the clock itself.
+    // clock only while the lead covers every move, the mating move a
+    // single-board proof may end with on the waiting board included. The
+    // joint tier follows the clock itself.
     const bool sitsThroughLine = time.can_sit_through(
-        teamSide, candidateAttackerMoves);
+        teamSide, candidateAttackerMoves + 1);
     const TimeState afterCandidate = time.after(
         teamSide, board.on_turn_on_both_boards(teamSide));
     board.make_moves(candidate.moveA, candidate.moveB);
@@ -3257,7 +3269,7 @@ bool Agent::find_root_mate_impl(
         }
         MateJointAction feedMateAction;
         if (find_immediate_capture_feed_mate(
-            board, teamSide, attackerWinsMateRace,
+            board, teamSide, time, attackerWinsMateRace,
             *feedBudget, feedMateAction)) {
             const JointActionRules rules{
                 true, true, teamHasTimeAdvantage,
@@ -4867,9 +4879,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     int moveTimeMs = options.moveTimeMs;
     size_t targetNodes = options.targetNodes;
 
-    // The root's identity, and the key a retained subtree is found under.
+    // Compute position hash for tree reuse
     uint64_t positionHash = board.search_hash_key(teamSide, searchTime_);
-    const uint64_t reuseKey = board.search_reuse_key(teamSide, searchTime_);
     const std::string positionSignature = board_signature(board);
 
     // Every claimed forced win passes this before it is acted on, whichever
@@ -4889,18 +4900,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     // Try to reuse tree from previous search (if enabled)
     std::shared_ptr<Node> reusedRoot = nullptr;
-    bool reusedUnderSameClock = false;
     if (SearchParams::ENABLE_TREE_REUSE) {
         reusedRoot = try_reuse_tree(
-            reuseKey, teamSide, positionSignature, searchTime_,
-            options.background, &reusedUnderSameClock);
-    }
-    if (reusedRoot && !reusedUnderSameClock) {
-        // The lead moved since the subtree was searched. Who may sit at the
-        // root is unchanged, so its edges stand and its visits are still
-        // worth having, but deeper down a team may have gained or lost the
-        // right to sit: nothing it proved is trusted here.
-        clear_reused_proofs(reusedRoot);
+            positionHash, teamSide, positionSignature, options.background);
     }
     if (reusedRoot && mustPlayDespiteTeamMate
         && reusedRoot->get_node_type() == NodeType::LOSS) {
@@ -4936,9 +4938,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
         if (options.verbose) {
             cout << "info string Tree reuse: " << rootNode->get_visits()
-                 << " visits recovered"
-                 << (reusedUnderSameClock ? "" : " (clock changed; proofs cleared)")
-                 << endl;
+                 << " visits recovered" << endl;
         }
     } else {
         // Create new root node
@@ -4979,11 +4979,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // Released on the GC thread: clearing in place costs tens of
         // milliseconds before the first mate check can run.
         discard(transpositionTable->detach(), options.background);
-        if (reusedRoot && reusedUnderSameClock) {
+        if (reusedRoot) {
             reindex_reused_subtree(rootNode, options.background);
         } else {
-            // A subtree from another clock keeps the hashes of that clock, so
-            // none of its nodes may stand in for a node of this one.
             transpositionTable->insertOrGet(positionHash, rootNode);
         }
     }
@@ -7236,23 +7234,6 @@ void Agent::discard(std::shared_ptr<void> item, bool background) {
                       background ? &stopRequested_ : nullptr);
 }
 
-void Agent::clear_reused_proofs(const std::shared_ptr<Node>& reusedRoot) {
-    if (!reusedRoot) {
-        return;
-    }
-    std::vector<Node*> pending = {reusedRoot.get()};
-    std::unordered_set<const Node*> visited;
-    while (!pending.empty()) {
-        Node* node = pending.back();
-        pending.pop_back();
-        if (!node || !visited.insert(node).second) {
-            continue;
-        }
-        node->clear_solver_state();
-        node->append_child_ptrs(pending);
-    }
-}
-
 void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot,
                                    bool background) {
     if (!transpositionTable || !reusedRoot) {
@@ -7285,22 +7266,17 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot,
     }
 }
 
-std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t reuseKey,
+std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
                                             Stockfish::Color teamSide,
                                             const std::string& signature,
-                                            const TimeState& rootTime,
-                                            bool background,
-                                            bool* outExactClock) {
-    // The key locates the candidate; the signature is what admits it. Retained
+                                            bool background) {
+    // The hash locates the candidate; the signature is what admits it. Retained
     // edges were generated against that exact board, and a stale pocket would
-    // make reused drops illegal. The key carries only the lead's class, which
-    // fixes who may sit at the root itself, so the root's edges stay legal;
-    // the caller decides from the exact clock what else to trust.
+    // make reused drops illegal. Under a clock the hash is the exact clock's,
+    // so a drifted lead finds nothing: deeper down it can change who may sit,
+    // and with it the actions a retained node was expanded with.
     std::shared_ptr<Node> reused;
-    if (outExactClock) {
-        *outExactClock = false;
-    }
-    auto entry = nextRootCandidates_.find(reuseKey);
+    auto entry = nextRootCandidates_.find(positionHash);
     if (entry != nextRootCandidates_.end()) {
         const RetainedRootCandidate& candidate = entry->second;
         if (candidate.node
@@ -7308,9 +7284,6 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t reuseKey,
             && !candidate.signature.empty()
             && candidate.signature == signature) {
             reused = candidate.node;
-            if (outExactClock) {
-                *outExactClock = candidate.time == rootTime;
-            }
         }
     }
 
@@ -7439,15 +7412,15 @@ void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
     }
 
     if (depth == level) {
-        const uint64_t reuseKey = board.search_reuse_key(
+        const uint64_t positionHash = board.search_hash_key(
             node->get_team_to_play(), nodeTime);
         // Shallower levels run first, so a transposition already indexed keeps
         // the shallower node, whose signature is already built.
-        if (!nextRootCandidates_.contains(reuseKey)) {
+        if (!nextRootCandidates_.contains(positionHash)) {
             nextRootCandidates_.emplace(
-                reuseKey,
+                positionHash,
                 RetainedRootCandidate{
-                    node, reuseKey, board_signature(board), nodeTime});
+                    node, positionHash, board_signature(board)});
         }
         return;
     }
