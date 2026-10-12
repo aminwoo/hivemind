@@ -166,6 +166,15 @@ position. The default 8,000,000 nodes are split across the active boards:
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
 
+`--time-model clock` plays every game on a simulated clock instead of letting
+one team sit all game. Each game starts level with probability
+`--level-start-fraction` (0.5); otherwise the white team's lead is drawn
+log-uniformly from `--start-lead-min-ms` to `--start-lead-max-ms` (100 to
+10000) with a random sign. Each team's move time is drawn log-uniformly from
+`--move-time-min-ms` to `--move-time-max-ms` (100 to 3000). Searches and
+adjudication follow the lead, and the PGN records the starting and final lead
+and both move times.
+
 ### Background search for UCI frontends
 
 MCTS keeps searching the opponents' replies after emitting `bestmove`. Stopping
@@ -361,6 +370,11 @@ to play, and `true|false` time advantage. Comment lines begin with `#`. Each
 position is used for a complete color-swapped pair. Sequential stopping is
 evaluated only after both games in a pair; `summary.json` also records measured
 full-search NPS for each contestant and every effective search parameter.
+
+With `--time-model clock` and the self-play clock options, each pair draws one
+clock and both of its games use it, so the contender plays each team's side of
+the lead once. The positions file's time-advantage flags are then unused, and
+the breakdown splits games by the contender's starting lead: up, down or level.
 
 cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"

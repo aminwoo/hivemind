@@ -26,6 +26,7 @@ add_executable(
   test_root_scan_stop.cc
   test_nnue.cc
   test_time_state.cc
+  test_clock_sampling.cc
 )
 target_link_libraries(hivemind_tests PRIVATE hivemind_lib gtest_main)
 

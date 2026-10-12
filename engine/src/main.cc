@@ -93,6 +93,25 @@ bool parse_bool_argument(const string& value) {
     throw invalid_argument("Expected true/false, got: " + value);
 }
 
+// The clock options selfplay and tournament share. Returns false for any
+// other option.
+bool parse_clock_option(const string& option, const string& value,
+                        bool& clockModel, ClockSampling& clock) {
+    if (option == "--time-model") {
+        if (value != "flag" && value != "clock") {
+            throw invalid_argument("--time-model must be flag or clock");
+        }
+        clockModel = value == "clock";
+    }
+    else if (option == "--level-start-fraction") clock.levelStartFraction = stod(value);
+    else if (option == "--start-lead-min-ms") clock.startLeadMinMs = stoi(value);
+    else if (option == "--start-lead-max-ms") clock.startLeadMaxMs = stoi(value);
+    else if (option == "--move-time-min-ms") clock.moveTimeMinMs = stoi(value);
+    else if (option == "--move-time-max-ms") clock.moveTimeMaxMs = stoi(value);
+    else return false;
+    return true;
+}
+
 }  // namespace
 
 void printUsage(const char* progName) {
@@ -117,6 +136,9 @@ void printUsage(const char* progName) {
     cout << "    --distill-output <dir> (also write HDST chunks of the search targets)" << endl;
     cout << "    --distill-chunk-positions <n> --parallel-games <n> --root-scans <bool>" << endl;
     cout << "    --training-chunks <bool> (write HVM5 chunks; default true)" << endl;
+    cout << "    --time-model flag|clock (clock: each game draws a lead and team move times)" << endl;
+    cout << "    --level-start-fraction <x> --start-lead-min-ms <ms> --start-lead-max-ms <ms>" << endl;
+    cout << "    --move-time-min-ms <ms> --move-time-max-ms <ms> (log-uniform; defaults 0.5, 100-10000, 100-3000)" << endl;
     cout << "  searchdiag         Root candidates of searches at several node budgets, per FEN" << endl;
     cout << "    --model <onnx> --fens <file> --output <jsonl> --budgets 50,200,800 --positions <n> --every <n>" << endl;
     cout << "  gennnue [options]  Generate NNUE distillation data from teacher-policy games" << endl;
@@ -140,6 +162,7 @@ void printUsage(const char* progName) {
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
     cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
+    cout << "    --time-model flag|clock and the selfplay clock options (drawn per opening pair)" << endl;
     cout << "    --contender-nnue <file> (alpha-beta contender instead of --contender)" << endl;
     cout << "    --contender-ab-movetime <ms> --contender-ab-depth <n> --contender-hash <mb>" << endl;
     cout << "    --baseline-nnue <file> --baseline-ab-movetime <ms> --baseline-ab-depth <n>" << endl;
@@ -300,8 +323,10 @@ int main(int argc, char* argv[]) {
                 else if (option == "--dirichlet-alpha") config.dirichletAlpha = stof(value);
                 else if (option == "--dirichlet-epsilon") config.dirichletEpsilon = stof(value);
                 else if (option == "--batch-size") config.batchSize = stoi(value);
+                else if (parse_clock_option(option, value, config.clockModel, config.clock)) {}
                 else throw invalid_argument("Unknown selfplay option: " + option);
             }
+            config.clock.validate();
         } catch (const exception& error) {
             cerr << "Invalid selfplay arguments: " << error.what() << endl;
             return EXIT_FAILURE;
@@ -651,8 +676,10 @@ int main(int argc, char* argv[]) {
                         }
                     }
                 }
+                else if (parse_clock_option(option, value, config.clockModel, config.clock)) {}
                 else throw invalid_argument("Unknown tournament option: " + option);
             }
+            config.clock.validate();
         } catch (const exception& error) {
             cerr << "Invalid tournament arguments: " << error.what() << endl;
             return EXIT_FAILURE;

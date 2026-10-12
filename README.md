@@ -252,6 +252,30 @@ legal joint actions — set it to match the real clocks before searching.
 > setting (`sit` = `TimeAdvantage true`). It is still accepted but no longer
 > advertised.
 
+#### Clock model
+
+`TimeAdvantage` is one bit fixed for the whole search. The clock model searches
+on the lead itself:
+
+```text
+setoption name TimeModel value clock
+setoption name TimeLeadMs value 4200        # our lead over the diagonal opponents
+setoption name TeamMoveTimeMs value 1000     # how long our team takes per action
+setoption name OpponentMoveTimeMs value 1500
+```
+
+Without increment a team's lead is the same on both diagonals (White on A minus
+White on B equals Black on B minus Black on A), and the other team's is its
+negation. It moves only while one team is on turn on both boards: each action
+that team plays costs it its own move time. The search charges every path that
+way, so a team may sit only while its lead lasts, and at a lead of exactly zero
+neither team may. Both move times default to 100 ms, chess.com's fastest move.
+`TimeModel flag` (the default) keeps the `TimeAdvantage` behaviour.
+
+Current networks only see whether the team may sit, through the
+`TimeAdvantage` plane. They were trained with one team sitting for the whole
+game, so they misjudge level clocks until retrained.
+
 ### Opening diversity
 
 Normal UCI play is deterministic by default. To vary early play without the

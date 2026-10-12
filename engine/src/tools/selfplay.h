@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "search/search_params.h"
+#include "tools/clock_sampling.h"
 
 class Engine;
 
@@ -43,6 +44,11 @@ struct SelfPlayConfig {
     bool writeTrainingChunks = true;
     // Root mate scan and selected-move certification before each search.
     bool rootScans = true;
+    // Clock model: each game draws a starting lead and per-team move times
+    // from `clock`, and every search and adjudication follows that lead.
+    // Off, one team may sit for the whole game (the TimeAdvantage flag).
+    bool clockModel = false;
+    ClockSampling clock;
     std::filesystem::path distillOutputDirectory;
     size_t distillChunkPositions = 250'000;
 };
