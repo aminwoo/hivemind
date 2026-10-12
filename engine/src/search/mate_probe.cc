@@ -22,13 +22,15 @@ namespace MateProbe {
 namespace {
 
 // Search::Limits, ThreadPool::stop and the transposition table are process
-// globals, so a second probe would corrupt the one already running.
+// globals, so a second probe would corrupt the one already running. Resizing
+// the pool takes it too, so workers are never added or retired mid-probe.
 std::mutex probeMutex;
 
-// Index of the pool thread the probe drives. Thread::search() prints its pv
-// and honours Limits.depth only on the main thread, so a worker searches
-// silently and is stopped from here instead.
-constexpr size_t PROBE_THREAD_INDEX = 1;
+// Index of the first pool thread the probe drives; every thread from here to
+// the end of the pool is a probe worker. Thread::search() prints its pv and
+// honours Limits.depth only on the main thread, so the workers search
+// silently and are stopped from here instead.
+constexpr size_t FIRST_PROBE_THREAD_INDEX = 1;
 
 // Roughly what the probe searches in a millisecond, so a budget below this is
 // polled by yielding instead of sleeping.
@@ -73,16 +75,24 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
 
     init_fairy_stockfish();
     const Stockfish::Variant* variant = bughouse_variant();
-    if (variant == nullptr || Stockfish::Threads.size() <= PROBE_THREAD_INDEX) {
+    if (variant == nullptr) {
         return result;
     }
 
     std::lock_guard<std::mutex> guard(probeMutex);
-    Stockfish::Thread* worker = Stockfish::Threads[PROBE_THREAD_INDEX];
-    worker->wait_for_search_finished();
+    if (Stockfish::Threads.size() <= FIRST_PROBE_THREAD_INDEX) {
+        return result;
+    }
+    const std::vector<Stockfish::Thread*> workers(
+        Stockfish::Threads.begin() + FIRST_PROBE_THREAD_INDEX,
+        Stockfish::Threads.end());
+    for (Stockfish::Thread* worker : workers) {
+        worker->wait_for_search_finished();
+    }
 
-    Stockfish::Position& position = worker->rootPos;
-    position.set(variant, fen, false, &worker->rootState, worker);
+    Stockfish::Thread* const firstWorker = workers.front();
+    Stockfish::Position& position = firstWorker->rootPos;
+    position.set(variant, fen, false, &firstWorker->rootState, firstWorker);
 
     Stockfish::Search::RootMoves rootMoves;
     for (const auto& move : Stockfish::MoveList<Stockfish::LEGAL>(position)) {
@@ -117,10 +127,24 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
     limits.mate = maxMateMoves;
     Stockfish::Search::Limits = limits;
 
-    worker->nodes = worker->tbHits = worker->bestMoveChanges = 0;
-    worker->nmpMinPly = 0;
-    worker->rootDepth = worker->completedDepth = 0;
-    worker->rootMoves = rootMoves;
+    // Every worker searches the same root as lazy SMP does: they share the
+    // transposition table and diverge only through what each finds there.
+    for (Stockfish::Thread* worker : workers) {
+        if (worker != firstWorker) {
+            worker->rootPos.set(variant, fen, false, &worker->rootState, worker);
+        }
+        worker->nodes = worker->tbHits = worker->bestMoveChanges = 0;
+        worker->nmpMinPly = 0;
+        worker->rootDepth = worker->completedDepth = 0;
+        worker->rootMoves = rootMoves;
+    }
+    const auto nodes_searched = [&] {
+        uint64_t nodes = 0;
+        for (Stockfish::Thread* worker : workers) {
+            nodes += worker->nodes.load(std::memory_order_relaxed);
+        }
+        return nodes;
+    };
 
     Stockfish::Threads.stop = false;
     Stockfish::Threads.abort = false;
@@ -130,17 +154,21 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
     const auto deadline = budgetMs > 0
         ? std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs)
         : std::chrono::steady_clock::time_point::max();
-    worker->start_searching();
+    for (Stockfish::Thread* worker : workers) {
+        worker->start_searching();
+    }
     while (!Stockfish::Threads.stop) {
         // A helper thread never raises Threads.stop itself: it returns to the
         // idle loop once rootDepth hits MAX_PLY, which a tiny tree reaches
         // well inside the node budget. Without this check the poll spins
         // forever when no deadline or abort is armed, as under self-play's
-        // complete-probe mode.
-        if (!worker->is_searching()) {
-            break;
-        }
-        if (worker->nodes.load(std::memory_order_relaxed) >= nodeBudget
+        // complete-probe mode. The first worker back has searched as deep as
+        // there is to go, so the rest are stopped with it.
+        const bool workerReturned = std::any_of(
+            workers.begin(), workers.end(),
+            [](Stockfish::Thread* worker) { return !worker->is_searching(); });
+        if (workerReturned
+            || nodes_searched() >= nodeBudget
             || std::chrono::steady_clock::now() >= deadline
             || (abort && abort())) {
             Stockfish::Threads.stop = true;
@@ -154,17 +182,47 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-    worker->wait_for_search_finished();
+    for (Stockfish::Thread* worker : workers) {
+        worker->wait_for_search_finished();
+    }
 
-    result.depth = worker->completedDepth;
-    result.nodes = worker->nodes.load(std::memory_order_relaxed);
+    result.nodes = nodes_searched();
 
-    const Stockfish::Search::RootMove& best = worker->rootMoves.front();
     // An iteration cut off before its first move completes leaves the current
     // score at -VALUE_INFINITE, so fall back to the last completed one.
-    const Stockfish::Value score = best.score == -Stockfish::VALUE_INFINITE
-        ? best.previousScore : best.score;
-    if (score < Stockfish::VALUE_MATE_IN_MAX_PLY || best.pv.empty()) {
+    const auto settled_score = [](const Stockfish::Search::RootMove& rootMove) {
+        return rootMove.score == -Stockfish::VALUE_INFINITE
+            ? rootMove.previousScore : rootMove.score;
+    };
+    // The shortest mate any worker holds is the answer, the deeper search
+    // breaking a tie and the lower index any tie left after that.
+    Stockfish::Thread* bestWorker = nullptr;
+    for (Stockfish::Thread* worker : workers) {
+        result.depth = std::max<int>(result.depth, worker->completedDepth);
+        const Stockfish::Search::RootMove& candidate = worker->rootMoves.front();
+        if (candidate.pv.empty()) {
+            continue;
+        }
+        if (bestWorker == nullptr) {
+            bestWorker = worker;
+            continue;
+        }
+        const Stockfish::Value candidateScore = settled_score(candidate);
+        const Stockfish::Value bestScore =
+            settled_score(bestWorker->rootMoves.front());
+        if (candidateScore > bestScore
+            || (candidateScore == bestScore
+                && worker->completedDepth > bestWorker->completedDepth)) {
+            bestWorker = worker;
+        }
+    }
+    if (bestWorker == nullptr) {
+        return result;
+    }
+
+    const Stockfish::Search::RootMove& best = bestWorker->rootMoves.front();
+    const Stockfish::Value score = settled_score(best);
+    if (score < Stockfish::VALUE_MATE_IN_MAX_PLY) {
         return result;
     }
 
@@ -194,6 +252,34 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
         line.do_move(move, lineStates.back());
     }
     return result;
+}
+
+void set_threads(int count) {
+    const size_t poolSize = FIRST_PROBE_THREAD_INDEX
+        + static_cast<size_t>(std::clamp(count, 1, MAX_THREADS));
+    init_fairy_stockfish();
+    std::lock_guard<std::mutex> guard(probeMutex);
+    // ThreadPool::set() would rebuild the main thread too, and every Board
+    // position holds that one as its thread, so only the workers behind it are
+    // started or retired here. init_fairy_stockfish() reserved room for the
+    // largest pool, so this never reallocates under a Threads.main() reader.
+    while (Stockfish::Threads.size() > poolSize) {
+        delete Stockfish::Threads.back();
+        Stockfish::Threads.pop_back();
+    }
+    while (Stockfish::Threads.size() < poolSize) {
+        auto* worker = new Stockfish::Thread(Stockfish::Threads.size());
+        worker->clear();
+        Stockfish::Threads.push_back(worker);
+    }
+}
+
+int threads() {
+    init_fairy_stockfish();
+    std::lock_guard<std::mutex> guard(probeMutex);
+    return static_cast<int>(
+        Stockfish::Threads.size() - std::min<size_t>(
+            Stockfish::Threads.size(), FIRST_PROBE_THREAD_INDEX));
 }
 
 }  // namespace MateProbe

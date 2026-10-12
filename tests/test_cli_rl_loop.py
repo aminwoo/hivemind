@@ -40,6 +40,49 @@ def test_replay_window_stops_at_the_first_iteration():
     assert rl_loop.replay_iterations(1, 3) == []
 
 
+@pytest.mark.parametrize("completed, segment_games, target, expected", [
+    ({k: 1000 for k in range(91)}, 10_000, 100_000, [("seg91", 9000)]),
+    ({0: 10_000}, 1000, 12_500, [("seg01", 1000), ("seg02", 1000), ("seg03", 500)]),
+    ({0: 1000, 2: 1000}, 1000, 3000, [("seg01", 1000)]),
+    ({0: 10_000}, 1000, 10_000, []),
+    ({}, 1000, 1500, [("seg00", 1000), ("seg01", 500)]),
+])
+def test_iteration_generates_remaining_games_before_validation(
+        tmp_path, completed, segment_games, target, expected):
+    loop = rl_loop.Loop.__new__(rl_loop.Loop)
+    loop.runs, loop.exchange = tmp_path, None
+    loop.it = tmp_path / "rl-it7"
+    stages = loop.it / "stages"
+    stages.mkdir(parents=True)
+    (stages / "generator").write_text("generator\n")
+    for k, games in completed.items():
+        (stages / f"seg{k:02d}.done").write_text(json.dumps({"games": games}))
+    loop.args = SimpleNamespace(games=target, segment_games=segment_games, val_games=1000)
+    loop.generator = tmp_path / "generator.onnx"
+    loop.fixed = tmp_path / "missing-it0.onnx"
+    loop.log = lambda message: None
+    calls = []
+
+    def selfplay(name, games, seed, data, records):
+        calls.append((name, games))
+        assert seed == 7000 + (999 if name == "val" else int(name[3:]))
+        assert data == loop.it / "search" / ("val" if name == "val" else f"train/{name}")
+        if name == "val":
+            assert loop.games_played() >= target
+        loop.mark(name, {"games": games, "seed": seed})
+
+    loop.selfplay = selfplay
+    loop.train = lambda: calls.append(("train", 0))
+    loop.match = lambda *args: None
+    loop.promote = lambda: None
+    loop.upload = lambda: None
+    loop.iteration(7)
+    assert calls == expected + [("val", 1000), ("train", 0)]
+    assert loop.games_played() == target
+    for k, games in completed.items():
+        assert json.loads((stages / f"seg{k:02d}.done").read_text()) == {"games": games}
+
+
 def write_summary(path, wins, losses, draws):
     path.write_text(json.dumps({
         "contender_wins": wins, "baseline_wins": losses, "draws": draws,

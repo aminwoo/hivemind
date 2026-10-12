@@ -211,6 +211,19 @@ cross-board blocks that faults on the device. Against FP16, the INT8 teacher
 agrees on the top move in 93% (board A) and 92% (board B) of positions, with
 a mean value difference of 0.023.
 
+### Mate-probe threads
+
+`MateThreads` (default `4`, max `256`) sets how many Fairy-Stockfish workers
+each mate probe searches with, in both MCTS and alpha-beta. The workers share
+one transposition table, and the probe's node budget is their combined total,
+so extra workers search more within the same move time and use up a node
+budget sooner. Each worker adds about 20 MB of resident memory. On a
+12-thread CPU, one probe searched 0.94M nodes/s with one worker, 3.6M with
+four and 5.8M with eight, but eight reached no deeper in a second than four.
+MCTS there keeps about three cores busy while it waits on the GPU, and lost
+0.6% of its nodes per move to four workers. Lower the count on a machine with
+fewer cores. The hand-rolled check-only mate scans are unaffected.
+
 ### Internal mate-probe experiment
 
 The `InternalMateProbe` UCI combo is disabled by default and separates the

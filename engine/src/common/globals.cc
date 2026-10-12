@@ -1,5 +1,6 @@
 #include "common/globals.h"
 #include "environment/constants.h"
+#include "search/mate_probe.h"
 #include <string>
 #include <algorithm>
 #include <mutex>
@@ -31,8 +32,12 @@ void init_fairy_stockfish() {
         // "fairy" variant this build no longer ships. Material::probe() falls
         // back to the generic evaluation when the endgame maps are empty, and
         // no specialised endgame is reachable from a bughouse position anyway.
-        // One idle main thread, plus the single worker the mate probe drives.
-        Stockfish::Threads.set(2);
+        // One idle main thread, plus the mate probe's default workers;
+        // MateProbe::set_threads() changes how many. Room for the largest pool
+        // is reserved now, so adding workers later never moves Threads.main()
+        // under a thread that is reading it.
+        Stockfish::Threads.reserve(1 + MateProbe::MAX_THREADS);
+        Stockfish::Threads.set(1 + MateProbe::DEFAULT_THREADS);
         Stockfish::TT.resize(size_t(Stockfish::Options["Hash"]));
         Stockfish::Search::clear();
     });

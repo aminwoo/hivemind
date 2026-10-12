@@ -8,6 +8,7 @@
 #include "common/utils.h"
 #include "environment/planes.h"
 #include "interface/uci.h"
+#include "search/mate_probe.h"
 
 class UCIOpeningNoiseTestPeer {
 public:
@@ -196,6 +197,19 @@ TEST_F(UCIOpeningNoiseTest, AdvertisesOptionsInUciHandshake) {
         "option name InternalMateProbe type combo default off "
         "var off var telemetry var bias var certify"),
         std::string::npos);
+    EXPECT_NE(output.str().find(
+        "option name MateThreads type spin default 4 min 1 max 256"),
+        std::string::npos);
+}
+
+TEST_F(UCIOpeningNoiseTest, MateThreadsSetsTheProbeWorkerCount) {
+    UCI uci;
+    set_option(uci, "MateThreads", "3");
+    EXPECT_EQ(MateProbe::threads(), 3);
+    set_option(uci, "MateThreads", "0");
+    EXPECT_EQ(MateProbe::threads(), 1);
+    set_option(uci, "MateThreads",
+               std::to_string(MateProbe::DEFAULT_THREADS));
 }
 
 TEST_F(UCIOpeningNoiseTest, BackgroundOptionIsIndependentOfPonder) {

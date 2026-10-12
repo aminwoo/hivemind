@@ -461,11 +461,18 @@ class Loop:
         if self.exchange:
             self.distributed_selfplay()
         else:
-            for k in range(math.ceil(args.games / args.segment_games)):
+            k = 0
+            played = self.games_played()
+            while played < args.games:
+                while self.done(f"seg{k:02d}"):
+                    k += 1
+                if k >= 999:
+                    raise StageFailed("out of local self-play seeds")
                 name = f"seg{k:02d}"
-                self.attempt(self.selfplay, name, min(args.segment_games, args.games - k * args.segment_games),
+                self.attempt(self.selfplay, name, min(args.segment_games, args.games - played),
                              1000 * n + k, self.it / "search" / "train" / name,
                              self.it / "search" / "train_run" / name)
+                played = self.games_played()
         self.attempt(self.selfplay, "val", args.val_games, 1000 * n + 999, self.it / "search" / "val",
                      self.it / "search" / "val_run")
         if self.exchange:
