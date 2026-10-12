@@ -24,6 +24,13 @@ machines, and the loop collects their batches (and keeps playing its own
 segments, unless --no-local-selfplay) until the iteration has --games games.
 Batches that arrive later still count, as replay data for later iterations.
 
+Each finished self-play segment moves to the private --archive dataset on
+Hugging Face as a zstd tarball (about 13x smaller than the chunks), and is
+deleted from disk once the Hub's copy checks out; rl-itN/search/archive.json
+lists what went where. Training downloads the games it needs, with the teacher
+validation set, and deletes them again once it has finished. --keep-selfplay
+keeps everything on disk; --archive-only archives and exits.
+
 Stop between stages with: touch RUNS/rl-loop.stop"""
 
 import argparse
@@ -39,8 +46,9 @@ import sys
 import time
 
 from hivemind.cli import selfplay, train
+from hivemind.data import archive
 from hivemind.distill.exchange import PROTOCOL, HubExchange, install, open_exchange, sha256
-from hivemind.network import DEFAULT_ONNX_PATH, SELFPLAY_EXCHANGE, TWIN_REPOSITORY
+from hivemind.network import DEFAULT_ONNX_PATH, SELFPLAY_ARCHIVE, SELFPLAY_EXCHANGE, TWIN_REPOSITORY
 from hivemind.paths import PROJECT_ROOT
 
 RUNS = PROJECT_ROOT / "data" / "distill" / "runs"
@@ -165,6 +173,22 @@ def upload_blocker(api, repo, token):
     return None
 
 
+def finished_selfplay(it):
+    """The paths under rl-itN/search that hold finished self-play: the games,
+    records and log of every finished segment and collected batch, and the
+    validation games once played. The pilot, rl-it1, left no stage markers and
+    is finished as a whole. An interrupted segment's files stay for its rerun
+    to move aside."""
+    stages = it / "stages"
+    if not stages.is_dir():
+        return None
+    names = sorted(marker.stem for marker in stages.glob("seg*.done"))
+    paths = [path for name in names for path in (f"train/{name}", f"train_run/{name}", f"logs/{name}.log")]
+    if (stages / "val.done").is_file():
+        paths += ["val", "val_run", "logs/val.log"]
+    return paths
+
+
 class Loop:
     def __init__(self, args, generator=DEFAULT_ONNX_PATH, checkpoint=train.GENERATOR_CHECKPOINT,
                  teacher_val=train.TEACHER_VAL):
@@ -257,6 +281,7 @@ class Loop:
         if not positions:
             raise StageFailed(f"{name}: empty corpus")
         self.mark(name, {"games": games, "seed": seed, "positions": positions, "generator": generator})
+        self.archive(self.n)
 
     def games_played(self):
         return sum(json.loads(marker.read_text())["games"] for marker in (self.it / "stages").glob("seg*.done"))
@@ -352,8 +377,13 @@ class Loop:
                 else train.generator_checkpoint(self.generator, self.checkpoint))
         if not init.is_file():
             raise StageFailed(f"missing {init}")
+        replays = replay_iterations(self.n, self.args.window)
+        for m in [self.n, *replays]:
+            archive.restore(self.runs / f"rl-it{m}" / "search", self.log)
+        for directory in self.teacher_val:
+            archive.restore(directory, self.log)
         new = train_dirs(self.runs, self.n)
-        old = [d for m in replay_iterations(self.n, self.args.window) for d in train_dirs(self.runs, m)]
+        old = [d for m in replays for d in train_dirs(self.runs, m)]
         npos, opos = train.positions(new), train.positions(old)
         if not npos:
             raise StageFailed("no new self-play positions")
@@ -379,6 +409,10 @@ class Loop:
         self.mark("train", {"steps": steps, "replay_fraction": fraction, "new_positions": npos,
                             "replay_positions": opos, "init": sha256(init),
                             "onnx": sha256(self.it / "models" / "C.onnx")})
+        self.archive(self.n, *replays)
+        if not self.args.keep_selfplay:
+            for directory in self.teacher_val:
+                archive.evict(directory)
 
     def match(self, name, baseline):
         if self.done(f"match_{name}"):
@@ -444,6 +478,26 @@ class Loop:
                     time.sleep(RETRY_SECONDS)
         self.log(f"it{self.n}: continuing without uploading")
 
+    def archive(self, *iterations):
+        """Move the finished self-play of these iterations, and what their
+        interrupted stages left in rl-itN/aborted, to --archive. Not fatal:
+        what is left stays on disk and the next call retries."""
+        if self.args.keep_selfplay:
+            return
+        for m in iterations:
+            it = self.runs / f"rl-it{m}"
+            for directory, paths in ((it / "search", finished_selfplay(it)), (it / "aborted", None)):
+                if not directory.is_dir():
+                    continue
+                try:
+                    freed = archive.archive(self.api, self.args.archive, directory, self.log, paths)
+                except Exception as error:
+                    self.log(f"it{self.n}: archiving {directory} to {self.args.archive} failed: {error!r}; "
+                             f"it stays on disk")
+                    return
+                if freed:
+                    self.log(f"{it.name}: freed {freed / 1e9:.1f} GB on disk")
+
     def iteration(self, n):
         self.n, self.it = n, self.runs / f"rl-it{n}"
         self.arms = self.it / "arms"
@@ -457,6 +511,7 @@ class Loop:
         # The generator is fixed for a whole iteration's self-play.
         if not (self.it / "stages" / "generator").is_file():
             (self.it / "stages" / "generator").write_text(sha256(self.generator) + "\n")
+        self.archive(*range(1, n + 1))
         args = self.args
         if self.exchange:
             self.distributed_selfplay()
@@ -494,7 +549,8 @@ class Loop:
         self.log(f"loop: iterations {first}..{last or 'forever'}, {self.args.games} games "
                  f"({self.args.segment_games} per segment), window {self.args.window}, "
                  f"passes new {self.args.new_passes} / replay {self.args.replay_passes}, "
-                 f"upload {'off' if self.args.no_upload else self.args.repo}"
+                 f"upload {'off' if self.args.no_upload else self.args.repo}, "
+                 f"self-play {'kept on disk' if self.args.keep_selfplay else 'moved to ' + self.args.archive}"
                  + (f", distributed via {self.exchange}" if self.exchange else ""))
         n = first
         while last is None or n <= last:
@@ -540,6 +596,13 @@ def main():
                         help="Hugging Face model repository; uploads are skipped when this machine "
                              "is not logged in to an account that can write to it")
     parser.add_argument("--no-upload", action="store_true", help="Do not upload to Hugging Face")
+    parser.add_argument("--archive", default=SELFPLAY_ARCHIVE,
+                        help="Private Hugging Face dataset that finished self-play moves to, compressed, "
+                             "freeing the disk")
+    parser.add_argument("--keep-selfplay", action="store_true",
+                        help="Keep all self-play on disk rather than moving it to --archive")
+    parser.add_argument("--archive-only", action="store_true",
+                        help="Move all finished self-play to --archive, then exit")
     parser.add_argument("--pause-for", default="reaper|wineserver",
                         help="pgrep -x pattern of processes (Steam and Proton games by default) that "
                              "pause training and matches; empty disables")
@@ -557,31 +620,42 @@ def main():
         parser.error("--new-passes must be positive and --replay-passes non-negative")
     if args.last is not None and args.first is not None and args.last < args.first:
         parser.error("--last is before --first")
+    if args.archive_only and args.keep_selfplay:
+        parser.error("--archive-only and --keep-selfplay contradict each other")
     if args.segment_games is None:
         args.segment_games = 1000 if args.distributed else 10_000
     args.local_selfplay = not args.no_local_selfplay
 
     if not DEFAULT_ONNX_PATH.is_file():
         sys.exit(f"Generator not found at {DEFAULT_ONNX_PATH}; run `hivemind fetch-network`.")
-    if not args.selfplay_engine.is_file():
-        sys.exit(f"Self-play engine not found at {args.selfplay_engine}; build it with\n"
-                 f"  {selfplay.BUILD_COMMAND}")
-    if not args.match_engine.is_file():
-        sys.exit(f"Match engine not found at {args.match_engine}; run `hivemind build-engine`.")
-    if not args.openings.is_file():
-        sys.exit(f"Openings not found at {args.openings}; pass --openings.")
+    if not args.archive_only:
+        if not args.selfplay_engine.is_file():
+            sys.exit(f"Self-play engine not found at {args.selfplay_engine}; build it with\n"
+                     f"  {selfplay.BUILD_COMMAND}")
+        if not args.match_engine.is_file():
+            sys.exit(f"Match engine not found at {args.match_engine}; run `hivemind build-engine`.")
+        if not args.openings.is_file():
+            sys.exit(f"Openings not found at {args.openings}; pass --openings.")
     args.openings = args.openings.resolve()
     args.selfplay_engine = args.selfplay_engine.resolve()
     args.match_engine = args.match_engine.resolve()
     args.runs = args.runs.resolve()
 
     loop = Loop(args)
-    skipped = None
+    skipped = unarchived = None
     if not args.no_upload:
         from huggingface_hub import HfApi, get_token
         loop.api = HfApi()
         skipped = upload_blocker(loop.api, args.repo, get_token())
         args.no_upload = skipped is not None
+        if not args.keep_selfplay:
+            unarchived = upload_blocker(loop.api, args.archive, get_token())
+    elif not args.keep_selfplay:
+        unarchived = "--no-upload"
+    if unarchived:
+        if args.archive_only:
+            sys.exit(f"Cannot archive to {args.archive}: {unarchived}.")
+        args.keep_selfplay = True
 
     import fcntl
     args.runs.mkdir(parents=True, exist_ok=True)
@@ -596,6 +670,13 @@ def main():
         loop.log(f"cleared an earlier stop request ({stop})")
     if skipped:
         loop.log(f"not uploading: {skipped}")
+    if unarchived:
+        loop.log(f"keeping self-play on disk: {unarchived}")
+    if args.archive_only:
+        loop.n = args.first or next_iteration(args.runs)
+        loop.log(f"archiving the finished self-play of it1..it{loop.n} to {args.archive}")
+        loop.archive(*range(1, loop.n + 1))
+        return
     if args.distributed:
         loop.exchange = open_exchange(args.exchange, args.repo, loop.api)
         if isinstance(loop.exchange, HubExchange) and args.no_upload:

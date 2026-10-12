@@ -15,6 +15,8 @@ COMMANDS = {
     "train": ("hivemind.cli.train", "Train twin-s on self-play games with the RL loop's settings"),
     "rl-loop": ("hivemind.cli.rl_loop", "Self-play, train, match and upload twin-s networks, forever"),
     "contribute": ("hivemind.cli.contribute", "Play self-play games for a distributed rl-loop, forever"),
+    "archive": ("hivemind.cli.archive", "Move data directories to a private Hugging Face dataset"),
+    "restore": ("hivemind.cli.restore", "Download archived data directories back"),
     "rise-selfplay": ("hivemind.cli.rise_selfplay", "Run RISE self-play (800 nodes, 100k mate nodes)"),
     "rise-train": ("hivemind.training.train_loop", "Train RISE networks with supervised or self-play data"),
     "prepare": ("hivemind.cli.train_from_games_parquet", "Prepare game shards and train"),

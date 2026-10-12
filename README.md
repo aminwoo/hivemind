@@ -315,6 +315,28 @@ Matches open from the 100 positions in `engine/openings.tsv`.
 `hivemind fetch-network` keeps installing the network and checkpoint pinned
 in `src/hivemind/network.py`; update that pin to publish a promotion.
 
+#### Keeping data off the disk
+
+An iteration's games take about 9 GB on disk. The loop moves each finished
+segment to the private Hugging Face dataset
+`aminwoo/bughouse-twin-s-selfplay-archive` (`--archive`) as a zstd tarball
+about 13x smaller. It deletes the games only once the Hub's copy matches.
+Training downloads the games it needs, about 3 GB for the new iteration and
+the replay window, and deletes them again when it finishes. Use
+`--keep-selfplay` to keep everything on disk; without uploads (`--no-upload`,
+or no `hf auth login`) the loop keeps everything on disk anyway.
+`hivemind rl-loop --archive-only` moves all finished self-play and exits.
+
+`archive` and `restore` do the same for any data directory:
+
+```bash
+uv run hivemind archive data/nnue/train   # leaves data/nnue/train/archive.json
+uv run hivemind restore data/nnue/train   # brings the files back
+```
+
+`hivemind train` restores the directories it is given by itself; other
+training commands need a `restore` first.
+
 #### Sharing self-play with other machines
 
 Self-play is most of each iteration, and any number of machines can share it.

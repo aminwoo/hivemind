@@ -1,11 +1,13 @@
 """RL loop bookkeeping: resuming, data discovery, match results and uploads."""
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from hivemind.cli import rl_loop
+from hivemind.data import archive
 
 
 def test_next_iteration_resumes_after_the_last_finished_one(tmp_path):
@@ -57,7 +59,8 @@ def test_iteration_generates_remaining_games_before_validation(
     (stages / "generator").write_text("generator\n")
     for k, games in completed.items():
         (stages / f"seg{k:02d}.done").write_text(json.dumps({"games": games}))
-    loop.args = SimpleNamespace(games=target, segment_games=segment_games, val_games=1000)
+    loop.args = SimpleNamespace(games=target, segment_games=segment_games, val_games=1000,
+                                keep_selfplay=True)
     loop.generator = tmp_path / "generator.onnx"
     loop.fixed = tmp_path / "missing-it0.onnx"
     loop.log = lambda message: None
@@ -249,3 +252,91 @@ def test_collect_files_batches_under_their_iteration(tmp_path, monkeypatch):
     assert list(exchange.submissions()) == []
     assert (shared / "rejected" / "it7--mac-03").is_dir()
     assert rl_loop.train_dirs(runs, 7) == [runs / "rl-it7" / "search" / "train" / "seg-mac-01"]
+
+
+def write(directory, files):
+    for name, data in files.items():
+        (directory / name).parent.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_bytes(data)
+
+
+def test_finished_selfplay_is_every_finished_stage(tmp_path):
+    it = tmp_path / "rl-it7"
+    assert rl_loop.finished_selfplay(it) is None  # the pilot's layout: all of it is finished
+    (it / "stages").mkdir(parents=True)
+    assert rl_loop.finished_selfplay(it) == []
+    for stage in ("seg00", "seg-mac-01", "val"):
+        (it / "stages" / f"{stage}.done").touch()
+    assert rl_loop.finished_selfplay(it) == [
+        "train/seg-mac-01", "train_run/seg-mac-01", "logs/seg-mac-01.log",
+        "train/seg00", "train_run/seg00", "logs/seg00.log", "val", "val_run", "logs/val.log"]
+
+
+def archiving_loop(runs, hub, **args):
+    loop = rl_loop.Loop.__new__(rl_loop.Loop)
+    loop.runs, loop.n, loop.api, loop.teacher_val = runs, 7, hub, []
+    loop.args = SimpleNamespace(**{"keep_selfplay": False, "archive": "me/archive", **args})
+    loop.log = lambda message: None
+    return loop
+
+
+def test_loop_archives_finished_selfplay_and_what_was_moved_aside(tmp_path, archive_hub):
+    it = tmp_path / "rl-it7"
+    write(it / "search", {"train/seg00/a.dst": b"done", "train_run/seg00/games.pgn": b"pgn",
+                          "logs/seg00.log": b"log", "train/seg01/a.dst": b"interrupted",
+                          "logs/seg01.log": b"interrupted"})
+    write(it / "aborted", {"search_train_seg07-20261006-001519/a.dst": b"moved aside"})
+    (it / "stages").mkdir()
+    (it / "stages" / "seg00.done").touch()
+    archiving_loop(tmp_path, archive_hub).archive(6, 7)
+    assert set(archive.files(it / "search")) == {"train/seg01/a.dst", "logs/seg01.log"}
+    assert archive.files(it / "aborted") == {}
+    assert len(archive_hub.uploads) == 2
+
+    archiving_loop(tmp_path, archive_hub, keep_selfplay=True).archive(7)
+    assert len(archive_hub.uploads) == 2
+
+
+# Stands in for distill-train: notes the chunks it was given and leaves a model.
+TRAINER = """import json, sys
+from pathlib import Path
+out = Path(sys.argv[1])
+out.mkdir(parents=True)
+(out / "seen.json").write_text(json.dumps(sorted(p.name for d in sys.argv[2:] for p in Path(d).glob("*.dst"))))
+(out / "last.pt").write_text("weights")
+(out / "distill-twin-s-v3.0.onnx").write_text("model")
+"""
+
+
+def test_training_downloads_its_games_and_deletes_them_again(tmp_path, archive_hub, monkeypatch):
+    runs = tmp_path / "runs"
+    for n in (5, 6, 7):
+        write(runs / f"rl-it{n}" / "search", {f"train/seg00/search_{n}_00000.dst": b"games",
+                                              f"val/search_{n}_00999.dst": b"val"})
+        (runs / f"rl-it{n}" / "stages").mkdir()
+        for stage in ("seg00", "val"):
+            (runs / f"rl-it{n}" / "stages" / f"{stage}.done").touch()
+    write(runs / "rl-it6" / "arms" / "C", {"last.pt": b"previous"})
+    (runs / "rl-it7" / "arms").mkdir()
+    teacher_val = tmp_path / "teacher_val"
+    write(teacher_val, {"distill_2_0_00000.dst": b"teacher"})
+    loop = archiving_loop(runs, archive_hub, window=2, new_passes=1.5, replay_passes=0.5, batch_size=2,
+                          pause_for="")
+    loop.archive(5, 6, 7)
+    archive.archive(archive_hub, "me/archive", teacher_val, loop.log)
+    uploads = list(archive_hub.uploads)
+    loop.it, loop.arms, loop.teacher_val = runs / "rl-it7", runs / "rl-it7" / "arms", [teacher_val]
+    loop.generator = tmp_path / "models" / "twin.onnx"
+    monkeypatch.setattr(archive, "hub_download", archive_hub.download)
+    monkeypatch.setattr(rl_loop.train, "positions", lambda dirs: 16 * sum(len(list(d.glob("*.dst"))) for d in dirs))
+    monkeypatch.setattr(rl_loop.train, "distill_command", lambda init, new, val, old, *args: [
+        sys.executable, "-c", TRAINER, str(args[-2]), *map(str, [*new, *val, *old, *args[-1]])])
+
+    loop.train()
+    assert json.loads((runs / "rl-it7" / "arms" / "C" / "seen.json").read_text()) == [
+        "distill_2_0_00000.dst", "search_5_00000.dst", "search_6_00000.dst", "search_7_00000.dst",
+        "search_7_00999.dst"]
+    assert (runs / "rl-it7" / "stages" / "train.done").is_file()
+    for directory in [*(runs / f"rl-it{n}" / "search" for n in (5, 6, 7)), teacher_val]:
+        assert archive.files(directory) == {}
+    assert archive_hub.uploads == uploads  # put back by deleting: the Hub already had them
