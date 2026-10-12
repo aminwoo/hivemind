@@ -16,6 +16,7 @@
 #include "environment/planes.h"
 #include "common/utils.h"
 #include "common/globals.h"
+#include "search/mate_probe.h"
 #include "search/single_board.h"
 
 using namespace std;
@@ -632,6 +633,10 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableMateProbe = value == "true";
             std::cout << "info string MateProbe set to " << value << std::endl;
         }
+    } else if (name == "MateThreads") {
+        MateProbe::set_threads(std::stoi(value));
+        std::cout << "info string MateThreads set to " << MateProbe::threads()
+                  << std::endl;
     } else if (name == "CertifySelectedMove") {
         if (value == "true" || value == "false") {
             searchConfig.certifySelectedMove = value == "true";
@@ -769,6 +774,9 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::CPUCT_INIT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
+    cout << "option name MateThreads type spin default "
+         << MateProbe::DEFAULT_THREADS << " min 1 max "
+         << MateProbe::MAX_THREADS << endl;
     cout << "option name CertifySelectedMove type check default "
          << (SearchParams::ENABLE_SELECTED_MOVE_CERTIFICATION ? "true" : "false")
          << endl;

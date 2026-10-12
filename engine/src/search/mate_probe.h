@@ -73,8 +73,27 @@ struct Result {
  *
  * Probes are serialized: Fairy-Stockfish keeps its limits, stop flag and
  * transposition table in globals, so only one can be in flight at a time.
+ * Each one searches with every worker set_threads() asked for, sharing one
+ * transposition table, and nodeBudget is their combined total.
  */
 Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
              int budgetMs, const std::function<bool()>& abort = {});
+
+/** Workers each probe searches with until set_threads() says otherwise. */
+constexpr int DEFAULT_THREADS = 4;
+
+/** Most workers set_threads() will start. */
+constexpr int MAX_THREADS = 256;
+
+/**
+ * @brief Set how many Fairy-Stockfish workers each probe searches with.
+ *
+ * Clamped to [1, MAX_THREADS]. Waits for a probe in flight to finish, then
+ * starts or retires workers so the next probe gets the new count.
+ */
+void set_threads(int count);
+
+/** Workers each probe currently searches with. */
+int threads();
 
 }  // namespace MateProbe

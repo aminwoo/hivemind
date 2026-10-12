@@ -41,6 +41,19 @@ protected:
     }
 };
 
+// The worker count is process-wide, so a test that changes it puts it back
+// for the tests after it.
+class MateThreadsGuard {
+public:
+    explicit MateThreadsGuard(int count) : previous_(MateProbe::threads()) {
+        MateProbe::set_threads(count);
+    }
+    ~MateThreadsGuard() { MateProbe::set_threads(previous_); }
+
+private:
+    int previous_;
+};
+
 // The scanner in agent.cc searches checking moves only, so this mate - which
 // needs the quiet Qe3 in the middle of the sequence - is invisible to it.
 TEST_F(MateProbeTest, FindsAMateThatNeedsAQuietMove) {
@@ -210,5 +223,62 @@ TEST_F(MateProbeTest, ReturnsWhenTheSearchExhaustsItsDepth) {
         std::chrono::steady_clock::now() - started).count();
     EXPECT_FALSE(result.found);
     EXPECT_LT(result.nodes, 100000u);
+    EXPECT_LT(elapsed, 5000) << "probe kept polling after the search returned";
+}
+
+TEST_F(MateProbeTest, SetThreadsResizesThePoolBothWays) {
+    MateThreadsGuard guard(4);
+    EXPECT_EQ(MateProbe::threads(), 4);
+    MateProbe::set_threads(2);
+    EXPECT_EQ(MateProbe::threads(), 2);
+    MateProbe::set_threads(0);
+    EXPECT_EQ(MateProbe::threads(), 1);
+}
+
+TEST_F(MateProbeTest, SeveralWorkersFindTheQuietMate) {
+    MateThreadsGuard guard(4);
+    const std::string fen =
+        "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2";
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const auto started = std::chrono::steady_clock::now();
+        const MateProbe::Result result = MateProbe::probe(
+            fen, SearchParams::MATE_PROBE_MAX_MATE_MOVES, 8000000, 10000);
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started).count();
+        ASSERT_TRUE(result.found) << "attempt " << attempt;
+        EXPECT_LT(elapsed, 2000) << "probe kept searching after proving a mate";
+
+        Board board;
+        board.set(fen + "|" + fen);
+        EXPECT_EQ(board.uci_move(BOARD_A, result.bestMove), "B@f7");
+        ASSERT_FALSE(result.principalVariation.empty());
+        EXPECT_EQ(result.principalVariation.front(), "B@f7");
+    }
+}
+
+// The node budget is what the workers spend between them, not each.
+TEST_F(MateProbeTest, NodeBudgetCoversEveryWorker) {
+    MateThreadsGuard guard(4);
+    const uint64_t nodeBudget = 400000;
+    const MateProbe::Result result = MateProbe::probe(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1",
+        SearchParams::MATE_PROBE_MAX_MATE_MOVES, nodeBudget, 0);
+    EXPECT_FALSE(result.found);
+    EXPECT_GE(result.nodes, nodeBudget);
+    EXPECT_LT(result.nodes, 2 * nodeBudget);
+}
+
+// One worker running out of depth stops the rest rather than leaving the poll
+// waiting on them.
+TEST_F(MateProbeTest, SeveralWorkersReturnWhenTheSearchExhaustsItsDepth) {
+    MateThreadsGuard guard(4);
+    const auto started = std::chrono::steady_clock::now();
+    const MateProbe::Result result = MateProbe::probe(
+        "8/8/8/8/8/1qk5/7P/K7[] w - - 0 1",
+        SearchParams::MATE_PROBE_MAX_MATE_MOVES, 8000000, 0);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    EXPECT_FALSE(result.found);
     EXPECT_LT(elapsed, 5000) << "probe kept polling after the search returned";
 }
