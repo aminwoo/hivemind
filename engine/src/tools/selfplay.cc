@@ -789,7 +789,8 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             std::cout << " lead " << game.initialTime.lead_ms(Stockfish::WHITE)
                       << "->" << game.finalTime.lead_ms(Stockfish::WHITE) << " ms";
         }
-        std::cout << '\n';
+        // Piped to `hivemind contribute`, which counts these lines.
+        std::cout << '\n' << std::flush;
     };
     auto playGames = [&](const std::vector<Engine*>& threadEngines) {
         std::vector<__half> distillPlanes(NB_INPUT_VALUES());

@@ -287,6 +287,25 @@ TEST(GCThreadTest, DoesNotTrimWithNothingFreed) {
 }
 #endif
 
+// Idle after freeing a tree, a GC thread waits for a trim to come due. Where
+// there is no malloc_trim none ever does: that wait spun holding the lock a
+// search takes to start, so the agent's next search never began.
+TEST(GCThreadTest, SearchStartsAfterIdlingWithMemoryFreed) {
+    GCThread gc;
+    gc.start();
+    { const GCThread::BusyScope search(gc); }
+    gc.enqueue(std::make_shared<Node>(Stockfish::WHITE));
+    std::this_thread::sleep_for(GCThread::kIdleBeforeTrim * 3 / 2);
+    for (int search = 0; search < 20; ++search) {
+        auto started = std::async(std::launch::async, [&gc] {
+            const GCThread::BusyScope busy(gc);
+        });
+        ASSERT_EQ(started.wait_for(std::chrono::seconds(2)),
+                  std::future_status::ready);
+    }
+    gc.stop();
+}
+
 // One thread cannot keep up with a search discarding a large tree and table
 // every move; the workers must free concurrently, not take turns.
 TEST(GCThreadTest, WorkersFreeInParallel) {

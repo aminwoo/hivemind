@@ -12,6 +12,7 @@ def test_build_engine_uses_requested_preset_and_target(monkeypatch, tmp_path):
     calls = []
 
     monkeypatch.setattr(build_engine, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(build_engine.sys, "platform", "linux")
     monkeypatch.setattr(
         build_engine.subprocess,
         "run",
@@ -37,3 +38,25 @@ def test_build_engine_uses_requested_preset_and_target(monkeypatch, tmp_path):
             {"cwd": engine_dir, "check": True},
         ),
     ]
+
+
+def test_build_engine_uses_onnxruntime_without_tests_on_macos(monkeypatch, tmp_path):
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    (engine_dir / "CMakeLists.txt").touch()
+    calls = []
+
+    monkeypatch.setattr(build_engine, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(build_engine.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        build_engine.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append(command),
+    )
+    monkeypatch.setattr(sys, "argv", ["hivemind build-engine", "--configure-only"])
+
+    assert build_engine.main() == 0
+    assert calls == [[
+        "cmake", "--preset", "ninja-fast",
+        "-DHIVEMIND_BACKEND=onnxruntime", "-DBUILD_TESTING=OFF",
+    ]]
