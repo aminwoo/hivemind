@@ -24,7 +24,9 @@ from typing import NamedTuple
 
 # Bump when self-play settings or the submission format change: contributors
 # and the trainer must agree on how games are played.
-PROTOCOL = 1
+# 2: work orders name the time model, and clock-model self-play carries the
+# clock input planes (78), so contributors from before them must not join.
+PROTOCOL = 2
 PR_TITLE = "Self-play games: "
 
 

@@ -12,7 +12,9 @@
   6. matches the result against the fixed pre-RL network (twin-s-noattn-it0)
 
 Self-play and training use the settings of `hivemind selfplay` and `hivemind
-train`. Every finished stage leaves a marker in RUNS/rl-itN/stages, so a rerun
+train`. With --time-model clock, self-play and matches run on a simulated clock
+(the engine's --time-model clock) and networks read the clock input planes; run
+such a lineage with its own --generator, --generator-checkpoint and --runs. Every finished stage leaves a marker in RUNS/rl-itN/stages, so a rerun
 resumes at the first unfinished one (an interrupted segment or match is moved
 to rl-itN/aborted and redone); the layout is that of data/distill/rl_loop.sh,
 whose runs this continues. Training and matches wait while a game is running
@@ -152,7 +154,8 @@ def sync_hub(api, repo, generator, checkpoint, log, runs):
         if marker.is_file():
             m = json.loads(marker.read_text())
             elo = "" if m["elo"] is None else f" ({m['elo']:+.0f} Elo)"
-            message += f": {m['wins']}-{m['losses']}-{m['draws']} vs the previous generator at 100 ms{elo}"
+            at = f"{m.get('movetime', 100)} ms" + (", clock" if m.get("time_model") == "clock" else "")
+            message += f": {m['wins']}-{m['losses']}-{m['draws']} vs the previous generator at {at}{elo}"
     commit = api.create_commit(
         repo_id=repo, commit_message=message,
         operations=[CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path)) for path, name in uploads])
@@ -269,7 +272,8 @@ class Loop:
         log.parent.mkdir(parents=True, exist_ok=True)
         self.log(f"it{self.n} self-play {name}: {games} games, seed {seed}")
         command = selfplay.engine_command(self.args.selfplay_engine, self.generator_sp1, games, seed,
-                                          data, records, self.args.parallel_games)
+                                          data, records, self.args.parallel_games,
+                                          selfplay.time_model_options(self.args.time_model))
         with log.open("w") as stream:
             if subprocess.run(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT).returncode:
                 raise StageFailed(f"self-play {name} failed (see {log})")
@@ -287,7 +291,8 @@ class Loop:
         return sum(json.loads(marker.read_text())["games"] for marker in (self.it / "stages").glob("seg*.done"))
 
     def publish(self, accepting):
-        order = {"protocol": PROTOCOL, "iteration": self.n, "accepting": accepting, "games": self.args.games}
+        order = {"protocol": PROTOCOL, "iteration": self.n, "accepting": accepting, "games": self.args.games,
+                 "time_model": self.args.time_model}
         try:
             self.exchange.publish(order, self.generator)
         except Exception as error:
@@ -419,15 +424,17 @@ class Loop:
             return
         self.check_stop()
         out, log = self.arms / f"match_{name}", self.arms / f"match_{name}.log"
-        games = self.args.match_games
+        games, movetime, clock = self.args.match_games, self.args.match_movetime, self.args.time_model
         while True:
             self.aside(out, log)
             self.wait_for_quiet()
-            self.log(f"it{self.n} match vs {name} ({baseline}, {games} games at 100 ms)")
+            self.log(f"it{self.n} match vs {name} ({baseline}, {games} games at {movetime} ms"
+                     + (", on a simulated clock" if clock == "clock" else "") + ")")
             command = [str(self.args.match_engine), "tournament",
                        "--contender", str(self.it / "models" / "C.onnx"), "--baseline", str(baseline),
-                       "--movetime", "100", "--games", str(games), "--seed", str(self.n),
-                       "--positions", str(self.args.openings), "--output", str(out)]
+                       "--movetime", str(movetime), "--games", str(games), "--seed", str(self.n),
+                       "--positions", str(self.args.openings), "--output", str(out),
+                       *(("--time-model", "clock") if clock == "clock" else ())]
             with log.open("w") as stream:
                 process = subprocess.Popen(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT)
                 status = None
@@ -445,7 +452,7 @@ class Loop:
             if status:
                 raise StageFailed(f"match vs {name} failed (see {log})")
             break
-        summary = match_summary(out / "summary.json", games)
+        summary = {**match_summary(out / "summary.json", games), "movetime": movetime, "time_model": clock}
         self.log(f"it{self.n} vs {name}: {json.dumps(summary)}")
         self.mark(f"match_{name}", summary)
 
@@ -547,7 +554,9 @@ class Loop:
 
     def run(self, first, last):
         self.log(f"loop: iterations {first}..{last or 'forever'}, {self.args.games} games "
-                 f"({self.args.segment_games} per segment), window {self.args.window}, "
+                 f"({self.args.segment_games} per segment), {self.args.time_model} time model, "
+                 f"generator {self.generator.name}, matches {self.args.match_games} games at "
+                 f"{self.args.match_movetime} ms, window {self.args.window}, "
                  f"passes new {self.args.new_passes} / replay {self.args.replay_passes}, "
                  f"upload {'off' if self.args.no_upload else self.args.repo}, "
                  f"self-play {'kept on disk' if self.args.keep_selfplay else 'moved to ' + self.args.archive}"
@@ -589,6 +598,18 @@ def main():
     parser.add_argument("--parallel-games", type=positive_int, default=6)
     parser.add_argument("--match-games", type=even_int, default=200,
                         help="Games per match, in colour-swapped pairs")
+    parser.add_argument("--match-movetime", type=positive_int, default=100,
+                        help="Milliseconds per move in matches (default: %(default)s)")
+    parser.add_argument("--time-model", choices=("flag", "clock"), default="flag",
+                        help="flag: one team may sit all game, as iterations 1-10 trained; clock: "
+                             "self-play and matches on a simulated clock, for networks that read "
+                             "the clock planes (default: %(default)s)")
+    parser.add_argument("--generator", type=Path, default=DEFAULT_ONNX_PATH,
+                        help="The generator network, replaced on promotion; another lineage needs "
+                             "its own (default: %(default)s)")
+    parser.add_argument("--generator-checkpoint", type=Path, default=train.GENERATOR_CHECKPOINT,
+                        help="The generator's training checkpoint, which the first iteration "
+                             "trains from (default: %(default)s)")
     parser.add_argument("--batch-size", type=positive_int, default=1024)
     parser.add_argument("--openings", type=Path, default=OPENINGS, help="Match opening positions (TSV)")
     parser.add_argument("--runs", type=Path, default=RUNS, help="Directory of the rl-itN runs")
@@ -626,8 +647,11 @@ def main():
         args.segment_games = 1000 if args.distributed else 10_000
     args.local_selfplay = not args.no_local_selfplay
 
-    if not DEFAULT_ONNX_PATH.is_file():
-        sys.exit(f"Generator not found at {DEFAULT_ONNX_PATH}; run `hivemind fetch-network`.")
+    args.generator = args.generator.resolve()
+    args.generator_checkpoint = args.generator_checkpoint.resolve()
+    if not args.generator.is_file():
+        sys.exit(f"Generator not found at {args.generator}; run `hivemind fetch-network` "
+                 f"or pass --generator.")
     if not args.archive_only:
         if not args.selfplay_engine.is_file():
             sys.exit(f"Self-play engine not found at {args.selfplay_engine}; build it with\n"
@@ -641,7 +665,7 @@ def main():
     args.match_engine = args.match_engine.resolve()
     args.runs = args.runs.resolve()
 
-    loop = Loop(args)
+    loop = Loop(args, generator=args.generator, checkpoint=args.generator_checkpoint)
     skipped = unarchived = None
     if not args.no_upload:
         from huggingface_hub import HfApi, get_token

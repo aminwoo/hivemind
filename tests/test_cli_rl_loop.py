@@ -2,6 +2,7 @@
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +85,57 @@ def test_iteration_generates_remaining_games_before_validation(
     assert loop.games_played() == target
     for k, games in completed.items():
         assert json.loads((stages / f"seg{k:02d}.done").read_text()) == {"games": games}
+
+
+def test_the_clock_model_reaches_self_play_and_matches(tmp_path, monkeypatch):
+    loop = rl_loop.Loop.__new__(rl_loop.Loop)
+    loop.runs = tmp_path
+    loop.n, loop.it = 3, tmp_path / "rl-it3"
+    loop.arms = loop.it / "arms"
+    for directory in ("stages", "arms", "models", "search"):
+        (loop.it / directory).mkdir(parents=True)
+    loop.generator = tmp_path / "net.onnx"
+    loop.generator.write_bytes(b"net")
+    loop.generator_sp1 = tmp_path / "net-sp1.onnx"
+    (loop.it / "stages" / "generator").write_text(rl_loop.sha256(loop.generator) + "\n")
+    loop.args = SimpleNamespace(selfplay_engine=tmp_path / "sp1", match_engine=tmp_path / "engine",
+                                parallel_games=6, time_model="clock", match_games=2,
+                                match_movetime=1000, openings=tmp_path / "openings.tsv",
+                                pause_for="", keep_selfplay=True)
+    loop.log = lambda message: None
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "selfplay":
+            out = Path(command[command.index("--distill-output") + 1])
+            out.mkdir(parents=True)
+            Path(kwargs["stdout"].name).write_text("selfplay game 1/1\n")
+        return SimpleNamespace(returncode=0)
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            out = Path(command[command.index("--output") + 1])
+            out.mkdir(parents=True)
+            write_summary(out / "summary.json", 1, 1, 0)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(rl_loop.subprocess, "run", run)
+    monkeypatch.setattr(rl_loop.subprocess, "Popen", Process)
+    monkeypatch.setattr(rl_loop.train, "positions", lambda dirs: 10)
+    loop.selfplay("seg00", 1, 3000, loop.it / "search" / "train" / "seg00",
+                  loop.it / "search" / "train_run" / "seg00")
+    loop.match("generator", loop.generator)
+
+    selfplay_command, match_command = commands
+    assert selfplay_command[selfplay_command.index("--time-model") + 1] == "clock"
+    assert match_command[match_command.index("--time-model") + 1] == "clock"
+    assert match_command[match_command.index("--movetime") + 1] == "1000"
+    marker = json.loads((loop.it / "stages" / "match_generator.done").read_text())
+    assert marker["time_model"] == "clock" and marker["movetime"] == 1000
 
 
 def write_summary(path, wins, losses, draws):

@@ -348,6 +348,35 @@ Matches open from the 100 positions in `engine/openings.tsv`.
 `hivemind fetch-network` keeps installing the network and checkpoint pinned
 in `src/hivemind/network.py`; update that pin to publish a promotion.
 
+#### Training on the clock
+
+`--time-model clock` trains a network that reads the clock planes: self-play
+plays every game on a simulated clock (`selfplay --time-model clock`: half the
+games start level, the rest with a lead of 0.1-10 s either way, and each team
+moves in 0.1-3 s), and matches run on one too. Such a network cannot replace
+the flag model's generator, which engines from before the clock planes still
+load, so it trains as a lineage of its own, from a copy of the generator it
+starts from:
+
+```bash
+cp engine/models/twin-s-noattn.onnx engine/models/twin-s-clock.onnx
+cp engine/models/twin-s-noattn.onnx engine/models/twin-s-clock-it0.onnx
+mkdir -p artifacts/distill/twin-s-clock
+cp data/distill/runs/rl-it10/arms/C/last.pt artifacts/distill/twin-s-clock/last.pt
+uv run hivemind rl-loop --time-model clock --runs data/distill/runs-clock \
+    --generator engine/models/twin-s-clock.onnx \
+    --generator-checkpoint artifacts/distill/twin-s-clock/last.pt \
+    --match-movetime 1000 --match-games 100 \
+    --selfplay-engine engine/build-clock-sp1/hivemind --match-engine engine/build-clock/hivemind
+```
+
+The first iteration widens the checkpoint's input layer with zero weights for
+the clock planes, so it starts out playing exactly as its parent. The engines
+must be builds with the clock model: one search worker for self-play
+(`-DHIVEMIND_SEARCH_WORKERS=1`) and the usual four for matches. Uploads name
+the lineage after its generator (`twin-s-clock-itN.onnx`), and contributors to
+a `--distributed` clock loop play clock games too (work-order protocol 2).
+
 #### Keeping data off the disk
 
 An iteration's games take about 9 GB on disk. The loop moves each finished

@@ -42,6 +42,15 @@ def refresh_copy(model, copy):
     temporary.replace(copy)
 
 
+def time_model_options(time_model):
+    """Engine options for a time model: the clock model plays every game on a
+    simulated clock (the engine's default leads and move times), the flag
+    model lets one team sit all game."""
+    if time_model not in ("flag", "clock"):
+        raise ValueError(f"unknown time model {time_model!r}")
+    return ("--time-model", time_model) if time_model == "clock" else ()
+
+
 def engine_command(engine, model, games, seed, output, records, parallel_games=6, extra=()):
     """The engine command line: HDST chunks go to `output`, PGN to `records`."""
     return [
