@@ -43,6 +43,11 @@ struct SearchOptions {
     // stopped or until its own node/time cap, and retains its entire root
     // subtree for reuse rather than a subtree below a move it is about to play.
     bool background = false;
+    // The match clock this search is rooted at. Unset, the TimeAdvantage flag
+    // passed to run_search stands for a permanent lead or deficit, as it always
+    // has. Set, it decides who may sit at every node, and the flag passed to
+    // run_search is ignored in favour of what it implies.
+    std::optional<TimeState> clock;
     
     SearchParams::RuntimeConfig search;
     
@@ -191,7 +196,9 @@ private:
     const Board* workerBoard_ = nullptr;
     std::vector<Engine*> workerEngines_;
     SearchInfo* workerSearchInfo_ = nullptr;
-    bool workerTeamHasTimeAdvantage_ = false;
+    TimeState workerTime_;
+    // Clock state the current search is rooted at; set by run_search.
+    TimeState searchTime_;
     size_t workerTargetNodes_ = 0;
     int workerMoveTimeMs_ = 0;
     std::exception_ptr workerException_;
@@ -257,7 +264,6 @@ private:
     void dispatch_workers(const Board& board,
                           const std::vector<Engine*>& engines,
                           SearchInfo& searchInfo,
-                          bool teamHasTimeAdvantage,
                           size_t targetNodes,
                           int moveTimeMs,
                           size_t workerCount);
@@ -275,10 +281,10 @@ private:
     void discard(std::shared_ptr<void> item, bool background);
     void retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
                                  Board& board,
-                                 bool teamHasTimeAdvantage);
+                                 const TimeState& subtreeTime);
     void retain_reuse_level(const std::shared_ptr<Node>& node,
                             Board& board,
-                            bool teamHasTimeAdvantage,
+                            const TimeState& nodeTime,
                             int depth,
                             int level);
     bool try_reuse_mate_continuation(
@@ -747,6 +753,8 @@ public:
      * generated opponent response beneath it.
      */
     void store_next_root_candidates(Board& board, bool teamHasTimeAdvantage);
+    /** As above, from the clock state the root was searched under. */
+    void store_next_root_candidates(Board& board, const TimeState& rootTime);
 
     /**
      * @brief Keeps searching between moves, from the position our own move creates.

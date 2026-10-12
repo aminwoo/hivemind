@@ -64,6 +64,23 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              WaitingMateContinuation* waitingMate = nullptr);
 
 /**
+ * @brief Classify a position reached in search under its own clock state.
+ *
+ * @param time The clock state at this position, after every action that led
+ *        to it has been charged. Who may sit is read from it for both teams,
+ *        so neither team's right is derived by negating the other's.
+ */
+TerminalOutcome classify_terminal_position(Board& board,
+                                             Stockfish::Color teamToPlay,
+                                             Stockfish::Color rootTeam,
+                                             const TimeState& time,
+                                             const std::array<int, 2>& boardSearchPlies,
+                                             int* endInPly = nullptr,
+                                             bool partnerBoardAgnostic = false,
+                                             bool allowMatedTeamToMove = false,
+                                             WaitingMateContinuation* waitingMate = nullptr);
+
+/**
  * @brief Entry in an MCTS selection trajectory.
  * 
  * Stores the node, action taken, and selected child index for backup.
@@ -97,6 +114,7 @@ struct LeafContext {
     vector<int> policyIndicesA;
     vector<int> policyIndicesB;
     Stockfish::Color teamToPlay;
+    TimeState time;      // Clock state at the leaf, every action on the path charged
     bool sitPlaneActive;
     bool boardAOnTurn;
     bool boardBOnTurn;
@@ -126,6 +144,8 @@ struct LeafSelection {
     bool hasEvaluationReservation = false;
     std::shared_ptr<Node> pendingEvaluation;
     std::shared_ptr<Node> exhaustedSubtree;
+    // Clock state at the selected leaf, every action on the path charged.
+    TimeState time;
 };
 
 class SearchThread {
@@ -167,8 +187,8 @@ private:
     bool wait_for_pending_evaluation(Node& node);
 
     void collect_batch(SearchBatch& batch, Board& board,
-                       bool teamHasTimeAdvantage, bool allowReservationWait);
-    void process_batch(SearchBatch& batch, bool teamHasTimeAdvantage,
+                       const TimeState& rootTime, bool allowReservationWait);
+    void process_batch(SearchBatch& batch,
                        const Engine::HalfInferenceOutputs& inferenceOutputs);
     void abort_batch(SearchBatch& batch);
     CanonicalChildResult canonicalize_child(
@@ -178,7 +198,7 @@ private:
         const JointActionCandidate& action,
         shared_ptr<Node>& child,
         bool& hasEvaluationReservation,
-        bool teamHasTimeAdvantage);
+        const TimeState& childTime);
 
 public: 
     SearchThread();
@@ -202,7 +222,14 @@ public:
     void set_runtime_config(const SearchParams::RuntimeConfig& config);
     void set_inference_worker_index(size_t workerIndex);
     
-    // MCGS (Monte Carlo Graph Search) with prior-ordered joint action expansion
+    // MCGS (Monte Carlo Graph Search) with prior-ordered joint action expansion.
+    // @param rootTime Clock state at the root; each action on the selected
+    //        path is charged to it on the way down.
+    LeafSelection select_and_expand(
+        Board& board,
+        const TimeState& rootTime,
+        const std::unordered_set<const Node*>* blockedNodes = nullptr);
+    /** Legacy form: the root team's permanent TimeAdvantage flag. */
     LeafSelection select_and_expand(
         Board& board,
         bool teamHasTimeAdvantage,
@@ -225,8 +252,8 @@ public:
     void cancel_virtual_losses(const vector<TrajectoryEntry>& trajectory);
     
     // Minibatch MCGS - collects SearchParams::BATCH_SIZE leaves, runs batched inference, processes results
-    void run_iteration(Board& board, Engine* engine, bool teamHasTimeAdvantage);
+    void run_iteration(Board& board, Engine* engine, const TimeState& rootTime);
     void finish_pending_iteration(Board& board, Engine* engine,
-                                  bool teamHasTimeAdvantage);
+                                  const TimeState& rootTime);
     void discard_pending_iteration(Board& board, Engine* engine);
 };

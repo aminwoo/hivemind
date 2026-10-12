@@ -113,9 +113,10 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
     const Board& rootBoard,
     const std::shared_ptr<Node>& root,
     Stockfish::Color rootTeam,
-    bool rootTeamHasTimeAdvantage,
+    const TimeState& rootTime,
     int topK,
     int minimumVisits) {
+    const bool rootTeamHasTimeAdvantage = rootTime.can_sit(rootTeam);
     std::vector<InternalMateProbeTarget> targets;
     if (!root || topK <= 0) {
         return targets;
@@ -158,6 +159,10 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
             || !targetBoard->is_legal_move(BOARD_B, rootAction.moveB)) {
             return;
         }
+        // Each action is charged as the search charged it, so the target's
+        // hash is the one its tree node carries.
+        TimeState targetTime = rootTime;
+        targetTime.advance(rootTeam, targetBoard->on_turn_on_both_boards(rootTeam));
         targetBoard->make_moves(rootAction.moveA, rootAction.moveB);
 
         if (replyEdge >= 0) {
@@ -165,13 +170,16 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
                 || !targetBoard->is_legal_move(BOARD_B, reply.moveB)) {
                 return;
             }
+            targetTime.advance(~rootTeam, targetBoard->on_turn_on_both_boards(~rootTeam));
             targetBoard->make_moves(reply.moveA, reply.moveB);
         }
 
         const Stockfish::Color targetTeam = treeDepth == 1
             ? ~rootTeam : rootTeam;
+        // Targets are collected only for a team that may sit, so a legacy
+        // state hashes exactly as the old `true` did.
         const uint64_t positionHash = targetBoard->search_hash_key(
-            targetTeam, true);
+            targetTeam, targetTime);
         if (!seen.insert(positionHash).second) {
             return;
         }
@@ -4329,7 +4337,7 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
         const Board* board = nullptr;
         Engine* engine = nullptr;
         SearchInfo* searchInfo = nullptr;
-        bool teamHasTimeAdvantage = false;
+        TimeState rootTime;
         size_t targetNodes = 0;
         int moveTimeMs = 0;
 
@@ -4348,7 +4356,7 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
             board = workerBoard_;
             engine = workerEngines_[workerIndex % workerEngines_.size()];
             searchInfo = workerSearchInfo_;
-            teamHasTimeAdvantage = workerTeamHasTimeAdvantage_;
+            rootTime = workerTime_;
             targetNodes = workerTargetNodes_;
             moveTimeMs = workerMoveTimeMs_;
         }
@@ -4366,7 +4374,7 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                         break;
                     }
                     searchThread->run_iteration(
-                        localBoard, engine, teamHasTimeAdvantage);
+                        localBoard, engine, rootTime);
                 }
             } else {
                 // The winning root scan may occupy the same share of a node
@@ -4384,7 +4392,7 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                         break;
                     }
                     searchThread->run_iteration(
-                        localBoard, engine, teamHasTimeAdvantage);
+                        localBoard, engine, rootTime);
                     if (!rootWinScanStop_.load(std::memory_order_relaxed)
                         && static_cast<size_t>(searchInfo->get_nodes_searched())
                             >= winScanNodes) {
@@ -4397,7 +4405,7 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
                 searchThread->discard_pending_iteration(localBoard, engine);
             } else {
                 searchThread->finish_pending_iteration(
-                    localBoard, engine, teamHasTimeAdvantage);
+                    localBoard, engine, rootTime);
             }
             // The agent still owns the tree here, so this only drops
             // reference counts; the GC thread then holds the last one.
@@ -4430,7 +4438,6 @@ void Agent::worker_loop(size_t workerIndex, uint64_t observedGeneration) {
 void Agent::dispatch_workers(const Board& board,
                              const vector<Engine*>& engines,
                              SearchInfo& searchInfo,
-                             bool teamHasTimeAdvantage,
                              size_t targetNodes,
                              int moveTimeMs,
                              size_t workerCount) {
@@ -4439,7 +4446,7 @@ void Agent::dispatch_workers(const Board& board,
         workerBoard_ = &board;
         workerEngines_ = engines;
         workerSearchInfo_ = &searchInfo;
-        workerTeamHasTimeAdvantage_ = teamHasTimeAdvantage;
+        workerTime_ = searchTime_;
         workerTargetNodes_ = targetNodes;
         workerMoveTimeMs_ = moveTimeMs;
         activeWorkerCount_ = workerCount;
@@ -4552,7 +4559,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
     
     certifiedChoice_ = false;
-    searchStatus_ = adjudicate_game(board, teamSide, teamHasTimeAdvantage);
+    // Without a clock the flag stands for a permanent lead or deficit. With
+    // one, the flag is whatever the clock implies for this team now, and the
+    // workers charge every action they search to it.
+    searchTime_ = options.clock
+        ? *options.clock
+        : TimeState::legacy(teamSide, teamHasTimeAdvantage);
+    teamHasTimeAdvantage = searchTime_.can_sit(teamSide);
+    searchStatus_ = adjudicate_game(board, teamSide, searchTime_);
     if (searchStatus_ != GameStatus::ONGOING) {
         if (!options.background) {
             nextRootCandidates_.clear();
@@ -4584,8 +4598,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     size_t targetNodes = options.targetNodes;
 
     // Compute position hash for tree reuse
-    uint64_t positionHash = board.search_hash_key(
-        teamSide, teamHasTimeAdvantage);
+    uint64_t positionHash = board.search_hash_key(teamSide, searchTime_);
     const std::string positionSignature = board_signature(board);
 
     // Every claimed forced win passes this before it is acted on, whichever
@@ -4873,7 +4886,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     while (runInternal && !internalSettled()) {
                         targets = collect_internal_probe_targets(
                             *probeBoard, probeRoot, teamSide,
-                            teamHasTimeAdvantage,
+                            searchTime_,
                             SearchParams::INTERNAL_MATE_PROBE_TOP_K,
                             SearchParams::INTERNAL_MATE_PROBE_MIN_VISITS);
                         if (!targets.empty()
@@ -5406,7 +5419,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         record_root_scan(true);
         result = provenAction;
         const uint64_t provenPositionHash = board.search_hash_key(
-            teamSide, teamHasTimeAdvantage);
+            teamSide, searchTime_);
         rootNode = make_shared<Node>(teamSide, provenPositionHash);
         rootNode->set_depth(0);
 
@@ -5436,7 +5449,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootNode->mark_as_win(plyToMate);
 
         if (SearchParams::ENABLE_TREE_REUSE) {
-            store_next_root_candidates(board, teamHasTimeAdvantage);
+            store_next_root_candidates(board, searchTime_);
             lastSearchHash_ = positionHash;
         }
 
@@ -5509,7 +5522,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
 
         if (!cachedRootMate && !immediateRootMate) {
-            dispatch_workers(board, engines, searchInfo, teamHasTimeAdvantage,
+            dispatch_workers(board, engines, searchInfo,
                              targetNodes, moveTimeMs, scanWorkerCount);
             workersDispatched = true;
             start_prepass_reporter();
@@ -5627,7 +5640,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         halt_workers_after_scan();
         result = rootLossAction;
         const uint64_t provenPositionHash = board.search_hash_key(
-            teamSide, teamHasTimeAdvantage);
+            teamSide, searchTime_);
         rootNode = make_shared<Node>(teamSide, provenPositionHash);
         rootNode->set_depth(0);
 
@@ -5659,7 +5672,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootNode->mark_as_loss(rootLossPly);
 
         if (SearchParams::ENABLE_TREE_REUSE) {
-            store_next_root_candidates(board, teamHasTimeAdvantage);
+            store_next_root_candidates(board, searchTime_);
             lastSearchHash_ = positionHash;
         }
 
@@ -6450,12 +6463,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             // No move is played from a background root - the position we are
             // next asked about lies below it - so retain the root itself.
             nextRootCandidates_.clear();
-            retain_reuse_candidates(rootNode, board, teamHasTimeAdvantage);
+            retain_reuse_candidates(rootNode, board, searchTime_);
         } else {
-            store_next_root_candidates(board, teamHasTimeAdvantage);
+            store_next_root_candidates(board, searchTime_);
         }
-        lastSearchHash_ = board.search_hash_key(
-            teamSide, teamHasTimeAdvantage);
+        lastSearchHash_ = board.search_hash_key(teamSide, searchTime_);
     }
 
     return result;
@@ -6481,10 +6493,16 @@ void Agent::run_permanent_brain(Board& board, const vector<Engine*>& engines,
         }
     }
 
+    // The position after our move carries the clock after it: our action is
+    // charged to us if we played it on turn on both boards.
+    SearchOptions nextOptions = options;
+    if (nextOptions.clock) {
+        nextOptions.clock->advance(teamSide, board.on_turn_on_both_boards(teamSide));
+    }
     Board nextBoard(board);
     nextBoard.make_moves(playedAction.moveA, playedAction.moveB);
     run_background_search(
-        nextBoard, engines, teamSide, teamHasTimeAdvantage, options);
+        nextBoard, engines, teamSide, teamHasTimeAdvantage, nextOptions);
 }
 
 void Agent::clear_stop_request() {
@@ -6507,6 +6525,7 @@ void Agent::run_background_search(Board& board,
 
     SearchOptions backgroundOptions;
     backgroundOptions.search = options.search;
+    backgroundOptions.clock = options.clock;
     backgroundOptions.search.rootDirichletAlpha = 0.0f;
     backgroundOptions.search.rootDirichletEpsilon = 0.0f;
     backgroundOptions.background = true;
@@ -7003,6 +7022,16 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
  */
 void Agent::store_next_root_candidates(Board& board,
                                        bool teamHasTimeAdvantage) {
+    if (!rootNode) {
+        nextRootCandidates_.clear();
+        return;
+    }
+    store_next_root_candidates(
+        board, TimeState::legacy(rootNode->get_team_to_play(), teamHasTimeAdvantage));
+}
+
+void Agent::store_next_root_candidates(Board& board,
+                                       const TimeState& rootTime) {
     nextRootCandidates_.clear();
 
     if (!rootNode || !rootNode->is_expanded()) {
@@ -7035,10 +7064,12 @@ void Agent::store_next_root_candidates(Board& board,
     }
 
     const JointActionCandidate ownAction = rootNode->get_joint_action(bestIdx);
+    const Stockfish::Color rootTeam = rootNode->get_team_to_play();
+    TimeState ownNextTime = rootTime;
+    ownNextTime.advance(rootTeam, board.on_turn_on_both_boards(rootTeam));
     Board ownNextBoard(board);
     ownNextBoard.make_moves(ownAction.moveA, ownAction.moveB);
-    retain_reuse_candidates(
-        children[bestIdx], ownNextBoard, !teamHasTimeAdvantage);
+    retain_reuse_candidates(children[bestIdx], ownNextBoard, ownNextTime);
 }
 
 /**
@@ -7053,12 +7084,13 @@ void Agent::store_next_root_candidates(Board& board,
  * else: a position already indexed is skipped before its signature is built.
  *
  * @param board Position of subtreeRoot; restored before returning.
- * @param teamHasTimeAdvantage Time advantage from the side of subtreeRoot's
- *        team, which alternates with the team to move as the walk descends.
+ * @param subtreeTime Clock state at subtreeRoot. The walk charges every action
+ *        it descends through, as the search did, so each retained hash is the
+ *        one the next search computes for that position.
  */
 void Agent::retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
                                     Board& board,
-                                    bool teamHasTimeAdvantage) {
+                                    const TimeState& subtreeTime) {
     for (int level = 0;
          level <= SearchParams::TREE_REUSE_MAX_JOINT_PLIES;
          ++level) {
@@ -7073,7 +7105,7 @@ void Agent::retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
 
         const size_t before = nextRootCandidates_.size();
         retain_reuse_level(
-            subtreeRoot, board, teamHasTimeAdvantage, 0, level);
+            subtreeRoot, board, subtreeTime, 0, level);
         if (nextRootCandidates_.size()
                 >= SearchParams::TREE_REUSE_MAX_CANDIDATES
             || (level > 0 && nextRootCandidates_.size() == before)) {
@@ -7085,7 +7117,7 @@ void Agent::retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
 /** Records every node exactly `level` joint plies below `node`. */
 void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
                                Board& board,
-                               bool teamHasTimeAdvantage,
+                               const TimeState& nodeTime,
                                int depth,
                                int level) {
     if (!node
@@ -7096,7 +7128,7 @@ void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
 
     if (depth == level) {
         const uint64_t positionHash = board.search_hash_key(
-            node->get_team_to_play(), teamHasTimeAdvantage);
+            node->get_team_to_play(), nodeTime);
         // Shallower levels run first, so a transposition already indexed keeps
         // the shallower node, whose signature is already built.
         if (!nextRootCandidates_.contains(positionHash)) {
@@ -7114,6 +7146,9 @@ void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
 
     const auto children = node->get_children();
     const auto visits = node->get_child_visits();
+    const Stockfish::Color actingTeam = node->get_team_to_play();
+    TimeState childTime = nodeTime;
+    childTime.advance(actingTeam, board.on_turn_on_both_boards(actingTeam));
     for (size_t index = 0; index < children.size(); ++index) {
         if (!children[index]) {
             continue;
@@ -7131,7 +7166,7 @@ void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
             node->get_joint_action(static_cast<int>(index));
         board.make_moves(reply.moveA, reply.moveB);
         retain_reuse_level(
-            children[index], board, !teamHasTimeAdvantage, depth + 1, level);
+            children[index], board, childTime, depth + 1, level);
         board.unmake_moves(reply.moveA, reply.moveB);
         if (nextRootCandidates_.size()
                 >= SearchParams::TREE_REUSE_MAX_CANDIDATES) {

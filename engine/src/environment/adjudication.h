@@ -17,7 +17,10 @@ enum class GameStatus { ONGOING, WIN, LOSS, DRAW, NO_LEGAL_ACTION };
  * yet supply the piece that breaks the mate. A team with no real move may
  * still have the legal wait action; only with neither is it out of actions.
  */
-inline GameStatus adjudicate_game(Board& board, Stockfish::Color team, bool timeAdvantage) {
+inline GameStatus adjudicate_game(Board& board, Stockfish::Color team,
+                                  const TimeState& time) {
+    const bool timeAdvantage = time.can_sit(team);
+    const bool opponentTimeAdvantage = time.can_sit(~team);
     if (board.is_single_board()) {
         float value;
         if (board.single_board_terminal_value(value)) {
@@ -32,7 +35,7 @@ inline GameStatus adjudicate_game(Board& board, Stockfish::Color team, bool time
     const bool canWait = is_double_sit_legal(timeAdvantage, aOnTurn, bOnTurn);
     const bool hasMove = (aOnTurn && !board.legal_moves(BOARD_A).empty())
         || (bOnTurn && !board.legal_moves(BOARD_B).empty());
-    if (board.is_checkmate(~team, !timeAdvantage) && (canWait || !hasMove)) {
+    if (board.is_checkmate(~team, opponentTimeAdvantage) && (canWait || !hasMove)) {
         return GameStatus::WIN;
     }
     if (board.is_checkmate(team, timeAdvantage) && (timeAdvantage || !hasMove)) {
@@ -42,6 +45,11 @@ inline GameStatus adjudicate_game(Board& board, Stockfish::Color team, bool time
         return GameStatus::DRAW;
     }
     return !hasMove && !canWait ? GameStatus::NO_LEGAL_ACTION : GameStatus::ONGOING;
+}
+
+/** Legacy form: @p timeAdvantage is `team`'s permanent TimeAdvantage flag. */
+inline GameStatus adjudicate_game(Board& board, Stockfish::Color team, bool timeAdvantage) {
+    return adjudicate_game(board, team, TimeState::legacy(team, timeAdvantage));
 }
 
 inline int adjudicated_winner(GameStatus status, Stockfish::Color team) {

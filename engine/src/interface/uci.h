@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 #include <memory>
+#include <optional>
 #include <random>
 
 #include "environment/board.h"
@@ -27,6 +28,20 @@ private:
     // True when our team is ahead on the clocks, which is what makes sitting
     // and double-sitting legal. Set by the TimeAdvantage option.
     bool teamHasTimeAdvantage = false;
+    // TimeModel clock: searches root on the lead below and charge every
+    // action to the team that plays it, instead of the permanent flag above.
+    bool clockModel = false;
+    // Our team's lead over its diagonal opponents; negative when behind.
+    int timeLeadMs = 0;
+    // How long each team takes for one action, which is what a team on turn
+    // on both boards pays from its lead.
+    int teamMoveTimeMs = TimeState::DEFAULT_MOVE_TIME_MS;
+    int opponentMoveTimeMs = TimeState::DEFAULT_MOVE_TIME_MS;
+
+    /** The clock a search should root on, or none under TimeModel flag. */
+    std::optional<TimeState> current_clock() const;
+    /** Whether our team may sit now, under whichever time model is active. */
+    bool team_may_sit() const;
     std::vector<std::unique_ptr<Engine>> engines;
     // Retained so the BatchSize option can rebuild the engines in place.
     std::vector<int> deviceIds;
