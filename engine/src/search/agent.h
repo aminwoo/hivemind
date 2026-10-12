@@ -171,6 +171,10 @@ private:
         std::shared_ptr<Node> node;
         uint64_t positionHash = 0;
         std::string signature;
+        // The clock the retained subtree was searched under. A later search
+        // finds the node by the coarse reuse key, and trusts its proofs only
+        // when its own clock is this one exactly.
+        TimeState time;
     };
 
     struct MateContinuation {
@@ -289,6 +293,11 @@ private:
                             int level);
     bool try_reuse_mate_continuation(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        bool avoidRepetition = false) const;
+    /** Replays only a line whose remaining moves the lead in @p time covers. */
+    bool try_reuse_mate_continuation(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& outAction, int& outPlyToMate,
         bool avoidRepetition = false) const;
     static std::string format_root_aware_uci_score(
@@ -427,6 +436,16 @@ public:
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
         MateSearchBudget::Clock::time_point deadline = {});
+    /**
+     * As above under a clock. Every proof charges the actions it plays, and
+     * the shortcuts that sit the partner board for a whole line run only
+     * while the lead covers every move of it.
+     */
+    static bool find_root_mate(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
 
     /**
      * @brief Whether a joint action hands the opponents a mate they play first.
@@ -448,6 +467,11 @@ public:
     static bool action_loses_mate_race(
         Board& board, const JointActionCandidate& action,
         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget* budget = nullptr);
+    /** As above; the opponents answer under the clock @p action leaves. */
+    static bool action_loses_mate_race(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, const TimeState& time,
         MateSearchBudget* budget = nullptr);
 
     /**
@@ -475,6 +499,11 @@ public:
     static std::optional<JointActionCandidate> race_safe_alternative(
         Board& board, const Node& node, Stockfish::Color teamSide,
         bool teamHasTimeAdvantage, float qVetoDelta, float qValueWeight,
+        bool avoidSolvedDraw,
+        const std::atomic<bool>* cancelled = nullptr);
+    static std::optional<JointActionCandidate> race_safe_alternative(
+        Board& board, const Node& node, Stockfish::Color teamSide,
+        const TimeState& time, float qVetoDelta, float qValueWeight,
         bool avoidSolvedDraw,
         const std::atomic<bool>* cancelled = nullptr);
 
@@ -505,6 +534,16 @@ public:
         joint_mate::JointMateCache* cache = nullptr,
         bool* outRefutedAtBound = nullptr,
         const Node* treeNode = nullptr);
+    /** As above under a clock, charged action by action down every line. */
+    static bool prove_joint_forced_mate(
+        Board& board, Stockfish::Color attackingTeam,
+        const TimeState& time, int maxAttackerMoves,
+        MateSearchBudget& budget, JointActionCandidate& outAction,
+        int& outPlyToMate, std::vector<MateProofPly>* outLine = nullptr,
+        bool shortestFirst = true,
+        joint_mate::JointMateCache* cache = nullptr,
+        bool* outRefutedAtBound = nullptr,
+        const Node* treeNode = nullptr);
 
     /**
      * @brief One slice of verification for a root action.
@@ -522,6 +561,18 @@ public:
     static void verify_root_action_slice(
         Board& board, const JointActionCandidate& action,
         Stockfish::Color teamSide, RootActionVerdict& verdict,
+        uint64_t sliceNodes, int probeMs,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
+        uint64_t& nodesSpent, ConcurrentVerifierStats* stats = nullptr,
+        const Node* actionNode = nullptr,
+        int maxAttackerMoves =
+            SearchParams::SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES);
+    /** As above, with this team's clock @p time before the action. */
+    static void verify_root_action_slice(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, const TimeState& time,
+        RootActionVerdict& verdict,
         uint64_t sliceNodes, int probeMs,
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
@@ -547,6 +598,17 @@ public:
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled,
         int& outPlyToMate, SelectedMoveCertStats* stats = nullptr);
+    /**
+     * As above under a clock: skipped only while this team's lead outlasts
+     * any line the opponents could be asked to prove, and their proofs run
+     * under the clock @p action leaves them.
+     */
+    static bool action_walks_into_certified_mate(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, const TimeState& time,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled,
+        int& outPlyToMate, SelectedMoveCertStats* stats = nullptr);
 
     /**
      * @brief A replacement for @p chosen when it walks into a certified mate.
@@ -561,6 +623,12 @@ public:
     static std::optional<JointActionCandidate> certified_mate_free_alternative(
         Board& board, const Node& node, const JointActionCandidate& chosen,
         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled = nullptr,
+        SelectedMoveCertStats* stats = nullptr);
+    static std::optional<JointActionCandidate> certified_mate_free_alternative(
+        Board& board, const Node& node, const JointActionCandidate& chosen,
+        Stockfish::Color teamSide, const TimeState& time,
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled = nullptr,
         SelectedMoveCertStats* stats = nullptr);
@@ -600,6 +668,20 @@ public:
         const std::function<void()>& onMate = {},
         bool avoidRepetition = false,
         uint64_t* outNodes = nullptr);
+    /**
+     * As above under a clock: the probe sits the partner board for the whole
+     * line, so a mate is reported only when this team's lead covers all of
+     * its moves.
+     */
+    static bool probe_position_mate(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        uint64_t nodeBudget, int budgetMs,
+        const std::function<bool()>& abort,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        std::string& outPrincipalVariation,
+        const std::function<void()>& onMate = {},
+        bool avoidRepetition = false,
+        uint64_t* outNodes = nullptr);
 
     static bool probe_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
@@ -624,6 +706,19 @@ public:
         int& outPlyToMate,
         MateCertificateTier& outTier,
         const Node* treeNode = nullptr);
+    /**
+     * As above under a clock. The single-board and sat-board tiers need the
+     * lead to cover every move of the line; the joint tier follows the clock.
+     */
+    static bool certify_mate_candidate(
+        Board& board, Stockfish::Color teamSide,
+        const TimeState& time,
+        const JointActionCandidate& candidate,
+        int candidatePlyToMate,
+        MateSearchBudget& budget,
+        int& outPlyToMate,
+        MateCertificateTier& outTier,
+        const Node* treeNode = nullptr);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.
@@ -633,6 +728,11 @@ public:
      */
     static bool find_root_forced_loss(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
+    static bool find_root_forced_loss(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
         MateSearchBudget::Clock::time_point deadline = {});
@@ -653,6 +753,16 @@ public:
         const std::vector<JointActionCandidate>* preferredActions = nullptr,
         Node* liveRoot = nullptr,
         bool scanWaitingChecks = true);
+    /** As above under a clock; each defense is charged before it is answered. */
+    static bool find_root_loss_proofs(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        std::vector<RootLossProof>& outProofs,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {},
+        const std::atomic<bool>* cancelled = nullptr,
+        const std::vector<JointActionCandidate>* preferredActions = nullptr,
+        Node* liveRoot = nullptr,
+        bool scanWaitingChecks = true);
     
     /**
      * @brief Extracts PV line starting from a specific child index.
@@ -663,7 +773,7 @@ public:
      */
     std::string extract_pv_from_child(
         Board& board, int childIdx, int maxDepth,
-        Stockfish::Color rootTeam, bool rootTeamHasTimeAdvantage);
+        Stockfish::Color rootTeam, const TimeState& rootTime);
 
     /**
      * @brief Extracts the best move from the root node after search.
@@ -736,15 +846,29 @@ public:
      * @brief Try to reuse the search tree from a previous search.
      *
      * Checks whether the current position matches a saved next-root candidate.
-     * @param positionHash Hash of the current position.
+     * @param reuseKey Board::search_reuse_key of the current position.
      * @param teamSide Team to play at the current position.
      * @param signature Exact board signature of the current position.
+     * @param rootTime Clock state of the current position.
+     * @param outExactClock Set to whether the subtree was searched under
+     *        exactly @p rootTime. When it was not, the caller must not trust
+     *        the subtree's proofs or merge its nodes by hash.
      * @return Shared pointer to reusable root, or nullptr if no reuse possible
      */
-    std::shared_ptr<Node> try_reuse_tree(uint64_t positionHash,
+    std::shared_ptr<Node> try_reuse_tree(uint64_t reuseKey,
                                          Stockfish::Color teamSide,
                                          const std::string& signature,
-                                         bool background);
+                                         const TimeState& rootTime,
+                                         bool background,
+                                         bool* outExactClock = nullptr);
+
+    /**
+     * @brief Forget every proof in a subtree adopted under a different clock.
+     *
+     * Visits, values and edges stay; solved node types and mate distances go,
+     * so nothing proved under the old lead is acted on under the new one.
+     */
+    static void clear_reused_proofs(const std::shared_ptr<Node>& reusedRoot);
     
     /**
      * @brief Store next-root candidates for tree reuse.
@@ -823,7 +947,7 @@ private:
         bool partnerBoardAgnostic = false,
         std::vector<MateProofPly>* outPrincipalVariation = nullptr);
     static bool find_root_mate_impl(
-        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget,
         std::vector<MateContinuation>* continuations,

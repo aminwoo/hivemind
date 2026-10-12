@@ -53,6 +53,8 @@ struct InternalMateProbeTarget {
     int visitsAtSubmit = 0;
     float rootQAtSubmit = 0.0f;
     uint64_t positionHash = 0;
+    // The clock the target's path reached: who may sit there, exactly.
+    TimeState time;
 };
 
 std::vector<size_t> ranked_visited_edges(const std::shared_ptr<Node>& node,
@@ -176,8 +178,6 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
 
         const Stockfish::Color targetTeam = treeDepth == 1
             ? ~rootTeam : rootTeam;
-        // Targets are collected only for a team that may sit, so a legacy
-        // state hashes exactly as the old `true` did.
         const uint64_t positionHash = targetBoard->search_hash_key(
             targetTeam, targetTime);
         if (!seen.insert(positionHash).second) {
@@ -187,7 +187,8 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
             std::move(targetBoard), targetNode, root,
             replyParent, static_cast<int>(rootEdge), replyEdge,
             treeDepth, visitsAtSubmit,
-            root->get_child_q(static_cast<int>(rootEdge)), positionHash});
+            root->get_child_q(static_cast<int>(rootEdge)), positionHash,
+            targetTime});
     };
 
     if (!rootTeamHasTimeAdvantage) {
@@ -418,17 +419,41 @@ static uint64_t mate_search_node_budget(const SearchOptions& options) {
 }
 
 /**
+ * Longest line, in attacker moves, of any proof the opponents may be asked
+ * for against a candidate move: Fairy's probe and the joint solver. While a
+ * team can sit through that many actions of its own, the opponents never gain
+ * the right to sit within such a line.
+ */
+constexpr int OPPONENT_PROOF_HORIZON_MOVES = std::max(
+    SearchParams::MATE_PROBE_MAX_MATE_MOVES,
+    SearchParams::SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES);
+
+/**
+ * Actions the attacker may play in the root scan's single-board proofs, which
+ * sit the partner board for the whole line: a capture feed, then up to
+ * MATE_SEARCH_MAX_ATTACKER_MOVES checks.
+ */
+constexpr int SAT_PARTNER_PROOF_ACTIONS =
+    SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES + 1;
+
+/**
  * @brief Performs a fast 1-ply checkmate scan at the root before starting MCTS.
  * If any legal joint action immediately delivers checkmate against the opponent,
  * returns true and sets outAction to that winning joint move.
  */
 static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
-                                     bool teamHasTimeAdvantage,
+                                     const TimeState& time,
                                      JointActionCandidate& outAction,
                                      Agent::MateSearchBudget* budget = nullptr,
                                      bool requireUnblockable = false) {
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
+    const bool teamHasTimeAdvantage = time.can_sit(teamSide);
+    // Every action from here costs the same: whether this team is on turn on
+    // both boards decides it. The opponents are mated, or not, under the
+    // clock that action leaves them.
+    const bool opponentHasTimeAdvantage = time.after(
+        teamSide, boardAOnTurn && boardBOnTurn).can_sit(~teamSide);
 
     vector<Stockfish::Move> actionsA;
     if (boardAOnTurn) {
@@ -544,9 +569,9 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
                 teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, isCapA);
             if (canPassB) {
                 board.push_move(BOARD_A, mA);
-                const bool isMate = board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+                const bool isMate = board.is_checkmate(~teamSide, opponentHasTimeAdvantage);
                 const bool isLiteralMate = isMate && hasLiteralCheckmate(
-                    ~teamSide, !teamHasTimeAdvantage);
+                    ~teamSide, opponentHasTimeAdvantage);
                 const bool isUnblockableMate = isMate
                     && hasUnblockableCheckmate(~teamSide);
                 board.pop_move(BOARD_A);
@@ -578,9 +603,9 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
                 teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, isCapB);
             if (canPassA) {
                 board.push_move(BOARD_B, mB);
-                const bool isMate = board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+                const bool isMate = board.is_checkmate(~teamSide, opponentHasTimeAdvantage);
                 const bool isLiteralMate = isMate && hasLiteralCheckmate(
-                    ~teamSide, !teamHasTimeAdvantage);
+                    ~teamSide, opponentHasTimeAdvantage);
                 const bool isUnblockableMate = isMate
                     && hasUnblockableCheckmate(~teamSide);
                 board.pop_move(BOARD_B);
@@ -636,9 +661,9 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
             const Stockfish::Move mA = actionsA[iA];
             const Stockfish::Move mB = actionsB[iB];
             board.make_moves(mA, mB);
-            const bool isMate = board.is_checkmate(~teamSide, !teamHasTimeAdvantage);
+            const bool isMate = board.is_checkmate(~teamSide, opponentHasTimeAdvantage);
             const bool isLiteralMate = isMate && hasLiteralCheckmate(
-                ~teamSide, !teamHasTimeAdvantage);
+                ~teamSide, opponentHasTimeAdvantage);
             const bool isUnblockableMate = isMate
                 && hasUnblockableCheckmate(~teamSide);
             board.unmake_moves(mA, mB);
@@ -682,6 +707,17 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
     return finishWithStalemate();
 }
 
+/** Legacy form: @p teamHasTimeAdvantage is a permanent flag. */
+static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
+                                     bool teamHasTimeAdvantage,
+                                     JointActionCandidate& outAction,
+                                     Agent::MateSearchBudget* budget = nullptr,
+                                     bool requireUnblockable = false) {
+    return find_immediate_root_mate(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        outAction, budget, requireUnblockable);
+}
+
 /**
  * @brief Whether a capture the defending team can play now hands their partner
  *        an immediate mate.
@@ -694,8 +730,12 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
  * boards where they are on turn. Leaves @p board as it found it.
  */
 static bool defenders_capture_into_immediate_mate(
-    Board& board, Stockfish::Color defenders, bool defendersHaveTimeAdvantage,
+    Board& board, Stockfish::Color defenders, const TimeState& time,
     Agent::MateSearchBudget* budget) {
+    // The capture is the defenders' action, charged as one; the mate they
+    // then hold is judged under the clock it leaves.
+    const TimeState afterCapture = time.after(
+        defenders, board.on_turn_on_both_boards(defenders));
     for (int boardNum : {BOARD_A, BOARD_B}) {
         const Stockfish::Color mover = boardNum == BOARD_A
             ? defenders : ~defenders;
@@ -712,7 +752,7 @@ static bool defenders_capture_into_immediate_mate(
             board.push_move(boardNum, reply);
             JointActionCandidate mate;
             const bool mates = find_immediate_root_mate(
-                board, defenders, defendersHaveTimeAdvantage, mate, budget);
+                board, defenders, afterCapture, mate, budget);
             board.pop_move(boardNum);
             if (mates) {
                 return true;
@@ -727,6 +767,16 @@ bool Agent::action_loses_mate_race(Board& board,
                                    Stockfish::Color teamSide,
                                    bool teamHasTimeAdvantage,
                                    MateSearchBudget* budget) {
+    return action_loses_mate_race(
+        board, action, teamSide,
+        TimeState::legacy(teamSide, teamHasTimeAdvantage), budget);
+}
+
+bool Agent::action_loses_mate_race(Board& board,
+                                   const JointActionCandidate& action,
+                                   Stockfish::Color teamSide,
+                                   const TimeState& time,
+                                   MateSearchBudget* budget) {
     if (!board.is_legal_move(BOARD_A, action.moveA)
         || !board.is_legal_move(BOARD_B, action.moveB)) {
         return false;
@@ -737,11 +787,12 @@ bool Agent::action_loses_mate_race(Board& board,
 
     JointActionCandidate instantMate;
     if (find_immediate_root_mate(
-            board, ~teamSide, !teamHasTimeAdvantage, instantMate,
-            budget, true)) {
+            board, ~teamSide, time, instantMate, budget, true)) {
         return true;
     }
 
+    const TimeState afterAction = time.after(
+        teamSide, board.on_turn_on_both_boards(teamSide));
     board.make_moves(action.moveA, action.moveB);
     bool lost = false;
     // Mating ends the game where it stands, so no reply of theirs is played.
@@ -750,12 +801,12 @@ bool Agent::action_loses_mate_race(Board& board,
     // same goes for a mate they are one capture away from: the piece is in
     // their partner's hand the moment it is taken, so a forced recapture of
     // our checking piece is a mate for them, not a tempo for us.
-    if (!board.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
+    if (!board.is_checkmate(~teamSide, afterAction.can_sit(~teamSide))) {
         JointActionCandidate reply;
         lost = find_immediate_root_mate(
-                   board, ~teamSide, !teamHasTimeAdvantage, reply, budget)
+                   board, ~teamSide, afterAction, reply, budget)
             || defenders_capture_into_immediate_mate(
-                   board, ~teamSide, !teamHasTimeAdvantage, budget);
+                   board, ~teamSide, afterAction, budget);
     }
     board.unmake_moves(action.moveA, action.moveB);
     return lost;
@@ -787,6 +838,16 @@ std::optional<JointActionCandidate> Agent::race_safe_alternative(
     Board& board, const Node& node, Stockfish::Color teamSide,
     bool teamHasTimeAdvantage, float qVetoDelta, float qValueWeight,
     bool avoidSolvedDraw, const std::atomic<bool>* cancelled) {
+    return race_safe_alternative(
+        board, node, teamSide,
+        TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        qVetoDelta, qValueWeight, avoidSolvedDraw, cancelled);
+}
+
+std::optional<JointActionCandidate> Agent::race_safe_alternative(
+    Board& board, const Node& node, Stockfish::Color teamSide,
+    const TimeState& time, float qVetoDelta, float qValueWeight,
+    bool avoidSolvedDraw, const std::atomic<bool>* cancelled) {
     const std::optional<JointActionCandidate> claimed = claimed_win_action(
         node, qVetoDelta, qValueWeight, avoidSolvedDraw);
     if (!claimed) {
@@ -802,7 +863,7 @@ std::optional<JointActionCandidate> Agent::race_safe_alternative(
     };
     MateSearchBudget claimBudget = race_budget();
     if (!action_loses_mate_race(
-            board, *claimed, teamSide, teamHasTimeAdvantage, &claimBudget)) {
+            board, *claimed, teamSide, time, &claimBudget)) {
         return std::nullopt;
     }
 
@@ -842,7 +903,7 @@ std::optional<JointActionCandidate> Agent::race_safe_alternative(
             node.get_joint_action(static_cast<int>(index));
         MateSearchBudget budget = race_budget();
         if (!action_loses_mate_race(
-                board, candidate, teamSide, teamHasTimeAdvantage, &budget)) {
+                board, candidate, teamSide, time, &budget)) {
             return candidate;
         }
     }
@@ -855,11 +916,24 @@ bool Agent::action_walks_into_certified_mate(
     MateSearchBudget::Clock::time_point deadline,
     const std::atomic<bool>* cancelled,
     int& outPlyToMate, SelectedMoveCertStats* stats) {
+    return action_walks_into_certified_mate(
+        board, action, teamSide,
+        TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        deadline, cancelled, outPlyToMate, stats);
+}
+
+bool Agent::action_walks_into_certified_mate(
+    Board& board, const JointActionCandidate& action,
+    Stockfish::Color teamSide, const TimeState& time,
+    MateSearchBudget::Clock::time_point deadline,
+    const std::atomic<bool>* cancelled,
+    int& outPlyToMate, SelectedMoveCertStats* stats) {
     outPlyToMate = 0;
-    // Ahead on time, this team may sit the board a line is played on, so no
+    // Ahead on time for longer than any line the opponents could be asked to
+    // prove, this team may sit the board a line is played on, so no
     // single-board mate is forced against it: the probe would have nothing
     // to say and the certifier declines an attacker behind on the clock.
-    if (teamHasTimeAdvantage) {
+    if (time.can_sit_through(teamSide, OPPONENT_PROOF_HORIZON_MOVES)) {
         return false;
     }
     if (!board.is_legal_move(BOARD_A, action.moveA)
@@ -881,10 +955,12 @@ bool Agent::action_walks_into_certified_mate(
         ++stats->candidates;
     }
 
+    const TimeState afterAction = time.after(
+        teamSide, board.on_turn_on_both_boards(teamSide));
     board.make_moves(action.moveA, action.moveB);
     bool certified = false;
     // Mating them ends the game where it stands.
-    if (!board.is_checkmate(~teamSide, true)) {
+    if (!board.is_checkmate(~teamSide, afterAction.can_sit(~teamSide))) {
         JointActionCandidate reply;
         int replyPly = 0;
         string replyPv;
@@ -892,10 +968,10 @@ bool Agent::action_walks_into_certified_mate(
         const int probeMs = std::max(
             1, std::min(SearchParams::SELECTED_MOVE_PROBE_MAX_MS,
                         remaining_ms()));
-        // The opponents are the team ahead on time here, which is what lets
-        // them sit the other board while this line runs.
+        // Their proofs run under the clock this action leaves them: the
+        // probe and the certifier only claim a line their lead can pay for.
         const bool found = probe_position_mate(
-            board, ~teamSide, true,
+            board, ~teamSide, afterAction,
             SearchParams::SELECTED_MOVE_PROBE_NODE_BUDGET, probeMs, abort,
             reply, replyPly, replyPv, {}, false, &probeNodes);
         if (stats) {
@@ -915,7 +991,7 @@ bool Agent::action_walks_into_certified_mate(
             int certifiedPly = 0;
             MateCertificateTier tier = MateCertificateTier::NONE;
             certified = certify_mate_candidate(
-                board, ~teamSide, true, reply, replyPly, budget,
+                board, ~teamSide, afterAction, reply, replyPly, budget,
                 certifiedPly, tier);
             if (stats) {
                 stats->certificateNodes +=
@@ -940,7 +1016,7 @@ bool Agent::action_walks_into_certified_mate(
             JointActionCandidate jointAction;
             int jointPly = 0;
             certified = prove_joint_forced_mate(
-                board, ~teamSide, true,
+                board, ~teamSide, afterAction,
                 SearchParams::SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES,
                 jointBudget, jointAction, jointPly, nullptr, false);
             if (stats) {
@@ -963,7 +1039,19 @@ std::optional<JointActionCandidate> Agent::certified_mate_free_alternative(
     Stockfish::Color teamSide, bool teamHasTimeAdvantage,
     MateSearchBudget::Clock::time_point deadline,
     const std::atomic<bool>* cancelled, SelectedMoveCertStats* stats) {
-    if (teamHasTimeAdvantage || !node.is_expanded()) {
+    return certified_mate_free_alternative(
+        board, node, chosen, teamSide,
+        TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        deadline, cancelled, stats);
+}
+
+std::optional<JointActionCandidate> Agent::certified_mate_free_alternative(
+    Board& board, const Node& node, const JointActionCandidate& chosen,
+    Stockfish::Color teamSide, const TimeState& time,
+    MateSearchBudget::Clock::time_point deadline,
+    const std::atomic<bool>* cancelled, SelectedMoveCertStats* stats) {
+    if (time.can_sit_through(teamSide, OPPONENT_PROOF_HORIZON_MOVES)
+        || !node.is_expanded()) {
         return std::nullopt;
     }
     const vector<int> visits = node.get_child_visits();
@@ -995,7 +1083,7 @@ std::optional<JointActionCandidate> Agent::certified_mate_free_alternative(
 
     int ply = 0;
     if (!action_walks_into_certified_mate(
-            board, chosen, teamSide, teamHasTimeAdvantage, deadline,
+            board, chosen, teamSide, time, deadline,
             cancelled, ply, stats)) {
         return std::nullopt;
     }
@@ -1029,7 +1117,7 @@ std::optional<JointActionCandidate> Agent::certified_mate_free_alternative(
             node.get_joint_action(static_cast<int>(index));
         int candidatePly = 0;
         if (!action_walks_into_certified_mate(
-                board, candidate, teamSide, teamHasTimeAdvantage, deadline,
+                board, candidate, teamSide, time, deadline,
                 cancelled, candidatePly, stats)) {
             if (stats) {
                 stats->replaced = true;
@@ -1049,7 +1137,8 @@ std::optional<JointActionCandidate> Agent::certified_mate_free_alternative(
  * identical to the MCTS candidate generator.
  */
 static vector<JointActionCandidate> legal_joint_actions(
-    Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage) {
+    Board& board, Stockfish::Color teamSide, const TimeState& time) {
+    const bool teamHasTimeAdvantage = time.can_sit(teamSide);
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == teamSide;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~teamSide;
 
@@ -1581,20 +1670,32 @@ bool visit_legal_joint_actions(const MateActionSpace& space,
 JointMateStatus terminal_joint_mate_status(
     Board& board,
     Stockfish::Color attackingTeam,
-    bool attackingTeamHasTimeAdvantage,
+    const TimeState& time,
     int searchPly) {
     const Stockfish::Color victimTeam = ~attackingTeam;
     Board::LegalMoveCache legalMoveCache;
     if (board.is_checkmate(
-            victimTeam, !attackingTeamHasTimeAdvantage, &legalMoveCache)) {
+            victimTeam, time.can_sit(victimTeam), &legalMoveCache)) {
         return JointMateStatus::PROVEN;
     }
     if (board.is_checkmate(
-            attackingTeam, attackingTeamHasTimeAdvantage, &legalMoveCache)
+            attackingTeam, time.can_sit(attackingTeam), &legalMoveCache)
         || board.is_draw(searchPly)) {
         return JointMateStatus::REFUTED;
     }
     return JointMateStatus::UNKNOWN;
+}
+
+/** Legacy form, for proofs that fix who may sit for the whole line. */
+JointMateStatus terminal_joint_mate_status(
+    Board& board,
+    Stockfish::Color attackingTeam,
+    bool attackingTeamHasTimeAdvantage,
+    int searchPly) {
+    return terminal_joint_mate_status(
+        board, attackingTeam,
+        TimeState::legacy(attackingTeam, attackingTeamHasTimeAdvantage),
+        searchPly);
 }
 
 bool team_is_in_check(Board& board, Stockfish::Color team) {
@@ -1730,10 +1831,15 @@ std::vector<Stockfish::Move> checks_by_prior(Board& board, int boardNum,
     return checks;
 }
 
+/**
+ * @param time The clock at this position. Every action the solver plays is
+ *        charged to the team playing it before the recursion, so each node's
+ *        sit rights, terminal status and cache entry follow its own path.
+ */
 JointMateProof search_joint_forced_mate(
     Board& board,
     Stockfish::Color attackingTeam,
-    bool attackingTeamHasTimeAdvantage,
+    const TimeState& time,
     Stockfish::Color teamToPlay,
     int attackerMovesRemaining,
     int searchPly,
@@ -1742,7 +1848,7 @@ JointMateProof search_joint_forced_mate(
     bool attackerWinsMateRace,
     const Node* treeNode = nullptr) {
     const JointMateStatus terminal = terminal_joint_mate_status(
-        board, attackingTeam, attackingTeamHasTimeAdvantage, searchPly);
+        board, attackingTeam, time, searchPly);
     if (terminal != JointMateStatus::UNKNOWN) {
         return {terminal, 0, {}};
     }
@@ -1755,13 +1861,17 @@ JointMateProof search_joint_forced_mate(
         return {JointMateStatus::UNKNOWN, 0, {}};
     }
 
-    const bool teamToPlayHasTimeAdvantage = attackerToPlay
-        ? attackingTeamHasTimeAdvantage
-        : !attackingTeamHasTimeAdvantage;
+    const bool teamToPlayHasTimeAdvantage = time.can_sit(teamToPlay);
+    // The search hash carries the exact clock, so a proof is only shared by
+    // positions with the same sit rights for the rest of the line.
     const JointMateCacheKey cacheKey{
-        board.search_hash_key(teamToPlay, teamToPlayHasTimeAdvantage),
+        board.search_hash_key(teamToPlay, time),
         static_cast<uint16_t>(std::max(0, attackerMovesRemaining)),
         static_cast<uint8_t>(teamToPlay)};
+    // Whatever the action, it costs the same: it depends only on whether
+    // this team is on turn on both boards here.
+    const TimeState childTime = time.after(
+        teamToPlay, board.on_turn_on_both_boards(teamToPlay));
     if (const auto found = cache.proofs.find(cacheKey);
         found != cache.proofs.end()) {
         return found->second;
@@ -1798,7 +1908,11 @@ JointMateProof search_joint_forced_mate(
         // thousands refuting every check line. The attempt is an
         // accelerator, so it gets a small slice of the budget and hands an
         // unfinished search back to the joint product rather than a claim.
-        if (attackingTeamHasTimeAdvantage && attackerMovesRemaining >= 1) {
+        // The sat-board model lets the attacker sit at every move and never
+        // the defender, which the clock grants only while the attacker's lead
+        // covers every move it has left.
+        if (attackerMovesRemaining >= 1
+            && time.can_sit_through(attackingTeam, attackerMovesRemaining)) {
             for (int activeBoard : {BOARD_A, BOARD_B}) {
                 const Stockfish::Color attackerColor = activeBoard == BOARD_A
                     ? attackingTeam : ~attackingTeam;
@@ -1941,7 +2055,7 @@ JointMateProof search_joint_forced_mate(
                     treeNode, action.moveA, action.moveB);
                 board.make_moves(action.moveA, action.moveB);
                 JointMateProof child = search_joint_forced_mate(
-                    board, attackingTeam, attackingTeamHasTimeAdvantage,
+                    board, attackingTeam, childTime,
                     ~teamToPlay, attackerMovesRemaining - 1, searchPly + 1,
                     childBudget, cache, attackerWinsMateRace, childNode.get());
                 board.unmake_moves(action.moveA, action.moveB);
@@ -2004,8 +2118,7 @@ JointMateProof search_joint_forced_mate(
                 }
                 board.make_moves(action.moveA, action.moveB);
                 const JointMateStatus quietTerminal = terminal_joint_mate_status(
-                    board, attackingTeam, attackingTeamHasTimeAdvantage,
-                    searchPly + 1);
+                    board, attackingTeam, childTime, searchPly + 1);
                 board.unmake_moves(action.moveA, action.moveB);
                 if (quietTerminal == JointMateStatus::PROVEN) {
                     result = {
@@ -2059,11 +2172,10 @@ JointMateProof search_joint_forced_mate(
             treeNode, action.moveA, action.moveB);
         const JointMateProof child = feedsPartner && !attackerWinsMateRace
                 && find_immediate_root_mate(
-                    board, teamToPlay, teamToPlayHasTimeAdvantage,
-                    raceMate, &budget)
+                    board, teamToPlay, childTime, raceMate, &budget)
             ? JointMateProof{JointMateStatus::REFUTED, 0, {}}
             : search_joint_forced_mate(
-                board, attackingTeam, attackingTeamHasTimeAdvantage,
+                board, attackingTeam, childTime,
                 ~teamToPlay, attackerMovesRemaining, searchPly + 1,
                 budget, cache, attackerWinsMateRace, childNode.get());
         board.unmake_moves(action.moveA, action.moveB);
@@ -2302,13 +2414,13 @@ void append_waiting_mate_suffix(
     Board& lineBoard,
     Stockfish::Color teamToPlay,
     Stockfish::Color rootTeam,
-    bool rootTeamHasTimeAdvantage,
+    const TimeState& lineTime,
     const std::array<int, 2>& boardSearchPlies,
     string& formatted) {
     WaitingMateContinuation continuation;
     int endInPly = 0;
     if (classify_terminal_position(
-            lineBoard, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
+            lineBoard, teamToPlay, rootTeam, lineTime,
             boardSearchPlies, &endInPly, false, false, &continuation)
             != TerminalOutcome::LOSS
         || continuation.activeBoard < 0) {
@@ -2335,20 +2447,21 @@ string format_mate_proof_pv(
     Board& board,
     const std::vector<MateProofPly>& principalVariation,
     Stockfish::Color rootTeam,
-    bool rootTeamHasTimeAdvantage) {
+    const TimeState& rootTime) {
     Board lineBoard = board;
     string formatted;
     std::array<int, 2> boardSearchPlies{};
+    TimeState lineTime = rootTime;
+    Stockfish::Color mover = rootTeam;
     for (const MateProofPly& ply : principalVariation) {
+        lineTime.advance(mover, lineBoard.on_turn_on_both_boards(mover));
         append_formatted_ply(lineBoard, ply, formatted);
         boardSearchPlies[BOARD_A] += ply.moveA != Stockfish::MOVE_NONE;
         boardSearchPlies[BOARD_B] += ply.moveB != Stockfish::MOVE_NONE;
+        mover = ~mover;
     }
-    const Stockfish::Color teamToPlay = principalVariation.size() % 2 == 0
-        ? rootTeam : ~rootTeam;
     append_waiting_mate_suffix(
-        lineBoard, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
-        boardSearchPlies, formatted);
+        lineBoard, mover, rootTeam, lineTime, boardSearchPlies, formatted);
     return formatted;
 }
 
@@ -2408,12 +2521,38 @@ bool Agent::probe_position_mate(
     const std::function<void()>& onMate,
     bool avoidRepetition,
     uint64_t* outNodes) {
+    return probe_position_mate(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        nodeBudget, budgetMs, abort, outAction, outPlyToMate,
+        outPrincipalVariation, onMate, avoidRepetition, outNodes);
+}
+
+bool Agent::probe_position_mate(
+    Board& board,
+    Stockfish::Color teamSide,
+    const TimeState& time,
+    uint64_t nodeBudget,
+    int budgetMs,
+    const std::function<bool()>& abort,
+    JointActionCandidate& outAction,
+    int& outPlyToMate,
+    string& outPrincipalVariation,
+    const std::function<void()>& onMate,
+    bool avoidRepetition,
+    uint64_t* outNodes) {
     if (outNodes) {
         *outNodes = 0;
     }
-    if (!teamHasTimeAdvantage) {
+    // The probe sits the partner board for the whole line. A mate it finds
+    // is accepted below only when this team's lead pays for every move of it.
+    if (!time.can_sit(teamSide)) {
         return false;
     }
+    const bool teamHasTimeAdvantage = true;
+    // The line is replayed under the model the probe assumed: this team may
+    // sit throughout and the defenders never may, which the lead check below
+    // makes true of the real clock as well.
+    const TimeState lineTime = TimeState::legacy(teamSide, true);
     const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamSide,
                             board.side_to_move(BOARD_B) == ~teamSide};
     const int probeBoards = onTurn[BOARD_A] + onTurn[BOARD_B];
@@ -2481,13 +2620,12 @@ bool Agent::probe_position_mate(
             ++plies;
             if (plies % 2 != 0
                 && !line.is_checkmate(
-                    ~teamSide, !teamHasTimeAdvantage)) {
+                    ~teamSide, lineTime.can_sit(~teamSide))) {
                 JointActionCandidate raceMate;
                 if (find_immediate_root_mate(
-                        line, ~teamSide, !teamHasTimeAdvantage, raceMate,
-                        &budget)
+                        line, ~teamSide, lineTime, raceMate, &budget)
                     || defenders_capture_into_immediate_mate(
-                        line, ~teamSide, !teamHasTimeAdvantage, &budget)) {
+                        line, ~teamSide, lineTime, &budget)) {
                     return false;
                 }
                 if (budget.exhausted) {
@@ -2496,8 +2634,7 @@ bool Agent::probe_position_mate(
             } else if (plies % 2 == 0) {
                 JointActionCandidate raceMate;
                 if (find_immediate_root_mate(
-                        line, ~teamSide, !teamHasTimeAdvantage, raceMate,
-                        &budget)) {
+                        line, ~teamSide, lineTime, raceMate, &budget)) {
                     return false;
                 }
                 if (budget.exhausted) {
@@ -2505,7 +2642,7 @@ bool Agent::probe_position_mate(
                 }
             }
         }
-        if (line.is_checkmate(~teamSide, !teamHasTimeAdvantage)) {
+        if (line.is_checkmate(~teamSide, lineTime.can_sit(~teamSide))) {
             outEndsInCheckmate = line.is_in_check(boardNum);
             return true;
         }
@@ -2525,7 +2662,7 @@ bool Agent::probe_position_mate(
         if (attackerMovesLeft <= 1) {
             JointActionCandidate finish;
             const bool foundFinish = find_immediate_root_mate(
-                line, teamSide, teamHasTimeAdvantage, finish, &budget);
+                line, teamSide, lineTime, finish, &budget);
             return foundFinish && !budget.exhausted;
         }
         return true;
@@ -2560,6 +2697,7 @@ bool Agent::probe_position_mate(
         if (!result.found
             || result.bestMove == Stockfish::MOVE_NONE
             || !board.is_legal_move(boardNum, result.bestMove)
+            || !time.can_sit_through(teamSide, result.mateInMoves)
             || (avoidRepetition
                 && move_completes_repetition(
                     board, boardNum, result.bestMove))
@@ -2603,7 +2741,7 @@ bool Agent::probe_root_mate(
     const std::function<void()>& onMate,
     bool avoidRepetition) {
     return probe_position_mate(
-        board, teamSide, teamHasTimeAdvantage,
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
         nodeBudget, budgetMs, abort,
         outAction, outPlyToMate, outPrincipalVariation,
         onMate, avoidRepetition, nullptr);
@@ -2619,9 +2757,25 @@ bool Agent::certify_mate_candidate(
     int& outPlyToMate,
     MateCertificateTier& outTier,
     const Node* treeNode) {
+    return certify_mate_candidate(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        candidate, candidatePlyToMate, budget, outPlyToMate, outTier,
+        treeNode);
+}
+
+bool Agent::certify_mate_candidate(
+    Board& board,
+    Stockfish::Color teamSide,
+    const TimeState& time,
+    const JointActionCandidate& candidate,
+    int candidatePlyToMate,
+    MateSearchBudget& budget,
+    int& outPlyToMate,
+    MateCertificateTier& outTier,
+    const Node* treeNode) {
     outPlyToMate = 0;
     outTier = MateCertificateTier::NONE;
-    if (!teamHasTimeAdvantage || candidatePlyToMate <= 0
+    if (!time.can_sit(teamSide) || candidatePlyToMate <= 0
         || budget.exhausted || budget.remainingNodes == 0
         || budget.out_of_time()) {
         return false;
@@ -2634,7 +2788,7 @@ bool Agent::certify_mate_candidate(
         return false;
     }
     const bool losesRace = action_loses_mate_race(
-        board, candidate, teamSide, teamHasTimeAdvantage, &budget);
+        board, candidate, teamSide, time, &budget);
     if (losesRace || budget.exhausted || budget.out_of_time()) {
         return false;
     }
@@ -2644,13 +2798,21 @@ bool Agent::certify_mate_candidate(
         SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES);
     const std::shared_ptr<Node> candidateNode = tree_child_for(
         treeNode, candidate.moveA, candidate.moveB);
+    // The single-board and sat-board tiers let this team sit the partner
+    // board at every move of the line and never the defenders: true of the
+    // clock only while the lead covers every move. The joint tier follows
+    // the clock itself.
+    const bool sitsThroughLine = time.can_sit_through(
+        teamSide, candidateAttackerMoves);
+    const TimeState afterCandidate = time.after(
+        teamSide, board.on_turn_on_both_boards(teamSide));
     board.make_moves(candidate.moveA, candidate.moveB);
     const auto restore = [&] {
         board.unmake_moves(candidate.moveA, candidate.moveB);
     };
 
     const JointMateStatus terminal = terminal_joint_mate_status(
-        board, teamSide, teamHasTimeAdvantage, 1);
+        board, teamSide, afterCandidate, 1);
     if (terminal == JointMateStatus::PROVEN) {
         restore();
         outPlyToMate = 1;
@@ -2683,7 +2845,7 @@ bool Agent::certify_mate_candidate(
     // A single-board proof is exact while the time-behind defender is not on
     // turn on the partner board: every legal reply is then an evasion on the
     // mating board, and the time-ahead attacker may keep its partner sitting.
-    if (movesA != movesB) {
+    if (movesA != movesB && sitsThroughLine) {
         const int activeBoard = movesA ? BOARD_A : BOARD_B;
         const int partnerBoard = 1 - activeBoard;
         const Stockfish::Color defenderPartnerColor = partnerBoard == BOARD_A
@@ -2743,7 +2905,7 @@ bool Agent::certify_mate_candidate(
     cache.reserve(static_cast<size_t>(
         std::min<uint64_t>(budget.remainingNodes, 16384)));
     const JointMateProof proof = search_joint_forced_mate(
-        board, teamSide, teamHasTimeAdvantage, ~teamSide,
+        board, teamSide, afterCandidate, ~teamSide,
         std::max(0, candidateAttackerMoves - 1), 1,
         budget, cache, false, candidateNode.get());
     restore();
@@ -2758,6 +2920,21 @@ bool Agent::certify_mate_candidate(
 void Agent::verify_root_action_slice(
     Board& board, const JointActionCandidate& action,
     Stockfish::Color teamSide, RootActionVerdict& verdict,
+    uint64_t sliceNodes, int probeMs,
+    MateSearchBudget::Clock::time_point deadline,
+    const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
+    uint64_t& nodesSpent, ConcurrentVerifierStats* stats,
+    const Node* actionNode, int maxAttackerMoves) {
+    verify_root_action_slice(
+        board, action, teamSide, TimeState::legacy(teamSide, false), verdict,
+        sliceNodes, probeMs, deadline, cancelled, stopOnSolvedRoot,
+        nodesSpent, stats, actionNode, maxAttackerMoves);
+}
+
+void Agent::verify_root_action_slice(
+    Board& board, const JointActionCandidate& action,
+    Stockfish::Color teamSide, const TimeState& time,
+    RootActionVerdict& verdict,
     uint64_t sliceNodes, int probeMs,
     MateSearchBudget::Clock::time_point deadline,
     const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
@@ -2789,17 +2966,20 @@ void Agent::verify_root_action_slice(
         ++stats->slices;
     }
 
+    // The opponents' proofs run under the clock this action leaves them.
+    const TimeState afterAction = time.after(
+        teamSide, board.on_turn_on_both_boards(teamSide));
     board.make_moves(action.moveA, action.moveB);
     bool proven = false;
     int provenPly = 0;
     bool refuted = false;
     // Mating them ends the game where it stands.
-    if (board.is_checkmate(~teamSide, true)) {
+    if (board.is_checkmate(~teamSide, afterAction.can_sit(~teamSide))) {
         refuted = true;
     } else if (!verdict.fairyProbed) {
         // Fairy first: a single-board mate is found in a few milliseconds
-        // and certified exactly. The opponents are the team ahead on time
-        // here, which is what lets them sit the other board.
+        // and certified exactly, when the opponents' lead lets them sit the
+        // other board for the whole line.
         verdict.fairyProbed = true;
         if (stats) {
             ++stats->probes;
@@ -2809,7 +2989,7 @@ void Agent::verify_root_action_slice(
         string replyPv;
         uint64_t probeNodes = 0;
         const bool found = probe_position_mate(
-            board, ~teamSide, true,
+            board, ~teamSide, afterAction,
             SearchParams::SELECTED_MOVE_PROBE_NODE_BUDGET,
             std::max(1, std::min(probeMs, remaining_ms())), abort,
             reply, replyPly, replyPv, {}, false, &probeNodes);
@@ -2829,7 +3009,7 @@ void Agent::verify_root_action_slice(
             MateCertificateTier tier = MateCertificateTier::NONE;
             int certifiedPly = 0;
             proven = certify_mate_candidate(
-                board, ~teamSide, true, reply, replyPly, certBudget,
+                board, ~teamSide, afterAction, reply, replyPly, certBudget,
                 certifiedPly, tier, actionNode);
             provenPly = certifiedPly;
             const uint64_t spent = SearchParams::SELECTED_MOVE_CERT_NODE_BUDGET
@@ -2857,7 +3037,7 @@ void Agent::verify_root_action_slice(
         int matePly = 0;
         bool refutedAtBound = false;
         proven = prove_joint_forced_mate(
-            board, ~teamSide, true, maxAttackerMoves, slice,
+            board, ~teamSide, afterAction, maxAttackerMoves, slice,
             mateAction, matePly, nullptr, false, verdict.cache.get(),
             &refutedAtBound, actionNode);
         provenPly = matePly;
@@ -2894,6 +3074,20 @@ bool Agent::prove_joint_forced_mate(
     int& outPlyToMate, std::vector<MateProofPly>* outLine,
     bool shortestFirst, joint_mate::JointMateCache* cache,
     bool* outRefutedAtBound, const Node* treeNode) {
+    return prove_joint_forced_mate(
+        board, attackingTeam,
+        TimeState::legacy(attackingTeam, attackingTeamHasTimeAdvantage),
+        maxAttackerMoves, budget, outAction, outPlyToMate, outLine,
+        shortestFirst, cache, outRefutedAtBound, treeNode);
+}
+
+bool Agent::prove_joint_forced_mate(
+    Board& board, Stockfish::Color attackingTeam,
+    const TimeState& time, int maxAttackerMoves,
+    MateSearchBudget& budget, JointActionCandidate& outAction,
+    int& outPlyToMate, std::vector<MateProofPly>* outLine,
+    bool shortestFirst, joint_mate::JointMateCache* cache,
+    bool* outRefutedAtBound, const Node* treeNode) {
     outPlyToMate = 0;
     if (outRefutedAtBound) {
         *outRefutedAtBound = false;
@@ -2914,7 +3108,7 @@ bool Agent::prove_joint_forced_mate(
              ? std::min(2, maxAttackerMoves) : maxAttackerMoves;
          attackerMoves <= maxAttackerMoves; ++attackerMoves) {
         const JointMateProof proof = search_joint_forced_mate(
-            board, attackingTeam, attackingTeamHasTimeAdvantage,
+            board, attackingTeam, time,
             attackingTeam, attackerMoves, 0, budget, *cache, false, treeNode);
         refutedThroughout = refutedThroughout
             && proof.status == JointMateStatus::REFUTED;
@@ -2924,7 +3118,7 @@ bool Agent::prove_joint_forced_mate(
             const bool isCapB = proof.action.moveB != Stockfish::MOVE_NONE
                 && board.is_capture(BOARD_B, proof.action.moveB);
             const JointActionRules rules{
-                boardAOnTurn, boardBOnTurn, attackingTeamHasTimeAdvantage,
+                boardAOnTurn, boardBOnTurn, time.can_sit(attackingTeam),
                 boardAOnTurn && board.has_any_legal_move(BOARD_A),
                 boardBOnTurn && board.has_any_legal_move(BOARD_B)};
             outAction = JointActionCandidate(
@@ -2957,14 +3151,25 @@ bool Agent::find_root_mate(Board& board, Stockfish::Color teamSide,
                           int& outPlyToMate,
                           uint64_t nodeBudget,
                           MateSearchBudget::Clock::time_point deadline) {
+    return find_root_mate(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        outAction, outPlyToMate, nodeBudget, deadline);
+}
+
+bool Agent::find_root_mate(Board& board, Stockfish::Color teamSide,
+                          const TimeState& time,
+                          JointActionCandidate& outAction,
+                          int& outPlyToMate,
+                          uint64_t nodeBudget,
+                          MateSearchBudget::Clock::time_point deadline) {
     return find_root_mate_impl(
-        board, teamSide, teamHasTimeAdvantage, outAction, outPlyToMate,
+        board, teamSide, time, outAction, outPlyToMate,
         nodeBudget, nullptr, nullptr, true, deadline);
 }
 
 bool Agent::find_root_mate_impl(
     Board& board, Stockfish::Color teamSide,
-    bool teamHasTimeAdvantage,
+    const TimeState& time,
     JointActionCandidate& outAction,
     int& outPlyToMate,
     uint64_t nodeBudget,
@@ -3001,6 +3206,12 @@ bool Agent::find_root_mate_impl(
     if (out_of_time()) {
         return false;
     }
+    const bool teamHasTimeAdvantage = time.can_sit(teamSide);
+    // The single-board and capture-feed proofs below sit the partner board
+    // for the whole line and never let the defenders sit. The clock allows
+    // that only while this team's lead covers every action of the line.
+    const bool sitsThroughLine = time.can_sit_through(
+        teamSide, SAT_PARTNER_PROOF_ACTIONS);
 
     // 1. Fast 1-ply immediate mate scan across all joint combinations.
     // With both boards on turn the scan walks a joint move space that is cheap
@@ -3019,8 +3230,7 @@ bool Agent::find_root_mate_impl(
                    ? &immediateDeadlineBudget
                    : nullptr);
         if (find_immediate_root_mate(
-                board, teamSide, teamHasTimeAdvantage, outAction,
-                immediateBudget)) {
+                board, teamSide, time, outAction, immediateBudget)) {
             outPlyToMate = 1;
             if (outPrincipalVariation) {
                 outPrincipalVariation->push_back(
@@ -3071,15 +3281,17 @@ bool Agent::find_root_mate_impl(
         }
     }
 
-    // 2. When down on time, capture-plus-pass is still legal with both boards
-    // on turn. The capture may feed an immediate mate to the waiting board.
-    // The time-ahead opponent can move the capture board or sit, so reuse the
-    // in-tree waiting-mate classifier: it proves the mate survives every choice
-    // and rejects the capture if the opponent can mate the capturing board
-    // first.
-    if (!teamHasTimeAdvantage && boardAOnTurn && boardBOnTurn) {
-        const JointActionRules rules{boardAOnTurn, boardBOnTurn, false,
-                                     true, true};
+    // 2. Without the lead for the sat-board proofs below, capture-plus-pass
+    // is still legal with both boards on turn. The capture may feed an
+    // immediate mate to the waiting board. The opponent may be able to move
+    // the capture board or sit, so reuse the in-tree waiting-mate classifier,
+    // under the clock the capture leaves: it proves the mate survives every
+    // choice and rejects the capture if the opponent can mate the capturing
+    // board first.
+    if (!sitsThroughLine && boardAOnTurn && boardBOnTurn) {
+        const JointActionRules rules{boardAOnTurn, boardBOnTurn,
+                                     teamHasTimeAdvantage, true, true};
+        const TimeState afterCapture = time.after(teamSide, true);
         for (int feedBoard : {BOARD_A, BOARD_B}) {
             const int targetBoard = 1 - feedBoard;
             const Stockfish::Color targetAttacker = targetBoard == BOARD_A
@@ -3115,7 +3327,7 @@ bool Agent::find_root_mate_impl(
                 int terminalEndInPly = 0;
                 const TerminalOutcome outcome = handCountAfter > handCountBefore
                     ? classify_terminal_position(
-                        board, ~teamSide, teamSide, false, 1,
+                        board, ~teamSide, teamSide, afterCapture, {1, 1},
                         &terminalEndInPly)
                     : TerminalOutcome::NONE;
                 board.pop_move(feedBoard);
@@ -3142,7 +3354,7 @@ bool Agent::find_root_mate_impl(
     // 3. Multi-ply forced mate detectors for the time-ahead team. These proofs
     // rely on freely sitting on one board while the other board's mating
     // sequence is played.
-    if (teamHasTimeAdvantage && boardAOnTurn && boardBOnTurn) {
+    if (sitsThroughLine && boardAOnTurn && boardBOnTurn) {
         const JointActionRules rules{boardAOnTurn, boardBOnTurn, teamHasTimeAdvantage,
                                      true, true};
 
@@ -3785,7 +3997,7 @@ bool Agent::find_root_mate_impl(
              maxMateMoves <= SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
              ++maxMateMoves) {
             const JointMateProof proof = search_joint_forced_mate(
-                board, teamSide, teamHasTimeAdvantage, teamSide,
+                board, teamSide, time, teamSide,
                 maxMateMoves, 0, budget, cache, attackerWinsMateRace,
                 stopOnSolvedRoot);
             if (proof.status == JointMateStatus::PROVEN) {
@@ -3830,6 +4042,23 @@ bool Agent::find_root_loss_proofs(
     const vector<JointActionCandidate>* preferredActions,
     Node* liveRoot,
     bool scanWaitingChecks) {
+    return find_root_loss_proofs(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        outProofs, nodeBudget, deadline, cancelled, preferredActions,
+        liveRoot, scanWaitingChecks);
+}
+
+bool Agent::find_root_loss_proofs(
+    Board& board,
+    Stockfish::Color teamSide,
+    const TimeState& time,
+    vector<RootLossProof>& outProofs,
+    uint64_t nodeBudget,
+    MateSearchBudget::Clock::time_point deadline,
+    const std::atomic<bool>* cancelled,
+    const vector<JointActionCandidate>* preferredActions,
+    Node* liveRoot,
+    bool scanWaitingChecks) {
     outProofs.clear();
     MateSearchBudget totalBudget;
     totalBudget.remainingNodes = nodeBudget;
@@ -3840,7 +4069,7 @@ bool Agent::find_root_loss_proofs(
         return false;
     }
     vector<JointActionCandidate> defenses = legal_joint_actions(
-        board, teamSide, teamHasTimeAdvantage);
+        board, teamSide, time);
     if (defenses.empty() || nodeBudget == 0) {
         return false;
     }
@@ -3888,7 +4117,16 @@ bool Agent::find_root_loss_proofs(
     }
 
     const Stockfish::Color opponentTeam = ~teamSide;
-    const bool opponentHasTimeAdvantage = !teamHasTimeAdvantage;
+    // Every defense costs the same, so the opponents answer all of them under
+    // one clock: the one the defense leaves.
+    const TimeState defenseTime = time.after(
+        teamSide, board.on_turn_on_both_boards(teamSide));
+    const bool teamHasTimeAdvantage = defenseTime.can_sit(teamSide);
+    const bool opponentHasTimeAdvantage = defenseTime.can_sit(opponentTeam);
+    // The cached proofs are the opponents' sat-partner-board proofs, valid
+    // only while their lead covers the whole line.
+    const bool opponentSitsThroughLine = defenseTime.can_sit_through(
+        opponentTeam, SAT_PARTNER_PROOF_ACTIONS);
     SingleBoardMateCache singleBoardMateCache;
 
     const auto actions_equal = [](const JointActionCandidate& lhs,
@@ -3904,7 +4142,7 @@ bool Agent::find_root_loss_proofs(
     const auto try_cached_capture_feed = [&] (
         int& opponentMatePly,
         vector<MateProofPly>& opponentPv) {
-        if (!opponentHasTimeAdvantage || singleBoardMateCache.empty()) {
+        if (!opponentSitsThroughLine || singleBoardMateCache.empty()) {
             return false;
         }
         const bool opponentAOnTurn =
@@ -4052,18 +4290,22 @@ bool Agent::find_root_loss_proofs(
                 break;
             }
 
+            // The waiting check is the opponents' action on both boards,
+            // charged as such; this team defends under what it leaves.
+            const TimeState checkTime = defenseTime.after(
+                opponentTeam, board.on_turn_on_both_boards(opponentTeam));
             board.make_moves(check.action.moveA, check.action.moveB);
             bool forcedMate = board.is_checkmate(
-                teamSide, teamHasTimeAdvantage);
+                teamSide, checkTime.can_sit(teamSide));
             int matePly = forcedMate ? 1 : 0;
             vector<MateProofPly> line{check.action};
             if (!forcedMate
                 && !board.is_checkmate(
-                    opponentTeam, opponentHasTimeAdvantage)
+                    opponentTeam, checkTime.can_sit(opponentTeam))
                 && !board.is_draw(1)) {
                 vector<RootLossProof> replyProofs;
                 forcedMate = find_root_loss_proofs(
-                    board, teamSide, teamHasTimeAdvantage,
+                    board, teamSide, checkTime,
                     replyProofs, allocation, deadline, cancelled,
                     nullptr, nullptr, false);
                 if (forcedMate) {
@@ -4201,7 +4443,7 @@ bool Agent::find_root_loss_proofs(
                 int opponentMatePly = 0;
                 std::vector<MateProofPly> opponentPrincipalVariation;
                 defenseIsMated = find_root_mate_impl(
-                    board, opponentTeam, opponentHasTimeAdvantage,
+                    board, opponentTeam, defenseTime,
                     opponentMate, opponentMatePly,
                     defenseAllocation, nullptr, &defenseBudget, true,
                     deadline, true, true, &opponentPrincipalVariation,
@@ -4262,9 +4504,22 @@ bool Agent::find_root_forced_loss(
     int& outPlyToMate,
     uint64_t nodeBudget,
     MateSearchBudget::Clock::time_point deadline) {
+    return find_root_forced_loss(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        outAction, outPlyToMate, nodeBudget, deadline);
+}
+
+bool Agent::find_root_forced_loss(
+    Board& board,
+    Stockfish::Color teamSide,
+    const TimeState& time,
+    JointActionCandidate& outAction,
+    int& outPlyToMate,
+    uint64_t nodeBudget,
+    MateSearchBudget::Clock::time_point deadline) {
     vector<RootLossProof> proofs;
     if (!find_root_loss_proofs(
-            board, teamSide, teamHasTimeAdvantage,
+            board, teamSide, time,
             proofs, nodeBudget, deadline)) {
         return false;
     }
@@ -4485,6 +4740,19 @@ bool Agent::try_reuse_mate_continuation(
     Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
     JointActionCandidate& outAction, int& outPlyToMate,
     bool avoidRepetition) const {
+    return try_reuse_mate_continuation(
+        board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+        outAction, outPlyToMate, avoidRepetition);
+}
+
+bool Agent::try_reuse_mate_continuation(
+    Board& board, Stockfish::Color teamSide, const TimeState& time,
+    JointActionCandidate& outAction, int& outPlyToMate,
+    bool avoidRepetition) const {
+    // Continuations come from the single-board prover, which sits the
+    // partner board for the whole line: keyed by the flag that model takes,
+    // and replayed only while the lead still covers every move left.
+    const bool teamHasTimeAdvantage = time.can_sit(teamSide);
     const uint64_t positionHash = board.search_hash_key(
         teamSide, teamHasTimeAdvantage);
     const std::string signature = board_signature(board);
@@ -4494,7 +4762,9 @@ bool Agent::try_reuse_mate_continuation(
             || continuation.signature != signature
             || continuation.teamSide != teamSide
             || continuation.teamHasTimeAdvantage != teamHasTimeAdvantage
-            || continuation.plyToMate <= 0) {
+            || continuation.plyToMate <= 0
+            || !time.can_sit_through(
+                teamSide, (continuation.plyToMate + 1) / 2)) {
             continue;
         }
         if ((continuation.action.moveA != Stockfish::MOVE_NONE
@@ -4597,8 +4867,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     int moveTimeMs = options.moveTimeMs;
     size_t targetNodes = options.targetNodes;
 
-    // Compute position hash for tree reuse
+    // The root's identity, and the key a retained subtree is found under.
     uint64_t positionHash = board.search_hash_key(teamSide, searchTime_);
+    const uint64_t reuseKey = board.search_reuse_key(teamSide, searchTime_);
     const std::string positionSignature = board_signature(board);
 
     // Every claimed forced win passes this before it is acted on, whichever
@@ -4613,14 +4884,23 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             + chrono::milliseconds(SearchParams::MATE_RACE_VETO_MAX_MS);
         budget.cancelled = &stopRequested_;
         return action_loses_mate_race(
-            target, action, teamSide, teamHasTimeAdvantage, &budget);
+            target, action, teamSide, searchTime_, &budget);
     };
 
     // Try to reuse tree from previous search (if enabled)
     std::shared_ptr<Node> reusedRoot = nullptr;
+    bool reusedUnderSameClock = false;
     if (SearchParams::ENABLE_TREE_REUSE) {
         reusedRoot = try_reuse_tree(
-            positionHash, teamSide, positionSignature, options.background);
+            reuseKey, teamSide, positionSignature, searchTime_,
+            options.background, &reusedUnderSameClock);
+    }
+    if (reusedRoot && !reusedUnderSameClock) {
+        // The lead moved since the subtree was searched. Who may sit at the
+        // root is unchanged, so its edges stand and its visits are still
+        // worth having, but deeper down a team may have gained or lost the
+        // right to sit: nothing it proved is trusted here.
+        clear_reused_proofs(reusedRoot);
     }
     if (reusedRoot && mustPlayDespiteTeamMate
         && reusedRoot->get_node_type() == NodeType::LOSS) {
@@ -4656,7 +4936,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
         if (options.verbose) {
             cout << "info string Tree reuse: " << rootNode->get_visits()
-                 << " visits recovered" << endl;
+                 << " visits recovered"
+                 << (reusedUnderSameClock ? "" : " (clock changed; proofs cleared)")
+                 << endl;
         }
     } else {
         // Create new root node
@@ -4667,10 +4949,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     // Certifying the chosen move runs once the tree has stopped growing, so
     // its time comes off the front of the allocation rather than after it.
-    // It only ever vetoes when this team is behind on time, so ahead on time
-    // the search keeps the whole move.
+    // It only ever vetoes when the opponents could sit through a line of
+    // theirs, so with a lead longer than any such line the search keeps the
+    // whole move.
     const int selectedMoveCertReserveMs =
-        options.search.certifySelectedMove && !teamHasTimeAdvantage
+        options.search.certifySelectedMove
+            && !searchTime_.can_sit_through(teamSide, OPPONENT_PROOF_HORIZON_MOVES)
             && !options.background && options.search.enableMateProbe
             ? SearchParams::selected_move_cert_reserve_ms(moveTimeMs)
             : 0;
@@ -4695,9 +4979,11 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // Released on the GC thread: clearing in place costs tens of
         // milliseconds before the first mate check can run.
         discard(transpositionTable->detach(), options.background);
-        if (reusedRoot) {
+        if (reusedRoot && reusedUnderSameClock) {
             reindex_reused_subtree(rootNode, options.background);
         } else {
+            // A subtree from another clock keeps the hashes of that clock, so
+            // none of its nodes may stand in for a node of this one.
             transpositionTable->insertOrGet(positionHash, rootNode);
         }
     }
@@ -4862,7 +5148,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 try {
                     const bool rootFound = rootProbeNodeBudget > 0
                         && probe_position_mate(
-                            *probeBoard, teamSide, teamHasTimeAdvantage,
+                            *probeBoard, teamSide, searchTime_,
                             rootProbeNodeBudget, rootProbeBudgetMs, rootSettled,
                             action, plyToMate, pv,
                             publish, options.search.drawContempt > 0.0f);
@@ -4934,20 +5220,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         string candidatePv;
                         uint64_t nodesUsed = 0;
                         // A single-board candidate assumes this target team
-                        // can sit on the partner board. It remains a hint until
-                        // the two-board certifier checks that same assumption.
-                        // The proof-only mode has no hint to keep, so it asks
-                        // with the clock as it stands: a team behind on time
-                        // cannot sit, and the probe reports nothing for it.
+                        // can sit on the partner board for the whole line. In
+                        // the hint modes the probe asks under that assumption
+                        // and the result stays a hint; the proof-only mode has
+                        // no hint to keep, so it asks with the clock the
+                        // target's path reached. Either way only the
+                        // certifier, held to that same clock, settles a node.
                         const Stockfish::Color targetTeam =
                             targetNode->get_team_to_play();
-                        const bool targetTeamHasTimeAdvantage =
-                            certifyOnly
-                                ? (targetTeam == teamSide) == teamHasTimeAdvantage
-                                : true;
+                        const TimeState probeTime = certifyOnly
+                            ? target.time
+                            : TimeState::legacy(targetTeam, true);
                         const bool found = probe_position_mate(
-                            *target.board, targetTeam,
-                            targetTeamHasTimeAdvantage,
+                            *target.board, targetTeam, probeTime,
                             jobNodes, jobBudgetMs, internalSettled,
                             candidate, candidatePly, candidatePv, {},
                             options.search.drawContempt > 0.0f, &nodesUsed);
@@ -5057,8 +5342,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             MateCertificateTier certificateTier =
                                 MateCertificateTier::NONE;
                             const bool certified = certify_mate_candidate(
-                                *target.board, targetTeam,
-                                targetTeamHasTimeAdvantage,
+                                *target.board, targetTeam, target.time,
                                 candidate, candidatePly, certificateBudget,
                                 certifiedPly, certificateTier,
                                 targetNode.get());
@@ -5159,7 +5443,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             ++verifierStats.actions;
                         }
                         verify_root_action_slice(
-                            *probeBoard, action, teamSide, verdict,
+                            *probeBoard, action, teamSide, searchTime_, verdict,
                             std::min(
                                 SearchParams::CONCURRENT_VERIFIER_SLICE_NODES,
                                 SearchParams::CONCURRENT_VERIFIER_NODE_CEILING
@@ -5324,8 +5608,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 const string scoreStr = format_root_aware_uci_score(
                     rootNode, children[displayIdx], childQ, C, k);
                 const string pv = extract_pv_from_child(
-                    board, displayIdx, 20, teamSide,
-                    teamHasTimeAdvantage);
+                    board, displayIdx, 20, teamSide, searchTime_);
 
                 lastReportedDepth = depth;
                 cout << "info depth " << depth
@@ -5483,7 +5766,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     try {
         cachedRootMate = runRootScan
             && try_reuse_mate_continuation(
-                *scanBoard, teamSide, teamHasTimeAdvantage,
+                *scanBoard, teamSide, searchTime_,
                 rootMateAction, rootMatePly,
                 options.search.drawContempt > 0.0f);
         if (cachedRootMate && loses_mate_race(*scanBoard, rootMateAction)) {
@@ -5512,7 +5795,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 ? std::min(rootScanDeadline, immediateDeadline)
                 : immediateDeadline;
             immediateRootMate = find_immediate_root_mate(
-                *scanBoard, teamSide, teamHasTimeAdvantage,
+                *scanBoard, teamSide, searchTime_,
                 rootMateAction, &immediateBudget);
             immediateScanComplete = !immediateBudget.exhausted;
             if (immediateRootMate) {
@@ -5532,7 +5815,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             && !cachedRootMate
             && !immediateRootMate
             && find_root_mate_impl(
-                *scanBoard, teamSide, teamHasTimeAdvantage,
+                *scanBoard, teamSide, searchTime_,
                 rootMateAction, rootMatePly,
                 rootMateBudget, &mateContinuations_, nullptr, true,
                 rootScanDeadline, !immediateScanComplete, false,
@@ -5567,7 +5850,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         || probedRootMate) {
         const string proofPv = probePrincipalVariation.empty()
             ? format_mate_proof_pv(
-                board, rootMatePv, teamSide, teamHasTimeAdvantage)
+                board, rootMatePv, teamSide, searchTime_)
             : probePrincipalVariation;
         return return_proven_mate(rootMateAction, rootMatePly, proofPv);
     }
@@ -5609,7 +5892,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
         scannedRootLoss = runRootScan
             && find_root_loss_proofs(
-                *scanBoard, teamSide, teamHasTimeAdvantage,
+                *scanBoard, teamSide, searchTime_,
                 rootLossProofs, rootLossBudget,
                 rootLossScanDeadline, &rootLossScanStop_,
                 &preferredRootActions, rootNode.get());
@@ -5682,7 +5965,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         if (options.verbose) {
             const string bestMoveStr = extract_best_move(board);
             const string proofPv = format_mate_proof_pv(
-                board, rootLossPv, teamSide, teamHasTimeAdvantage);
+                board, rootLossPv, teamSide, searchTime_);
             const int mateScore = (rootLossPly + 1) / 2;
             cout << "info depth " << rootLossPly << " score mate -"
                  << mateScore << " nodes 1 nps 1000 time 0 pv "
@@ -5778,8 +6061,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         return proof == rootLossProofs.end()
             ? string{}
             : format_mate_proof_pv(
-                board, proof->principalVariation,
-                teamSide, teamHasTimeAdvantage);
+                board, proof->principalVariation, teamSide, searchTime_);
     };
 
     // Periodic info output during search (UCI verbose mode only)
@@ -5945,7 +6227,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             if (pv.empty()) {
                                 pv = extract_pv_from_child(
                                     board, static_cast<int>(childIdx), 20,
-                                    teamSide, teamHasTimeAdvantage);
+                                    teamSide, searchTime_);
                             }
                             float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
                             string scoreStr = format_root_aware_uci_score(
@@ -6222,7 +6504,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             // of the alternatives the search actually looked at.
             if (const std::optional<JointActionCandidate> safer =
                     race_safe_alternative(
-                        board, *rootNode, teamSide, teamHasTimeAdvantage,
+                        board, *rootNode, teamSide, searchTime_,
                         options.search.qVetoDelta, options.search.qValueWeight,
                         avoidSolvedDraw, &stopRequested_)) {
                 if (options.verbose) {
@@ -6274,7 +6556,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 const std::optional<JointActionCandidate> mateFree =
                     certified_mate_free_alternative(
                         board, *rootNode, result, teamSide,
-                        teamHasTimeAdvantage, certDeadline, &stopRequested_,
+                        searchTime_, certDeadline, &stopRequested_,
                         &certStats);
                 if (mateFree) {
                     result = *mateFree;
@@ -6360,7 +6642,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 if (pv.empty()) {
                     pv = extract_pv_from_child(
                         board, static_cast<int>(childIdx), 20,
-                        teamSide, teamHasTimeAdvantage);
+                        teamSide, searchTime_);
                 }
                 float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
                 string scoreStr = format_root_aware_uci_score(
@@ -6773,7 +7055,7 @@ string Agent::extract_pv(Board& board, int maxDepth) {
  */
 string Agent::extract_pv_from_child(
     Board& board, int childIdx, int maxDepth,
-    Stockfish::Color rootTeam, bool rootTeamHasTimeAdvantage) {
+    Stockfish::Color rootTeam, const TimeState& rootTime) {
     if (!rootNode || !rootNode->is_expanded()) {
         return "";
     }
@@ -6796,6 +7078,8 @@ string Agent::extract_pv_from_child(
     pv = "(" + moveA + "," + moveB + ")";
     boardSearchPlies[BOARD_A] += action.moveA != Stockfish::MOVE_NONE;
     boardSearchPlies[BOARD_B] += action.moveB != Stockfish::MOVE_NONE;
+    TimeState lineTime = rootTime.after(
+        rootTeam, tempBoard.on_turn_on_both_boards(rootTeam));
     
     // Apply moves to temp board
     tempBoard.make_moves(action.moveA, action.moveB);
@@ -6844,6 +7128,8 @@ string Agent::extract_pv_from_child(
             nextAction.moveA != Stockfish::MOVE_NONE;
         boardSearchPlies[BOARD_B] +=
             nextAction.moveB != Stockfish::MOVE_NONE;
+        const Stockfish::Color mover = currentNode->get_team_to_play();
+        lineTime.advance(mover, tempBoard.on_turn_on_both_boards(mover));
         
         // Apply moves to temp board for next iteration
         tempBoard.make_moves(nextAction.moveA, nextAction.moveB);
@@ -6856,8 +7142,7 @@ string Agent::extract_pv_from_child(
         && currentNode->get_node_type() != NodeType::UNSOLVED) {
         append_waiting_mate_suffix(
             tempBoard, currentNode->get_team_to_play(),
-            rootTeam, rootTeamHasTimeAdvantage,
-            boardSearchPlies, pv);
+            rootTeam, lineTime, boardSearchPlies, pv);
     }
     
     return pv;
@@ -6951,6 +7236,23 @@ void Agent::discard(std::shared_ptr<void> item, bool background) {
                       background ? &stopRequested_ : nullptr);
 }
 
+void Agent::clear_reused_proofs(const std::shared_ptr<Node>& reusedRoot) {
+    if (!reusedRoot) {
+        return;
+    }
+    std::vector<Node*> pending = {reusedRoot.get()};
+    std::unordered_set<const Node*> visited;
+    while (!pending.empty()) {
+        Node* node = pending.back();
+        pending.pop_back();
+        if (!node || !visited.insert(node).second) {
+            continue;
+        }
+        node->clear_solver_state();
+        node->append_child_ptrs(pending);
+    }
+}
+
 void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot,
                                    bool background) {
     if (!transpositionTable || !reusedRoot) {
@@ -6983,15 +7285,22 @@ void Agent::reindex_reused_subtree(const std::shared_ptr<Node>& reusedRoot,
     }
 }
 
-std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
+std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t reuseKey,
                                             Stockfish::Color teamSide,
                                             const std::string& signature,
-                                            bool background) {
-    // The hash locates the candidate; the signature is what admits it. Retained
+                                            const TimeState& rootTime,
+                                            bool background,
+                                            bool* outExactClock) {
+    // The key locates the candidate; the signature is what admits it. Retained
     // edges were generated against that exact board, and a stale pocket would
-    // make reused drops illegal.
+    // make reused drops illegal. The key carries only the lead's class, which
+    // fixes who may sit at the root itself, so the root's edges stay legal;
+    // the caller decides from the exact clock what else to trust.
     std::shared_ptr<Node> reused;
-    auto entry = nextRootCandidates_.find(positionHash);
+    if (outExactClock) {
+        *outExactClock = false;
+    }
+    auto entry = nextRootCandidates_.find(reuseKey);
     if (entry != nextRootCandidates_.end()) {
         const RetainedRootCandidate& candidate = entry->second;
         if (candidate.node
@@ -6999,6 +7308,9 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
             && !candidate.signature.empty()
             && candidate.signature == signature) {
             reused = candidate.node;
+            if (outExactClock) {
+                *outExactClock = candidate.time == rootTime;
+            }
         }
     }
 
@@ -7127,15 +7439,15 @@ void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
     }
 
     if (depth == level) {
-        const uint64_t positionHash = board.search_hash_key(
+        const uint64_t reuseKey = board.search_reuse_key(
             node->get_team_to_play(), nodeTime);
         // Shallower levels run first, so a transposition already indexed keeps
         // the shallower node, whose signature is already built.
-        if (!nextRootCandidates_.contains(positionHash)) {
+        if (!nextRootCandidates_.contains(reuseKey)) {
             nextRootCandidates_.emplace(
-                positionHash,
+                reuseKey,
                 RetainedRootCandidate{
-                    node, positionHash, board_signature(board)});
+                    node, reuseKey, board_signature(board), nodeTime});
         }
         return;
     }

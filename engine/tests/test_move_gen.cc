@@ -51,8 +51,8 @@ public:
         bool teamHasTimeAdvantage, JointActionCandidate& action,
         int& plyToMate) {
         return Agent::find_root_mate_impl(
-            board, teamSide, teamHasTimeAdvantage, action, plyToMate,
-            SearchParams::MATE_SEARCH_NODE_BUDGET,
+            board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+            action, plyToMate, SearchParams::MATE_SEARCH_NODE_BUDGET,
             &agent.mateContinuations_);
     }
 
@@ -64,13 +64,33 @@ public:
             board, teamSide, teamHasTimeAdvantage, action, plyToMate);
     }
 
+    static bool reuse_mate_continuation(
+        const Agent& agent, Board& board, Stockfish::Color teamSide,
+        const TimeState& time, JointActionCandidate& action,
+        int& plyToMate) {
+        return agent.try_reuse_mate_continuation(
+            board, teamSide, time, action, plyToMate);
+    }
+
+    static bool find_root_mate_with_pv(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        JointActionCandidate& action, int& plyToMate,
+        std::vector<MateProofPly>& principalVariation) {
+        return Agent::find_root_mate_impl(
+            board, teamSide, time, action, plyToMate,
+            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            Agent::MateSearchBudget::Clock::time_point{}, true, false,
+            &principalVariation);
+    }
+
     static bool find_root_mate_with_pv(
         Board& board, Stockfish::Color teamSide,
         bool teamHasTimeAdvantage, JointActionCandidate& action,
         int& plyToMate,
         std::vector<MateProofPly>& principalVariation) {
         return Agent::find_root_mate_impl(
-            board, teamSide, teamHasTimeAdvantage, action, plyToMate,
+            board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+            action, plyToMate,
             SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
             Agent::MateSearchBudget::Clock::time_point{}, true, false,
             &principalVariation);
@@ -2575,11 +2595,83 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
         actualPosition.search_hash_key(
             Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
-        Agent::board_signature(actualPosition), false);
+        Agent::board_signature(actualPosition),
+        TimeState::legacy(Stockfish::WHITE, teamHasTimeAdvantage), false);
     EXPECT_EQ(reused, replyNodes[1]);
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
     EXPECT_EQ(reused->get_end_in_ply(), 3);
+}
+
+TEST_F(EngineTest, TreeReuseFindsAClockedNodeByClassAndReportsAChangedClock) {
+    Board board;
+    // White to move on board A alone: its own move is free. Black then has
+    // both boards and pays 200 ms for its reply, so White's next root sits
+    // at a 500 ms lead.
+    const TimeState rootTime =
+        TimeState::clocked(Stockfish::WHITE, 300, 100, 200);
+    auto root = std::make_shared<Node>(
+        Stockfish::WHITE, board.search_hash_key(Stockfish::WHITE, rootTime));
+    const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
+    ASSERT_NE(ownMove, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {ownMove}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        true, true, false, SearchParams::RuntimeConfig{}));
+    const std::shared_ptr<Node> opponentNode = root->get_children().front();
+
+    Board afterOwnMove(board);
+    afterOwnMove.make_moves(ownMove, Stockfish::MOVE_NONE);
+    const Stockfish::Move reply = find_move(afterOwnMove, BOARD_A, "e7e5");
+    ASSERT_NE(reply, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(opponentNode->try_init_and_expand(
+        {reply}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        false, true, true, SearchParams::RuntimeConfig{}));
+    const std::shared_ptr<Node> replyNode = opponentNode->get_children().front();
+    replyNode->mark_as_win(3);
+
+    Board nextRoot(afterOwnMove);
+    nextRoot.make_moves(reply, Stockfish::MOVE_NONE);
+    const TimeState predicted =
+        TimeState::clocked(Stockfish::WHITE, 500, 100, 200);
+    const auto store = [&](Agent& agent) {
+        AgentTreeReuseTestPeer::set_root(agent, root);
+        agent.store_next_root_candidates(board, rootTime);
+    };
+    const auto reuse = [&](Agent& agent, const TimeState& now, bool& exact) {
+        return agent.try_reuse_tree(
+            nextRoot.search_reuse_key(Stockfish::WHITE, now), Stockfish::WHITE,
+            Agent::board_signature(nextRoot), now, false, &exact);
+    };
+
+    {
+        Agent agent;
+        store(agent);
+        bool exact = false;
+        EXPECT_EQ(reuse(agent, predicted, exact), replyNode);
+        EXPECT_TRUE(exact);
+    }
+    {
+        // 450 ms is the same class as the predicted 500 ms: the node is
+        // found, but its proofs belong to another clock.
+        Agent agent;
+        store(agent);
+        bool exact = true;
+        const TimeState drifted =
+            TimeState::clocked(Stockfish::WHITE, 450, 100, 200);
+        EXPECT_EQ(reuse(agent, drifted, exact), replyNode);
+        EXPECT_FALSE(exact);
+        Agent::clear_reused_proofs(replyNode);
+        EXPECT_EQ(replyNode->get_node_type(), NodeType::UNSOLVED);
+    }
+    {
+        // Behind on time changes who may sit at the root itself.
+        Agent agent;
+        store(agent);
+        bool exact = true;
+        EXPECT_EQ(reuse(agent, TimeState::clocked(Stockfish::WHITE, -500, 100, 200),
+                        exact),
+                  nullptr);
+    }
 }
 
 TEST_F(EngineTest, TreeReuseIndexesPositionsThreeJointPliesDeep) {
@@ -2655,7 +2747,8 @@ TEST_F(EngineTest, TreeReuseIndexesPositionsThreeJointPliesDeep) {
     const std::shared_ptr<Node> reused = agent.try_reuse_tree(
         deepPosition.search_hash_key(
             Stockfish::WHITE, teamHasTimeAdvantage), Stockfish::WHITE,
-        Agent::board_signature(deepPosition), false);
+        Agent::board_signature(deepPosition),
+        TimeState::legacy(Stockfish::WHITE, teamHasTimeAdvantage), false);
     EXPECT_EQ(reused, deepNode);
 }
 
@@ -2686,7 +2779,9 @@ TEST_F(EngineTest, TreeReuseRejectsUnrelatedPositionAtSameDepth) {
     EXPECT_EQ(agent.try_reuse_tree(
                   elsewhere.search_hash_key(
                       Stockfish::BLACK, !teamHasTimeAdvantage), Stockfish::BLACK,
-                  Agent::board_signature(elsewhere), false),
+                  Agent::board_signature(elsewhere),
+                  TimeState::legacy(Stockfish::BLACK, !teamHasTimeAdvantage),
+                  false),
               nullptr);
 }
 
@@ -3505,6 +3600,136 @@ TEST_F(EngineTest, CertifiesCandidateWithNoPartnerIntervention) {
         budget, certifiedPly, tier));
     EXPECT_EQ(tier, MateCertificateTier::CHECKS_ONLY);
     EXPECT_GT(certifiedPly, 0);
+}
+
+namespace {
+
+// Whether every sit in @p line was legal when it was played, with the clock
+// charged ply by ply as the search charges it.
+::testing::AssertionResult line_sits_within_clock(
+    Board board, const std::vector<MateProofPly>& line,
+    Stockfish::Color team, TimeState time) {
+    Stockfish::Color mover = team;
+    for (size_t ply = 0; ply < line.size(); ++ply) {
+        const MateProofPly& step = line[ply];
+        const bool onA = board.side_to_move(BOARD_A) == mover;
+        const bool onB = board.side_to_move(BOARD_B) == ~mover;
+        const bool captureA = step.moveA != Stockfish::MOVE_NONE
+            && board.is_capture(BOARD_A, step.moveA);
+        const bool captureB = step.moveB != Stockfish::MOVE_NONE
+            && board.is_capture(BOARD_B, step.moveB);
+        const JointActionRules rules{
+            onA, onB, time.can_sit(mover),
+            onA && board.has_any_legal_move(BOARD_A),
+            onB && board.has_any_legal_move(BOARD_B)};
+        if (!is_joint_action_legal(
+                rules, step.moveA, step.moveB, captureA, captureB)) {
+            return ::testing::AssertionFailure()
+                << "illegal sit at ply " << ply << " with a lead of "
+                << time.lead_ms(mover) << " ms";
+        }
+        time.advance(mover, onA && onB);
+        board.make_moves(step.moveA, step.moveB);
+        mover = ~mover;
+    }
+    return ::testing::AssertionSuccess();
+}
+
+constexpr const char* kSatPartnerMate =
+    "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2"
+    "|"
+    "r1bk4/ppp1npNp/2nb3B/3B2B1/3P4/2P5/P1P2PPP/R2QK2R[bpp] b KQ";
+
+}  // namespace
+
+TEST_F(EngineTest, RootMateScanSitsOnlyWhileTheLeadLasts) {
+    Board board;
+    board.set(kSatPartnerMate);
+
+    // With a lead that covers the whole line, the sat-board proof stands.
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::vector<MateProofPly> line;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_with_pv(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 10000, 100, 100),
+        action, plyToMate, line));
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "d1h5");
+    EXPECT_EQ(plyToMate, 9);
+
+    // 250 ms pays for two sits of a line that needs five: the proof above,
+    // which the scan used to return on any lead, is not one this clock allows.
+    const TimeState shortLead =
+        TimeState::clocked(Stockfish::WHITE, 250, 100, 100);
+    EXPECT_FALSE(line_sits_within_clock(board, line, Stockfish::WHITE, shortLead));
+    // Whatever the scan proves now, it may only sit while the clock allows.
+    line.clear();
+    if (AgentTreeReuseTestPeer::find_root_mate_with_pv(
+            board, Stockfish::WHITE, shortLead, action, plyToMate, line)) {
+        EXPECT_TRUE(line_sits_within_clock(board, line, Stockfish::WHITE, shortLead));
+    }
+}
+
+TEST_F(EngineTest, MateContinuationsReplayOnlyWhileTheLeadCoversThem) {
+    Board board;
+    board.set(kSatPartnerMate);
+    Agent agent;
+    JointActionCandidate rootAction;
+    int rootPlyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_and_retain(
+        agent, board, Stockfish::WHITE, true, rootAction, rootPlyToMate));
+
+    Board continuation(board);
+    continuation.make_moves(rootAction.moveA, rootAction.moveB);
+    continuation.push_move(BOARD_A, continuation.legal_moves(BOARD_A).front());
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, continuation, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 10000, 100, 100),
+        action, plyToMate));
+    const int movesLeft = (plyToMate + 1) / 2;
+    ASSERT_GE(movesLeft, 2);
+    // Exactly the moves the stored line still sits through, then 50 ms short.
+    EXPECT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, continuation, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, movesLeft * 100, 100, 100),
+        action, plyToMate));
+    EXPECT_FALSE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, continuation, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, movesLeft * 100 - 50, 100, 100),
+        action, plyToMate));
+}
+
+TEST_F(EngineTest, CertificateTiersFollowTheClock) {
+    Board board;
+    board.set(kSatPartnerMate);
+    JointActionCandidate candidate;
+    int candidatePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, candidate, candidatePly));
+
+    const auto certify = [&](const TimeState& time, MateCertificateTier& tier) {
+        Agent::MateSearchBudget budget;
+        budget.remainingNodes = SearchParams::INTERNAL_MATE_CERT_NODE_BUDGET;
+        int certifiedPly = 0;
+        tier = MateCertificateTier::NONE;
+        return Agent::certify_mate_candidate(
+            board, Stockfish::WHITE, time, candidate, candidatePly,
+            budget, certifiedPly, tier);
+    };
+    MateCertificateTier tier = MateCertificateTier::NONE;
+    EXPECT_TRUE(certify(TimeState::clocked(Stockfish::WHITE, 10000, 100, 100), tier));
+    EXPECT_EQ(tier, MateCertificateTier::CHECKS_ONLY);
+
+    // Too short a lead for the sat-board tiers: only the joint tier, which
+    // follows the clock, may certify.
+    if (certify(TimeState::clocked(Stockfish::WHITE, 250, 100, 100), tier)) {
+        EXPECT_EQ(tier, MateCertificateTier::FULL_JOINT);
+    }
+    // A team that may not sit is never certified a sat-board line.
+    EXPECT_FALSE(certify(TimeState::clocked(Stockfish::WHITE, -250, 100, 100), tier));
 }
 
 TEST_F(EngineTest, CandidateCertificateRejectsExhaustedRaceScan) {

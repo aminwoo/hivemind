@@ -535,6 +535,12 @@ int run_tournament(
     if (config.games == 0 || config.games % 2 != 0) {
         throw std::invalid_argument("Tournament games must be a positive even number");
     }
+    if (config.clockModel && (alphaBetaContender || alphaBetaBaseline)) {
+        // Alpha-beta knows only the flag, so it would search other rules than
+        // the ones the game is played and adjudicated under.
+        throw std::invalid_argument(
+            "--time-model clock is not supported for alpha-beta players yet");
+    }
     const bool anyMcts = !alphaBetaContender || !alphaBetaBaseline;
     if ((anyMcts && (config.nodes == 0) == (config.moveTimeMs <= 0)) ||
         config.maxMacroPlies == 0) {

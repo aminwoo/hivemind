@@ -857,6 +857,25 @@ public:
     }
     
     /**
+     * @brief Forget every proof this node holds, keeping its statistics.
+     *
+     * For a retained subtree adopted under a different clock: its edges and
+     * visits still describe the position, but a win, loss or draw proved
+     * under the old lead may not hold under the new one. A terminal leaf is
+     * classified again when the search next reaches it. Call before workers
+     * start; it does not guard against a concurrent search.
+     */
+    void clear_solver_state() {
+        std::unique_lock<std::shared_mutex> guard(nodeMutex);
+        nodeType.store(NodeType::UNSOLVED, std::memory_order_relaxed);
+        endInPly.store(0, std::memory_order_relaxed);
+        std::fill(childNodeTypes.begin(), childNodeTypes.end(), NodeType::UNSOLVED);
+        unsolvedChildCount.store(
+            static_cast<int>(childNodeTypes.size()), std::memory_order_relaxed);
+        provenWinningChildCount = 0;
+    }
+
+    /**
      * @brief Update child node type and check for solver propagation.
      * @param childIdx Index of the child
      * @param childType The child's proven node type

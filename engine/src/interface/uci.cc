@@ -104,6 +104,13 @@ void UCI::go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite) {
         std::cout << "bestmove (none)" << std::endl;
         return;
     }
+    if (clockModel) {
+        // Alpha-beta has no clock: it searches the lead's current sign as a
+        // permanent TimeAdvantage flag, never charging the actions it plays.
+        std::cout << "info string TimeModel clock is not supported by alphabeta "
+                     "search; it searches the current lead as a permanent "
+                     "TimeAdvantage" << std::endl;
+    }
     ab::Limits limits;
     limits.nodes = nodes;
     limits.moveTimeMs = moveTime;

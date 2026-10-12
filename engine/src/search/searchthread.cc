@@ -35,10 +35,15 @@ std::vector<Stockfish::Move> immediate_mates_on_board(
     return mates;
 }
 
+/**
+ * @param time The clock at this position. The defenders, on turn on one board
+ *        only, reply without charge; the opponents' mating move is then made
+ *        on turn on both boards after a real reply, and charged, so the mate
+ *        is judged under the clock it would actually be played on.
+ */
 bool has_unavoidable_waiting_board_mate(Board& board,
                                         Stockfish::Color teamToPlay,
-                                        bool teamToPlayHasTimeAdvantage,
-                                        bool opponentHasTimeAdvantage,
+                                        const TimeState& time,
                                         bool waitingMateWinsRace,
                                         const std::array<int, 2>& boardSearchPlies,
                                         WaitingMateContinuation* continuation) {
@@ -50,11 +55,25 @@ bool has_unavoidable_waiting_board_mate(Board& board,
     if (boardAOnTurn == boardBOnTurn) {
         return false;
     }
+    const bool teamToPlayHasTimeAdvantage = time.can_sit(teamToPlay);
+    // On turn on one board, the defenders' reply costs nothing. A real reply
+    // leaves the opponents on turn on both boards, so their mating move is
+    // charged; after a sit the defenders keep the reply board, and it is not.
+    const TimeState afterReply = time.after(teamToPlay, false);
+    const TimeState afterMateFollowingMove = afterReply.after(~teamToPlay, true);
+    const TimeState afterMateFollowingSit = afterReply.after(~teamToPlay, false);
+    const bool opponentHasTimeAdvantage = afterReply.can_sit(~teamToPlay);
 
     const int activeBoard = boardAOnTurn ? BOARD_A : BOARD_B;
     const int waitingBoard = 1 - activeBoard;
+    // Candidates are the moves that mate under the weakest right the
+    // defenders could hold when they land; each is checked below under the
+    // clock of the reply it follows. Under a fixed flag these are one.
+    const bool weakestDefenderRight = teamToPlayHasTimeAdvantage
+        && afterMateFollowingMove.can_sit(teamToPlay)
+        && afterMateFollowingSit.can_sit(teamToPlay);
     const std::vector<Stockfish::Move> matingMoves = immediate_mates_on_board(
-        board, waitingBoard, teamToPlay, teamToPlayHasTimeAdvantage);
+        board, waitingBoard, teamToPlay, weakestDefenderRight);
     if (matingMoves.empty()) {
         return false;
     }
@@ -80,6 +99,8 @@ bool has_unavoidable_waiting_board_mate(Board& board,
         if (reply != Stockfish::MOVE_NONE) {
             ++replySearchPlies[activeBoard];
         }
+        const TimeState& afterMate = reply != Stockfish::MOVE_NONE
+            ? afterMateFollowingMove : afterMateFollowingSit;
         if ((waitingMateWinsRace
              || !board.is_checkmate(
                  ~teamToPlay, opponentHasTimeAdvantage))
@@ -90,7 +111,7 @@ bool has_unavoidable_waiting_board_mate(Board& board,
                 }
                 board.push_move(waitingBoard, matingMove);
                 matePersists = board.is_checkmate(
-                    teamToPlay, teamToPlayHasTimeAdvantage);
+                    teamToPlay, afterMate.can_sit(teamToPlay));
                 board.pop_move(waitingBoard);
                 if (matePersists) {
                     persistentMate = matingMove;
@@ -185,8 +206,7 @@ TerminalOutcome classify_terminal_position(Board& board,
     if (!partnerBoardAgnostic
         && (boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
         && has_unavoidable_waiting_board_mate(
-            board, teamToPlay, teamToPlayHasTimeAdvantage,
-            opponentHasTimeAdvantage, teamToPlay == rootTeam,
+            board, teamToPlay, time, teamToPlay == rootTeam,
             boardSearchPlies, waitingMate)) {
         if (endInPly) {
             // One forced reply, then the opponent's mating move. Terminal

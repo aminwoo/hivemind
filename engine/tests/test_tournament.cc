@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
 #include <filesystem>
 #include <fstream>
 
@@ -141,4 +144,26 @@ TEST(TournamentBreakdownTest, CountsAllOutcomes) {
     breakdown.losses = 1;
     breakdown.draws = 2;
     EXPECT_EQ(breakdown.games(), 6);
+}
+
+TEST(TournamentConfigTest, ClockModelRefusesAlphaBetaPlayers) {
+    // Alpha-beta knows only the flag. The tournament refuses before it
+    // touches either player, so placeholder searchers are never used.
+    TournamentConfig config;
+    config.games = 2;
+    config.nodes = 1;
+    config.clockModel = true;
+    config.contenderAbDepth = 1;
+    config.baselineAbDepth = 1;
+    config.outputDirectory = std::filesystem::temp_directory_path()
+        / "hivemind-clock-alphabeta-test";
+    auto* placeholder = reinterpret_cast<ab::Searcher*>(alignof(std::max_align_t));
+    try {
+        run_tournament(nullptr, nullptr, "contender", "baseline", config,
+                       placeholder, placeholder);
+        FAIL() << "a clock tournament accepted alpha-beta players";
+    } catch (const std::invalid_argument& error) {
+        EXPECT_NE(std::string(error.what()).find("clock"), std::string::npos)
+            << error.what();
+    }
 }

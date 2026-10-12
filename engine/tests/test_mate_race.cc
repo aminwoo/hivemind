@@ -302,6 +302,73 @@ TEST_F(MateRaceTest, TheProbeIsForTheTimeAheadTeamOnly) {
     EXPECT_EQ(plyToMate, 1);
 }
 
+TEST_F(MateRaceTest, TheProbeOnlyClaimsALineTheLeadPaysFor) {
+    Board board;
+    board.set_fen(BOARD_A, "6k1/5ppp/8/8/8/8/8/R5K1[] w - - 0 1");
+    board.set_fen(BOARD_B, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1");
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::string pv;
+    // Ahead by half an action: the probe's line sits the other board, and
+    // this lead does not cover even one move of it.
+    EXPECT_FALSE(Agent::probe_position_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 50, 100, 100),
+        200000, 2000, {}, action, plyToMate, pv))
+        << "claimed " << pv << " on a 50 ms lead";
+    ASSERT_TRUE(Agent::probe_position_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 100, 100, 100),
+        200000, 2000, {}, action, plyToMate, pv));
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "a1a8");
+}
+
+// The waiting-board classifier, where the mating move's charge decides it.
+// Board B: Black, the white team's partner, mates with a rook drop on the
+// first rank - unless the defenders may wait for a partner capture to supply
+// a blocker. Board A: Black, defending, is on turn there alone, with nothing
+// to capture yet. Its reply Qd4 forks both white rooks, so after it every
+// white move leaves Black a rook to take: a defender who may sit survives the
+// drop, one who may not is mated.
+constexpr const char* kForkBoardA = "5r1k/6pp/1q6/4p3/R6R/8/8/7K[] b - - 0 1";
+constexpr const char* kDropMateBoardB = "4k3/8/8/8/8/8/6PP/7K[r] b - - 0 1";
+
+TEST_F(MateRaceTest, WaitingBoardMateIsJudgedUnderTheClockItIsPlayedOn) {
+    Board board;
+    board.set_fen(BOARD_A, kForkBoardA);
+    board.set_fen(BOARD_B, kDropMateBoardB);
+    // The defenders hold no capture now, so the drop mates before any reply.
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        ASSERT_FALSE(board.is_capture(BOARD_A, move))
+            << board.uci_move(BOARD_A, move);
+    }
+    ASSERT_NE(move_of(board, BOARD_A, "b6d4"), Stockfish::MOVE_NONE);
+
+    // A permanent flag: the defenders never sit, and the mate stands.
+    int endInPly = 0;
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::WHITE, true,
+                  std::array<int, 2>{1, 1}, &endInPly),
+              TerminalOutcome::LOSS);
+
+    // White 150 ms ahead pays 100 ms for the drop, on turn on both boards
+    // after any real reply, and is still ahead: the mate stands.
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::WHITE,
+                  TimeState::clocked(Stockfish::WHITE, 150, 100, 100),
+                  std::array<int, 2>{1, 1}, &endInPly),
+              TerminalOutcome::LOSS);
+
+    // Only 50 ms ahead, the drop puts the defenders 50 ms ahead. After Qd4
+    // they may sit for the rook White cannot save, so nothing is forced.
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::WHITE,
+                  TimeState::clocked(Stockfish::WHITE, 50, 100, 100),
+                  std::array<int, 2>{1, 1}, &endInPly),
+              TerminalOutcome::NONE);
+}
+
 // A time-ahead attacker can sit through the defending partner's quiet moves.
 // Only a capture that supplies a legal drop can unfreeze the stalemated board.
 TEST_F(MateRaceTest, ProbeValidatesStalemateAgainstPartnerCaptures) {

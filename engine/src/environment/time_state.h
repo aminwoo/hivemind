@@ -75,6 +75,23 @@ public:
     }
 
     /**
+     * @brief Whether @p team can pay for @p actions more actions on turn on
+     * both boards and still not be behind.
+     *
+     * Proofs that let one team sit a board for a whole line rest on this:
+     * while it holds, that team may sit before each of those actions and the
+     * other team never gains the right to. A legacy state answers can_sit().
+     */
+    bool can_sit_through(Stockfish::Color team, int actions) const {
+        if (!clocked_) {
+            return can_sit(team);
+        }
+        return can_sit(team)
+            && static_cast<int64_t>(lead_ms(team))
+                   >= static_cast<int64_t>(std::max(actions, 1)) * moveTimeMs_[team];
+    }
+
+    /**
      * @brief Charge the action @p actingTeam is about to play.
      *
      * Call it with the position before the action. Only a team on turn on both
@@ -90,13 +107,32 @@ public:
             + (actingTeam == Stockfish::WHITE ? -cost : cost));
     }
 
+    /** The state after @p actingTeam plays one action; see advance(). */
+    TimeState after(Stockfish::Color actingTeam, bool actingTeamOnBothBoards) const {
+        TimeState next = *this;
+        next.advance(actingTeam, actingTeamOnBothBoards);
+        return next;
+    }
+
+    /** Exact identity of a clocked state: the lead and both move times. */
+    uint64_t exact_key() const {
+        const uint64_t lead = static_cast<uint32_t>(whiteLeadMs_);
+        const uint64_t moveTimes =
+            (static_cast<uint64_t>(static_cast<uint32_t>(moveTimeMs_[Stockfish::WHITE])) << 32)
+            | static_cast<uint32_t>(moveTimeMs_[Stockfish::BLACK]);
+        return (0x434c4f434b000000ULL ^ (lead * 0x9e3779b97f4a7c15ULL))
+            ^ (moveTimes * 0xbf58476d1ce4e5b9ULL) ^ (clocked_ ? 1 : 0);
+    }
+
     /**
-     * @brief Coarse lead class for a search node's identity.
+     * @brief Coarse lead class, the key under which tree reuse finds a node.
      *
      * The side that may sit is exact, since it decides which actions are
-     * legal. The size of its lead counts on a log2 scale in its own move
-     * times, so the few hundred milliseconds that pass between two searches
-     * rarely move a retained position to a different node.
+     * legal at the node itself. The size of its lead counts on a log2 scale
+     * in its own move times, so the few hundred milliseconds that pass between
+     * two searches rarely move a retained position to a different class.
+     * Deeper down, leads in one class can differ in sign, so nodes are only
+     * merged on the exact key.
      */
     uint32_t lead_class(Stockfish::Color team) const {
         const int32_t lead = lead_ms(team);

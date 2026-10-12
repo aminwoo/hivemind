@@ -175,6 +175,73 @@ TEST_F(TimeStateBoardTest, ClockedHashSeparatesWhoMaySit) {
     EXPECT_NE(behind, board.search_hash_key(Stockfish::WHITE, false));
 }
 
+TEST(TimeStateTest, SitsThroughOnlyWhatTheLeadCovers) {
+    // 250 ms at 100 ms an action covers two sits, never three.
+    const TimeState clock = TimeState::clocked(Stockfish::WHITE, 250, 100, 300);
+    EXPECT_TRUE(clock.can_sit_through(Stockfish::WHITE, 1));
+    EXPECT_TRUE(clock.can_sit_through(Stockfish::WHITE, 2));
+    EXPECT_FALSE(clock.can_sit_through(Stockfish::WHITE, 3));
+    EXPECT_FALSE(clock.can_sit_through(Stockfish::BLACK, 1));
+    // A lead short of one action may sit once, but not through a line.
+    const TimeState sliver = TimeState::clocked(Stockfish::WHITE, 50, 100, 100);
+    EXPECT_TRUE(sliver.can_sit(Stockfish::WHITE));
+    EXPECT_FALSE(sliver.can_sit_through(Stockfish::WHITE, 1));
+    EXPECT_FALSE(TimeState::clocked(Stockfish::WHITE, 0)
+                     .can_sit_through(Stockfish::WHITE, 1));
+    // A permanent flag covers any line.
+    EXPECT_TRUE(TimeState::legacy(Stockfish::WHITE, true)
+                    .can_sit_through(Stockfish::WHITE, 1000));
+    EXPECT_FALSE(TimeState::legacy(Stockfish::WHITE, true)
+                     .can_sit_through(Stockfish::BLACK, 1));
+}
+
+TEST(TimeStateTest, AfterChargesACopy) {
+    const TimeState clock = TimeState::clocked(Stockfish::WHITE, 150, 100, 100);
+    const TimeState next = clock.after(Stockfish::WHITE, true);
+    EXPECT_EQ(clock.lead_ms(Stockfish::WHITE), 150);
+    EXPECT_EQ(next.lead_ms(Stockfish::WHITE), 50);
+    EXPECT_EQ(clock.after(Stockfish::WHITE, false), clock);
+}
+
+TEST_F(TimeStateBoardTest, NodeIdentityIsExactWhileReuseLooksUpTheClass) {
+    Board board;
+    // Same class, but two more charged actions leave one ahead and one behind.
+    const TimeState near = TimeState::clocked(Stockfish::WHITE, 150, 100, 100);
+    const TimeState far = TimeState::clocked(Stockfish::WHITE, 250, 100, 100);
+    ASSERT_EQ(near.lead_class(Stockfish::WHITE), far.lead_class(Stockfish::WHITE));
+    ASSERT_NE(near.after(Stockfish::WHITE, true).after(Stockfish::WHITE, true)
+                  .can_sit(Stockfish::WHITE),
+              far.after(Stockfish::WHITE, true).after(Stockfish::WHITE, true)
+                  .can_sit(Stockfish::WHITE));
+    EXPECT_NE(board.search_hash_key(Stockfish::WHITE, near),
+              board.search_hash_key(Stockfish::WHITE, far));
+    EXPECT_EQ(board.search_reuse_key(Stockfish::WHITE, near),
+              board.search_reuse_key(Stockfish::WHITE, far));
+    // Move times decide how the lead moves later, so they are identity too.
+    EXPECT_NE(board.search_hash_key(
+                  Stockfish::WHITE, TimeState::clocked(Stockfish::WHITE, 150, 100, 100)),
+              board.search_hash_key(
+                  Stockfish::WHITE, TimeState::clocked(Stockfish::WHITE, 150, 100, 200)));
+    // A legacy state keys as its flag either way.
+    for (bool flag : {false, true}) {
+        const TimeState state = TimeState::legacy(Stockfish::WHITE, flag);
+        EXPECT_EQ(board.search_reuse_key(Stockfish::WHITE, state),
+                  board.search_hash_key(Stockfish::WHITE, flag));
+    }
+}
+
+TEST_F(TimeStateBoardTest, ClearingSolverStateKeepsStatistics) {
+    auto node = std::make_shared<Node>(Stockfish::WHITE, 1);
+    node->update_terminal(0.5f);
+    node->mark_as_win(3);
+    ASSERT_EQ(node->get_node_type(), NodeType::WIN);
+    const int visits = node->get_visits();
+    node->clear_solver_state();
+    EXPECT_EQ(node->get_node_type(), NodeType::UNSOLVED);
+    EXPECT_EQ(node->get_end_in_ply(), 0);
+    EXPECT_EQ(node->get_visits(), visits);
+}
+
 TEST_F(TimeStateBoardTest, AdjudicationReadsBothTeamsFromTheClock) {
     // Fool's mate on board A. The legacy overload must judge it exactly as
     // the legacy clock state it now delegates to.
