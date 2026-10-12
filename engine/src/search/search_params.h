@@ -334,10 +334,10 @@ constexpr float INSTABILITY_TIME_FRACTION = 0.4f;
 constexpr bool ENABLE_MCTS_SOLVER = true;
 
 /**
- * Maximum attacker moves for the root single-board forced-mate search.
+ * Maximum attacker moves for the root single-board and joint forced-mate search.
  * The search is iteratively deepened from 2, so a shorter mate is preferred.
  */
-constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 5;
+constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 8;
 
 /**
  * Node budget (attacker moves plus defender replies tried) for the whole root

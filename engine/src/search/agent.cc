@@ -1905,7 +1905,8 @@ JointMateProof search_joint_forced_mate(
     if (attackerToPlay && attackerMovesRemaining <= 0) {
         return {JointMateStatus::REFUTED, 0, {}};
     }
-    if (budget.exhausted) {
+    if (budget.exhausted || budget.out_of_time()) {
+        budget.exhausted = true;
         return {JointMateStatus::UNKNOWN, 0, {}};
     }
 
@@ -4090,6 +4091,7 @@ bool Agent::find_root_mate_impl(
             scoutBudget.remainingNodes = scoutNodes;
             Stockfish::Move candidate = Stockfish::MOVE_NONE;
             int candidatePly = 0;
+            int candidateMoveLimit = 0;
             bool foundCandidate = false;
             for (int moves = 2;
                  scoutNodes > 0
@@ -4098,6 +4100,9 @@ bool Agent::find_root_mate_impl(
                 foundCandidate = search_single_board_forced_mate_impl(
                     board, activeBoard, attackerColor, 1, moves,
                     candidate, candidatePly, &scoutBudget, nullptr, true);
+                if (foundCandidate) {
+                    candidateMoveLimit = moves;
+                }
                 if (foundCandidate || scoutBudget.exhausted) {
                     break;
                 }
@@ -4113,9 +4118,12 @@ bool Agent::find_root_mate_impl(
                     ? MateJointAction{candidate, Stockfish::MOVE_NONE}
                     : MateJointAction{Stockfish::MOVE_NONE, candidate};
                 board.make_moves(action.moveA, action.moveB);
+                // Verify at the depth that found the candidate. Its reported
+                // distance can be shortened by a waiting mate, while verifying
+                // at the global maximum wastes the bounded proof budget.
                 const JointMateProof tail = search_reduced_partner_mate(
                     board, teamSide, activeBoard, attackerColor, ~teamSide,
-                    SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES - 1,
+                    candidateMoveLimit - 1,
                     1, verifyBudget, &cache);
                 board.unmake_moves(action.moveA, action.moveB);
                 budget.remainingNodes -= verifyNodes - verifyBudget.remainingNodes;
