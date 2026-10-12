@@ -28,6 +28,14 @@
 
 class AgentTreeReuseTestPeer {
 public:
+    static void retain_mate(
+        Agent& agent, Board& board, Stockfish::Color teamSide,
+        const JointActionCandidate& action, int plyToMate) {
+        agent.mateContinuations_.push_back({
+            board.search_hash_key(teamSide, true), Agent::board_signature(board),
+            teamSide, true, action, plyToMate});
+    }
+
     static void set_root(Agent& agent, const std::shared_ptr<Node>& root) {
         agent.rootNode = root;
     }
@@ -2241,6 +2249,55 @@ TEST(MctsSolverTest, PropagatesDrawAfterAllMovesAreSolved) {
     EXPECT_EQ(parent.get_node_type(), NodeType::DRAW);
 }
 
+TEST(MctsSolverTest, LaterMateInOneReplacesTheFirstProvenWin) {
+    SearchParams::RuntimeConfig config;
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {static_cast<Stockfish::Move>(1), static_cast<Stockfish::Move>(2)},
+        {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(root->expand_next_joint_child(nullptr, 0, expanded, config), nullptr);
+    ASSERT_EQ(root->get_num_generated(), 2U);
+
+    // The more popular edge proves a longer mate first. A worker still in
+    // flight subsequently finds mate in one on the other edge.
+    root->update(0, 1.0f);
+    root->get_child(0)->mark_as_loss(6);
+    ASSERT_EQ(root->get_node_type(), NodeType::WIN);
+    ASSERT_EQ(root->get_end_in_ply(), 7);
+    root->get_child(1)->mark_as_loss(0);
+
+    EXPECT_EQ(root->get_best_move_idx_with_q_weight(), 1);
+    EXPECT_EQ(root->get_end_in_ply(), 1);
+    EXPECT_FALSE(root->update_child_node_type(1, NodeType::LOSS));
+    EXPECT_EQ(root->get_end_in_ply(), 1);
+}
+
+TEST(MctsSolverTest, ShorterMateUpdatesEverySolvedAncestor) {
+    SearchParams::RuntimeConfig config;
+    auto parent = std::make_shared<Node>(Stockfish::BLACK);
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
+    ASSERT_TRUE(parent->try_init_and_expand(
+        {static_cast<Stockfish::Move>(3)}, {Stockfish::MOVE_NONE},
+        {1.0f}, {1.0f}, false, true, false, config));
+    ASSERT_TRUE(root->try_init_and_expand(
+        {static_cast<Stockfish::Move>(1), static_cast<Stockfish::Move>(2)},
+        {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(root->expand_next_joint_child(nullptr, 0, expanded, config), nullptr);
+    parent->replace_child(0, root);
+    root->get_child(0)->mark_as_loss(6);
+    ASSERT_EQ(parent->get_node_type(), NodeType::LOSS);
+    ASSERT_EQ(parent->get_end_in_ply(), 8);
+
+    root->get_child(1)->mark_as_loss(0);
+    EXPECT_EQ(parent->get_node_type(), NodeType::LOSS);
+    EXPECT_EQ(parent->get_end_in_ply(), 2);
+    EXPECT_FALSE(parent->update_child_node_type(0, NodeType::WIN));
+}
+
 TEST(MctsSolverTest, ProvenLossKeepsBestSearchedMoveInsteadOfDelayingMate) {
     Node parent(Stockfish::WHITE);
     const std::vector<Stockfish::Move> actionsA = {
@@ -2910,6 +2967,33 @@ TEST_F(EngineTest, RootMateContinuationRejectsPartnerBoardChange) {
     EXPECT_FALSE(AgentTreeReuseTestPeer::reuse_mate_continuation(
         agent, board, Stockfish::WHITE, true,
         cachedAction, cachedPlyToMate));
+}
+
+TEST_F(EngineTest, FreshMateInOneOverridesCachedLongerMate) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2");
+    board.set_fen(BOARD_B,
+        "k7/8/8/8/4n3/8/6PP/6RK[] b - - 0 1");
+    Agent agent(1);
+    JointActionCandidate cached;
+    cached.moveA = find_move(board, BOARD_A, "d1h5");
+    ASSERT_NE(cached.moveA, Stockfish::MOVE_NONE);
+    AgentTreeReuseTestPeer::retain_mate(agent, board, Stockfish::WHITE, cached, 9);
+    JointActionCandidate reused;
+    int cachedPly = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, board, Stockfish::WHITE, true, reused, cachedPly));
+    ASSERT_EQ(cachedPly, 9);
+
+    SearchOptions options;
+    options.targetNodes = 100;
+    // Both the cached proof and the immediate preflight return before workers
+    // are dispatched, so no inference backend or loaded network is needed.
+    const auto chosen = agent.run_search(
+        board, {nullptr}, Stockfish::WHITE, true, options);
+    EXPECT_EQ(chosen.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, chosen.moveB), "e4f2");
 }
 
 TEST_F(EngineTest, ReusedTreeIsReindexedIntoTranspositionTable) {

@@ -158,6 +158,76 @@ TEST_F(MateRaceTest, OrdinaryPositionsAreNotVetoed) {
         board, joint(opening, Stockfish::MOVE_NONE), Stockfish::WHITE, false));
 }
 
+// chess.com 186127589087, after 30...Kf4 and before 28...Q@e2#.
+// Both mates belong to the white-A/black-B team. A partner's mate must not
+// turn Ne2 or Rxc1 into the recommendation on a board with its own mate in one.
+TEST_F(MateRaceTest, TwoImmediateMatesFinishBothBoards) {
+    constexpr const char* boardA =
+        "r7/p7/b1p1ppQ1/3p2nQ/3P1k2/2N5/PPP2P1P/R3K2R[Pqnpp] w KQ - 3 31";
+    constexpr const char* boardB =
+        "r3kbnr/ppp2pp1/2p4p/4P3/1pB1PPb1/2pPN3/P1b2P1P/nrB1K2R[RBBNNPPq] b kq - 5 28";
+    for (bool swapped : {false, true}) {
+        for (bool timeAdvantage : {false, true}) {
+            Board board;
+            board.set_fen(BOARD_A, swapped ? boardB : boardA);
+            board.set_fen(BOARD_B, swapped ? boardA : boardB);
+            const auto team = swapped ? Stockfish::BLACK : Stockfish::WHITE;
+            const auto before = Agent::board_signature(board);
+            JointActionCandidate action;
+            int ply = 0;
+            ASSERT_TRUE(Agent::find_root_mate(
+                board, team, timeAdvantage, action, ply));
+            EXPECT_EQ(ply, 1);
+            EXPECT_EQ(Agent::board_signature(board), before);
+            const auto pawnMove = swapped ? action.moveB : action.moveA;
+            const auto queenMove = swapped ? action.moveA : action.moveB;
+            const int pawnBoard = swapped ? BOARD_B : BOARD_A;
+            const int queenBoard = 1 - pawnBoard;
+            EXPECT_TRUE(board.uci_move(pawnBoard, pawnMove) == "P@e3"
+                        || board.uci_move(pawnBoard, pawnMove) == "P@g3");
+            EXPECT_EQ(board.uci_move(queenBoard, queenMove), "Q@e2");
+            board.make_moves(action.moveA, action.moveB);
+            EXPECT_TRUE(board.is_in_check(BOARD_A));
+            EXPECT_TRUE(board.is_in_check(BOARD_B));
+            EXPECT_TRUE(board.legal_moves(BOARD_A).empty());
+            EXPECT_TRUE(board.legal_moves(BOARD_B).empty());
+        }
+    }
+}
+
+TEST_F(MateRaceTest, SeparateRecommendationsCanRelyOnTheWaitingPartnersMate) {
+    for (int movingBoard : {BOARD_A, BOARD_B}) {
+        Board board;
+        board.set_fen(BOARD_A,
+            "r7/p7/b1p1ppQ1/3p2nQ/3P1k2/2N5/PPP2P1P/R3K2R[Pqnpp] w KQ - 3 31");
+        board.set_fen(BOARD_B,
+            "r3kbnr/ppp2pp1/2p4p/4P3/1pB1PPb1/2pPN3/P1b2P1P/nrB1K2R[RBBNNPPq] b kq - 5 28");
+        const auto move = move_of(
+            board, movingBoard, movingBoard == BOARD_A ? "c3e2" : "b1c1");
+        ASSERT_NE(move, Stockfish::MOVE_NONE);
+        board.push_move(movingBoard, move);
+        ASSERT_FALSE(board.is_checkmate(Stockfish::BLACK, false));
+
+        std::array<int, 2> searchPlies{0, 0};
+        searchPlies[movingBoard] = 1;
+        int endInPly = 0;
+        WaitingMateContinuation continuation;
+        EXPECT_EQ(classify_terminal_position(
+            board, Stockfish::BLACK, Stockfish::WHITE, true,
+            searchPlies, &endInPly, false, false, &continuation),
+            TerminalOutcome::LOSS);
+        EXPECT_EQ(endInPly, 3);
+        EXPECT_EQ(continuation.waitingBoard, 1 - movingBoard);
+        const auto mate = board.uci_move(
+            continuation.waitingBoard, continuation.matingMove);
+        if (movingBoard == BOARD_A) {
+            EXPECT_EQ(mate, "Q@e2");
+        } else {
+            EXPECT_TRUE(mate == "P@e3" || mate == "P@g3");
+        }
+    }
+}
+
 // The root veto is the last word, not the only one: a search that reaches this
 // line from further up has to value it the same way, or the root would follow
 // an inflated score into it without ever claiming a win.

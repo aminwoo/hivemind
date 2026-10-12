@@ -503,7 +503,14 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
         return false;
     };
     std::optional<JointActionCandidate> stalemateFallback;
+    std::optional<JointActionCandidate> literalMateFallback;
+    std::optional<size_t> matingA;
+    std::optional<size_t> matingB;
     const auto finishWithStalemate = [&] {
+        if (literalMateFallback) {
+            outAction = *literalMateFallback;
+            return true;
+        }
         if (!stalemateFallback) {
             return false;
         }
@@ -568,7 +575,7 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
             const bool isCapA = board.is_capture(BOARD_A, mA);
             const bool canPassB = !boardBOnTurn || is_single_pass_legal(
                 teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, isCapA);
-            if (canPassB) {
+            {
                 board.push_move(BOARD_A, mA);
                 const bool isMate = board.is_checkmate(~teamSide, opponentHasTimeAdvantage);
                 const bool isLiteralMate = isMate && hasLiteralCheckmate(
@@ -581,10 +588,13 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
                         mA, 1.0f, iA, Stockfish::MOVE_NONE, 1.0f, 0,
                         rules, isCapA, false);
                     if (isLiteralMate) {
-                        outAction = action;
-                        return true;
+                        matingA = iA;
+                        if (canPassB) {
+                            literalMateFallback = action;
+                        }
+                        break;
                     }
-                    if (!stalemateFallback) {
+                    if (canPassB && !stalemateFallback) {
                         stalemateFallback = action;
                     }
                 }
@@ -602,7 +612,7 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
             const bool isCapB = board.is_capture(BOARD_B, mB);
             const bool canPassA = !boardAOnTurn || is_single_pass_legal(
                 teamHasTimeAdvantage, boardAOnTurn, boardBOnTurn, isCapB);
-            if (canPassA) {
+            {
                 board.push_move(BOARD_B, mB);
                 const bool isMate = board.is_checkmate(~teamSide, opponentHasTimeAdvantage);
                 const bool isLiteralMate = isMate && hasLiteralCheckmate(
@@ -615,15 +625,42 @@ static bool find_immediate_root_mate(Board& board, Stockfish::Color teamSide,
                         Stockfish::MOVE_NONE, 1.0f, 0, mB, 1.0f, iB,
                         rules, false, isCapB);
                     if (isLiteralMate) {
-                        outAction = action;
-                        return true;
+                        matingB = iB;
+                        if (canPassA && !literalMateFallback) {
+                            literalMateFallback = action;
+                        }
+                        break;
                     }
-                    if (!stalemateFallback) {
+                    if (canPassA && !stalemateFallback) {
                         stalemateFallback = action;
                     }
                 }
             }
         }
+    }
+
+    // Both boards may already have mate in one. Finish both when possible,
+    // rather than reporting a pass or an arbitrary partner move beside a mate.
+    if (matingA && matingB) {
+        const Stockfish::Move mA = actionsA[*matingA];
+        const Stockfish::Move mB = actionsB[*matingB];
+        if (!budget || budget->consume()) {
+            board.make_moves(mA, mB);
+            const bool mates = board.is_checkmate(
+                ~teamSide, opponentHasTimeAdvantage)
+                && (!requireUnblockable || hasUnblockableCheckmate(~teamSide));
+            board.unmake_moves(mA, mB);
+            if (mates) {
+                outAction = JointActionCandidate(
+                    mA, 1.0f, *matingA, mB, 1.0f, *matingB, rules,
+                    board.is_capture(BOARD_A, mA), board.is_capture(BOARD_B, mB));
+                return true;
+            }
+        }
+    }
+    if (literalMateFallback) {
+        outAction = *literalMateFallback;
+        return true;
     }
 
     // 3. Move on both boards if both on turn.
@@ -5644,7 +5681,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     };
 
     // Reuse an exact reply-indexed certificate from the previous forced-mate
-    // proof before running the bounded root scan again. A changed partner
+    // proof after checking for a fresh mate in one. A changed partner
     // board, pocket, side to move, team, or TimeAdvantage value cannot match.
     JointActionCandidate rootMateAction;
     int rootMatePly = 1;
@@ -5762,24 +5799,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     bool probedRootMate = false;
     string probePrincipalVariation;
     try {
-        cachedRootMate = runRootScan
-            && try_reuse_mate_continuation(
-                *scanBoard, teamSide, searchTime_,
-                rootMateAction, rootMatePly,
-                options.search.drawContempt > 0.0f);
-        if (cachedRootMate && loses_mate_race(*scanBoard, rootMateAction)) {
-            // The continuation was proven where its board stood alone. Replayed
-            // here it starts a race the other board has already lost, and no
-            // legality or repetition check it carries can see that. Forget the
-            // line as well as the claim, or every ply of this position pays for
-            // the same refutation.
-            cachedRootMate = false;
-            mateContinuations_.clear();
-        }
-
         // A mate the immediate scan finds is on the board now: the opponents
         // never move again, so there is no race for them to win.
-        if (runRootScan && !cachedRootMate) {
+        if (runRootScan) {
             MateSearchBudget immediateBudget;
             immediateBudget.remainingNodes = std::min(
                 rootMateBudget,
@@ -5800,6 +5822,17 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 rootMatePly = 1;
                 rootMatePv = {{rootMateAction.moveA, rootMateAction.moveB}};
             }
+        }
+
+        cachedRootMate = runRootScan && !immediateRootMate
+            && try_reuse_mate_continuation(
+                *scanBoard, teamSide, searchTime_,
+                rootMateAction, rootMatePly,
+                options.search.drawContempt > 0.0f);
+        if (cachedRootMate && loses_mate_race(*scanBoard, rootMateAction)) {
+            // Forget a retained line that loses the cross-board mate race.
+            cachedRootMate = false;
+            mateContinuations_.clear();
         }
 
         if (!cachedRootMate && !immediateRootMate) {
