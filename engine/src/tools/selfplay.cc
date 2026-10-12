@@ -37,8 +37,10 @@
 
 namespace {
 
-constexpr std::array<char, 4> CHUNK_MAGIC = {'H', 'V', 'M', '5'};
-constexpr uint32_t CHUNK_VERSION = 5;
+// HVM6: the clock planes close each board's block, stored as (v + 1) / 2
+// since a chunk keeps planes as unsigned bytes.
+constexpr std::array<char, 4> CHUNK_MAGIC = {'H', 'V', 'M', '6'};
+constexpr uint32_t CHUNK_VERSION = 6;
 constexpr uint16_t PASS_POLICY_INDEX = static_cast<uint16_t>(NB_POLICY_VALUES());
 
 struct SparsePolicyEntry {
@@ -109,7 +111,7 @@ public:
 private:
     void write_policy(std::ostream& stream, const std::vector<SparsePolicyEntry>& policy) {
         if (policy.size() > std::numeric_limits<uint16_t>::max()) {
-            throw std::runtime_error("Sparse policy is too large for HVM5");
+            throw std::runtime_error("Sparse policy is too large for HVM6");
         }
         write_scalar(stream, static_cast<uint16_t>(policy.size()));
         for (const SparsePolicyEntry& entry : policy) {
@@ -122,7 +124,7 @@ private:
         std::ostream& stream,
         const std::vector<SparseJointPolicyEntry>& policy) {
         if (policy.size() > std::numeric_limits<uint16_t>::max()) {
-            throw std::runtime_error("Sparse joint policy is too large for HVM5");
+            throw std::runtime_error("Sparse joint policy is too large for HVM6");
         }
         write_scalar(stream, static_cast<uint16_t>(policy.size()));
         for (const SparseJointPolicyEntry& entry : policy) {
@@ -270,9 +272,9 @@ public:
     void evaluate(Engine& engine,
                   Board& board,
                   Stockfish::Color team,
-                  bool hasTimeAdvantage) {
+                  const TimeState& time) {
         std::array<float, NB_INPUT_VALUES()> planes{};
-        board_to_planes(board, planes.data(), team, hasTimeAdvantage);
+        board_to_planes(board, planes.data(), team, time);
         for (size_t batch = 0; batch < batchSize_; ++batch) {
             std::copy(planes.begin(), planes.end(),
                       observations_.begin() + static_cast<std::ptrdiff_t>(batch * planes.size()));
@@ -328,10 +330,11 @@ JointActionCandidate sample_raw_policy_action(
     RawPolicyEvaluator& evaluator,
     Board& board,
     Stockfish::Color team,
-    bool hasTimeAdvantage,
+    const TimeState& time,
     double temperature,
     std::mt19937_64& randomEngine) {
-    evaluator.evaluate(engine, board, team, hasTimeAdvantage);
+    evaluator.evaluate(engine, board, team, time);
+    const bool hasTimeAdvantage = time.can_sit(team);
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == team;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~team;
     std::vector<Stockfish::Move> actionsA;
@@ -570,13 +573,19 @@ JointActionCandidate select_action(
 std::array<uint8_t, NB_INPUT_VALUES()> encode_planes(
     Board& board,
     Stockfish::Color team,
-    bool hasTimeAdvantage) {
+    const TimeState& time) {
     std::array<float, NB_INPUT_VALUES()> raw{};
     std::array<uint8_t, NB_INPUT_VALUES()> encoded{};
-    board_to_planes(board, raw.data(), team, hasTimeAdvantage);
+    board_to_planes(board, raw.data(), team, time);
+    constexpr size_t square = 64;
+    constexpr size_t block = NB_INPUT_CHANNELS_PER_BOARD * square;
+    constexpr size_t clockStart = NB_LEGACY_INPUT_CHANNELS_PER_BOARD * square;
     for (size_t index = 0; index < raw.size(); ++index) {
+        // The clock planes are signed; the chunk keeps them as (v + 1) / 2.
+        const bool clockPlane = index % block >= clockStart;
+        const float value = clockPlane ? (raw[index] + 1.0f) / 2.0f : raw[index];
         encoded[index] = static_cast<uint8_t>(std::lround(
-            std::clamp(raw[index], 0.0f, 1.0f) * 255.0f));
+            std::clamp(value, 0.0f, 1.0f) * 255.0f));
     }
     return encoded;
 }
@@ -831,7 +840,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
 
                 if (rawInitializationActive && macroPly < initializationLength) {
                     const JointActionCandidate rawAction = sample_raw_policy_action(
-                        rawPolicyEngine, rawPolicyEvaluator, board, team, hasTimeAdvantage,
+                        rawPolicyEngine, rawPolicyEvaluator, board, team, time,
                         sample_raw_policy_temperature(config, randomEngine), randomEngine);
                     if (!action_leads_to_terminal(board, rawAction, team, time)) {
                         time.advance(team, board.on_turn_on_both_boards(team));
@@ -861,7 +870,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     macroPly, std::numeric_limits<uint16_t>::max()));
                 sample.team = team == Stockfish::WHITE ? 0 : 1;
                 sample.hasTimeAdvantage = hasTimeAdvantage ? 1 : 0;
-                sample.planes = encode_planes(board, team, hasTimeAdvantage);
+                sample.planes = encode_planes(board, team, time);
 
                 agent.reset_search_state();
                 SearchOptions searchOptions;
@@ -912,7 +921,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     // WDL stays zero: search has a value but no WDL distribution,
                     // so these records carry no WDL or moves-left target.
                     distill::Record record;
-                    board_to_planes(board, distillPlanes.data(), team, hasTimeAdvantage);
+                    board_to_planes(board, distillPlanes.data(), team, time);
                     distill::pack_planes(distillPlanes.data(), record);
                     record.value = rootQ;
                     record.ply = sample.macroPly;

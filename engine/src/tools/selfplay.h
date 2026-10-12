@@ -40,7 +40,7 @@ struct SelfPlayConfig {
     // Games played at once, each on its own engine (see main: one engine per
     // game on each device). 1 keeps a single game spread over all engines.
     size_t parallelGames = 1;
-    // Write the HVM5 training chunks (off when only distillation data is wanted).
+    // Write the HVM6 training chunks (off when only distillation data is wanted).
     bool writeTrainingChunks = true;
     // Root mate scan and selected-move certification before each search.
     bool rootScans = true;

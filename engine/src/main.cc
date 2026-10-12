@@ -124,7 +124,7 @@ void printUsage(const char* progName) {
          << SearchParams::BATCH_SIZE << "; also settable with the BatchSize UCI option)" << endl;
     cout << "  bench [iters]      Run inference benchmark (accepts --model, --batch-size)" << endl;
     cout << "  perft [depth]      Run move generation benchmark" << endl;
-    cout << "  selfplay [options] Generate HVM5 training chunks and bughouse PGN" << endl;
+    cout << "  selfplay [options] Generate HVM6 training chunks and bughouse PGN" << endl;
     cout << "    --model <onnx> --games <n> --nodes <n> --output <dir> --seed <n>" << endl;
     cout << "    --max-macro-plies <n> --raw-policy-mean-macro-plies <x>" << endl;
     cout << "    --raw-policy-max-macro-plies <n> --raw-policy-high-temp-probability <x>" << endl;
@@ -135,7 +135,7 @@ void printUsage(const char* progName) {
     cout << "    --chunk-samples <n> --dirichlet-alpha <x> --dirichlet-epsilon <x>" << endl;
     cout << "    --distill-output <dir> (also write HDST chunks of the search targets)" << endl;
     cout << "    --distill-chunk-positions <n> --parallel-games <n> --root-scans <bool>" << endl;
-    cout << "    --training-chunks <bool> (write HVM5 chunks; default true)" << endl;
+    cout << "    --training-chunks <bool> (write HVM6 chunks; default true)" << endl;
     cout << "    --time-model flag|clock (clock: each game draws a lead and team move times)" << endl;
     cout << "    --level-start-fraction <x> --start-lead-min-ms <ms> --start-lead-max-ms <ms>" << endl;
     cout << "    --move-time-min-ms <ms> --move-time-max-ms <ms> (log-uniform; defaults 0.5, 100-10000, 100-3000)" << endl;
@@ -433,18 +433,21 @@ int main(int argc, char* argv[]) {
     }
 
     // dumpplanes writes the network input planes of FEN lines (float32,
-    // N x 74 x 8 x 8) with the engine's own encoder: calibration data for
-    // scripts/quantize_int8.py.
+    // N x 78 x 8 x 8, or N x 74 x 8 x 8 with --legacy-planes for a network
+    // from before the clock planes) with the engine's own encoder:
+    // calibration data for scripts/quantize_int8.py.
     if (argc > 1 && string(argv[1]) == "dumpplanes") {
         string fenFile, outputFile;
         size_t every = 1;
         size_t limit = 0;
+        bool legacyPlanes = false;
         for (int i = 2; i + 1 < argc; i += 2) {
             const string option = argv[i];
             if (option == "--fens") fenFile = argv[i + 1];
             else if (option == "--output") outputFile = argv[i + 1];
             else if (option == "--every") every = max<size_t>(1, stoull(argv[i + 1]));
             else if (option == "--limit") limit = stoull(argv[i + 1]);
+            else if (option == "--legacy-planes") legacyPlanes = parse_bool_argument(argv[i + 1]);
             else {
                 cerr << "Unknown option " << option << endl;
                 return EXIT_FAILURE;
@@ -453,10 +456,12 @@ int main(int argc, char* argv[]) {
         ifstream fens(fenFile);
         ofstream out(outputFile, ios::binary);
         if (!fens || !out) {
-            cerr << "Usage: dumpplanes --fens <file> --output <file> [--every n] [--limit n]" << endl;
+            cerr << "Usage: dumpplanes --fens <file> --output <file> [--every n] [--limit n]"
+                    " [--legacy-planes <bool>]" << endl;
             return EXIT_FAILURE;
         }
         vector<float> planes(NB_INPUT_VALUES());
+        vector<float> legacy(NB_LEGACY_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH);
         size_t index = 0;
         size_t written = 0;
         for (string line; getline(fens, line) && (limit == 0 || written < limit); ++index) {
@@ -475,8 +480,13 @@ int main(int argc, char* argv[]) {
             board.set(fields[0] + "|" + fields[1]);
             board_to_planes(board, planes.data(),
                             fields[2] == "w" ? Stockfish::WHITE : Stockfish::BLACK, fields[3] == "1");
-            out.write(reinterpret_cast<const char*>(planes.data()),
-                      static_cast<streamsize>(planes.size() * sizeof(float)));
+            const vector<float>* written_planes = &planes;
+            if (legacyPlanes) {
+                drop_clock_planes(planes.data(), legacy.data(), 1);
+                written_planes = &legacy;
+            }
+            out.write(reinterpret_cast<const char*>(written_planes->data()),
+                      static_cast<streamsize>(written_planes->size() * sizeof(float)));
             ++written;
         }
         cout << "wrote " << written << " positions to " << outputFile << endl;

@@ -14,10 +14,10 @@ Their `bestmove` is a single move; Bughouse keeps its dual-FEN positions,
 board-prefixed move history, and joint `(moveA,moveB)` output. Single-board
 play uses a neural PUCT search with legal moves and terminal rules from
 Fairy-Stockfish, without Bughouse sitting or partner capture feeds. Its active
-position occupies board A's 37 input planes; board B's 37 planes encode a
+position occupies board A's input planes; board B's planes encode a
 fixed starting position with White to move, empty pockets, and full castling
 rights, using the usual opposite-team perspective. Both time-advantage planes
-are zero. Draw contempt defaults to zero. Rook, bishop, and Antichess king
+and all four clock planes are zero. Draw contempt defaults to zero. Rook, bishop, and Antichess king
 promotions share the queen promotion's policy prior but are evaluated as their
 actual resulting positions.
 
@@ -213,6 +213,9 @@ python3 -m venv ~/.cache/hivemind-quantize
     models/network.onnx calib.f32 models/network-int8.onnx
 ./build-ninja/hivemind --model models/network-int8.onnx
 ```
+
+A network from before the clock planes reads 74 planes; calibrate it on
+`dumpplanes --legacy-planes true`, which drops the clock planes.
 
 The engine recognises a Q/DQ network and builds it at builder optimization
 level 3: at the default level 5, TensorRT 11 times a fused kernel for the

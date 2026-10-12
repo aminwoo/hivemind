@@ -225,7 +225,8 @@ worth confirming with a paired tournament rather than by nodes per second alone.
 
 Self-play diversifies each opening with raw-policy initialization. Its length is
 sampled from an exponential distribution with a mean of 8 macro plies and a
-maximum of 30; these positions are recorded in PGN but excluded from HVM5.
+maximum of 30; these positions are recorded in PGN but excluded from the
+training chunks.
 Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
 every two macro plies. Search budgets are randomized by ±5% per position.
 
@@ -272,9 +273,17 @@ way, so a team may sit only while its lead lasts, and at a lead of exactly zero
 neither team may. Both move times default to 100 ms, chess.com's fastest move.
 `TimeModel flag` (the default) keeps the `TimeAdvantage` behaviour.
 
-Current networks only see whether the team may sit, through the
-`TimeAdvantage` plane. They were trained with one team sitting for the whole
-game, so they misjudge level clocks until retrained.
+Networks read the clock through two planes at the end of each board's block
+(see [Input Representation](#input-representation)): the lead, counted in the
+moves the leading team can afford to wait, and the ratio of the two teams'
+move times. Networks from before those planes read 74 planes and still load;
+the engine drops the clock planes before running them. Those networks were
+trained with one team sitting for the whole game, so they misjudge level
+clocks until retrained. Training from one widens its first layer with zero
+weights for the two new planes (`hivemind.architectures.twin_board.
+widen_to_clock_planes`), so it starts out computing exactly what it did, and
+training data from before the planes is widened as it is read: the lead plane
+is +1 or -1 by the sit right, the speed plane 0.
 
 ### Opening diversity
 
@@ -448,7 +457,9 @@ uv run hivemind prepare \
   --architecture crossboard-risev33 \
   --batch-size 256
 
-# RL training directly from native HVM5 self-play data
+# RL training directly from native HVM5 self-play data (from before the clock
+# planes: self-play now writes HVM6 chunks with 78 planes, which these RISE
+# commands do not read)
 uv run hivemind rise-train --mode rl --checkpoint artifacts/training/weights/rl/model-rl-final.tar --selfplay-dir engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
 ```
 
@@ -542,7 +553,7 @@ each epoch boundary and at the end of training.
 
 ### Input Representation
 
-The network uses a **74-channel input** (74×8×8), with 37 channels per board:
+The network uses a **78-channel input** (78×8×8), with 39 channels per board:
 
 | Per-board channels | Description                             |
 | ------------------ | --------------------------------------- |
@@ -555,6 +566,13 @@ The network uses a **74-channel input** (74×8×8), with 37 channels per board:
 | 32-33              | Last move source and destination        |
 | 34                 | Halfmove clock                          |
 | 35-36              | Twofold and threefold repetition        |
+| 37                 | Time lead: sign(lead) * min(1, log2(1 + moves the leader can wait) / 10) |
+| 38                 | Speed: log2(own move time / opponents' move time) / 5, clamped to ±1 |
+
+Both boards carry the team's same two clock values. Under `TimeModel flag` the
+lead plane is +1 or -1 by the sit right and the speed plane 0. Networks from
+before the clock planes (RISE, and twin-s up to iteration 10) read channels
+0-36 of each board, 74 in all.
 
 ### Output
 

@@ -1,25 +1,56 @@
-"""Reader for the engine's `gennnue --format distill` chunks (HDST v2)."""
+"""Reader for the engine's `gennnue --format distill` chunks (HDST v2).
+
+Chunks carry 78 planes, the clock planes closing each board's block, or 74
+from before them. Those are widened as they are read, so every position comes
+out in the 78-plane layout."""
 
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from hivemind.constants import (
+    NUM_BUGHOUSE_CHANNELS,
+    NUM_BUGHOUSE_CHANNELS_PER_BOARD,
+    NUM_CLOCKED_CHANNELS,
+    NUM_CLOCKED_CHANNELS_PER_BOARD,
+    TIME_ADVANTAGE_CHANNEL,
+)
+
 MAGIC = b"HDST"
 VERSION = 2
 HEADER_BYTES = 28
-PLANES = 74
+PLANES = NUM_CLOCKED_CHANNELS
+LEGACY_PLANES = NUM_BUGHOUSE_CHANNELS
 POLICY_SIZE = 4672
 
 
 def _header(raw, path):
     if raw[:4] != MAGIC:
         raise ValueError(f"{path}: not an HDST chunk")
-    version, planes = np.frombuffer(raw, np.uint32, 2, 4)
-    if version != VERSION or planes != PLANES:
-        raise ValueError(f"{path}: version {version}, {planes} planes (expected {VERSION}, {PLANES})")
+    version, planes = (int(v) for v in np.frombuffer(raw, np.uint32, 2, 4))
+    if version != VERSION or planes not in (PLANES, LEGACY_PLANES):
+        raise ValueError(f"{path}: version {version}, {planes} planes "
+                         f"(expected {VERSION}, {PLANES} or {LEGACY_PLANES})")
     n, entries = (int(v) for v in np.frombuffer(raw, np.uint64, 2, 12))
-    return n, entries
+    return n, entries, planes
+
+
+def widen_legacy_planes(bits, values):
+    """Positions from before the clock planes, in the clocked layout. Those
+    games gave one team the right to sit for the whole game, so the lead plane
+    is +1 for a team that may sit and -1 for one that may not; the speed plane,
+    which those games never had, is 0."""
+    count = len(bits)
+    old, new = NUM_BUGHOUSE_CHANNELS_PER_BOARD, NUM_CLOCKED_CHANNELS_PER_BOARD
+    wide_bits = np.zeros((count, PLANES), np.int64)
+    wide_values = np.zeros((count, PLANES), np.float16)
+    for board in range(2):
+        wide_bits[:, board * new:board * new + old] = bits[:, board * old:(board + 1) * old]
+        wide_values[:, board * new:board * new + old] = values[:, board * old:(board + 1) * old]
+        may_sit = values[:, board * old + TIME_ADVANTAGE_CHANNEL] > 0.5
+        wide_values[:, board * new + old] = np.where(may_sit, 1.0, -1.0)
+    return wide_bits, wide_values
 
 
 def chunk_positions(path):
@@ -30,7 +61,7 @@ def chunk_positions(path):
 
 def read_chunk(path):
     raw = Path(path).read_bytes()
-    n, entries = _header(raw, path)
+    n, entries, planes = _header(raw, path)
     offset = HEADER_BYTES
 
     def take(dtype, count):
@@ -40,8 +71,8 @@ def read_chunk(path):
         return array
 
     chunk = {
-        "plane_bits": take(np.int64, n * PLANES).reshape(n, PLANES),
-        "plane_values": take(np.float16, n * PLANES).reshape(n, PLANES),
+        "plane_bits": take(np.int64, n * planes).reshape(n, planes),
+        "plane_values": take(np.float16, n * planes).reshape(n, planes),
         "value": take(np.float32, n),
         "wdl": take(np.float32, 3 * n).reshape(n, 3),
         "moves_left": take(np.float16, n),
@@ -53,6 +84,9 @@ def read_chunk(path):
     }
     if offset != len(raw) or int(chunk["policy_count"].sum()) != entries:
         raise ValueError(f"{path}: truncated or inconsistent chunk")
+    if planes == LEGACY_PLANES:
+        chunk["plane_bits"], chunk["plane_values"] = widen_legacy_planes(
+            chunk["plane_bits"], chunk["plane_values"])
     return chunk
 
 
@@ -101,9 +135,9 @@ class DistillDataset:
         return len(self.value)
 
     def planes(self, index):
-        bits = self.plane_bits[index]                                # [B, 74]
+        bits = self.plane_bits[index]                                # [B, 78]
         values = self.plane_values[index].float()
-        squares = ((bits.unsqueeze(-1) >> self.shifts) & 1).float()  # [B, 74, 64]
+        squares = ((bits.unsqueeze(-1) >> self.shifts) & 1).float()  # [B, 78, 64]
         filled = torch.where(bits.unsqueeze(-1) != 0, squares, torch.ones_like(squares))
         return (filled * values.unsqueeze(-1)).view(-1, PLANES, 8, 8)
 

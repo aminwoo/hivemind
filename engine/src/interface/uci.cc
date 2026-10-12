@@ -873,7 +873,9 @@ void UCI::policy() {
     float* movesLeft = new float[loadedBatchSize];
 
     // Convert board to planes
-    board_to_planes(board, obs, teamSide, team_may_sit());
+    const std::optional<TimeState> clock = current_clock();
+    board_to_planes(board, obs, teamSide,
+                    clock ? *clock : TimeState::legacy(teamSide, teamHasTimeAdvantage));
 
     // Run inference
     Engine* engine = engines[0].get();

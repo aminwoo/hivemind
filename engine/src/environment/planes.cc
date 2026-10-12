@@ -1,6 +1,7 @@
 #include "environment/planes.h"
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <type_traits>
 
@@ -212,8 +213,38 @@ inline void set_plane_history_board(PlaneData<T>& p, int boardIdx) {
     p.set_plane_to_value(repetitions >= 3 ? 1.0f : 0.0f);
 }
 
+float clock_lead_plane_value(const TimeState& time, Stockfish::Color team) {
+    if (!time.is_clocked()) {
+        return time.can_sit(team) ? 1.0f : -1.0f;
+    }
+    const int32_t lead = time.lead_ms(team);
+    if (lead == 0) {
+        return 0.0f;
+    }
+    const Stockfish::Color ahead = lead > 0 ? team : ~team;
+    const double moves = std::abs(static_cast<double>(lead))
+        / static_cast<double>(time.move_time_ms(ahead));
+    const float size = static_cast<float>(std::min(1.0, std::log2(1.0 + moves) / 10.0));
+    return lead > 0 ? size : -size;
+}
+
+float clock_speed_plane_value(const TimeState& time, Stockfish::Color team) {
+    if (!time.is_clocked()) {
+        return 0.0f;
+    }
+    const double ratio = static_cast<double>(time.move_time_ms(team))
+        / static_cast<double>(time.move_time_ms(~team));
+    return static_cast<float>(std::clamp(std::log2(ratio) / 5.0, -1.0, 1.0));
+}
+
 template <typename T>
-void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage) {
+void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSide,
+                          const TimeState& time) {
+    const bool hasTimeAdvantage = time.can_sit(teamSide);
+    const float leadPlane = board.is_single_board()
+        ? 0.0f : clock_lead_plane_value(time, teamSide);
+    const float speedPlane = board.is_single_board()
+        ? 0.0f : clock_speed_plane_value(time, teamSide);
     // Initialize all to 0 using SIMD when available
     constexpr size_t totalValues = NB_INPUT_VALUES();
 #if USE_AVX2
@@ -235,7 +266,7 @@ void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSid
 #endif
     PlaneData<T> planeData(board, inputPlanes, teamSide);
     
-    // Process Board 0 (Channels 0-36)
+    // Process Board 0 (Channels 0-38)
     set_plane_pieces_board(planeData, 0);           
     set_plane_pockets_board(planeData, 0);          
     set_plane_promoted_pieces_board(planeData, 0);  
@@ -245,10 +276,12 @@ void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSid
     set_plane_castling_rights_board(planeData, 0);  
     planeData.set_plane_to_value(!board.is_single_board() && hasTimeAdvantage ? 1.0f : 0.0f);
     set_plane_history_board(planeData, 0);
+    planeData.set_plane_to_value(leadPlane);
+    planeData.set_plane_to_value(speedPlane);
 
     // Single-board variants keep Board B at the starting position. Encode it
     // with the usual opposite-team perspective, including its metadata.
-    // Process Board 1 (Channels 37-73)
+    // Process Board 1 (Channels 39-77)
     set_plane_pieces_board(planeData, 1);           
     set_plane_pockets_board(planeData, 1);          
     set_plane_promoted_pieces_board(planeData, 1);  
@@ -258,14 +291,29 @@ void board_to_planes_impl(Board& board, T* inputPlanes, Stockfish::Color teamSid
     set_plane_castling_rights_board(planeData, 1);  
     planeData.set_plane_to_value(!board.is_single_board() && hasTimeAdvantage ? 1.0f : 0.0f);
     set_plane_history_board(planeData, 1);
+    // The clock is the team's, so both boards carry the same two values.
+    planeData.set_plane_to_value(leadPlane);
+    planeData.set_plane_to_value(speedPlane);
+}
+
+void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide,
+                     const TimeState& time) {
+    board_to_planes_impl(board, inputPlanes, teamSide, time);
 }
 
 void board_to_planes(Board& board, float* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage) {
-    board_to_planes_impl(board, inputPlanes, teamSide, hasTimeAdvantage);
+    board_to_planes_impl(board, inputPlanes, teamSide,
+                         TimeState::legacy(teamSide, hasTimeAdvantage));
 }
 
 #if defined(HIVEMIND_BACKEND_TENSORRT) || defined(HIVEMIND_ORT_FP16)
+void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide,
+                     const TimeState& time) {
+    board_to_planes_impl(board, inputPlanes, teamSide, time);
+}
+
 void board_to_planes(Board& board, __half* inputPlanes, Stockfish::Color teamSide, bool hasTimeAdvantage) {
-    board_to_planes_impl(board, inputPlanes, teamSide, hasTimeAdvantage);
+    board_to_planes_impl(board, inputPlanes, teamSide,
+                         TimeState::legacy(teamSide, hasTimeAdvantage));
 }
 #endif

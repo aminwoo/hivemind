@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "environment/adjudication.h"
 #include "environment/board.h"
+#include "environment/planes.h"
 #include "environment/time_state.h"
 #include "search/node.h"
 #include "search/searchthread.h"
@@ -223,6 +225,76 @@ TEST_F(TimeStateBoardTest, NodeIdentityIsTheExactClock) {
     EXPECT_EQ(board.search_hash_key(Stockfish::WHITE, near),
               board.search_hash_key(
                   Stockfish::WHITE, TimeState::clocked(Stockfish::WHITE, 150, 100, 100)));
+}
+
+TEST(TimeStateTest, ClockPlanesCountTheLeadInWaitsAndTheSpeedAsARatio) {
+    using Stockfish::WHITE;
+    using Stockfish::BLACK;
+    const TimeState level = TimeState::clocked(WHITE, 0);
+    EXPECT_FLOAT_EQ(clock_lead_plane_value(level, WHITE), 0.0f);
+    EXPECT_FLOAT_EQ(clock_speed_plane_value(level, WHITE), 0.0f);
+
+    // 10 s at 0.1 s a move is 100 waits; at 1 s, 10. Same lead, other values.
+    const TimeState fast = TimeState::clocked(WHITE, 10000, 100, 100);
+    EXPECT_NEAR(clock_lead_plane_value(fast, WHITE), std::log2(101.0) / 10.0, 1e-6);
+    EXPECT_NEAR(clock_lead_plane_value(fast, BLACK), -std::log2(101.0) / 10.0, 1e-6);
+    const TimeState slow = TimeState::clocked(WHITE, 10000, 1000, 100);
+    EXPECT_NEAR(clock_lead_plane_value(slow, WHITE), std::log2(11.0) / 10.0, 1e-6);
+    EXPECT_NEAR(clock_speed_plane_value(slow, WHITE), std::log2(10.0) / 5.0, 1e-6);
+    EXPECT_NEAR(clock_speed_plane_value(slow, BLACK), -std::log2(10.0) / 5.0, 1e-6);
+    // Behind, the waits are the leader's.
+    EXPECT_NEAR(clock_lead_plane_value(slow, BLACK), -std::log2(11.0) / 10.0, 1e-6);
+
+    // Both saturate.
+    EXPECT_FLOAT_EQ(clock_lead_plane_value(
+        TimeState::clocked(WHITE, TimeState::MAX_LEAD_MS, 1, 1), WHITE), 1.0f);
+    EXPECT_FLOAT_EQ(clock_speed_plane_value(
+        TimeState::clocked(WHITE, 0, 3600000, 1), WHITE), 1.0f);
+
+    // A flag is a permanent lead or deficit and has no speeds: the values
+    // the old networks' data is widened with.
+    EXPECT_FLOAT_EQ(clock_lead_plane_value(TimeState::legacy(WHITE, true), WHITE), 1.0f);
+    EXPECT_FLOAT_EQ(clock_lead_plane_value(TimeState::legacy(WHITE, true), BLACK), -1.0f);
+    EXPECT_FLOAT_EQ(clock_speed_plane_value(TimeState::legacy(WHITE, true), WHITE), 0.0f);
+}
+
+TEST_F(TimeStateBoardTest, ClockPlanesCloseBothBoardBlocks) {
+    Board board;
+    const TimeState clock = TimeState::clocked(Stockfish::WHITE, 10000, 1000, 100);
+    std::vector<float> planes(NB_INPUT_VALUES());
+    board_to_planes(board, planes.data(), Stockfish::WHITE, clock);
+    for (int block : {0, NB_INPUT_CHANNELS_PER_BOARD}) {
+        const int lead = block + NB_LEGACY_INPUT_CHANNELS_PER_BOARD;
+        for (int square = 0; square < 64; ++square) {
+            EXPECT_FLOAT_EQ(planes[lead * 64 + square],
+                            clock_lead_plane_value(clock, Stockfish::WHITE));
+            EXPECT_FLOAT_EQ(planes[(lead + 1) * 64 + square],
+                            clock_speed_plane_value(clock, Stockfish::WHITE));
+            // The sit right is still its own plane.
+            EXPECT_FLOAT_EQ(planes[(block + 31) * 64 + square], 1.0f);
+        }
+    }
+}
+
+TEST(TimeStateTest, LegacyNetworksGetTheFirstPlanesOfEachBlock) {
+    constexpr size_t batch = 2;
+    std::vector<float> planes(batch * NB_INPUT_VALUES());
+    for (size_t index = 0; index < planes.size(); ++index) {
+        planes[index] = static_cast<float>(index / 64);  // each plane's own number
+    }
+    std::vector<float> legacy(batch * NB_LEGACY_INPUT_CHANNELS * 64, -1.0f);
+    drop_clock_planes(planes.data(), legacy.data(), batch);
+    for (size_t position = 0; position < batch; ++position) {
+        for (size_t board = 0; board < 2; ++board) {
+            for (size_t plane = 0; plane < NB_LEGACY_INPUT_CHANNELS_PER_BOARD; ++plane) {
+                const size_t to = (position * 2 + board) * NB_LEGACY_INPUT_CHANNELS_PER_BOARD
+                    + plane;
+                const size_t from = (position * 2 + board) * NB_INPUT_CHANNELS_PER_BOARD
+                    + plane;
+                ASSERT_FLOAT_EQ(legacy[to * 64 + 7], static_cast<float>(from));
+            }
+        }
+    }
 }
 
 TEST_F(TimeStateBoardTest, AdjudicationReadsBothTeamsFromTheClock) {

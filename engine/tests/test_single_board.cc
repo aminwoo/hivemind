@@ -176,7 +176,15 @@ TEST_F(SingleBoardTest, NewVariantsKeepStandardPartnerAndEncodeNonRoyalKings) {
             std::vector<float> planes(NB_INPUT_VALUES()), expected(NB_INPUT_VALUES());
             board_to_planes(board, planes.data(), side, true);
             board_to_planes(reference, expected.data(), side, false);
-            for (size_t i = 37 * 64; i < planes.size(); ++i) EXPECT_FLOAT_EQ(planes[i], expected[i]);
+            // The partner block matches the start position's, apart from the
+            // clock planes a single board leaves at zero.
+            for (size_t i = NB_INPUT_CHANNELS_PER_BOARD * 64; i < planes.size(); ++i) {
+                if (i / 64 % NB_INPUT_CHANNELS_PER_BOARD >= NB_LEGACY_INPUT_CHANNELS_PER_BOARD) {
+                    EXPECT_FLOAT_EQ(planes[i], 0.0f) << "clock plane index " << i;
+                } else {
+                    EXPECT_FLOAT_EQ(planes[i], expected[i]);
+                }
+            }
             for (int plane : {5, 11}) {
                 for (int square = 0; square < 64; ++square) {
                     EXPECT_FLOAT_EQ(planes[plane * 64 + square], expected[plane * 64 + square]);
@@ -283,15 +291,26 @@ TEST_F(SingleBoardTest, SharedNetworkEncodingKeepsPartnerAtStartAndZerosTimeAdva
                 std::vector<float> expected(NB_INPUT_VALUES());
                 board_to_planes(board, planes.data(), side, true);
                 board_to_planes(reference, expected.data(), side, false);
-                for (size_t i = 37 * 64; i < planes.size(); ++i) {
+                constexpr size_t partner = NB_INPUT_CHANNELS_PER_BOARD;
+                for (size_t i = partner * 64; i < planes.size(); ++i) {
+                    if (i / 64 % partner >= NB_LEGACY_INPUT_CHANNELS_PER_BOARD) {
+                        continue;  // The clock planes, checked below.
+                    }
                     EXPECT_FLOAT_EQ(planes[i], expected[i]) << "input index " << i;
                 }
                 for (size_t square = 0; square < 64; ++square) {
-                    EXPECT_FLOAT_EQ(planes[(37 + 26) * 64 + square], 1.0f);
-                    EXPECT_FLOAT_EQ(planes[(37 + 25) * 64 + square],
+                    EXPECT_FLOAT_EQ(planes[(partner + 26) * 64 + square], 1.0f);
+                    EXPECT_FLOAT_EQ(planes[(partner + 25) * 64 + square],
                                     side == Stockfish::BLACK ? 1.0f : 0.0f);
                     EXPECT_FLOAT_EQ(planes[31 * 64 + square], 0.0f);
-                    EXPECT_FLOAT_EQ(planes[(37 + 31) * 64 + square], 0.0f);
+                    EXPECT_FLOAT_EQ(planes[(partner + 31) * 64 + square], 0.0f);
+                    // No bughouse clock on a single board: lead and speed are 0.
+                    for (size_t block : {size_t{0}, partner}) {
+                        for (size_t clock = NB_LEGACY_INPUT_CHANNELS_PER_BOARD;
+                             clock < partner; ++clock) {
+                            EXPECT_FLOAT_EQ(planes[(block + clock) * 64 + square], 0.0f);
+                        }
+                    }
                 }
             }
         };

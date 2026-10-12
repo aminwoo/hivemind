@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <cstddef>
 #include <unordered_map>
 #include <string>
 #include "search/search_params.h"
@@ -8,13 +10,37 @@ const int BOARD_A = 0;
 const int BOARD_B = 1;
 
 constexpr int NB_POLICY_CHANNELS = 73;
-constexpr int NB_INPUT_CHANNELS_PER_BOARD = 37;
+// Each board's block closes with two clock planes: the team's time lead and
+// the ratio of the two teams' move times (environment/planes.h).
+constexpr int NB_CLOCK_CHANNELS_PER_BOARD = 2;
+// Networks from before the clock planes read only the first 37 planes of
+// each block; the engine drops the clock planes before running them.
+constexpr int NB_LEGACY_INPUT_CHANNELS_PER_BOARD = 37;
+constexpr int NB_LEGACY_INPUT_CHANNELS = 2 * NB_LEGACY_INPUT_CHANNELS_PER_BOARD;
+constexpr int NB_INPUT_CHANNELS_PER_BOARD =
+    NB_LEGACY_INPUT_CHANNELS_PER_BOARD + NB_CLOCK_CHANNELS_PER_BOARD;
 constexpr int NB_INPUT_CHANNELS = 2 * NB_INPUT_CHANNELS_PER_BOARD;
 constexpr int BOARD_HEIGHT = 8; 
 constexpr int BOARD_WIDTH = 8; 
 
 constexpr size_t NB_INPUT_VALUES() {
     return static_cast<size_t>(NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH);  
+}
+
+/**
+ * @brief Copies @p batch positions' planes into the layout of a network
+ * from before the clock planes: the first NB_LEGACY_INPUT_CHANNELS_PER_BOARD
+ * planes of each board's block.
+ */
+template <typename T>
+void drop_clock_planes(const T* planes, T* legacyPlanes, size_t batch) {
+    constexpr size_t square = 64;
+    constexpr size_t block = NB_INPUT_CHANNELS_PER_BOARD * square;
+    constexpr size_t legacyBlock = NB_LEGACY_INPUT_CHANNELS_PER_BOARD * square;
+    for (size_t position = 0; position < 2 * batch; ++position) {
+        const T* source = planes + position * block;
+        std::copy(source, source + legacyBlock, legacyPlanes + position * legacyBlock);
+    }
 }
 
 constexpr size_t NB_POLICY_VALUES() {

@@ -160,8 +160,9 @@ uint64_t recomputed_position_key(Board& board, int boardNum) {
 }
 
 TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
-    EXPECT_EQ(NB_INPUT_CHANNELS, 74);
-    EXPECT_EQ(NB_INPUT_CHANNELS_PER_BOARD, 37);
+    EXPECT_EQ(NB_INPUT_CHANNELS, 78);
+    EXPECT_EQ(NB_INPUT_CHANNELS_PER_BOARD, 39);
+    EXPECT_EQ(NB_LEGACY_INPUT_CHANNELS, 74);
 
     Board board;
     std::vector<float> planes(NB_INPUT_VALUES());
@@ -172,6 +173,12 @@ TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
             for (int square = 0; square < 64; ++square) {
                 EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + channel, square), 0.0f);
             }
+        }
+        // A flag without the right to sit is a permanent deficit, and
+        // carries no speeds.
+        for (int square = 0; square < 64; ++square) {
+            EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + 37, square), -1.0f);
+            EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + 38, square), 0.0f);
         }
     }
 }

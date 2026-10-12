@@ -115,7 +115,6 @@ struct LeafContext {
     vector<int> policyIndicesB;
     Stockfish::Color teamToPlay;
     TimeState time;      // Clock state at the leaf, every action on the path charged
-    bool sitPlaneActive;
     bool boardAOnTurn;
     bool boardBOnTurn;
     bool isTerminal;     // True if this is a terminal node (draw/checkmate)
@@ -124,8 +123,8 @@ struct LeafContext {
     bool isTransposition; // True if this leaf was found via transposition table (MCGS)
     uint64_t leafHash;    // Hash of the leaf position for transposition lookup
     
-    LeafContext() : leaf(nullptr), teamToPlay(Stockfish::WHITE), 
-                    sitPlaneActive(false), boardAOnTurn(false), boardBOnTurn(false),
+    LeafContext() : leaf(nullptr), teamToPlay(Stockfish::WHITE),
+                    boardAOnTurn(false), boardBOnTurn(false),
                     isTerminal(false), hasEvaluationReservation(false),
                     terminalValue(0.0f),
                     isTransposition(false), leafHash(0) {}

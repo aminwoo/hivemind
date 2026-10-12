@@ -12,7 +12,8 @@ ModelOpt is not a project dependency; install it into its own environment:
     ~/.cache/hivemind-quantize/bin/pip install "nvidia-modelopt[onnx]"
 
 Calibrate on positions encoded by the engine itself, so the activations match
-what the search feeds the network (a few thousand are enough):
+what the search feeds the network (a few thousand are enough). A network from
+before the clock planes reads 74 planes; add `--legacy-planes true` for it:
 
     ./build-ninja/hivemind dumpplanes --fens ../data/nnue/val/nnue_99_0_00000.fen \\
         --output calib.f32 --every 122
@@ -38,7 +39,14 @@ from onnx import TensorProto
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import convert_onnx_fp32  # noqa: E402
 
-PLANES_SHAPE = (74, 8, 8)
+
+
+def input_planes(model: onnx.ModelProto) -> int:
+    """Planes the network reads: 78, or 74 from before the clock planes."""
+    dims = model.graph.input[0].type.tensor_type.shape.dim
+    if len(dims) != 4 or dims[1].dim_value not in (74, 78):
+        raise SystemExit("the network's input is not N x 74 or N x 78 x 8 x 8")
+    return dims[1].dim_value
 
 
 def fp16_interface(model: onnx.ModelProto) -> int:
@@ -88,15 +96,18 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("model", type=Path, help="FP16 or FP32 Hivemind ONNX network")
     parser.add_argument("calibration", type=Path,
-                        help="float32 planes, N x 74 x 8 x 8, from `hivemind dumpplanes`")
+                        help="float32 planes, N x 78 (or 74) x 8 x 8, from `hivemind dumpplanes`")
     parser.add_argument("output", type=Path)
     parser.add_argument("--calibration-method", default="max", choices=["max", "entropy"])
     args = parser.parse_args()
 
+    shape = (input_planes(onnx.load(str(args.model), load_external_data=False)), 8, 8)
     planes = np.fromfile(args.calibration, dtype=np.float32)
-    if planes.size == 0 or planes.size % int(np.prod(PLANES_SHAPE)) != 0:
-        raise SystemExit(f"{args.calibration} is not a float32 array of 74x8x8 planes")
-    planes = planes.reshape(-1, *PLANES_SHAPE)
+    if planes.size == 0 or planes.size % int(np.prod(shape)) != 0:
+        legacy = " (dumpplanes --legacy-planes true for this network)" if shape[0] == 74 else ""
+        raise SystemExit(f"{args.calibration} is not a float32 array of "
+                         f"{shape[0]}x8x8 planes{legacy}")
+    planes = planes.reshape(-1, *shape)
     print(f"calibrating on {len(planes)} positions")
 
     with tempfile.TemporaryDirectory() as work:

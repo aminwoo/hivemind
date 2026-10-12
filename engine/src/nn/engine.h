@@ -98,6 +98,14 @@ public:
      */
     int getBatchSize() const { return m_batchSize; }
 
+    /**
+     * @brief Input planes the loaded network takes: NB_INPUT_CHANNELS, or
+     * NB_LEGACY_INPUT_CHANNELS for a network from before the clock planes.
+     * Callers always pass NB_INPUT_CHANNELS planes per position; the engine
+     * drops the clock planes before running a legacy network.
+     */
+    int inputChannels() const { return m_inputChannels; }
+
     /// Human-readable backend name, e.g. "TensorRT" or "ONNX Runtime".
     static const char* backendName();
 
@@ -121,6 +129,8 @@ private:
         void* deviceJointFactorsABuffer = nullptr;
         void* deviceJointFactorsBBuffer = nullptr;
         void* hostObsHalf = nullptr;
+        // A legacy network's input, the clock planes dropped (null otherwise).
+        void* hostLegacyObsHalf = nullptr;
         void* hostValueHalf = nullptr;
         void* hostPolicyAHalf = nullptr;
         void* hostPolicyBHalf = nullptr;
@@ -138,6 +148,7 @@ private:
     // Device ID and batch shape
     int m_deviceId;
     int m_batchSize = SearchParams::BATCH_SIZE;
+    int m_inputChannels = NB_INPUT_CHANNELS;
 
 #if defined(HIVEMIND_BACKEND_TENSORRT)
     Logger m_logger;

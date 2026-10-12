@@ -506,7 +506,6 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         ctx.hasEvaluationReservation = selection.hasEvaluationReservation;
         ctx.teamToPlay = leaf->get_team_to_play();
         ctx.time = selection.time;
-        ctx.sitPlaneActive = ctx.time.can_sit(ctx.teamToPlay);
         
         // Check for terminal states
         // Track search moves independently per board. A combined tree depth is
@@ -625,8 +624,8 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                         ctx.capturesB, ctx.policyIndicesB);
 
         // Convert board to planes for this batch slot
-        board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(), 
-                        ctx.teamToPlay, ctx.sitPlaneActive);
+        board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(),
+                        ctx.teamToPlay, ctx.time);
         validInferenceCount++;
         
         batchContexts.push_back(std::move(ctx));
