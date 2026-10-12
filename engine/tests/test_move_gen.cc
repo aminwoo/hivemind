@@ -105,11 +105,12 @@ public:
         Board& board, Stockfish::Color teamSide,
         bool teamHasTimeAdvantage, JointActionCandidate& action,
         int& plyToMate,
-        std::vector<MateProofPly>& principalVariation) {
+        std::vector<MateProofPly>& principalVariation,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET) {
         return Agent::find_root_mate_impl(
             board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
             action, plyToMate,
-            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            nodeBudget, nullptr, nullptr, true,
             Agent::MateSearchBudget::Clock::time_point{}, true, false,
             &principalVariation);
     }
@@ -2888,6 +2889,28 @@ TEST_F(EngineTest, CaptureFeedRootMateReportsWholeProofLine) {
         line.make_moves(step.moveA, step.moveB);
     }
     EXPECT_TRUE(line.is_checkmate(Stockfish::BLACK, false));
+}
+
+TEST_F(EngineTest, ScoutedDropMateReportsTheWholeTwoBoardProofLine) {
+    Board board;
+    board.set(
+        "r2q1kr1/pppbnp1p/5P1p/1B1P1p1N/N2Pp3/P1Pp2P1/2B1BP1P/R2QK2R"
+        "[BNNQPqbnn] w KQ - 0 29|"
+        "2r2r2/p2p2k1/1p2p2p/3b1pb1/P7/5P2/KP1p1PPP/2nR3R[P] w - - 1 41");
+    JointActionCandidate action;
+    int ply = 0;
+    std::vector<MateProofPly> pv;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_with_pv(
+        board, Stockfish::WHITE, true, action, ply, pv, 200000));
+    ASSERT_EQ(ply, 9);
+    ASSERT_EQ(pv.size(), static_cast<size_t>(ply));
+    EXPECT_EQ(board.uci_move(BOARD_A, pv.front().moveA), "N@e6");
+    for (const auto& step : pv) {
+        ASSERT_TRUE(board.is_legal_move(BOARD_A, step.moveA));
+        ASSERT_TRUE(board.is_legal_move(BOARD_B, step.moveB));
+        board.make_moves(step.moveA, step.moveB);
+    }
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
 }
 
 TEST_F(EngineTest, RootMateProofRetainsEveryDefenderContinuation) {

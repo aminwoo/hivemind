@@ -689,6 +689,12 @@ constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
  */
 constexpr uint64_t JOINT_MATE_REDUCED_ATTEMPT_NODES = 4000;
 
+// Before a mixed-turn root spends its allowance excluding short joint mates,
+// scout a local checking line and verify it with partner moves included. The
+// scout supplies only a candidate; only the second search can prove a win.
+constexpr uint64_t ROOT_MATE_SCOUT_NODES = 10000;
+constexpr uint64_t ROOT_MATE_SCOUT_VERIFY_NODES = 20000;
+
 /**
  * Widening at the joint solver's attacker nodes: the slice each forcing
  * action gets in the first round, and how much it grows per round. Small

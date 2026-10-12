@@ -2329,7 +2329,10 @@ JointMateProof search_reduced_partner_mate(
             board.unmake_moves(action.moveA, action.moveB);
             if (child.status == JointMateStatus::PROVEN) {
                 return remember({JointMateStatus::PROVEN,
-                                 child.pliesToMate + 1, action});
+                                 child.pliesToMate + 1, action,
+                                 std::make_shared<JointMateProofLine>(
+                                     JointMateProofLine{
+                                         action, child.principalVariation})});
             }
             if (child.status == JointMateStatus::UNKNOWN
                 && budget.exhausted) {
@@ -2425,8 +2428,14 @@ JointMateProof search_reduced_partner_mate(
             sawUnknown = true;
             return true;
         }
-        result.pliesToMate = std::max(
-            result.pliesToMate, child.pliesToMate + 1);
+        if (child.pliesToMate + 1 > result.pliesToMate
+            || !result.principalVariation) {
+            result.pliesToMate = child.pliesToMate + 1;
+            result.action = action;
+            result.principalVariation =
+                std::make_shared<JointMateProofLine>(
+                    JointMateProofLine{action, child.principalVariation});
+        }
         return false;
     };
     visit_legal_joint_actions(
@@ -4042,38 +4051,102 @@ bool Agent::find_root_mate_impl(
         JointMateCache cache;
         cache.reserve(static_cast<size_t>(
             std::min<uint64_t>(budget.remainingNodes, 16384)));
+        const auto publish_proof = [&](const JointMateProof& proof) {
+            const JointActionRules rules{
+                boardAOnTurn, boardBOnTurn, teamHasTimeAdvantage,
+                boardAOnTurn && board.has_any_legal_move(BOARD_A),
+                boardBOnTurn && board.has_any_legal_move(BOARD_B)};
+            outAction = JointActionCandidate(
+                proof.action.moveA, 1.0f, 0,
+                proof.action.moveB, 1.0f, 0, rules,
+                proof.action.moveA != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_A, proof.action.moveA),
+                proof.action.moveB != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_B, proof.action.moveB));
+            outPlyToMate = proof.pliesToMate;
+            if (outPrincipalVariation) {
+                for (auto ply = proof.principalVariation;
+                     ply; ply = ply->next) {
+                    outPrincipalVariation->push_back(ply->action);
+                }
+            }
+            return true;
+        };
+
+        // Excluding every shorter joint mate can consume the entire budget
+        // before a simple longer line is reached. Keep a verified upper bound
+        // first, then spend what remains trying to shorten it. When only one
+        // board is ours to move, the other board's defender can still capture,
+        // check or buy a pass, so a local scout alone is never a certificate.
+        JointMateProof scoutedProof{JointMateStatus::UNKNOWN, 0, {}};
+        if (sitsThroughLine && boardAOnTurn != boardBOnTurn) {
+            const int activeBoard = boardAOnTurn ? BOARD_A : BOARD_B;
+            const Stockfish::Color attackerColor = boardAOnTurn
+                ? teamSide : ~teamSide;
+            MateSearchBudget scoutBudget = budget;
+            const uint64_t scoutNodes = std::min(
+                budget.remainingNodes / 2,
+                SearchParams::ROOT_MATE_SCOUT_NODES);
+            scoutBudget.remainingNodes = scoutNodes;
+            Stockfish::Move candidate = Stockfish::MOVE_NONE;
+            int candidatePly = 0;
+            bool foundCandidate = false;
+            for (int moves = 2;
+                 scoutNodes > 0
+                     && moves <= SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
+                 ++moves) {
+                foundCandidate = search_single_board_forced_mate_impl(
+                    board, activeBoard, attackerColor, 1, moves,
+                    candidate, candidatePly, &scoutBudget, nullptr, true);
+                if (foundCandidate || scoutBudget.exhausted) {
+                    break;
+                }
+            }
+            budget.remainingNodes -= scoutNodes - scoutBudget.remainingNodes;
+            if (foundCandidate && !budget.out_of_time()) {
+                MateSearchBudget verifyBudget = budget;
+                const uint64_t verifyNodes = std::min(
+                    budget.remainingNodes,
+                    SearchParams::ROOT_MATE_SCOUT_VERIFY_NODES);
+                verifyBudget.remainingNodes = verifyNodes;
+                const MateJointAction action = boardAOnTurn
+                    ? MateJointAction{candidate, Stockfish::MOVE_NONE}
+                    : MateJointAction{Stockfish::MOVE_NONE, candidate};
+                board.make_moves(action.moveA, action.moveB);
+                const JointMateProof tail = search_reduced_partner_mate(
+                    board, teamSide, activeBoard, attackerColor, ~teamSide,
+                    SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES - 1,
+                    1, verifyBudget, &cache);
+                board.unmake_moves(action.moveA, action.moveB);
+                budget.remainingNodes -= verifyNodes - verifyBudget.remainingNodes;
+                if (tail.status == JointMateStatus::PROVEN) {
+                    scoutedProof = {
+                        JointMateStatus::PROVEN, tail.pliesToMate + 1, action,
+                        std::make_shared<JointMateProofLine>(
+                            JointMateProofLine{action, tail.principalVariation})};
+                }
+            }
+        }
         for (int maxMateMoves = 2;
              maxMateMoves <= SearchParams::MATE_SEARCH_MAX_ATTACKER_MOVES;
              ++maxMateMoves) {
+            if (scoutedProof.status == JointMateStatus::PROVEN
+                && 2 * maxMateMoves - 1 >= scoutedProof.pliesToMate) {
+                return publish_proof(scoutedProof);
+            }
             const JointMateProof proof = search_joint_forced_mate(
                 board, teamSide, time, teamSide,
                 maxMateMoves, 0, budget, cache, attackerWinsMateRace,
                 stopOnSolvedRoot);
             if (proof.status == JointMateStatus::PROVEN) {
-                const bool isCapA = proof.action.moveA != Stockfish::MOVE_NONE
-                    && board.is_capture(BOARD_A, proof.action.moveA);
-                const bool isCapB = proof.action.moveB != Stockfish::MOVE_NONE
-                    && board.is_capture(BOARD_B, proof.action.moveB);
-                const JointActionRules rules{
-                    boardAOnTurn, boardBOnTurn, teamHasTimeAdvantage,
-                    boardAOnTurn && board.has_any_legal_move(BOARD_A),
-                    boardBOnTurn && board.has_any_legal_move(BOARD_B)};
-                outAction = JointActionCandidate(
-                    proof.action.moveA, 1.0f, 0,
-                    proof.action.moveB, 1.0f, 0,
-                    rules, isCapA, isCapB);
-                outPlyToMate = proof.pliesToMate;
-                if (outPrincipalVariation) {
-                    for (auto ply = proof.principalVariation;
-                         ply; ply = ply->next) {
-                        outPrincipalVariation->push_back(ply->action);
-                    }
-                }
-                return true;
+                return publish_proof(proof);
             }
             if (budget.exhausted) {
                 break;
             }
+        }
+        if (scoutedProof.status == JointMateStatus::PROVEN) {
+            return publish_proof(scoutedProof);
         }
     }
 

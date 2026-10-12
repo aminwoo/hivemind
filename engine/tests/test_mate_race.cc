@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 
 #include <string>
 #include <vector>
@@ -41,6 +42,13 @@ constexpr const char* kFedBoardB =
 constexpr const char* kFedBoardANoMate =
     "4Q~bk1/pPp1pppp/3p4/3B4/3P1r2/B1P5/P1P1nPPP/R5RK"
     "[QQRBNNPPPqbbnnpp] b - - 0 25";
+
+// chess.com 186155189073, after 28...Nxe7.
+constexpr const char* kDropMateBoard =
+    "r2q1kr1/pppbnp1p/5P1p/1B1P1p1N/N2Pp3/P1Pp2P1/2B1BP1P/R2QK2R"
+    "[BNNQPqbnn] w KQ - 0 29";
+constexpr const char* kDropMatePartner =
+    "2r2r2/p2p2k1/1p2p2p/3b1pb1/P7/5P2/KP1p1PPP/2nR3R[P] w - - 1 41";
 
 Stockfish::Move move_of(Board& board, int boardNum, std::string uci) {
     return Stockfish::UCI::to_move(*board.pos[boardNum], uci);
@@ -156,6 +164,62 @@ TEST_F(MateRaceTest, OrdinaryPositionsAreNotVetoed) {
     ASSERT_NE(opening, Stockfish::MOVE_NONE);
     EXPECT_FALSE(Agent::action_loses_mate_race(
         board, joint(opening, Stockfish::MOVE_NONE), Stockfish::WHITE, false));
+}
+
+// chess.com 186155189073, after 28...Nxe7. The defender is also on turn
+// on the partner board, so a local mating line needs a two-board proof.
+TEST_F(MateRaceTest, LongerDropMateSurvivesTheShorterMateSearchBudget) {
+    for (bool swapped : {false, true}) {
+        Board board;
+        board.set_fen(BOARD_A, swapped ? kDropMatePartner : kDropMateBoard);
+        board.set_fen(BOARD_B, swapped ? kDropMateBoard : kDropMatePartner);
+        const auto before = Agent::board_signature(board);
+        JointActionCandidate action;
+        int ply = 0;
+        ASSERT_TRUE(Agent::find_root_mate(
+            board, swapped ? Stockfish::BLACK : Stockfish::WHITE,
+            true, action, ply, 200000,
+            std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+        const int activeBoard = swapped ? BOARD_B : BOARD_A;
+        EXPECT_EQ(board.uci_move(
+            activeBoard, swapped ? action.moveB : action.moveA), "N@e6");
+        EXPECT_EQ(swapped ? action.moveA : action.moveB, Stockfish::MOVE_NONE);
+        EXPECT_EQ(ply, 9);
+        EXPECT_EQ(Agent::board_signature(board), before);
+    }
+}
+
+TEST_F(MateRaceTest, BothCheckingDropsHaveTwoBoardMateProofs) {
+    Board board;
+    board.set_fen(BOARD_A, kDropMateBoard);
+    board.set_fen(BOARD_B, kDropMatePartner);
+    const auto before = Agent::board_signature(board);
+    for (const auto* moveText : {"N@e6", "Q@g7"}) {
+        const auto action = joint(
+            move_of(board, BOARD_A, moveText), Stockfish::MOVE_NONE);
+        ASSERT_NE(action.moveA, Stockfish::MOVE_NONE);
+        Agent::MateSearchBudget budget;
+        budget.remainingNodes = 50000;
+        int ply = 0;
+        MateCertificateTier tier;
+        ASSERT_TRUE(Agent::certify_mate_candidate(
+            board, Stockfish::WHITE, true, action, 9, budget, ply, tier));
+        EXPECT_EQ(ply, 9);
+        EXPECT_NE(tier, MateCertificateTier::NONE);
+        EXPECT_EQ(Agent::board_signature(board), before);
+    }
+}
+
+TEST_F(MateRaceTest, DropMateScoutCannotIgnoreThePartnersLosingRace) {
+    Board board;
+    board.set_fen(BOARD_A, kDropMateBoard);
+    board.set_fen(BOARD_B, "6rk/6pp/8/4N3/8/8/8/K7[] w - - 0 1");
+    const auto before = Agent::board_signature(board);
+    JointActionCandidate action;
+    int ply = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, action, ply, 200000));
+    EXPECT_EQ(Agent::board_signature(board), before);
 }
 
 // chess.com 186127589087, after 30...Kf4 and before 28...Q@e2#.
