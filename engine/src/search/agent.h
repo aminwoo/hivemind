@@ -213,12 +213,9 @@ private:
     // `running` back to true.
     std::atomic<bool> stopRequested_{false};
     // Stop signals for the two root scans. Both latch on a stop request. A
-    // node-limited search has no move time for the scans to carve their
-    // windows out of, and their node budgets cannot bound them in time (see
-    // MateSearchBudget), so the tree's own progress serves as the clock: the
-    // winning scan's share ends once the tree has searched its pre-pass share
-    // of the target, and both scans end when the workers finish. A timed
-    // search keeps its wall-clock deadlines and never sets these itself.
+    // node-limited search has no wall-clock deadline; its workers cancel both
+    // scans when the tree finishes. Timed workers do the same, and the winning
+    // scan also has the tree's deadline. A proven mate cancels the loss scan.
     std::atomic<bool> rootWinScanStop_{false};
     std::atomic<bool> rootLossScanStop_{false};
     std::atomic<SearchInfo*> currentSearchInfo_{nullptr};    // Active search info pointer
@@ -237,8 +234,8 @@ private:
     /**
      * Root pre-pass accounting.
      *
-     * The winning-mate and reverse-loss scans run inside the move time, bounded
-     * by MATE_SEARCH_MAX_TIME_PERCENT. Reverse proofs are also attached to
+     * The winning-mate and reverse-loss scans run inside the move time.
+     * Reverse proofs are also attached to
      * individual root actions, so a proof can prevent a blunder even when the
      * whole position is not proven lost. The cost and whole-root hit rate are
      * accumulated here so the trade can be read off real games.
@@ -343,9 +340,8 @@ public:
     /**
      * @brief Node and time budget for the root forced-mate search.
      *
-     * The search runs on the calling CPU thread alongside MCTS workers, so it
-     * carries a cap of its own. Running out is reported as "not proven", never
-     * as a proof.
+     * Proof scans run alongside MCTS workers, with node caps and cancellation.
+     * Running out is reported as "not proven", never as a proof.
      *
      * A node count alone cannot bound it in absolute time: a joint proof node
      * enumerates board-move combinations and costs two orders of magnitude
@@ -353,7 +349,7 @@ public:
      * therefore also set a deadline, sampled every few probes so the clock
      * read stays negligible next to the work it guards. Node-limited searches
      * have no deadline to give and use `cancelled` instead, raised from the
-     * MCTS workers as the tree reaches the scan's share of the node target.
+     * MCTS workers when the tree finishes its node target.
      */
     struct MateSearchBudget {
         using Clock = std::chrono::steady_clock;
@@ -944,6 +940,7 @@ private:
         std::vector<MateProofPly>* outPrincipalVariation = nullptr,
         const std::atomic<bool>* cancelled = nullptr,
         SingleBoardMateCache* singleBoardMateCache = nullptr,
-        const Node* stopOnSolvedRoot = nullptr);
+        const Node* stopOnSolvedRoot = nullptr,
+        bool stopAtFirstProof = false); // Background search publishes immediately.
     
 };

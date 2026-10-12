@@ -849,7 +849,8 @@ void SearchThread::abort_batch(SearchBatch& batch) {
 }
 
 void SearchThread::run_iteration(Board& board, Engine* engine,
-                                 const TimeState& rootTime) {
+                                 const TimeState& rootTime,
+                                 const std::atomic<bool>* keepRunning) {
     ensureBufferSize(engine->getBatchSize());
 
     if (pendingBatchIndex < 0) {
@@ -857,6 +858,10 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
         collect_batch(initialBatch, board, rootTime, true);
         if (initialBatch.validInferenceCount == 0) {
             process_batch(initialBatch, {});
+            return;
+        }
+        if (keepRunning && !keepRunning->load(std::memory_order_acquire)) {
+            abort_batch(initialBatch);
             return;
         }
         if (!engine->enqueueInferenceHalf(
@@ -885,6 +890,12 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
     pendingBatchIndex = -1;
     process_batch(completedBatch, inferenceOutputs);
 
+    // A mate or stop may land while inference is in flight. Release the
+    // lookahead reservations instead of submitting another batch afterward.
+    if (keepRunning && !keepRunning->load(std::memory_order_acquire)) {
+        abort_batch(lookaheadBatch);
+        return;
+    }
     if (lookaheadBatch.validInferenceCount == 0) {
         process_batch(lookaheadBatch, {});
         return;

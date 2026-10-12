@@ -251,7 +251,8 @@ public:
     void cancel_virtual_losses(const vector<TrajectoryEntry>& trajectory);
     
     // Minibatch MCGS - collects SearchParams::BATCH_SIZE leaves, runs batched inference, processes results
-    void run_iteration(Board& board, Engine* engine, const TimeState& rootTime);
+    void run_iteration(Board& board, Engine* engine, const TimeState& rootTime,
+                       const std::atomic<bool>* keepRunning = nullptr);
     void finish_pending_iteration(Board& board, Engine* engine,
                                   const TimeState& rootTime);
     void discard_pending_iteration(Board& board, Engine* engine);

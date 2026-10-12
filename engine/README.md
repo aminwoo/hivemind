@@ -225,6 +225,14 @@ a mean value difference of 0.023.
 
 ### Mate-probe threads
 
+MCTS checks mate in one before starting neural inference. Its deeper exact
+root mate scan searches up to M8 on a separate cancellable thread, with a
+private two-board position. It can use the whole MCTS search window, subject
+to its scaled node budget. The first verified proof stops MCTS and the loss
+scan and returns the mating move; stop requests, the move deadline and a
+finished MCTS search cancel it. Threads are joined before returning a move or
+replacing the tree.
+
 `MateThreads` (default `4`, max `256`) sets how many Fairy-Stockfish workers
 each mate probe searches with, in both MCTS and alpha-beta. The workers share
 one transposition table, and the probe's node budget is their combined total,

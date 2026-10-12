@@ -340,20 +340,11 @@ constexpr bool ENABLE_MCTS_SOLVER = true;
 constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 8;
 
 /**
- * Node budget (attacker moves plus defender replies tried) for the whole root
- * forced-mate pre-pass, shared across its deepening iterations.
- *
- * The pre-pass runs synchronously before MCTS, so it needs a cap of its own:
- * without one, an exposed king plus a full hand reaches multiple seconds. This
- * is the hard ceiling (~100 ms); Agent::search() scales it down further with the
- * budget of the search it precedes. Exhausting it only means "not proven" - the
- * position then goes to MCTS as usual, where the in-tree solver can still prove
- * the mate.
+ * Node budget (attacker moves plus defender replies tried) for the background
+ * root forced-mate scan, shared across its deepening iterations. Scaled down
+ * with the search allocation; cancellation and the move deadline bound its
+ * time. Exhausting it means "not proven", and MCTS continues independently.
  */
-// Safety net, not the operating limit: MATE_SEARCH_MAX_TIME_PERCENT is what
-// bounds the pre-pass, and this used to bind first and stop a scan with time
-// still on its clock. A root forced-loss proof needing ~4M probes - a
-// cross-board feed mate - fits inside a 10s move and was cut off at 100k.
 constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 10000000;
 
 /// Floor for the scaled budget, so even a very short search still gets a scan.
@@ -373,8 +364,7 @@ constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
 
 // Wall clock the Fairy-Stockfish mate probe may use when the search has no move
-// time to carve a pre-pass window out of, as in analysis. Timed searches hand
-// it whatever is left of MATE_SEARCH_MAX_TIME_PERCENT instead.
+// time, as in analysis. Timed searches give the probe the remaining move time.
 constexpr int MATE_PROBE_UNTIMED_BUDGET_MS = 500;
 
 // Longest mate the probe will stop for, and accept. It doubles as an evidence
@@ -508,29 +498,14 @@ constexpr int internal_mate_probe_root_time_percent(
 }
 
 /**
- * Share of the move time the root proof pre-pass may occupy. Both clock states
- * run the winning scan and the bounded loss scan.
- *
- * Node budgets cannot enforce this on their own: a joint proof node costs
- * ~70us against ~1us for a single-board check node, a spread no single node
- * count covers. Sized so the slowest proof the scan still completes - a
- * seven-ply capture feed, ~210ms of a 1500ms move - fits with margin; a proof
- * that lands returns immediately and hands the rest of the move time back, so
- * the average cost is far below the cap.
- *
- * A node-limited search has no move time, so the same share is taken of its
- * node target instead: the winning scan ends once the tree has searched this
- * percentage of the nodes, and the loss scan ends when the tree is complete.
- * Without that, a scan whose probes ran far over their per-node estimate held
- * bestmove for minutes after a 20000-node tree had finished in two seconds.
+ * Initial share of move time for the synchronous reverse-loss scan, before
+ * its bounded extra allowance. The winning scan runs on its own thread until
+ * the tree's deadline or cancellation, independent of this share.
  */
-constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
+constexpr int ROOT_LOSS_INITIAL_TIME_PERCENT = 20;
 
-// The winning scan and reverse (move-safety) scan share the work already done
-// by concurrent MCTS, but the winning scan can consume its entire deadline.
-// Give the reverse scan a small bounded tail in which to certify the current
-// MCTS favourites. This is capped so long time controls do not turn it into a
-// second multi-second search.
+// Extra allowance for the reverse scan to certify MCTS favourites. Cap it so
+// long time controls do not turn it into a multi-second search.
 constexpr int ROOT_LOSS_EXTRA_TIME_PERCENT = 80;
 constexpr int ROOT_LOSS_EXTRA_MAX_MS = 800;
 
@@ -553,6 +528,11 @@ constexpr uint64_t ROOT_LOSS_FOCUSED_BUDGET_PERCENT = 50;
 // to prove whether every check evasion loses. This catches short skewers and
 // capture feeds that have a tiny joint policy because one half is a pass.
 constexpr uint64_t ROOT_LOSS_WAITING_CHECK_NODE_BUDGET = 40000;
+
+// Keep deeper direct lines and optional waiting checks from hiding cheap
+// capture-feed proofs within a reverse scan's shared deadline.
+constexpr int ROOT_LOSS_DIRECT_SCOUT_MAX_ATTACKER_MOVES = 5;
+constexpr int ROOT_LOSS_WAITING_CHECK_TIME_DIVISOR = 2;
 
 /**
  * Tiny synchronous mate-in-one probe performed before neural workers start.
