@@ -156,12 +156,12 @@ cmake --build --preset ninja-fast -j "$(nproc)"
 ```
 
 Self-play allocates a fixed Fairy-Stockfish mate-search budget per searched
-position. The default 8,000,000 nodes are split across the active boards:
+position. The default 10,000,000 nodes are split across the active boards:
 
 ```bash
 ./build-ninja/hivemind selfplay \
   --network "$(realpath ../artifacts/training/weights/rl/model-rl-final-v3.0.onnx)" \
-  --games 1000 --nodes 400 --fairy-stockfish-mate-nodes 8000000
+  --games 1000 --nodes 400 --fairy-stockfish-mate-nodes 10000000
 ```
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.

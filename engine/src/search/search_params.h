@@ -414,7 +414,7 @@ constexpr uint64_t MATE_PROBE_FEED_NODE_BUDGET = 20000;
 constexpr int MATE_PROBE_FEED_MAX_MS = 40;
 
 // Total Fairy-Stockfish nodes available to the root probe across both boards.
-constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 8000000;
+constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 10000000;
 
 // Use the same evidence bound for accepting a probe mate and ending a move.
 // A separate five-move early-exit cap made accepted mates beyond it wait for

@@ -182,7 +182,7 @@ uv run hivemind rise-selfplay --games 1000 --nodes 400 --mate-nodes 0 --seed 7
 ```
 
 Self-play also runs the bounded Fairy-Stockfish mate search for each searched
-position. It receives a fixed total allowance of 8,000,000 nodes across the two
+position. It receives a fixed total allowance of 10,000,000 nodes across the two
 boards by default and is allowed to finish after the MCGS node budget is reached,
 so mate-aware generation trades some throughput for stronger tactical play.
 Adjust the node allowance, or disable it, with:
