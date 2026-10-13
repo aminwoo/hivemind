@@ -1011,8 +1011,11 @@ TEST_F(EngineTest, CurrentDrawPrecedesFutureWaitingBoardMate) {
         board.push_move(boardNum, move);
     }
 
+    // Two more occurrences make board A a threefold, the game's own draw;
+    // a twofold is not one for the search.
     board.record_position(BOARD_A);
-    ASSERT_TRUE(board.is_draw(2));
+    board.record_position(BOARD_A);
+    ASSERT_TRUE(board.is_draw());
     EXPECT_EQ(classify_terminal_position(
                   board, Stockfish::BLACK, Stockfish::BLACK, false, 2),
               TerminalOutcome::DRAW);

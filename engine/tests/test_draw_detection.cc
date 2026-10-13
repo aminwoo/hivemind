@@ -3,6 +3,7 @@
 #include <sstream>
 #include "environment/board.h"
 #include "environment/constants.h"
+#include "search/searchthread.h"
 #include "common/globals.h"
 #include "Fairy-Stockfish/src/position.h"
 #include "Fairy-Stockfish/src/types.h"
@@ -447,4 +448,40 @@ TEST_F(DrawDetectionTest, RepetitionKeyTracksEveryBoardField) {
         ASSERT_EQ(roundTrip.board_only_key(BOARD_A), before)
             << "Key changed after make/unmake of " << roundTrip.uci_move(BOARD_A, move);
     }
+}
+
+// chess.com 186184589455 board A: N@f6+ Kg7 Nh5+ Kg8 Nf6+ brings back the
+// position after N@f6+. Seen twice, it is no draw - the king is free to go
+// elsewhere this time - so the search must not end the line there, wherever
+// the first occurrence was. A third occurrence is the game's own draw.
+TEST_F(DrawDetectionTest, SearchEndsALineOnlyAtTheGamesOwnDraws) {
+    Board board;
+    board.set_fen(BOARD_B, board.startingFen);
+    auto push = [&](const std::string& uci) {
+        std::string moveText = uci;
+        const Stockfish::Move move = Stockfish::UCI::to_move(
+            *board.pos[BOARD_B], moveText);
+        ASSERT_NE(move, Stockfish::MOVE_NONE) << uci;
+        board.push_move(BOARD_B, move);
+    };
+    for (const char* move : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+        push(move);
+    }
+    ASSERT_EQ(board.repetition_count(BOARD_B), 2);
+    for (const std::array<int, 2> plies : {std::array<int, 2>{0, 0},
+                                           std::array<int, 2>{0, 1},
+                                           std::array<int, 2>{0, 4}}) {
+        EXPECT_NE(classify_terminal_position(
+                      board, Stockfish::WHITE, Stockfish::WHITE, false, plies),
+                  TerminalOutcome::DRAW)
+            << "twofold after " << plies[1] << " search plies on board B";
+    }
+    for (const char* move : {"g1f3", "g8f6", "f3g1", "f6g8"}) {
+        push(move);
+    }
+    ASSERT_EQ(board.repetition_count(BOARD_B), 3);
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::WHITE, Stockfish::WHITE, false,
+                  std::array<int, 2>{0, 4}),
+              TerminalOutcome::DRAW);
 }

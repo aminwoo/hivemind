@@ -95,16 +95,12 @@ bool has_unavoidable_waiting_board_mate(Board& board,
 
         bool matePersists = false;
         Stockfish::Move persistentMate = Stockfish::MOVE_NONE;
-        std::array<int, 2> replySearchPlies = boardSearchPlies;
-        if (reply != Stockfish::MOVE_NONE) {
-            ++replySearchPlies[activeBoard];
-        }
         const TimeState& afterMate = reply != Stockfish::MOVE_NONE
             ? afterMateFollowingMove : afterMateFollowingSit;
         if ((waitingMateWinsRace
              || !board.is_checkmate(
                  ~teamToPlay, opponentHasTimeAdvantage))
-            && !board.is_draw(replySearchPlies)) {
+            && !board.is_draw()) {
             for (Stockfish::Move matingMove : matingMoves) {
                 if (!board.is_legal_move(waitingBoard, matingMove)) {
                     continue;
@@ -200,7 +196,14 @@ TerminalOutcome classify_terminal_position(Board& board,
         }
         return TerminalOutcome::LOSS;
     }
-    if (board.is_draw(boardSearchPlies)) {
+    // Only the game's own draws end a line: a threefold repetition on
+    // either board, or the fifty-move rule. A position seen once before -
+    // in the game or earlier in the search - is not one: the side to move
+    // there may play differently this time, and in bughouse a repetition on
+    // one board leaves the other free to decide the game. It also keeps a
+    // node's verdict independent of where the search started, which tree
+    // reuse relies on.
+    if (board.is_draw()) {
         return TerminalOutcome::DRAW;
     }
     if (!partnerBoardAgnostic
