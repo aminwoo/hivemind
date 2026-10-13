@@ -6484,6 +6484,45 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 board, proof->principalVariation, teamSide, searchTime_);
     };
 
+    // Reports the line the solver would play once per completed depth.
+    const auto report_new_depth = [&](
+        int depth, int nodes, int nps, int hashfull, size_t tbhits,
+        double elapsedMs, size_t numChildren, int firstIdx,
+        const vector<shared_ptr<Node>>& children) {
+        if (depth <= lastReportedDepth) {
+            return;
+        }
+        lastReportedDepth = depth;
+        constexpr float C = 180.0f;
+        constexpr float k = 1.56f;
+        // Use solver-aware selection for the best child to display
+        const int solverBestIdx = rootNode->get_best_move_idx_with_q_weight(
+            options.search.qVetoDelta, options.search.qValueWeight);
+        const size_t childIdx = (solverBestIdx >= 0
+                                 && static_cast<size_t>(solverBestIdx) < numChildren)
+            ? static_cast<size_t>(solverBestIdx) : static_cast<size_t>(firstIdx);
+        string pv = exact_root_loss_pv(
+            rootNode->get_joint_action(static_cast<int>(childIdx)));
+        if (pv.empty()) {
+            pv = extract_pv_from_child(
+                board, static_cast<int>(childIdx), 20, teamSide, searchTime_);
+        }
+        const float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
+        const string scoreStr = format_root_aware_uci_score(
+            rootNode, children[childIdx], childQ, C, k);
+        cout << "info depth " << depth
+             << " " << scoreStr
+             << " nodes " << nodes
+             << " nps " << nps
+             << " hashfull " << hashfull
+             << " tbhits " << tbhits
+             << " time " << static_cast<int>(elapsedMs);
+        if (!pv.empty()) {
+            cout << " pv " << pv;
+        }
+        cout << endl;
+    };
+
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension
     constexpr int POLL_INTERVAL_MS = 5;
@@ -6491,8 +6530,6 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     int stalledCompletedNodes = 0;
     if (options.verbose && moveTimeMs > 0) {
         searchInfo.set_in_game(true);
-        constexpr float C = 180.0f;
-        constexpr float k = 1.56f;
         float lastCheckEval = 0.0f;
         bool evalInitialized = false;
         int lastBestChildIdx = -1;
@@ -6626,47 +6663,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
                     
-                    // Report each completed depth once.
-                    if (depth > lastReportedDepth) {
-                        lastReportedDepth = depth;
-                        
-                        // Use solver-aware selection for the best child to display
-                        int solverBestIdx = rootNode->get_best_move_idx_with_q_weight(
-                            options.search.qVetoDelta, options.search.qValueWeight);
-                        size_t displayIdx = (solverBestIdx >= 0
-                                             && static_cast<size_t>(solverBestIdx) < numChildren)
-                            ? static_cast<size_t>(solverBestIdx) : static_cast<size_t>(firstIdx);
-                        
-                        // Output best line during search
-                        int numPVs = 1;
-                        for (int pvIdx = 0; pvIdx < numPVs; ++pvIdx) {
-                            size_t childIdx = displayIdx;
-                            string pv = exact_root_loss_pv(
-                                rootNode->get_joint_action(
-                                    static_cast<int>(childIdx)));
-                            if (pv.empty()) {
-                                pv = extract_pv_from_child(
-                                    board, static_cast<int>(childIdx), 20,
-                                    teamSide, searchTime_);
-                            }
-                            float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
-                            string scoreStr = format_root_aware_uci_score(
-                                rootNode, children[childIdx], childQ, C, k);
-                            
-                            cout << "info depth " << depth 
-                                 << " " << scoreStr
-                                 << " nodes " << nodes 
-                                 << " nps " << nps
-                                 << " hashfull " << hashfull
-                                 << " tbhits " << tbhits
-                                 << " time " << static_cast<int>(elapsedMs);
-                            
-                            if (!pv.empty()) {
-                                cout << " pv " << pv;
-                            }
-                            cout << endl;
-                        }
-                    }
+                    report_new_depth(
+                        depth, nodes, nps, hashfull, tbhits, elapsedMs,
+                        numChildren, firstIdx, children);
                 }
             }
             if (!running || (!isPondering_.load(std::memory_order_relaxed)
@@ -6802,6 +6801,33 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+            // A verbose node search (go nodes, go infinite) reports as it
+            // deepens, like a timed one: an analysis front end shows nothing
+            // until bestmove otherwise.
+            if (options.verbose && !options.background && rootNode
+                && rootNode->is_expanded()) {
+                const vector<int> childVisits = rootNode->get_child_visits();
+                const vector<shared_ptr<Node>> children = rootNode->get_children();
+                const size_t numChildren = min(childVisits.size(), children.size());
+                if (numChildren > 0) {
+                    const int firstIdx = static_cast<int>(
+                        std::max_element(childVisits.begin(),
+                                         childVisits.begin() + numChildren)
+                        - childVisits.begin());
+                    const double elapsedMs = searchInfo.elapsed();
+                    const int nodes = searchInfo.get_nodes_searched();
+                    const bool tableOn = options.search.enableMCGS
+                        && options.search.enableTranspositions
+                        && transpositionTable;
+                    report_new_depth(
+                        searchInfo.get_max_depth(), nodes,
+                        elapsedMs > 0
+                            ? static_cast<int>(nodes * 1000.0 / elapsedMs) : 0,
+                        tableOn ? transpositionTable->getFullness() : 0,
+                        tableOn ? transpositionTable->getHits() : 0,
+                        elapsedMs, numChildren, firstIdx, children);
+                }
+            }
             if (SearchParams::ENABLE_MATE_EARLY_EXIT && rootNode
                 && rootNode->get_node_type() != NodeType::UNSOLVED) {
                 running = false;

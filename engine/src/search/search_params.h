@@ -263,6 +263,13 @@ constexpr double PERMANENT_BRAIN_MAX_MS = 60000.0;
 constexpr int PONDER_MAX_NODES = 500000;
 constexpr double PONDER_MAX_MS = 60000.0;
 
+/**
+ * Ceiling on a `go infinite` search, which otherwise runs until stop. The
+ * tree costs about 0.75 KB a node, so this is some 1.5 GB: within a 4 GB
+ * WebAssembly heap, and minutes of analysis at browser speeds.
+ */
+constexpr int ANALYSIS_MAX_NODES = 2000000;
+
 // =============================================================================
 // Early Stopping and Time Management Parameters
 // =============================================================================

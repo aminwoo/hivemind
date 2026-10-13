@@ -323,6 +323,12 @@ void UCI::go(std::istringstream& is) {
         opts.targetNodes = nodes;
     } else if (moveTime > 0) {
         opts = SearchOptions::uci(moveTime, multiPV, isPonder);
+    } else if (infinite) {
+        // "go infinite" thinks until stop. It runs as a node search towards
+        // a ceiling no analysis is meant to reach, so a session left running
+        // ends with a bestmove instead of filling memory with the tree.
+        opts = SearchOptions::uci(0, multiPV, isPonder);
+        opts.targetNodes = SearchParams::ANALYSIS_MAX_NODES;
     } else {
         // Default to 1 second if nothing specified
         opts = SearchOptions::uci(1000, multiPV, isPonder);
