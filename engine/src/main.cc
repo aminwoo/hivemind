@@ -163,6 +163,8 @@ void printUsage(const char* progName) {
     cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
     cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
     cout << "    --time-model flag|clock and the selfplay clock options (drawn per opening pair)" << endl;
+    cout << "    --{contender,baseline}-time-model flag|clock (flag: in a clocked game, search" << endl;
+    cout << "      as if sitting whenever ahead were permanent, as a pre-clock engine does)" << endl;
     cout << "    --contender-nnue <file> (alpha-beta contender instead of --contender)" << endl;
     cout << "    --contender-ab-movetime <ms> --contender-ab-depth <n> --contender-hash <mb>" << endl;
     cout << "    --baseline-nnue <file> --baseline-ab-movetime <ms> --baseline-ab-depth <n>" << endl;
@@ -589,6 +591,8 @@ int main(int argc, char* argv[]) {
         TournamentConfig config;
         filesystem::path contenderPath;
         string contenderNnuePath;
+        // Each side searches on the game's time model unless told otherwise.
+        string contenderTimeModel, baselineTimeModel;
         string baselineNnuePath;
         size_t contenderHashMb = 64;
         ab::Options contenderOptions;
@@ -612,6 +616,13 @@ int main(int argc, char* argv[]) {
                 }
                 else if (option == "--contender-batch-size") config.contenderBatchSize = stoi(value);
                 else if (option == "--baseline-batch-size") config.baselineBatchSize = stoi(value);
+                else if (option == "--contender-time-model" || option == "--baseline-time-model") {
+                    if (value != "flag" && value != "clock") {
+                        throw invalid_argument(option + " must be flag or clock");
+                    }
+                    (option == "--contender-time-model"
+                        ? contenderTimeModel : baselineTimeModel) = value;
+                }
                 else if (option == "--contender-threads") config.contenderThreads = stoi(value);
                 else if (option == "--baseline-threads") config.baselineThreads = stoi(value);
                 else if (option == "--contender") contenderPath = value;
@@ -690,6 +701,15 @@ int main(int argc, char* argv[]) {
                 else throw invalid_argument("Unknown tournament option: " + option);
             }
             config.clock.validate();
+            // A side can search the flag model inside a clocked game, but a
+            // flag game has no clock for a side to search on.
+            if (!config.clockModel
+                && (contenderTimeModel == "clock" || baselineTimeModel == "clock")) {
+                throw invalid_argument(
+                    "a side's time model can be clock only with --time-model clock");
+            }
+            config.contenderFlagSearch = contenderTimeModel == "flag";
+            config.baselineFlagSearch = baselineTimeModel == "flag";
         } catch (const exception& error) {
             cerr << "Invalid tournament arguments: " << error.what() << endl;
             return EXIT_FAILURE;

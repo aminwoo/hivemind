@@ -205,7 +205,11 @@ void write_summary(
                << "  \"clock\": {\"level_start_fraction\": " << config.clock.levelStartFraction
                << ", \"start_lead_ms\": [" << config.clock.startLeadMinMs << ", "
                << config.clock.startLeadMaxMs << "], \"move_time_ms\": ["
-               << config.clock.moveTimeMinMs << ", " << config.clock.moveTimeMaxMs << "]},\n";
+               << config.clock.moveTimeMinMs << ", " << config.clock.moveTimeMaxMs << "]},\n"
+               << "  \"contender_time_model\": \""
+               << (config.searchesOnClock(true) ? "clock" : "flag") << "\",\n"
+               << "  \"baseline_time_model\": \""
+               << (config.searchesOnClock(false) ? "clock" : "flag") << "\",\n";
     }
     stream << "  \"contender_wins\": " << result.contenderWins << ",\n"
            << "  \"baseline_wins\": " << result.baselineWins << ",\n"
@@ -707,7 +711,9 @@ int run_tournament(
             options.search.rootNoiseSeed = tournament_seed(
                 config.seed,
                 pairIndex * config.maxMacroPlies + macroPly);
-            if (config.clockModel) {
+            // A flag-model side gets no clock: run_search then searches on
+            // the TimeAdvantage bit the clock gives it now.
+            if (config.searchesOnClock(contenderActing)) {
                 options.clock = time;
             }
             const auto searchStart = std::chrono::steady_clock::now();

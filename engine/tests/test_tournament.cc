@@ -167,3 +167,19 @@ TEST(TournamentConfigTest, ClockModelRefusesAlphaBetaPlayers) {
             << error.what();
     }
 }
+
+TEST(TournamentConfigTest, AFlagSideSearchesWithoutTheClock) {
+    TournamentConfig config;
+    EXPECT_FALSE(config.searchesOnClock(true));
+    EXPECT_FALSE(config.searchesOnClock(false));
+
+    config.clockModel = true;
+    EXPECT_TRUE(config.searchesOnClock(true));
+    EXPECT_TRUE(config.searchesOnClock(false));
+
+    // A pre-clock engine in a clocked game: only its own searches lose the
+    // clock, the game itself stays clocked.
+    config.baselineFlagSearch = true;
+    EXPECT_TRUE(config.searchesOnClock(true));
+    EXPECT_FALSE(config.searchesOnClock(false));
+}

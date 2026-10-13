@@ -81,6 +81,18 @@ struct TournamentConfig {
     // each side of it once.
     bool clockModel = false;
     ClockSampling clock;
+    // A side that searches on the flag model in a clocked game: before each
+    // search its TimeAdvantage is whether the clock has it ahead right now,
+    // and it searches as if that advantage lasted the whole game. The game is
+    // still played and adjudicated on the clock, so it can only sit while it
+    // really leads. This is how a pre-clock engine plays a clocked game.
+    bool contenderFlagSearch = false;
+    bool baselineFlagSearch = false;
+
+    bool searchesOnClock(bool isContender) const {
+        return clockModel
+            && !(isContender ? contenderFlagSearch : baselineFlagSearch);
+    }
 
     float pwCoefficientFor(bool isContender) const {
         return isContender ? contenderPwCoefficient : baselinePwCoefficient;
