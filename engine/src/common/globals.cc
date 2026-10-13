@@ -37,7 +37,8 @@ void init_fairy_stockfish() {
         // is reserved now, so adding workers later never moves Threads.main()
         // under a thread that is reading it.
         Stockfish::Threads.reserve(1 + MateProbe::MAX_THREADS);
-        Stockfish::Threads.set(1 + MateProbe::DEFAULT_THREADS);
+        Stockfish::Threads.set(1);
+        MateProbe::grow_pool(1 + MateProbe::DEFAULT_THREADS);
         Stockfish::TT.resize(size_t(Stockfish::Options["Hash"]));
         Stockfish::Search::clear();
     });

@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
 
 #include "common/globals.h"
+#include "common/thread_priority.h"
 
 #include "Fairy-Stockfish/src/movegen.h"
 #include "Fairy-Stockfish/src/position.h"
@@ -267,11 +269,36 @@ void set_threads(int count) {
         delete Stockfish::Threads.back();
         Stockfish::Threads.pop_back();
     }
-    while (Stockfish::Threads.size() < poolSize) {
-        auto* worker = new Stockfish::Thread(Stockfish::Threads.size());
-        worker->clear();
-        Stockfish::Threads.push_back(worker);
+    grow_pool(poolSize);
+}
+
+void grow_pool(size_t poolSize) {
+    const auto start_workers = [poolSize] {
+        while (Stockfish::Threads.size() < poolSize) {
+            auto* worker = new Stockfish::Thread(Stockfish::Threads.size());
+            worker->clear();
+            Stockfish::Threads.push_back(worker);
+        }
+    };
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    // A thread starts with its creator's priority, so the workers are
+    // created from one that has lowered its own. A failure there is the
+    // caller's, as it was when the caller created them.
+    std::exception_ptr failure;
+    std::thread([&] {
+        try {
+            lower_mate_search_thread_priority();
+            start_workers();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }).join();
+    if (failure) {
+        std::rethrow_exception(failure);
     }
+#else
+    start_workers();
+#endif
 }
 
 int threads() {

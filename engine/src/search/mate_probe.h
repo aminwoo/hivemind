@@ -75,6 +75,7 @@ struct Result {
  * transposition table in globals, so only one can be in flight at a time.
  * Each one searches with every worker set_threads() asked for, sharing one
  * transposition table, and nodeBudget is their combined total.
+
  */
 Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
              int budgetMs, const std::function<bool()>& abort = {});
@@ -95,5 +96,14 @@ void set_threads(int count);
 
 /** Workers each probe currently searches with. */
 int threads();
+
+/**
+ * Starts Fairy-Stockfish workers until the pool, main thread included, holds
+ * @p poolSize threads. They start at a lowered scheduling priority
+ * (common/thread_priority.h): probes run beside the tree's workers for as
+ * long as it searches, and should take only the cores it leaves idle.
+ * The caller serializes pool changes.
+ */
+void grow_pool(size_t poolSize);
 
 }  // namespace MateProbe

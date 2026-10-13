@@ -593,6 +593,54 @@ TEST_F(MateRaceTest, ExactRootScanPrefersCheckmateOverStalemateAcrossBoards) {
     EXPECT_EQ(plyToMate, 1);
 }
 
+// Benchmark position 13, the black team on turn on both boards. Sitting board
+// A while Qxh4 takes a knight on board B feeds the mate N@f2+ Bxf2 Nxf2#, and
+// no board-B reply wins the race. Qxh4, N@f2+ and Nxf2# are each played on
+// turn on both boards, so the line charges three actions: a lead of five
+// falls well short of the full sat-partner horizon but still covers it.
+constexpr const char* kShortLeadFeedBoardA =
+    "r4q1k/ppp2p1p/2P2Nnp/4p3/8/2N1Bq~1b/PPPPB2P/R1BKR2n~"
+    "[NPPPpbb] b - - 0 1";
+constexpr const char* kShortLeadFeedBoardB =
+    "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Qn/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1";
+
+TEST_F(MateRaceTest, ALeadShortOfTheHorizonStillProvesAShortFeedMate) {
+    Board board;
+    board.set_fen(BOARD_A, kShortLeadFeedBoardA);
+    board.set_fen(BOARD_B, kShortLeadFeedBoardB);
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::BLACK,
+        TimeState::clocked(Stockfish::BLACK, 10000, 2000, 1000),
+        action, plyToMate));
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(action.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, action.moveB), "g4h4");
+    EXPECT_EQ(plyToMate, 5);
+}
+
+// Board A holds seven mates in one. Ra8# and the queen drops on the back rank
+// are mate only while the defenders have nothing to drop between, so a piece
+// arriving from their partner would have saved them; Q@g7#, guarded by the
+// knight, is a contact mate no drop can block, and it ends the game at once.
+// The scan has to prefer it to every back-rank mate it meets first.
+TEST_F(MateRaceTest, ImmediateRootMatePrefersAnUnblockableMate) {
+    Board board;
+    board.set_fen(BOARD_A, "7k/7p/4N3/8/8/8/8/R3K3[Q] w - - 0 1");
+    board.set_fen(BOARD_B, "4k3/8/8/8/8/8/8/4K3[] w - - 0 1");
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, action, plyToMate));
+    EXPECT_EQ(plyToMate, 1);
+    ASSERT_NE(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "Q@g7");
+    EXPECT_EQ(action.moveB, Stockfish::MOVE_NONE);
+}
+
 // The probe's local line is not a win if the defending partner already has a
 // mate in one. That mate is played before Hivemind reaches its next move.
 TEST_F(MateRaceTest, ProbeRejectsLineWhenOpponentHasMateInOne) {
@@ -617,10 +665,14 @@ TEST_F(MateRaceTest, ProbeRejectsLineWhenOpponentHasMateInOne) {
         << "claimed " << pv << " while the opponent had Ra8#";
 }
 
-// Benchmark position 4 has a legal capture on the defending partner board,
-// but that capture does not refute B@f7's mate. An unrelated capture must not
-// suppress the Fairy proof merely because it could be paired with a pass.
-TEST_F(MateRaceTest, BenchmarkPositionFourStillReportsMate) {
+// Benchmark position 4. B@f7 mates board A in five on its own (B@f7+ Kf5
+// Qd3+ B@e4 Nxe4 dxe4 Qe3 and Qg5#), but the defending partner is on turn on
+// board B with captures to play. A capture there buys the defenders a pass on
+// board A even in check and puts the piece in their board-A player's hand:
+// exf5 hands over a queen, after which the probe's own line fails
+// (Kf5 Qd3+ B@e4 Nxe4 Q@b4+, and Nd6+ is illegal). The probe never searched
+// that reply, so its mate is no claim at all here.
+TEST_F(MateRaceTest, ProbeMateIsUnsupportedWhileTheirPartnerCanCapture) {
     Board board;
     board.set_fen(
         BOARD_A,
@@ -628,6 +680,26 @@ TEST_F(MateRaceTest, BenchmarkPositionFourStillReportsMate) {
     board.set_fen(
         BOARD_B,
         "rn2k2r/ppp1bppp/3p1n2/4pq2/3PP3/2N2N2/PPP2PPP/R1BQ1RK1/p w kq - 0 1");
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::string pv;
+    EXPECT_FALSE(Agent::probe_root_mate(
+        board, Stockfish::WHITE, true, 8000000, 2000, {},
+        action, plyToMate, pv))
+        << "claimed " << pv;
+}
+
+// The same board A with our partner to move on board B: the defenders have
+// no turn there, so nothing reaches board A and the probe's mate stands.
+TEST_F(MateRaceTest, ProbeMateStandsWhenTheirPartnerHasNoTurn) {
+    Board board;
+    board.set_fen(
+        BOARD_A,
+        "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2");
+    board.set_fen(
+        BOARD_B,
+        "rn2k2r/ppp1bppp/3p1n2/4pq2/3PP3/2N2N2/PPP2PPP/R1BQ1RK1/p b kq - 0 1");
 
     JointActionCandidate action;
     int plyToMate = 0;
@@ -1028,4 +1100,30 @@ TEST_F(RootActionSliceTest, RefutationNeedsBudgetToSpare) {
         board, h6, Stockfish::BLACK, verdict, 5, 30, deadline_in(10000),
         nullptr, nullptr, nodes);
     EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
+}
+
+// chess.com 159878252255 / 159878252253, before 18...N@d3+ on board B. Black
+// there (the white team) mates by N@d3+ exd3 Q@e2+ Bxe2 Qxe2#, every reply
+// forced. The defenders, behind on the clock, may answer the first check on
+// board A instead (the game's Nxc2+); the attackers then wait on board A,
+// which costs them nothing while neither team is on turn on both boards,
+// until the defenders have to play exd3. The lead (0.2 s against 0.85 s a
+// move) never covers the whole line, so the proof has to follow the clock.
+TEST_F(MateRaceTest, WaitsOutTheDefendersOtherBoardThroughASittingMate) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r1b2r1k/pp1pNppp/3p2pP/8/3n4/5P2/PPP1BP1P/R3K1R1[Qn] b Q - 0 27");
+    board.set_fen(BOARD_B,
+        "r1bk1bnr/pp2bppp/3N4/4P1B1/1B6/5p2/PPq1PPPP/R3KB1R"
+        "[PPNNQppnq] b KQ - 3 18");
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 200, 850, 900),
+        action, plyToMate, SearchParams::MATE_SEARCH_UNBOUNDED_NODES,
+        std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, action.moveB), "N@d3");
+    EXPECT_EQ(plyToMate, 7);
 }

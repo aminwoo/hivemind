@@ -754,7 +754,12 @@ public:
         const std::atomic<bool>* cancelled = nullptr,
         const std::vector<JointActionCandidate>* preferredActions = nullptr,
         Node* liveRoot = nullptr,
-        bool scanWaitingChecks = true);
+        bool scanWaitingChecks = true,
+        // Set when every defense was either proven lost or settled safe
+        // within the budget, so a larger one would only repeat the answer.
+        bool* outComplete = nullptr,
+        // Called with each proof as soon as it is found.
+        const std::function<void(const RootLossProof&)>& onProof = {});
     
     /**
      * @brief Extracts PV line starting from a specific child index.
@@ -941,6 +946,9 @@ private:
         const std::atomic<bool>* cancelled = nullptr,
         SingleBoardMateCache* singleBoardMateCache = nullptr,
         const Node* stopOnSolvedRoot = nullptr,
-        bool stopAtFirstProof = false); // Background search publishes immediately.
+        bool stopAtFirstProof = false, // Background search publishes immediately.
+        // Set when the scan settled every line it searched within its
+        // budget, so a larger one would only repeat the same answer.
+        bool* outComplete = nullptr);
     
 };
