@@ -136,6 +136,16 @@ def test_the_clock_model_reaches_self_play_and_matches(tmp_path, monkeypatch):
     assert match_command[match_command.index("--movetime") + 1] == "1000"
     marker = json.loads((loop.it / "stages" / "match_generator.done").read_text())
     assert marker["time_model"] == "clock" and marker["movetime"] == 1000
+    assert "--baseline-time-model" not in match_command
+    assert "baseline_time_model" not in marker
+
+    # A pre-clock it0 searches on the binary advantage inside the clocked match.
+    loop.match("it0", tmp_path / "it0.onnx", "flag")
+    it0_command = commands[-1]
+    assert it0_command[it0_command.index("--time-model") + 1] == "clock"
+    assert it0_command[it0_command.index("--baseline-time-model") + 1] == "flag"
+    marker = json.loads((loop.it / "stages" / "match_it0.done").read_text())
+    assert marker["baseline_time_model"] == "flag"
 
 
 def write_summary(path, wins, losses, draws):

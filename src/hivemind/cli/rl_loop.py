@@ -419,12 +419,15 @@ class Loop:
             for directory in self.teacher_val:
                 archive.evict(directory)
 
-    def match(self, name, baseline):
+    def match(self, name, baseline, baseline_time_model=None):
+        """baseline_time_model "flag" makes a clocked match's baseline search on
+        the binary time advantage, for a network that cannot read the clock."""
         if self.done(f"match_{name}"):
             return
         self.check_stop()
         out, log = self.arms / f"match_{name}", self.arms / f"match_{name}.log"
         games, movetime, clock = self.args.match_games, self.args.match_movetime, self.args.time_model
+        flag_baseline = clock == "clock" and baseline_time_model == "flag"
         while True:
             self.aside(out, log)
             self.wait_for_quiet()
@@ -434,7 +437,8 @@ class Loop:
                        "--contender", str(self.it / "models" / "C.onnx"), "--baseline", str(baseline),
                        "--movetime", str(movetime), "--games", str(games), "--seed", str(self.n),
                        "--positions", str(self.args.openings), "--output", str(out),
-                       *(("--time-model", "clock") if clock == "clock" else ())]
+                       *(("--time-model", "clock") if clock == "clock" else ()),
+                       *(("--baseline-time-model", "flag") if flag_baseline else ())]
             with log.open("w") as stream:
                 process = subprocess.Popen(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT)
                 status = None
@@ -453,6 +457,8 @@ class Loop:
                 raise StageFailed(f"match vs {name} failed (see {log})")
             break
         summary = {**match_summary(out / "summary.json", games), "movetime": movetime, "time_model": clock}
+        if flag_baseline:
+            summary["baseline_time_model"] = "flag"
         self.log(f"it{self.n} vs {name}: {json.dumps(summary)}")
         self.mark(f"match_{name}", summary)
 
@@ -544,7 +550,7 @@ class Loop:
         self.promote()
         self.upload()
         if self.fixed.is_file():
-            self.attempt(self.match, "it0", self.fixed)
+            self.attempt(self.match, "it0", self.fixed, self.args.fixed_time_model)
         else:
             self.log(f"it{n}: no {self.fixed.name}, skipping the match against it")
         self.mark("iteration", {})
@@ -604,6 +610,9 @@ def main():
                         help="flag: one team may sit all game, as iterations 1-10 trained; clock: "
                              "self-play and matches on a simulated clock, for networks that read "
                              "the clock planes (default: %(default)s)")
+    parser.add_argument("--fixed-time-model", choices=("flag", "clock"),
+                        help="What the fixed it0 baseline searches on in clock matches; flag for an it0 "
+                             "from before the clock planes, which misreads them (default: --time-model)")
     parser.add_argument("--generator", type=Path, default=DEFAULT_ONNX_PATH,
                         help="The generator network, replaced on promotion; another lineage needs "
                              "its own (default: %(default)s)")
@@ -641,6 +650,10 @@ def main():
         parser.error("--new-passes must be positive and --replay-passes non-negative")
     if args.last is not None and args.first is not None and args.last < args.first:
         parser.error("--last is before --first")
+    if args.fixed_time_model is None:
+        args.fixed_time_model = args.time_model
+    if args.fixed_time_model == "clock" and args.time_model != "clock":
+        parser.error("--fixed-time-model clock needs --time-model clock")
     if args.archive_only and args.keep_selfplay:
         parser.error("--archive-only and --keep-selfplay contradict each other")
     if args.segment_games is None:
