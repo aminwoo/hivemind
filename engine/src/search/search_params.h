@@ -377,6 +377,18 @@ constexpr uint64_t ROOT_SCAN_ROUND_GROWTH = 4;
  * single 2M-node pass it replaced did.
  */
 constexpr uint64_t ROOT_LOSS_SCAN_FIRST_ROUND_NODES = 250000;
+/**
+ * Threads that share each loss-scan round, taking its defenses from one
+ * queue. On the 12-core dev box (RTX 4070) two cut the mate benchmark's
+ * time-to-mate by a fifth at no cost to tree nodes per second; four cost
+ * the tree a tenth of its nodes. The browser build has a fixed thread pool,
+ * so it keeps one.
+ */
+#ifdef __EMSCRIPTEN__
+constexpr size_t ROOT_LOSS_SCAN_THREADS = 1;
+#else
+constexpr size_t ROOT_LOSS_SCAN_THREADS = 2;
+#endif
 
 /**
  * Node limit standing for "until the search stops" where an API needs a
@@ -433,6 +445,22 @@ constexpr int MATE_PROBE_FEED_MAX_MS = 40;
 // its next job (the other board, the concurrent verifier, internal probes)
 // when it is spent; the tree stopping ends every job sooner.
 constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 10000000;
+/**
+ * The root probe alternates between the boards in slices that double each
+ * round, starting here, so a mate on board B is not kept waiting behind a
+ * board A with none for half the search.
+ */
+constexpr int MATE_PROBE_FIRST_SLICE_MS = 50;
+constexpr uint64_t MATE_PROBE_FIRST_SLICE_NODES = 200000;
+/**
+ * Probes that carry a mate's line on where the probe's own line, read from
+ * the table, stopped short of it, so a long mate can be seen to end in
+ * checkmate and stop the search at once rather than wait for the other
+ * board's probe; each is cheap, the table already holding the line.
+ */
+constexpr int MATE_PROBE_LINE_EXTENSIONS = MATE_PROBE_MAX_MATE_MOVES;
+constexpr uint64_t MATE_PROBE_LINE_EXTENSION_NODES = 200000;
+constexpr int MATE_PROBE_LINE_EXTENSION_MS = 20;
 
 // Use the same evidence bound for accepting a probe mate and ending a move.
 // A separate five-move early-exit cap made accepted mates beyond it wait for

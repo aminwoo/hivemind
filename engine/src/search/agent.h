@@ -156,6 +156,16 @@ struct RootLossProof {
 };
 
 /**
+ * Work several threads share in one loss scan: each takes the next defense
+ * from `nextDefense` and sizes its share from the nodes the threads have
+ * left between them.
+ */
+struct LossScanShare {
+    std::atomic<size_t> nextDefense{0};
+    std::atomic<uint64_t> remainingNodes{0};
+};
+
+/**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
  *
  * Runs multiple search threads in parallel, each with its own engine instance.
@@ -759,7 +769,17 @@ public:
         // within the budget, so a larger one would only repeat the answer.
         bool* outComplete = nullptr,
         // Called with each proof as soon as it is found.
-        const std::function<void(const RootLossProof&)>& onProof = {});
+        const std::function<void(const RootLossProof&)>& onProof = {},
+        // Proofs an earlier call already found in this position. Their
+        // defenses are not searched again and count toward a proven loss.
+        const std::vector<RootLossProof>* knownProofs = nullptr,
+        // Set when several threads search the defenses together, each
+        // calling with its own board: they take defenses from the share's
+        // queue and nodes from its pool (nodeBudget still sizes the focused
+        // defenses). Each call returns the known proofs and those it found;
+        // whether every defense loses is for the caller to tell from their
+        // union.
+        LossScanShare* share = nullptr);
     
     /**
      * @brief Extracts PV line starting from a specific child index.

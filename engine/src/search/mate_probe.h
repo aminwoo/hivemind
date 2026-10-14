@@ -44,10 +44,14 @@ struct Result {
     uint64_t nodes = 0;
     /**
      * The whole line in UCI. Every ply is a move of the probed board alone,
-     * so Board can replay it; a line cut short by a table hit ends before
-     * the mate it scored.
+     * so Board can replay it. The search's own line stops where its depth
+     * ran out and the mate score came from the table; the rest is read from
+     * the table's best moves, and a line can still end short of the mate
+     * where an entry was overwritten.
      */
     std::vector<std::string> principalVariation;
+    /** How many plies of principalVariation were read from the table. */
+    int tablePlies = 0;
 };
 
 /**

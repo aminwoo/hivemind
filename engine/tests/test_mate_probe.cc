@@ -9,6 +9,7 @@
 #include "search/mate_probe.h"
 #include "search/search_params.h"
 
+#include "Fairy-Stockfish/src/tt.h"
 #include "Fairy-Stockfish/src/types.h"
 #include "Fairy-Stockfish/src/uci.h"
 
@@ -81,6 +82,43 @@ TEST_F(MateProbeTest, FindsAMateThatNeedsAQuietMove) {
     EXPECT_EQ(board.uci_move(BOARD_A, result.bestMove), "B@f7");
 
     EXPECT_EQ(result.principalVariation.front(), "B@f7");
+}
+
+// chess.com 186251789181 ply 105, board B: a mate in eight or so for Black.
+// The search proves it at a depth well short of the mate, its own line
+// stopping where the mate score came from the table, so the probe reads the
+// rest of the line from the table: whole, and ending in checkmate.
+TEST_F(MateProbeTest, HandsBackTheWholeLineOfALongMate) {
+    const std::string fen =
+        "1Q~Nq3r/p6p/1bB1p3/kN1p4/1b6/2N4P/P1P2PKP/R7[Bppq] b - - 0 31";
+    // Threads sharing the table overwrite one another's entries, and earlier
+    // probes leave theirs, so which survive varies; one thread on a cleared
+    // table makes the test deterministic.
+    const int threads = MateProbe::threads();
+    MateProbe::set_threads(1);
+    Stockfish::TT.clear();
+    const MateProbe::Result result = MateProbe::probe(
+        fen, SearchParams::MATE_PROBE_MAX_MATE_MOVES, 8000000, 10000);
+    MateProbe::set_threads(threads);
+    ASSERT_TRUE(result.found);
+    ASSERT_GE(result.mateInMoves, 6);
+
+    Board board;
+    board.set(fen + "|" + fen);
+    for (const std::string& text : result.principalVariation) {
+        std::string moveText = text;
+        const Stockfish::Move move =
+            Stockfish::UCI::to_move(*board.pos[BOARD_A], moveText);
+        ASSERT_TRUE(move != Stockfish::MOVE_NONE
+                    && board.is_legal_move(BOARD_A, move)) << text;
+        board.push_move(BOARD_A, move);
+    }
+    EXPECT_EQ(result.principalVariation.size(),
+              static_cast<size_t>(2 * result.mateInMoves - 1))
+        << result.tablePlies << " plies from the table";
+    EXPECT_TRUE(board.is_in_check(BOARD_A)
+                && board.legal_moves(BOARD_A).empty())
+        << "the line does not end in checkmate";
 }
 
 // The probe searches one board with the other sitting, and a partner who

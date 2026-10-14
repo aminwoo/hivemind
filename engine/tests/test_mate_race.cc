@@ -436,6 +436,43 @@ TEST_F(MateRaceTest, TheProbeIsForTheTimeAheadTeamOnly) {
     EXPECT_EQ(plyToMate, 1);
 }
 
+// chess.com 186251789181 ply 105, our team white and 2.6 s ahead: board B
+// holds a mate in about nine (P@f3, among others) and board A none. The probe used to
+// spend board A's half of its budget before it looked at B, and Fairy cut
+// the mating line short at a table hit, so it could not tell the mate ended
+// in checkmate and waited out the rest of the budget too. Now the boards
+// alternate in growing slices and the line is carried on to the mate, which
+// lets the caller stop the probe long before either half is spent.
+TEST_F(MateRaceTest, TheProbeFindsAPartnerBoardMateWithoutWaitingOnTheOther) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "B2Nkbbr/p1pp1pp1/P3pnp1/3p4/3P2Pn/2P2P1P/P1P2P2/R1BQ1K1R[PRQppnnrr] w k - 1 23");
+    board.set_fen(BOARD_B,
+        "1Q~Nq3r/p6p/1bB1p3/kN1p4/1b6/2N4P/P1P2PKP/R7[Bppq] b - - 0 31");
+
+    std::atomic<bool> mated{false};
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::string pv;
+    const auto start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(Agent::probe_position_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 2600, 100, 100),
+        40000000, 8000,
+        [&] { return mated.load(); }, action, plyToMate, pv,
+        [&] { mated.store(true); }));
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    // Board B has more than one way to mate; any of them is the answer.
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_TRUE(board.is_legal_move(BOARD_B, action.moveB));
+    EXPECT_GE(plyToMate, 11);
+    // Each board may take 4 s or 20M nodes - seconds either way; the mate
+    // stops it in well under one.
+    EXPECT_LT(elapsedMs, 2000) << "the probe waited out a budget: " << pv;
+}
+
 TEST_F(MateRaceTest, TheProbeOnlyClaimsALineTheLeadPaysFor) {
     Board board;
     board.set_fen(BOARD_A, "6k1/5ppp/8/8/8/8/8/R5K1[] w - - 0 1");

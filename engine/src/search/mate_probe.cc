@@ -245,11 +245,66 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
     Stockfish::Position line;
     std::deque<Stockfish::StateInfo> lineStates(1);
     line.set(variant, fen, false, &lineStates.back(), Stockfish::Threads.main());
+    bool wholeLinePlayed = true;
     for (const Stockfish::Move move : best.pv) {
         if (!line.pseudo_legal(move) || !line.legal(move)) {
+            wholeLinePlayed = false;
             break;
         }
         result.principalVariation.push_back(Stockfish::UCI::move(line, move));
+        lineStates.emplace_back();
+        line.do_move(move, lineStates.back());
+    }
+
+    // The search's line ends where its depth ran out: the mate score beyond
+    // that came out of the table, by way of quiescence or mate-distance
+    // pruning, without the moves. The table still holds each position's best
+    // move from the deeper searches that scored it, so the line is carried on
+    // from there, as far as the mate it claims, while the entries last. The
+    // workers have stopped and the probe lock is held, so nothing writes the
+    // table meanwhile.
+    const Stockfish::Color attacker = line.side_to_move();
+    // The defender's replies all lose, so the search keeps no best move for
+    // a defender position. Its reply is read from the table one ply down
+    // instead: the one whose position the table scores as the longest mate,
+    // the defence the search would have found. Every child sits at the same
+    // ply, so their stored mate scores compare directly.
+    const auto longest_defence = [&] {
+        Stockfish::Move longest = Stockfish::MOVE_NONE;
+        int longestValue = Stockfish::VALUE_INFINITE;
+        Stockfish::StateInfo replyState;
+        for (const auto& reply : Stockfish::MoveList<Stockfish::LEGAL>(line)) {
+            line.do_move(reply, replyState);
+            bool found = false;
+            const Stockfish::TTEntry* entry =
+                Stockfish::TT.probe(line.key(), found);
+            const int value = found ? entry->value() : Stockfish::VALUE_NONE;
+            line.undo_move(reply);
+            if (found && entry->move() != Stockfish::MOVE_NONE
+                && value != Stockfish::VALUE_NONE
+                && value >= Stockfish::VALUE_MATE_IN_MAX_PLY
+                && value < longestValue) {
+                longest = reply;
+                longestValue = value;
+            }
+        }
+        return longest;
+    };
+    const size_t matePlies = static_cast<size_t>(2 * mateInMoves - 1);
+    while (wholeLinePlayed && result.principalVariation.size() < matePlies
+           && Stockfish::MoveList<Stockfish::LEGAL>(line).size() > 0) {
+        bool found = false;
+        const Stockfish::TTEntry* entry = Stockfish::TT.probe(line.key(), found);
+        Stockfish::Move move = found ? entry->move() : Stockfish::MOVE_NONE;
+        if (move == Stockfish::MOVE_NONE && line.side_to_move() != attacker) {
+            move = longest_defence();
+        }
+        if (move == Stockfish::MOVE_NONE || !line.pseudo_legal(move)
+            || !line.legal(move)) {
+            break;
+        }
+        result.principalVariation.push_back(Stockfish::UCI::move(line, move));
+        ++result.tablePlies;
         lineStates.emplace_back();
         line.do_move(move, lineStates.back());
     }
