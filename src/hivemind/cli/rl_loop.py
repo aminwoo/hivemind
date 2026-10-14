@@ -602,8 +602,9 @@ def main():
     parser.add_argument("--new-passes", type=float, default=1.5)
     parser.add_argument("--replay-passes", type=float, default=0.5)
     parser.add_argument("--parallel-games", type=positive_int, default=6)
-    parser.add_argument("--match-games", type=even_int, default=200,
-                        help="Games per match, in colour-swapped pairs")
+    parser.add_argument("--match-games", type=even_int, default=1000,
+                        help="Games per match (vs the generator and vs it0), in colour-swapped "
+                             "pairs (default: %(default)s)")
     parser.add_argument("--match-movetime", type=positive_int, default=100,
                         help="Milliseconds per move in matches (default: %(default)s)")
     parser.add_argument("--time-model", choices=("flag", "clock"), default="flag",

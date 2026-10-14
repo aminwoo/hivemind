@@ -334,8 +334,9 @@ uv run hivemind rl-loop
 
 Each iteration plays 100,000 self-play games and 1,000 validation games with
 the current generator, trains on them plus a replay of the previous three
-iterations' games, and plays 200 games at 100 ms per move against the
-generator. The new network replaces the generator unless it scores below 50%.
+iterations' games, and plays 1,000 games at 100 ms per move against the
+generator, and as many against the fixed first network (it0). The new network
+replaces the generator unless it scores below 50% against it.
 Every iteration's network and training checkpoint are uploaded to Hugging Face
 as `twin-s-noattn-itN.onnx` and `twin-s-noattn-itN.pt`, and a promoted one as
 `twin-s-noattn.onnx` and `twin-s-noattn.pt`, when `hf auth login` has logged
@@ -366,7 +367,6 @@ cp data/distill/runs/rl-it10/arms/C/last.pt artifacts/distill/twin-s-clock/last.
 uv run hivemind rl-loop --time-model clock --runs data/distill/runs-clock \
     --generator engine/models/twin-s-clock.onnx \
     --generator-checkpoint artifacts/distill/twin-s-clock/last.pt \
-    --match-movetime 1000 --match-games 100 \
     --selfplay-engine engine/build-clock-sp1/hivemind --match-engine engine/build-clock/hivemind
 ```
 
