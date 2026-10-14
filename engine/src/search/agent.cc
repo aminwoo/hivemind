@@ -5967,8 +5967,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // it returns true (a decision), the scan is stopped, or a round reports
     // it searched everything it could.
     const auto run_scan_rounds = [&](const std::atomic<bool>& stop,
-                                     const Node* root, const auto& round) {
-        for (uint64_t roundNodes = SearchParams::ROOT_SCAN_FIRST_ROUND_NODES;;
+                                     const Node* root, uint64_t firstRoundNodes,
+                                     const auto& round) {
+        for (uint64_t roundNodes = firstRoundNodes;;
              roundNodes *= SearchParams::ROOT_SCAN_ROUND_GROWTH) {
             bool complete = false;
             if (round(roundNodes, complete) || complete
@@ -6008,6 +6009,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     bool firstRound = true;
                     run_scan_rounds(
                         rootWinScanStop_, mateRoot.get(),
+                        SearchParams::ROOT_SCAN_FIRST_ROUND_NODES,
                         [&](uint64_t roundNodes, bool& complete) {
                             const bool found = find_root_mate_impl(
                                 *mateBoard, teamSide, searchTime_,
@@ -6114,6 +6116,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     };
                     run_scan_rounds(
                         rootLossScanStop_, lossRoot.get(),
+                        SearchParams::ROOT_LOSS_SCAN_FIRST_ROUND_NODES,
                         [&](uint64_t roundNodes, bool& complete) {
                             vector<RootLossProof> roundProofs;
                             lost = find_root_loss_proofs(
@@ -7542,16 +7545,19 @@ string Agent::extract_pv_from_child(
     // Apply moves to temp board
     tempBoard.make_moves(action.moveA, action.moveB);
     
-    // Continue extracting PV from this child
-    Node* currentNode = children[childIdx].get();
+    // Continue extracting PV from this child. The workers keep growing the
+    // tree while this runs, and a transposition can replace a child, so the
+    // walk holds a reference to the node it stands on rather than a raw
+    // pointer a replaced child could leave dangling.
+    std::shared_ptr<Node> currentNode = children[childIdx];
     
     for (int depth = 1; depth < maxDepth; depth++) {
         if (!currentNode || !currentNode->is_expanded()) {
             break;
         }
         
-        auto nodeChildren = currentNode->get_children();
-        auto childVisits = currentNode->get_child_visits();
+        const auto nodeChildren = currentNode->get_children();
+        const auto childVisits = currentNode->get_child_visits();
         if (nodeChildren.empty() || childVisits.empty()) {
             break;
         }
@@ -7560,8 +7566,11 @@ string Agent::extract_pv_from_child(
         int bestIdx = currentNode->get_best_move_idx_with_q_weight(
             lastRuntimeConfig_.qVetoDelta, lastRuntimeConfig_.qValueWeight);
         
-        // Fallback to most-visited (handles unsolved nodes and edge cases)
-        if (bestIdx < 0) {
+        // Fallback to most-visited (handles unsolved nodes and edge cases).
+        // The node may have generated children since the snapshots above were
+        // taken, so an index past either of them falls back too.
+        if (bestIdx < 0 || static_cast<size_t>(bestIdx) >= nodeChildren.size()
+            || static_cast<size_t>(bestIdx) >= childVisits.size()) {
             bestIdx = 0;
             int maxVisits = 0;
             for (size_t i = 0; i < nodeChildren.size() && i < childVisits.size(); i++) {
@@ -7593,7 +7602,7 @@ string Agent::extract_pv_from_child(
         tempBoard.make_moves(nextAction.moveA, nextAction.moveB);
         
         // Move to best child
-        currentNode = nodeChildren[bestIdx].get();
+        currentNode = nodeChildren[bestIdx];
     }
 
     if (currentNode

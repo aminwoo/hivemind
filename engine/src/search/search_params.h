@@ -368,6 +368,15 @@ constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
  */
 constexpr uint64_t ROOT_SCAN_FIRST_ROUND_NODES = 40000;
 constexpr uint64_t ROOT_SCAN_ROUND_GROWTH = 4;
+/**
+ * The loss scan's first round. It shares each round fairly among every
+ * defense and starts each round afresh, so a small first round leaves a few
+ * hundred nodes per defense - too few to settle any - and the proof waits
+ * for a late round. At 40k the benchmark's lost positions were proven by the
+ * tree after 230-650 ms; from 250k the scan proves them in 70-120 ms, as the
+ * single 2M-node pass it replaced did.
+ */
+constexpr uint64_t ROOT_LOSS_SCAN_FIRST_ROUND_NODES = 250000;
 
 /**
  * Node limit standing for "until the search stops" where an API needs a
