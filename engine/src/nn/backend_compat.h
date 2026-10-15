@@ -26,34 +26,14 @@
 #include <malloc.h>
 #endif
 
-#if defined(HIVEMIND_BACKEND_TENSORRT)
-
-#include <cuda_fp16.h>
-#include <cuda_runtime_api.h>
-
 namespace hm {
-inline bool alloc_pinned(void** ptr, std::size_t bytes) {
-    return cudaMallocHost(ptr, bytes) == cudaSuccess;
-}
-inline void free_pinned(void* ptr) { cudaFreeHost(ptr); }
-inline const char* alloc_error() { return cudaGetErrorString(cudaGetLastError()); }
-}  // namespace hm
 
-#elif defined(HIVEMIND_ORT_FP16)
-
-// The search tree spells the network scalar type `__half` throughout. Keep the
-// same two-byte layout as ONNX's FLOAT16 tensors without taking a CUDA header
-// dependency on portable builds.
-struct __half {
-    std::uint16_t bits = 0;
-};
-
-static_assert(sizeof(__half) == sizeof(std::uint16_t));
-
-inline float __half2float(__half value) {
-    const std::uint32_t sign = static_cast<std::uint32_t>(value.bits & 0x8000u) << 16;
-    const std::uint32_t exponent = (value.bits >> 10) & 0x1fu;
-    const std::uint32_t mantissa = value.bits & 0x03ffu;
+// IEEE 754 binary16 bits to and from float: the FP16 tensors of portable
+// builds and the half fields of training chunks, on every backend.
+inline float half_bits_to_float(std::uint16_t bits) {
+    const std::uint32_t sign = static_cast<std::uint32_t>(bits & 0x8000u) << 16;
+    const std::uint32_t exponent = (bits >> 10) & 0x1fu;
+    const std::uint32_t mantissa = bits & 0x03ffu;
 
     std::uint32_t result;
     if (exponent == 0) {
@@ -79,7 +59,7 @@ inline float __half2float(__half value) {
     return std::bit_cast<float>(result);
 }
 
-inline __half __float2half_rn(float value) {
+inline std::uint16_t float_to_half_bits(float value) {
     const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
     const std::uint16_t sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
     const std::uint32_t exponent = (bits >> 23) & 0xffu;
@@ -89,16 +69,16 @@ inline __half __float2half_rn(float value) {
         const std::uint16_t payload = mantissa == 0
             ? 0
             : static_cast<std::uint16_t>((mantissa >> 13) | 0x0200u);
-        return {static_cast<std::uint16_t>(sign | 0x7c00u | payload)};
+        return static_cast<std::uint16_t>(sign | 0x7c00u | payload);
     }
 
     const int halfExponent = static_cast<int>(exponent) - 127 + 15;
     if (halfExponent >= 31) {
-        return {static_cast<std::uint16_t>(sign | 0x7c00u)};
+        return static_cast<std::uint16_t>(sign | 0x7c00u);
     }
     if (halfExponent <= 0) {
         if (halfExponent < -10) {
-            return {sign};
+            return sign;
         }
         const std::uint32_t significand = mantissa | 0x00800000u;
         const int shift = 14 - halfExponent;
@@ -108,7 +88,7 @@ inline __half __float2half_rn(float value) {
         if (remainder > halfway || (remainder == halfway && (rounded & 1u))) {
             ++rounded;
         }
-        return {static_cast<std::uint16_t>(sign | rounded)};
+        return static_cast<std::uint16_t>(sign | rounded);
     }
 
     std::uint32_t rounded = (static_cast<std::uint32_t>(halfExponent) << 10)
@@ -117,8 +97,38 @@ inline __half __float2half_rn(float value) {
     if (remainder > 0x1000u || (remainder == 0x1000u && (rounded & 1u))) {
         ++rounded;
     }
-    return {static_cast<std::uint16_t>(sign | rounded)};
+    return static_cast<std::uint16_t>(sign | rounded);
 }
+
+}  // namespace hm
+
+#if defined(HIVEMIND_BACKEND_TENSORRT)
+
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
+
+namespace hm {
+inline bool alloc_pinned(void** ptr, std::size_t bytes) {
+    return cudaMallocHost(ptr, bytes) == cudaSuccess;
+}
+inline void free_pinned(void* ptr) { cudaFreeHost(ptr); }
+inline const char* alloc_error() { return cudaGetErrorString(cudaGetLastError()); }
+}  // namespace hm
+
+#elif defined(HIVEMIND_ORT_FP16)
+
+// The search tree spells the network scalar type `__half` throughout. Keep the
+// same two-byte layout as ONNX's FLOAT16 tensors without taking a CUDA header
+// dependency on portable builds.
+struct __half {
+    std::uint16_t bits = 0;
+};
+
+static_assert(sizeof(__half) == sizeof(std::uint16_t));
+
+inline float __half2float(__half value) { return hm::half_bits_to_float(value.bits); }
+
+inline __half __float2half_rn(float value) { return {hm::float_to_half_bits(value)}; }
 
 #else  // portable FP32 backend
 

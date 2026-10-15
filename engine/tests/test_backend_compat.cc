@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "nn/backend_compat.h"
+#include "tools/distill_data.h"
 
 TEST(BackendCompatTest, HalfHasOnnxFloat16Layout) {
 #if defined(HIVEMIND_BACKEND_TENSORRT) || defined(HIVEMIND_ORT_FP16)
@@ -24,3 +25,10 @@ TEST(BackendCompatTest, HalfRoundTripsExactlyRepresentableValues) {
     }
 }
 
+
+TEST(BackendCompatTest, ChunkHalfBitsAreBinary16OnEveryBackend) {
+    EXPECT_EQ(distill::half_bits(__float2half_rn(1.0f)), 0x3c00);
+    EXPECT_EQ(distill::half_bits(__float2half_rn(0.5f)), 0x3800);
+    EXPECT_EQ(distill::half_bits(__float2half_rn(-2.0f)), 0xc000);
+    EXPECT_EQ(distill::half_bits(__float2half_rn(0.0f)), 0x0000);
+}
