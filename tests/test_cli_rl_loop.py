@@ -305,7 +305,10 @@ def test_collect_files_batches_under_their_iteration(tmp_path, monkeypatch):
     submit("it7/mac-03", 7, "g4")  # an old generator
     loop = rl_loop.Loop.__new__(rl_loop.Loop)
     loop.runs, loop.exchange, loop.log = runs, exchange, lambda message: None
+    submit("it7/mac-04", 7, "g7")  # broken values
     monkeypatch.setattr(rl_loop.train, "positions", lambda dirs: 5)
+    monkeypatch.setattr(rl_loop, "chunk_problem",
+                        lambda path: "non-finite plane_values" if "mac-04" in str(path) else None)
     loop.collect()
     assert sorted(p.name for p in (runs / "rl-it7" / "stages").glob("seg*.done")) == ["seg-mac-01.done"]
     assert sorted(p.name for p in (runs / "rl-it6" / "stages").glob("seg*.done")) == ["seg-mac-02.done"]
@@ -313,6 +316,8 @@ def test_collect_files_batches_under_their_iteration(tmp_path, monkeypatch):
     assert json.loads((runs / "rl-it7" / "stages" / "seg-mac-01.done").read_text())["games"] == 10
     assert list(exchange.submissions()) == []
     assert (shared / "rejected" / "it7--mac-03").is_dir()
+    assert (shared / "rejected" / "it7--mac-04").is_dir()
+    assert not (runs / "rl-it7" / "search" / "train" / "seg-mac-04").exists()
     assert rl_loop.train_dirs(runs, 7) == [runs / "rl-it7" / "search" / "train" / "seg-mac-01"]
 
 

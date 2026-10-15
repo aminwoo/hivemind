@@ -90,6 +90,33 @@ def read_chunk(path):
     return chunk
 
 
+def chunk_problem(path):
+    """Why a chunk is unfit to train on, or None. Catches contributors whose
+    engine wrote broken values: non-finite or out-of-range targets and inputs,
+    or move probabilities that do not sum to one."""
+    try:
+        chunk = read_chunk(path)
+    except ValueError as error:  # truncated, or not a chunk
+        return f"{Path(path).name}: unreadable ({str(error).replace(str(path), 'it')})"
+    for field in ("plane_values", "value", "wdl", "moves_left", "policy_probability"):
+        if not np.isfinite(chunk[field].astype(np.float32)).all():
+            return f"{Path(path).name}: non-finite {field}"
+    if np.abs(chunk["plane_values"].astype(np.float32)).max(initial=0) > 16:
+        return f"{Path(path).name}: input planes out of range"
+    moves_left = chunk["moves_left"].astype(np.float32)  # remaining plies / 100, capped at 1
+    if (np.abs(chunk["value"]).max(initial=0) > 1 or (chunk["wdl"] < 0).any() or (chunk["wdl"] > 1).any()
+            or (moves_left < 0).any() or (moves_left > 1).any()):
+        return f"{Path(path).name}: value targets out of range"
+    probabilities = chunk["policy_probability"].astype(np.float64)
+    if (chunk["policy_index"] >= POLICY_SIZE).any() or (probabilities < 0).any():
+        return f"{Path(path).name}: policy out of range"
+    counts = chunk["policy_count"].ravel().astype(np.int64)
+    sums = np.add.reduceat(probabilities, np.cumsum(counts)[counts > 0] - counts[counts > 0]) \
+        if len(probabilities) else np.zeros(0)
+    if (np.abs(sums - 1) > 0.05).any():
+        return f"{Path(path).name}: move probabilities do not sum to one"
+    return None
+
 def head_chunk(chunk, count):
     """The first `count` positions of a chunk (policy entries follow the counts)."""
     count = min(count, len(chunk["value"]))

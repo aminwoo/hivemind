@@ -49,6 +49,7 @@ import time
 
 from hivemind.cli import selfplay, train
 from hivemind.data import archive
+from hivemind.distill.data import chunk_problem
 from hivemind.distill.exchange import PROTOCOL, HubExchange, install, open_exchange, sha256
 from hivemind.network import DEFAULT_ONNX_PATH, SELFPLAY_ARCHIVE, SELFPLAY_EXCHANGE, TWIN_REPOSITORY
 from hivemind.paths import PROJECT_ROOT
@@ -323,6 +324,12 @@ class Loop:
             data = self.runs / f"rl-it{n}" / "search" / "train" / name
             shutil.rmtree(data, ignore_errors=True)
             self.exchange.fetch(submission, data)
+            problem = next(filter(None, map(chunk_problem, sorted(data.glob("*.dst")))), None)
+            if problem:
+                shutil.rmtree(data)
+                self.exchange.finish(submission, False, f"Unusable games: {problem}.")
+                self.log(f"closed {submission.folder} from {manifest.get('contributor')} unused: {problem}")
+                continue
             positions = train.positions([data])
             if not positions:
                 shutil.rmtree(data)

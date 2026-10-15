@@ -13,6 +13,7 @@ from hivemind.distill.data import (
     PLANES,
     VERSION,
     DistillDataset,
+    chunk_problem,
     head_chunk,
     read_chunk,
 )
@@ -103,6 +104,34 @@ def test_chunks_from_before_the_clock_planes_are_widened(tmp_path):
         np.testing.assert_array_equal(lead[:, 0], np.where(may_sit, 1.0, -1.0))
         assert np.all(lead == lead[:, :1]) and np.all(speed == 0)
 
+
+def test_chunk_problem_flags_values_a_broken_engine_wrote(tmp_path):
+    n = 16
+    path = tmp_path / "c.dst"
+    _, counts = _write_chunk(path, np.random.default_rng(3), n=n)
+    raw = bytearray(path.read_bytes())
+    entries = int(counts.sum())
+    probabilities = np.frombuffer(raw[-2 * entries:], np.float16).astype(np.float64)
+    sizes = counts.ravel().astype(np.int64)
+    sizes = sizes[sizes > 0]
+    probabilities /= np.repeat(np.add.reduceat(probabilities, np.cumsum(sizes) - sizes), sizes)
+    raw[-2 * entries:] = probabilities.astype(np.float16).tobytes()
+    path.write_bytes(raw)
+    assert chunk_problem(path) is None
+
+    unnormalized = bytearray(raw)
+    unnormalized[-2 * entries:] = (probabilities * 3).astype(np.float16).tobytes()
+    path.write_bytes(unnormalized)
+    assert "sum to one" in chunk_problem(path)
+
+    nan_planes = bytearray(raw)
+    values = 28 + n * PLANES * 8  # header, then the plane bitboards
+    nan_planes[values:values + 2] = np.array([np.nan], np.float16).tobytes()
+    path.write_bytes(nan_planes)
+    assert "non-finite plane_values" in chunk_problem(path)
+
+    path.write_bytes(raw[:-1])
+    assert "unreadable" in chunk_problem(path)
 
 def test_policy_loss_ignores_illegal_logits(tmp_path):
     """The engine never sees illegal moves' logits, so the loss must not either."""
