@@ -4041,6 +4041,119 @@ TEST_F(EngineTest, CandidateCertificateRejectsCrossBoardDefense) {
     EXPECT_EQ(certifiedPly, 0);
 }
 
+namespace {
+
+// Board A: 1.Kf7 Kh7 2.Rh1#, a mate with no capture in it. Board B: our
+// partner (black) is on turn, so white's team is on turn on both boards.
+// Inert: bare kings, nothing there can ever be captured. Leaky: our partner's
+// knight on a1 is lost to Rc1 and Rxa1 (or axb3 / Rxc2 if it runs) once the
+// opponents get two moves there, and a knight in the defender's hand blocks
+// the rook's check on the h-file.
+constexpr const char* kQuietMateBoardA = "7k/8/5K2/8/8/8/8/R7[] w - - 0 1";
+constexpr const char* kInertBoardB = "7k/8/8/8/8/8/8/K7[] b - - 0 1";
+constexpr const char* kLeakyBoardB = "2R5/8/8/7k/8/8/P7/n6K[] b - - 0 1";
+
+struct BehindCertificate {
+    bool certified = false;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+    JointActionCandidate action;
+    int plyToMate = 0;
+    bool budgetSpent = false;
+};
+
+// Certifies 1.Kf7 as a probe would hand it over - sitting board B - under a
+// white-team lead of @p leadMs at 100 ms a move for both teams.
+BehindCertificate certify_quiet_mate(const char* boardB, int64_t leadMs) {
+    Board board;
+    board.set(std::string(kQuietMateBoardA) + "|" + boardB);
+    Stockfish::Move kingStep = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f6f7") {
+            kingStep = move;
+        }
+    }
+    EXPECT_NE(kingStep, Stockfish::MOVE_NONE);
+    const JointActionCandidate probeCandidate(
+        kingStep, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+        JointActionRules{true, true, true, true, true}, false, false);
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 4'000'000;
+    BehindCertificate result;
+    result.certified = Agent::certify_mate_candidate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, leadMs, 100, 100),
+        probeCandidate, 3, budget, result.plyToMate, result.tier, nullptr,
+        &result.action);
+    result.budgetSpent = budget.exhausted || budget.remainingNodes == 0;
+    EXPECT_EQ(board.fen(BOARD_A) + "|" + board.fen(BOARD_B),
+              [&] {
+                  Board fresh;
+                  fresh.set(std::string(kQuietMateBoardA) + "|" + boardB);
+                  return fresh.fen(BOARD_A) + "|" + fresh.fen(BOARD_B);
+              }());
+    return result;
+}
+
+}  // namespace
+
+// Behind on time, the defenders may sit board A and spend their lead on
+// board B, and white has to move there each time. With nothing on board B
+// to capture or mate with, that only delays the mate: it is a mate however
+// far behind white is, and the joint tier, which plays the real clock, says
+// so. The probe's sit on board B is illegal here, so the certified action
+// pairs Kf7 with a move there.
+TEST_F(EngineTest, CertifiesAMateBehindOnTimeWhenTheOtherBoardIsInert) {
+    for (const int64_t leadMs : {-300, 0}) {
+        SCOPED_TRACE(leadMs);
+        const BehindCertificate result = certify_quiet_mate(kInertBoardB, leadMs);
+        ASSERT_TRUE(result.certified);
+        EXPECT_EQ(result.tier, MateCertificateTier::FULL_JOINT);
+        Board board;
+        board.set(std::string(kQuietMateBoardA) + "|" + kInertBoardB);
+        EXPECT_EQ(board.uci_move(BOARD_A, result.action.moveA), "f6f7");
+        EXPECT_NE(result.action.moveB, Stockfish::MOVE_NONE);
+        EXPECT_GE(result.plyToMate, 3);
+    }
+}
+
+// The same capture-free line is no mate once the opponents get the two
+// moves on board B it takes to win the knight: whether they buy them with a
+// lead or white hands them over by having to move there, the knight comes
+// to the defender's hand and blocks the h-file. A line with no capture in it
+// is not a proof while the other board can still feed a defence. Its fixed
+// test position is the probe's: Fairy finds this mate on board A alone.
+TEST_F(EngineTest, RejectsACaptureFreeMateTheOtherBoardFeedsADefenceTo) {
+    // Level, the solver refutes the line outright. Behind, the defenders'
+    // waiting multiplies the lines past this budget; out of nodes is no
+    // certificate either, which is all a caller acts on.
+    const BehindCertificate level = certify_quiet_mate(kLeakyBoardB, 0);
+    EXPECT_FALSE(level.certified);
+    EXPECT_FALSE(level.budgetSpent);
+    const BehindCertificate behind = certify_quiet_mate(kLeakyBoardB, -300);
+    EXPECT_FALSE(behind.certified);
+    EXPECT_EQ(behind.tier, MateCertificateTier::NONE);
+    // Far enough ahead to sit board B through the whole line, the knight
+    // never comes under fire and the single-board proof stands.
+    const BehindCertificate ahead = certify_quiet_mate(kLeakyBoardB, 1000);
+    EXPECT_TRUE(ahead.certified);
+    EXPECT_EQ(ahead.tier, MateCertificateTier::CHECKS_ONLY);
+}
+
+// The exact edge on the leaky board. At 100 ms white sits board B for Kf7
+// and is then level: the defenders may not sit, Kh7 is forced, and Rh1+
+// beside a king move leaves black's partner on turn with nothing to capture.
+// At 99 ms the sit leaves the defenders 1 ms ahead: they wait on board A,
+// white has to move on board B, Rc1 follows, and the knight is lost in time
+// to block. The sat-board rule would ask for 300 ms; the clock needs 100.
+TEST_F(EngineTest, CertificateFollowsTheClockToTheMillisecond) {
+    const BehindCertificate atEdge = certify_quiet_mate(kLeakyBoardB, 100);
+    EXPECT_TRUE(atEdge.certified);
+    EXPECT_EQ(atEdge.tier, MateCertificateTier::FULL_JOINT);
+    const BehindCertificate short1 = certify_quiet_mate(kLeakyBoardB, 99);
+    EXPECT_FALSE(short1.certified);
+    EXPECT_FALSE(short1.budgetSpent);
+}
+
 TEST_F(EngineTest, JointForcedMateBudgetExhaustionIsConservative) {
     Board board;
     board.set(

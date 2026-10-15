@@ -710,7 +710,13 @@ public:
         const Node* treeNode = nullptr);
     /**
      * As above under a clock. The single-board and sat-board tiers need the
-     * lead to cover every move of the line; the joint tier follows the clock.
+     * lead to cover every move of the line; the joint tier follows the clock,
+     * so it may certify a team that is level or behind.
+     *
+     * A probe's candidate sits the board it does not move on. Where this
+     * clock does not allow that sit, the candidate's move is tried with each
+     * legal move on the other board instead, and @p outAction (when given)
+     * receives the joint action that was certified.
      */
     static bool certify_mate_candidate(
         Board& board, Stockfish::Color teamSide,
@@ -720,7 +726,8 @@ public:
         MateSearchBudget& budget,
         int& outPlyToMate,
         MateCertificateTier& outTier,
-        const Node* treeNode = nullptr);
+        const Node* treeNode = nullptr,
+        JointActionCandidate* outAction = nullptr);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.

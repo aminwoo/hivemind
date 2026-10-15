@@ -462,6 +462,29 @@ constexpr int MATE_PROBE_LINE_EXTENSIONS = MATE_PROBE_MAX_MATE_MOVES;
 constexpr uint64_t MATE_PROBE_LINE_EXTENSION_NODES = 200000;
 constexpr int MATE_PROBE_LINE_EXTENSION_MS = 20;
 
+/**
+ * Nodes the root may spend certifying a conditional mate: one its probe found
+ * with the other board sat, which the clock does not grant (level, behind,
+ * or a lead short of the line). The joint certifier plays the real clock, so
+ * a certificate is a proven mate; without one the mate only orders the
+ * tree's expansion. The move time bounds it as well.
+ */
+constexpr uint64_t ROOT_CONDITIONAL_MATE_CERT_NODE_BUDGET = 2000000;
+/**
+ * The conditional probe and its certificate together take at most this share
+ * of the root probe's nodes and time. The probe thread runs the concurrent
+ * verifier after it, whose proofs of the opponents' mates a team that is not
+ * ahead needs most; the whole allowance here measurably delayed them.
+ */
+constexpr int ROOT_CONDITIONAL_MATE_SHARE_PERCENT = 25;
+/**
+ * Whether the root asks for conditional mates at all. Off: on 386 positions
+ * where the game's single-board mate was not covered by the lead, it certified
+ * none at 1 s or 10 s, and at 1 s its share delayed the verifier's proofs of
+ * mates against a team behind on time.
+ */
+constexpr bool ROOT_CONDITIONAL_MATE_PROBE = false;
+
 // Use the same evidence bound for accepting a probe mate and ending a move.
 // A separate five-move early-exit cap made accepted mates beyond it wait for
 // the deadline even though the probe had already stopped searching. These
@@ -781,6 +804,7 @@ struct RuntimeConfig {
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     bool enableMateProbe = ENABLE_MATE_PROBE;
+    bool conditionalMateProbe = ROOT_CONDITIONAL_MATE_PROBE;
     bool certifySelectedMove = ENABLE_SELECTED_MOVE_CERTIFICATION;
     InternalMateProbeMode internalMateProbeMode = INTERNAL_MATE_PROBE_MODE;
     float internalMateProbeBias = INTERNAL_MATE_PROBE_BIAS;

@@ -647,6 +647,12 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableMateProbe = value == "true";
             std::cout << "info string MateProbe set to " << value << std::endl;
         }
+    } else if (name == "ConditionalMateProbe") {
+        if (value == "true" || value == "false") {
+            searchConfig.conditionalMateProbe = value == "true";
+            std::cout << "info string ConditionalMateProbe set to " << value
+                      << std::endl;
+        }
     } else if (name == "MateThreads") {
         MateProbe::set_threads(std::stoi(value));
         std::cout << "info string MateThreads set to " << MateProbe::threads()
@@ -817,6 +823,9 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::CPUCT_INIT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
+    cout << "option name ConditionalMateProbe type check default "
+         << (SearchParams::ROOT_CONDITIONAL_MATE_PROBE ? "true" : "false")
+         << endl;
     cout << "option name MateThreads type spin default "
          << MateProbe::DEFAULT_THREADS << " min 1 max "
          << MateProbe::MAX_THREADS << endl;

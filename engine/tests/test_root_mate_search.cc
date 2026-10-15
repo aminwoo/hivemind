@@ -113,6 +113,66 @@ TEST_F(RootMateSearchTest, FairyMateAlsoInterruptsTheLossScan) {
     EXPECT_EQ(Agent::board_signature(board), before);
 }
 
+// Board A: 1.Kf7 Kh7 2.Rh1# (or 1.Kg6 Kg8 2.Ra8#), quiet first moves, so
+// the checks-only scans cannot see them. Board B, our partner (black) on turn: bare kings in the
+// inert case; in the leaky one a knight the opponents win in two moves there,
+// which then blocks the h-file. White's team is 300 ms behind.
+constexpr const char* kQuietMate = "7k/8/5K2/8/8/8/8/R7[] w - - 0 1";
+constexpr const char* kInertPartner = "7k/8/8/8/8/8/8/K7[] b - - 0 1";
+constexpr const char* kLeakyPartner = "2R5/8/8/7k/8/8/P7/n6K[] b - - 0 1";
+
+// Behind on time the probe used not to run at all. It now finds the mate
+// with board B sat, and the joint certifier, playing the real clock, proves
+// it: the defenders' waits on board A only cost white moves on an inert
+// board B.
+TEST_F(RootMateSearchTest, CertifiedConditionalMateWinsBehindOnTime) {
+    Board board;
+    board.set(std::string(kQuietMate) + "|" + kInertPartner);
+    const auto before = Agent::board_signature(board);
+    Agent agent(2);
+    options.search.enableMateProbe = true;
+    options.search.conditionalMateProbe = true;
+    options.verbose = true;
+    options.moveTimeMs = 3000;
+    options.clock = TimeState::clocked(Stockfish::WHITE, -300, 100, 100);
+    testing::internal::CaptureStdout();
+    const auto action = agent.run_search(
+        board, {engine.get()}, Stockfish::WHITE, false, options);
+    const std::string output = testing::internal::GetCapturedStdout();
+    EXPECT_NE(output.find("conditional root mate: 1 found, 1 certified"),
+              std::string::npos) << output;
+    EXPECT_EQ(agent.root_type(), NodeType::WIN);
+    // 1.Kf7 Kh7 2.Rh1# and 1.Kg6 Kg8 2.Ra8# are both mates in two.
+    const std::string kingStep = board.uci_move(BOARD_A, action.moveA);
+    EXPECT_TRUE(kingStep == "f6f7" || kingStep == "f6g6") << kingStep;
+    EXPECT_TRUE(board.is_legal_move(BOARD_B, action.moveB));
+    EXPECT_NE(action.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(Agent::board_signature(board), before);
+}
+
+// The same probe hit with a knight to lose on board B is only conditional:
+// the opponents' extra moves there feed the defence. No certificate, so no
+// mate is claimed; the hit only orders the tree.
+TEST_F(RootMateSearchTest, UncertifiedConditionalMateIsNoClaim) {
+    Board board;
+    board.set(std::string(kQuietMate) + "|" + kLeakyPartner);
+    Agent agent(2);
+    options.search.enableMateProbe = true;
+    options.search.conditionalMateProbe = true;
+    options.verbose = true;
+    options.moveTimeMs = 1500;
+    options.clock = TimeState::clocked(Stockfish::WHITE, -300, 100, 100);
+    testing::internal::CaptureStdout();
+    agent.run_search(board, {engine.get()}, Stockfish::WHITE, false, options);
+    const std::string output = testing::internal::GetCapturedStdout();
+    // The hint is promoted only if the tree has not expanded that action
+    // yet, which is a race, so the count of promotions is not checked.
+    EXPECT_NE(output.find("conditional root mate: 1 found, 0 certified, "),
+              std::string::npos) << output;
+    EXPECT_NE(agent.root_type(), NodeType::WIN);
+    EXPECT_EQ(output.find("score mate"), std::string::npos) << output;
+}
+
 TEST_F(RootMateSearchTest, StopJoinsTheScanAndTheNextSearchCanRun) {
     Board board;
     set_busy_position(board);
