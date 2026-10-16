@@ -76,6 +76,9 @@ bool UCI::reload_engines() {
         }
     }
 
+    networkReadsClock = !engines.empty()
+        && engines.front()->inputChannels() == NB_INPUT_CHANNELS;
+
     // Create the single-threaded Agent
     agent = std::make_unique<Agent>();
     return !engines.empty();
@@ -104,7 +107,7 @@ void UCI::go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite) {
         std::cout << "bestmove (none)" << std::endl;
         return;
     }
-    if (clockModel) {
+    if (clock_model_active()) {
         // Alpha-beta has no clock: it searches the lead's current sign as a
         // permanent TimeAdvantage flag, never charging the actions it plays.
         std::cout << "info string TimeModel clock is not supported by alphabeta "
@@ -747,6 +750,7 @@ void UCI::setoption(std::istringstream& is) {
     } else if (name == "TimeModel") {
         if (value == "flag" || value == "clock") {
             clockModel = value == "clock";
+            timeModelSet = true;
             std::cout << "info string TimeModel set to " << value << std::endl;
         }
     } else if (name == "TimeLeadMs") {
@@ -777,8 +781,12 @@ void UCI::setoption(std::istringstream& is) {
     }
 }
 
+bool UCI::clock_model_active() const {
+    return clockModel && (timeModelSet || networkReadsClock);
+}
+
 std::optional<TimeState> UCI::current_clock() const {
-    if (!clockModel) {
+    if (!clock_model_active()) {
         return std::nullopt;
     }
     return TimeState::clocked(
@@ -866,7 +874,7 @@ void UCI::send_uci_response() {
          << " min 1 max 100000" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name TimeAdvantage type check default false" << endl;
-    cout << "option name TimeModel type combo default flag var flag var clock" << endl;
+    cout << "option name TimeModel type combo default clock var flag var clock" << endl;
     cout << "option name TimeLeadMs type spin default 0 min "
          << -TimeState::MAX_LEAD_MS << " max " << TimeState::MAX_LEAD_MS << endl;
     cout << "option name TeamMoveTimeMs type spin default "

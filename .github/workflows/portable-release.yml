@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag (for example, v2.2.2)
+        description: Release tag (for example, v3.0.0)
         required: true
-        default: v2.2.2
+        default: v3.0.0
       model_url:
         description: Direct ONNX URL or a Hivemind release zip containing the model
         required: true
-        default: https://huggingface.co/aminwoo/bughouse-twin-s/resolve/0d9b6c47096b3f523c381ec4488889fb9eb4127c/twin-s-noattn.onnx
+        default: https://huggingface.co/aminwoo/bughouse-twin-s-clock/resolve/749f54a59260330ea2771d69988c9255ba8a89ac/twin-s-clock.onnx
       publish:
         description: Publish the built assets to the requested release tag
         required: true
@@ -33,7 +33,7 @@ jobs:
   prepare-model:
     runs-on: ubuntu-latest
     env:
-      MODEL_URL: ${{ inputs.model_url || 'https://huggingface.co/aminwoo/bughouse-twin-s/resolve/0d9b6c47096b3f523c381ec4488889fb9eb4127c/twin-s-noattn.onnx' }}
+      MODEL_URL: ${{ inputs.model_url || 'https://huggingface.co/aminwoo/bughouse-twin-s-clock/resolve/749f54a59260330ea2771d69988c9255ba8a89ac/twin-s-clock.onnx' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,6 +78,8 @@ jobs:
             slug: linux-x86_64
           - os: windows-latest
             slug: windows-x86_64
+          - os: macos-latest
+            slug: macos-arm64
     runs-on: ${{ matrix.os }}
     env:
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
@@ -100,6 +102,26 @@ jobs:
           python engine/scripts/package_portable_release.py \
             --model model/hivemind.onnx \
             --name "hivemind-${RELEASE_VERSION}-${{ matrix.slug }}-onnxruntime"
+      - name: Smoke test the bundle
+        shell: bash
+        env:
+          # Hosted macOS runners are virtual machines without the Neural Engine.
+          HIVEMIND_COREML: "off"
+        run: |
+          mkdir smoke
+          cd smoke
+          if [ "$RUNNER_OS" = Windows ]; then
+            python -m zipfile -e ../dist/*.zip .
+            engine=$(ls -d */)bin/hivemind.exe
+          else
+            unzip -q ../dist/*.zip
+            engine=$(ls -d */)hivemind
+          fi
+          # Load the bundled network from another directory and finish a search.
+          cd ..
+          (printf 'uci\nisready\nposition startpos\ngo nodes 200\n'; sleep 30; printf 'quit\n') \
+            | "smoke/$engine" | tee smoke.log
+          grep -q '^bestmove' smoke.log
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.slug }}
