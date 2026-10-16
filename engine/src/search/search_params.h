@@ -147,6 +147,7 @@ constexpr float WDL_VALUE_WEIGHT = 0.0f;
  */
 constexpr float MOVES_LEFT_DISCOUNT = 0.05f;
 
+
 // =============================================================================
 // Draw Contempt Parameters
 // =============================================================================
@@ -501,6 +502,31 @@ constexpr bool mate_probe_can_end_search(int plyToMate) {
 // the check-only scans, so it gets its own flag.
 constexpr bool ENABLE_MATE_PROBE = true;
 
+/**
+ * Short frozen races, proven exactly on the probe thread: a board where one
+ * team is frozen, or about to be, so the other board is all its hope (see
+ * Agent::prove_frozen_race). The proof grows about forty-fold per attacker
+ * action - 0.6M nodes at three, 20-40M at four - so only short races, a lead
+ * of two seconds or so, fit; a longer one is left to the tree. A proof only
+ * ever marks a node won or lost.
+ */
+constexpr bool ENABLE_FROZEN_RACE = true;
+constexpr int FROZEN_RACE_MAX_ATTACKER_MOVES = 3;
+/// Root actions whose leading replies the stage also looks at, after every
+/// visited root action, and how many replies under each.
+constexpr int FROZEN_RACE_TOP_K = 4;
+constexpr int FROZEN_RACE_REPLY_TOP_K = 2;
+constexpr int FROZEN_RACE_MIN_VISITS = 4;
+/// What the stage may spend in one search, and on one target.
+constexpr uint64_t FROZEN_RACE_NODE_BUDGET = 2000000;
+/// Its share of the move time - never more than half of what is left, so the
+/// concurrent verifier after it keeps the rest - and its cap when the search
+/// has no move time.
+constexpr int FROZEN_RACE_TIME_PERCENT = 20;
+constexpr int FROZEN_RACE_MAX_MS = 250;
+/// How long the stage waits for the tree to generate a proof's move.
+constexpr int FROZEN_RACE_IDLE_MS = 20;
+
 // Experimental probing below the root. Each mode adds one effect so hit-rate,
 // playing-strength, and solver experiments can be measured independently.
 //
@@ -805,6 +831,7 @@ struct RuntimeConfig {
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     bool enableMateProbe = ENABLE_MATE_PROBE;
     bool conditionalMateProbe = ROOT_CONDITIONAL_MATE_PROBE;
+    bool frozenRace = ENABLE_FROZEN_RACE;
     bool certifySelectedMove = ENABLE_SELECTED_MOVE_CERTIFICATION;
     InternalMateProbeMode internalMateProbeMode = INTERNAL_MATE_PROBE_MODE;
     float internalMateProbeBias = INTERNAL_MATE_PROBE_BIAS;

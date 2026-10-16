@@ -480,6 +480,54 @@ public:
         MateSearchBudget* budget = nullptr);
 
     /**
+     * @brief Whether @p teamSide, on the boards it is on turn, has an action
+     *        that ends the game at once under @p time - a mate, or a win by
+     *        leaving the opponents no legal action.
+     */
+    static bool has_immediate_mate(Board& board, Stockfish::Color teamSide,
+                                   const TimeState& time);
+
+    enum class RaceVerdict { PROVEN, REFUTED, UNKNOWN };
+    struct FrozenRaceStats {
+        int targets = 0;
+        int races = 0;
+        int proven = 0;
+        int unplayedWitnesses = 0;
+        uint64_t nodes = 0;
+    };
+    /**
+     * @brief The probe thread's frozen-race stage: the leading root actions
+     *        and their leading replies, each checked for a frozen race and,
+     *        where there is one, proven within the short-race bound.
+     *
+     * A proof marks that node lost for its team to play, or - when that team
+     * wins - marks lost the child its proof plays, once the tree has generated
+     * it, so the node is won by propagation and keeps its move. Nothing else
+     * in the tree changes. Stops at @p budgetMs, when @p settled answers true,
+     * or when the stage's node budget is spent.
+     */
+    static void run_frozen_race_stage(
+        Board& rootBoard, const std::shared_ptr<Node>& root,
+        Stockfish::Color rootTeam, const TimeState& rootTime, int budgetMs,
+        const std::function<bool()>& settled,
+        const std::atomic<bool>* cancelled, FrozenRaceStats& stats);
+    /**
+     * @brief Prove that @p attackingTeam wins the race of a frozen board.
+     *
+     * @p raceBoard is frozen against the defenders, or the attackers can
+     * freeze it (after a feed, if need be). Every defender action is searched;
+     * the attackers pass or check on @p raceBoard and play anything on the
+     * other. REFUTED means only that this restricted strategy fails within
+     * @p maxAttackerMoves actions.
+     */
+    static RaceVerdict prove_frozen_race(
+        Board& board, Stockfish::Color attackingTeam, const TimeState& time,
+        Stockfish::Color teamToPlay, int raceBoard, int maxAttackerMoves,
+        MateSearchBudget& budget, int* outPlies = nullptr,
+        std::string* outLine = nullptr,
+        JointActionCandidate* outAction = nullptr);
+
+    /**
      * @brief The action a solved node stands behind, empty when it claims no
      *        forced win.
      *

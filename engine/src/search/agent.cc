@@ -801,6 +801,12 @@ static bool defenders_capture_into_immediate_mate(
     return false;
 }
 
+bool Agent::has_immediate_mate(Board& board, Stockfish::Color teamSide,
+                               const TimeState& time) {
+    JointActionCandidate mate;
+    return find_immediate_root_mate(board, teamSide, time, mate);
+}
+
 bool Agent::action_loses_mate_race(Board& board,
                                    const JointActionCandidate& action,
                                    Stockfish::Color teamSide,
@@ -2342,6 +2348,206 @@ JointMateProof search_joint_forced_mate(
 }
 
 /**
+ * The attackers' win in a race on one board while the other stands still:
+ * @p raceBoard is frozen against the defenders, or about to be, and the
+ * defenders can only hope to mate on the other board before their lead runs
+ * out.
+ *
+ * Every defender action is searched - the full legal set, the capture-feed
+ * escape included - so a proof here is a proof of the joint game. The
+ * attackers are restricted, which only ever costs proofs: on @p raceBoard
+ * they pass or give check (the freezing move, the mate), and on the other
+ * board every legal move is theirs, the quiet defensive ones above all, which
+ * the forcing prover never plays. The clock is charged after every action.
+ */
+JointMateProof search_frozen_race(
+    Board& board,
+    Stockfish::Color attackingTeam,
+    const TimeState& time,
+    Stockfish::Color teamToPlay,
+    int attackerMovesRemaining,
+    int searchPly,
+    Agent::MateSearchBudget& budget,
+    JointMateCache& cache,
+    int raceBoard) {
+    // Terminals as the tree judges them - the team to play's opponents
+    // mated first, then the team itself, then the game's own draws - so a
+    // certificate never claims a position the tree would score otherwise.
+    // The attackers count as the root team, so a waiting-board mate against
+    // the defenders is held to its race and one against the attackers is not.
+    switch (classify_terminal_position(
+                board, teamToPlay, attackingTeam, time,
+                std::array<int, 2>{1, 1})) {
+    case TerminalOutcome::WIN:
+        return {teamToPlay == attackingTeam ? JointMateStatus::PROVEN
+                                            : JointMateStatus::REFUTED, 0, {}};
+    case TerminalOutcome::LOSS:
+        return {teamToPlay == attackingTeam ? JointMateStatus::REFUTED
+                                            : JointMateStatus::PROVEN, 0, {}};
+    case TerminalOutcome::DRAW:
+        return {JointMateStatus::REFUTED, 0, {}};
+    case TerminalOutcome::NONE:
+        break;
+    }
+    const bool attackerToPlay = teamToPlay == attackingTeam;
+    if (attackerToPlay && attackerMovesRemaining <= 0) {
+        return {JointMateStatus::REFUTED, 0, {}};
+    }
+    if (budget.exhausted || budget.out_of_time()) {
+        budget.exhausted = true;
+        return {JointMateStatus::UNKNOWN, 0, {}};
+    }
+    const JointMateCacheKey cacheKey{
+        board.search_hash_key(teamToPlay, time),
+        static_cast<uint16_t>(std::max(0, attackerMovesRemaining)),
+        static_cast<uint8_t>(teamToPlay),
+        static_cast<uint8_t>(0xF0 | raceBoard)};
+    if (const auto found = cache.proofs.find(cacheKey);
+        found != cache.proofs.end()) {
+        return found->second;
+    }
+    const TimeState childTime = time.after(
+        teamToPlay, board.on_turn_on_both_boards(teamToPlay));
+    const MateActionSpace actionSpace = make_mate_action_space(
+        board, teamToPlay, time.can_sit(teamToPlay));
+    const int otherBoard = 1 - raceBoard;
+
+    if (attackerToPlay) {
+        // Order only: a sit first, since it is what makes the defenders move
+        // on the frozen board; then checks on the race board; then the other
+        // board's captures and checks; then the rest.
+        std::vector<std::pair<int, MateJointAction>> actions;
+        bool enumerationCut = false;
+        visit_legal_joint_actions(
+            actionSpace, false, false, false,
+            [&](const MateJointAction& action) {
+                if (!budget.consume()) {
+                    enumerationCut = true;
+                    return true;
+                }
+                const Stockfish::Move raceMove = raceBoard == BOARD_A
+                    ? action.moveA : action.moveB;
+                const Stockfish::Move otherMove = raceBoard == BOARD_A
+                    ? action.moveB : action.moveA;
+                int rank = 5;
+                if (raceMove != Stockfish::MOVE_NONE) {
+                    if (!board.gives_check(raceBoard, raceMove)) {
+                        return false;
+                    }
+                    rank = 1;
+                } else if (otherMove == Stockfish::MOVE_NONE) {
+                    rank = 0;
+                } else if (board.is_capture(otherBoard, otherMove)) {
+                    rank = 2;
+                } else if (board.gives_check(otherBoard, otherMove)) {
+                    rank = 3;
+                }
+                actions.emplace_back(rank, action);
+                return false;
+            });
+        if (enumerationCut) {
+            return {JointMateStatus::UNKNOWN, 0, {}};
+        }
+        std::stable_sort(actions.begin(), actions.end(),
+                         [](const auto& lhs, const auto& rhs) {
+                             return lhs.first < rhs.first;
+                         });
+        bool sawUnknown = false;
+        for (const auto& [rank, action] : actions) {
+            if (!budget.consume()) {
+                sawUnknown = true;
+                break;
+            }
+            board.make_moves(action.moveA, action.moveB);
+            const JointMateProof child = search_frozen_race(
+                board, attackingTeam, childTime, ~teamToPlay,
+                attackerMovesRemaining - 1, searchPly + 1, budget, cache,
+                raceBoard);
+            board.unmake_moves(action.moveA, action.moveB);
+            if (child.status == JointMateStatus::PROVEN) {
+                const JointMateProof result{
+                    JointMateStatus::PROVEN, child.pliesToMate + 1, action,
+                    std::make_shared<JointMateProofLine>(
+                        JointMateProofLine{action, child.principalVariation})};
+                cache.proofs.emplace(cacheKey, result);
+                return result;
+            }
+            if (child.status == JointMateStatus::UNKNOWN) {
+                sawUnknown = true;
+                if (budget.exhausted) {
+                    break;
+                }
+            }
+        }
+        if (sawUnknown) {
+            return {JointMateStatus::UNKNOWN, 0, {}};
+        }
+        const JointMateProof refuted{JointMateStatus::REFUTED, 0, {}};
+        cache.proofs.emplace(cacheKey, refuted);
+        return refuted;
+    }
+
+    // The defenders: every legal action must lose. A capture whose piece
+    // hands their partner an immediate mate ends the line in their favour
+    // before the attackers act, as in search_joint_forced_mate.
+    JointMateProof result{JointMateStatus::PROVEN, 0, {}};
+    bool sawAction = false;
+    bool sawUnknown = false;
+    visit_legal_joint_actions(
+        actionSpace, false, false, false,
+        [&](const MateJointAction& action) {
+            sawAction = true;
+            if (!budget.consume()) {
+                sawUnknown = true;
+                return true;
+            }
+            const bool feedsPartner =
+                (action.moveA != Stockfish::MOVE_NONE
+                 && board.is_capture(BOARD_A, action.moveA))
+                || (action.moveB != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_B, action.moveB));
+            board.make_moves(action.moveA, action.moveB);
+            JointActionCandidate raceMate;
+            const JointMateProof child = feedsPartner
+                    && find_immediate_root_mate(
+                        board, teamToPlay, childTime, raceMate, &budget)
+                ? JointMateProof{JointMateStatus::REFUTED, 0, {}}
+                : search_frozen_race(
+                    board, attackingTeam, childTime, ~teamToPlay,
+                    attackerMovesRemaining, searchPly + 1, budget, cache,
+                    raceBoard);
+            board.unmake_moves(action.moveA, action.moveB);
+            if (child.status == JointMateStatus::REFUTED) {
+                result = {JointMateStatus::REFUTED, 0, {}};
+                return true;
+            }
+            if (child.status == JointMateStatus::UNKNOWN) {
+                sawUnknown = true;
+                return budget.exhausted;
+            }
+            if (child.pliesToMate + 1 > result.pliesToMate
+                || !result.principalVariation) {
+                result.pliesToMate = child.pliesToMate + 1;
+                result.action = action;
+                result.principalVariation =
+                    std::make_shared<JointMateProofLine>(
+                        JointMateProofLine{action, child.principalVariation});
+            }
+            return false;
+        });
+    if (result.status == JointMateStatus::REFUTED) {
+        cache.proofs.emplace(cacheKey, result);
+        return result;
+    }
+    if (!sawAction || sawUnknown || budget.exhausted) {
+        return {sawAction ? JointMateStatus::UNKNOWN : JointMateStatus::REFUTED,
+                0, {}};
+    }
+    cache.proofs.emplace(cacheKey, result);
+    return result;
+}
+
+/**
  * A mate on @p activeBoard with the attackers sitting the partner board for
  * the whole line: a restriction of the joint game, so a proof here is a proof
  * there. @p time is the clock at this position and every action is charged
@@ -2669,6 +2875,209 @@ bool promote_conditional_mate(Node& root, Board& board, Stockfish::Color team,
 }
 
 }  // namespace
+
+Agent::RaceVerdict Agent::prove_frozen_race(
+    Board& board, Stockfish::Color attackingTeam, const TimeState& time,
+    Stockfish::Color teamToPlay, int raceBoard, int maxAttackerMoves,
+    MateSearchBudget& budget, int* outPlies, std::string* outLine,
+    JointActionCandidate* outAction) {
+    JointMateCache cache;
+    // Shallow first: a short win is found before the deep iterations, and
+    // the cache keeps what each iteration settled for the next.
+    for (int moves = 1; moves <= maxAttackerMoves; ++moves) {
+        const JointMateProof proof = search_frozen_race(
+            board, attackingTeam, time, teamToPlay, moves, 0, budget, cache,
+            raceBoard);
+        if (proof.status == JointMateStatus::PROVEN) {
+            if (outPlies) {
+                *outPlies = proof.pliesToMate;
+            }
+            if (outAction) {
+                *outAction = JointActionCandidate();
+                outAction->moveA = proof.action.moveA;
+                outAction->moveB = proof.action.moveB;
+            }
+            if (outLine) {
+                outLine->clear();
+                Board line(board);
+                for (const JointMateProofLine* ply = proof.principalVariation.get();
+                     ply; ply = ply->next.get()) {
+                    if (!outLine->empty()) {
+                        *outLine += " ";
+                    }
+                    *outLine += "(" + (ply->action.moveA == Stockfish::MOVE_NONE
+                            ? std::string("pass")
+                            : line.uci_move(BOARD_A, ply->action.moveA))
+                        + "," + (ply->action.moveB == Stockfish::MOVE_NONE
+                            ? std::string("pass")
+                            : line.uci_move(BOARD_B, ply->action.moveB)) + ")";
+                    line.make_moves(ply->action.moveA, ply->action.moveB);
+                }
+            }
+            return RaceVerdict::PROVEN;
+        }
+        if (proof.status == JointMateStatus::UNKNOWN) {
+            return RaceVerdict::UNKNOWN;
+        }
+    }
+    return RaceVerdict::REFUTED;
+}
+
+void Agent::run_frozen_race_stage(
+    Board& rootBoard, const std::shared_ptr<Node>& root,
+    Stockfish::Color rootTeam, const TimeState& rootTime, int budgetMs,
+    const std::function<bool()>& settled,
+    const std::atomic<bool>* cancelled, FrozenRaceStats& stats) {
+    const auto start = MateSearchBudget::Clock::now();
+    const auto deadline = start + std::chrono::milliseconds(std::max(1, budgetMs));
+    const auto out_of_time = [&] {
+        return settled() || MateSearchBudget::Clock::now() >= deadline;
+    };
+    // A target is a node and the path to it from the root.
+    struct Target {
+        std::shared_ptr<Node> node;
+        std::vector<JointActionCandidate> path;
+    };
+    // A won node is marked through the child its proof plays: marked lost,
+    // that child makes the node won by the solver's own propagation, and
+    // the node keeps a move to play. A child the tree has not generated yet
+    // waits here until it has.
+    struct Witness {
+        std::shared_ptr<Node> node;
+        JointActionCandidate action;
+        int endInPly = 0;
+    };
+    std::vector<Witness> witnesses;
+    const auto settle_witnesses = [&] {
+        std::erase_if(witnesses, [&](const Witness& witness) {
+            if (witness.node->get_node_type() != NodeType::UNSOLVED) {
+                return true;
+            }
+            const std::shared_ptr<Node> child = witness.node->child_for_action(
+                witness.action.moveA, witness.action.moveB);
+            if (!child) {
+                return false;
+            }
+            if (child->get_node_type() == NodeType::UNSOLVED) {
+                child->mark_as_loss(witness.endInPly);
+            }
+            return true;
+        });
+    };
+    std::unordered_set<const Node*> tried;
+    const auto next_target = [&]() -> std::optional<Target> {
+        // Every visited root action first, leading ones first: a root is
+        // proven lost only once each of its actions is. Then the leading
+        // replies under the leading actions.
+        const std::vector<size_t> edges = ranked_visited_edges(
+            root, SearchParams::FROZEN_RACE_MIN_VISITS);
+        for (size_t edge : edges) {
+            const std::shared_ptr<Node> child = root->get_child(edge);
+            if (child && !tried.contains(child.get())) {
+                return Target{child, {root->get_joint_action(edge)}};
+            }
+        }
+        for (size_t rank = 0; rank < edges.size()
+                 && rank < static_cast<size_t>(SearchParams::FROZEN_RACE_TOP_K);
+             ++rank) {
+            const std::shared_ptr<Node> child = root->get_child(edges[rank]);
+            if (!child || child->get_node_type() != NodeType::UNSOLVED) {
+                continue;
+            }
+            const std::vector<size_t> replies = ranked_visited_edges(
+                child, SearchParams::FROZEN_RACE_MIN_VISITS);
+            for (size_t reply = 0; reply < replies.size()
+                     && reply < static_cast<size_t>(
+                         SearchParams::FROZEN_RACE_REPLY_TOP_K);
+                 ++reply) {
+                const std::shared_ptr<Node> grandchild =
+                    child->get_child(replies[reply]);
+                if (grandchild && !tried.contains(grandchild.get())) {
+                    return Target{grandchild,
+                                  {root->get_joint_action(edges[rank]),
+                                   child->get_joint_action(replies[reply])}};
+                }
+            }
+        }
+        return std::nullopt;
+    };
+
+    int idleMs = 0;
+    while (!out_of_time()
+           && stats.nodes < SearchParams::FROZEN_RACE_NODE_BUDGET) {
+        settle_witnesses();
+        const std::optional<Target> target = next_target();
+        if (!target) {
+            // Nothing new to look at. Early on the tree has simply not
+            // visited enough yet; later, a proof still waiting for its child
+            // is worth a short wait. Otherwise the thread goes on to its next
+            // job rather than hold the verifier's time.
+            const bool treeYoung = root->get_visits()
+                < SearchParams::FROZEN_RACE_MIN_VISITS
+                    * SearchParams::FROZEN_RACE_TOP_K * 8;
+            if (!treeYoung && (witnesses.empty()
+                               || ++idleMs > SearchParams::FROZEN_RACE_IDLE_MS)) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        tried.insert(target->node.get());
+        ++stats.targets;
+        if (target->node->get_node_type() != NodeType::UNSOLVED) {
+            continue;
+        }
+        Board board(rootBoard);
+        TimeState time = rootTime;
+        Stockfish::Color team = rootTeam;
+        for (const JointActionCandidate& action : target->path) {
+            time = time.after(team, board.on_turn_on_both_boards(team));
+            board.make_moves(action.moveA, action.moveB);
+            team = ~team;
+        }
+        Stockfish::Color attackers = Stockfish::WHITE;
+        const int raceBoard = frozen_race_board(board, attackers, out_of_time);
+        if (raceBoard < 0) {
+            continue;
+        }
+        ++stats.races;
+        MateSearchBudget budget;
+        budget.remainingNodes =
+            SearchParams::FROZEN_RACE_NODE_BUDGET - stats.nodes;
+        budget.deadline = deadline;
+        budget.cancelled = cancelled;
+        budget.stopOnSolvedRoot = root.get();
+        const uint64_t startNodes = budget.remainingNodes;
+        int plies = 0;
+        JointActionCandidate action;
+        const RaceVerdict verdict = prove_frozen_race(
+            board, attackers, time, team, raceBoard,
+            SearchParams::FROZEN_RACE_MAX_ATTACKER_MOVES, budget, &plies,
+            nullptr, &action);
+        stats.nodes += startNodes - budget.remainingNodes;
+        if (verdict != RaceVerdict::PROVEN
+            || target->node->get_node_type() != NodeType::UNSOLVED) {
+            continue;
+        }
+        ++stats.proven;
+        // The proof counts actions to the mate, the mated position as zero;
+        // the tree counts that position as one.
+        if (attackers != team) {
+            target->node->mark_as_loss(plies + 1);
+        } else if (team != rootTeam) {
+            // The opponents win here: the root's team only has to avoid this
+            // node, and a node with the opponents to play never becomes this
+            // team's root, so it needs no move of its own to stand behind.
+            target->node->mark_as_win(plies + 1);
+        } else {
+            // A win for this team: tree reuse can make this node the root,
+            // so it is marked through the move that wins.
+            witnesses.push_back({target->node, action, plies});
+        }
+    }
+    settle_witnesses();
+    stats.unplayedWitnesses += static_cast<int>(witnesses.size());
+}
 
 /**
  * A bounded search keeps its mate score across a move that returns the board
@@ -5779,6 +6188,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         int certified = 0;
         int promoted = 0;
     } conditionalRootMates;
+    FrozenRaceStats frozenRaceStats;
     thread rootProbeThread;
 
     // The concurrent verifier's verdict on each root action, by action. A
@@ -5990,6 +6400,30 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                 ++conditionalRootMates.promoted;
                             }
                         }
+                    }
+                    // Short frozen races under the leading root actions and
+                    // their leading replies, proven exactly. Each proof marks
+                    // the node it is about; nothing else is touched.
+                    if (options.search.frozenRace && !rootFound && probeRoot) {
+                        run_frozen_race_stage(
+                            *probeBoard, probeRoot, teamSide, searchTime_,
+                            moveTimeMs > 0
+                                ? std::max(1, std::min(
+                                      moveTimeMs
+                                          * SearchParams::FROZEN_RACE_TIME_PERCENT
+                                          / 100,
+                                      (moveTimeMs - static_cast<int>(
+                                          searchInfo.elapsed())) / 2))
+                                : SearchParams::FROZEN_RACE_MAX_MS,
+                            [&] {
+                                return stopRootProbe.load(memory_order_acquire)
+                                    || stopRequested_.load(memory_order_relaxed)
+                                    || (!options.completeMateProbe
+                                        && !running.load(memory_order_acquire))
+                                    || probeRoot->get_node_type()
+                                        != NodeType::UNSOLVED;
+                            },
+                            &stopRootProbe, frozenRaceStats);
                     }
                     const bool runInternal = runInternalProbe && !rootFound
                         && internalProbeNodeBudget > 0;
@@ -6318,6 +6752,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             {
                 std::lock_guard statsLock(internalMateProbeStatsMutex_);
                 lastInternalMateProbeStats_ = internalProbeStats;
+            }
+            if (frozenRaceStats.races > 0) {
+                cout << "info string frozen race: " << frozenRaceStats.targets
+                     << " targets, " << frozenRaceStats.races << " races, "
+                     << frozenRaceStats.proven << " proven ("
+                     << frozenRaceStats.unplayedWitnesses
+                     << " without a generated move), "
+                     << frozenRaceStats.nodes << " nodes" << endl;
             }
             if (options.verbose && conditionalRootMates.found > 0) {
                 cout << "info string conditional root mate: "

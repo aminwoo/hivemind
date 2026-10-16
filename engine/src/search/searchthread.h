@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <functional>
+#include <optional>
 #include <unordered_set>
 
 #include "environment/board.h"
@@ -79,6 +81,43 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              bool partnerBoardAgnostic = false,
                                              bool allowMatedTeamToMove = false,
                                              WaitingMateContinuation* waitingMate = nullptr);
+
+/**
+ * @brief Whether @p team is frozen on @p boardNum: on turn there, in a check
+ *        no dropped piece can block, and every legal move it has there is
+ *        answered by an immediate mate that holds whatever the other board
+ *        supplies. Nothing will be captured on that board again.
+ */
+bool board_is_frozen(Board& board, int boardNum, Stockfish::Color team);
+
+/**
+ * @brief A move by @p team, on turn on @p boardNum, that freezes its opponents
+ *        there, or MOVE_NONE.
+ */
+Stockfish::Move freezing_move(Board& board, int boardNum, Stockfish::Color team);
+
+/**
+ * @brief The board a frozen race would be decided on, or -1.
+ *
+ * A board where the team on turn is frozen, or can freeze its opponents - at
+ * once, or after a capture on the other board hands it the piece. Sets
+ * @p outAttackers to the team the race would be won by. Detection only: the
+ * race itself is for Agent::prove_frozen_race(). Answers -1 once @p abort
+ * does.
+ */
+int frozen_race_board(Board& board, Stockfish::Color& outAttackers,
+                      const std::function<bool()>& abort = {});
+
+/**
+ * @brief Whether @p teamToPlay is lost to a frozen board: frozen there, unable
+ *        to sit (no lead, and no capture on the other board to pass with), so
+ *        every action it has moves on the frozen board and is mated at once -
+ *        unless the action's other move mates or draws first, which is checked.
+ *
+ * Exact under @p time. The tree marks such a leaf lost; the mate provers,
+ * which report shortest lines, do not use it.
+ */
+bool frozen_board_loss(Board& board, Stockfish::Color teamToPlay, const TimeState& time);
 
 /**
  * @brief Entry in an MCTS selection trajectory.

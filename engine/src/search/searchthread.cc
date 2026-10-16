@@ -1,5 +1,6 @@
 #include "search/searchthread.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -10,6 +11,7 @@
 #include "nn/backend_compat.h"
 
 #include "environment/joint_action.h"
+#include "search/agent.h"
 #include "common/utils.h"
 #include "common/globals.h"
 
@@ -234,6 +236,193 @@ TerminalOutcome classify_terminal_position(Board& board,
         board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
         {searchPly, searchPly}, endInPly, partnerBoardAgnostic,
         allowMatedTeamToMove, waitingMate);
+}
+
+bool board_is_frozen(Board& board, int boardNum, Stockfish::Color team) {
+    if (board.is_single_board()) {
+        return false;
+    }
+    const Stockfish::Color side = boardNum == BOARD_A ? team : ~team;
+    const Stockfish::Position& position = *board.pos[boardNum];
+    if (position.side_to_move() != side || !position.checkers()) {
+        return false;
+    }
+    // A check with an empty square between king and checker could be blocked
+    // by a piece the partner has yet to capture, so only a check no drop can
+    // meet - double, contact or a leaper's - fixes the team's moves here for
+    // good, whatever the other board does.
+    const Stockfish::Bitboard checkers = position.checkers();
+    if (!Stockfish::more_than_one(checkers)) {
+        const Stockfish::Square king = position.square<Stockfish::KING>(side);
+        if (Stockfish::between_bb(king, Stockfish::lsb(checkers))
+            & ~position.pieces()) {
+            return false;
+        }
+    }
+    const std::vector<Stockfish::Move> moves = board.legal_moves(boardNum);
+    if (moves.empty()) {
+        return false;
+    }
+    for (Stockfish::Move move : moves) {
+        board.push_move(boardNum, move);
+        // A move that draws - the fifty-move rule, a threefold - ends the game
+        // before any mate can answer it.
+        if (board.is_draw()) {
+            board.pop_move(boardNum);
+            return false;
+        }
+        // The mate must hold however the partner board stands, as if the
+        // partner could always supply a blocker: it is played straight after
+        // this move, and nothing on the other board can come between them.
+        bool answered = false;
+        for (Stockfish::Move mate : board.checking_moves(boardNum)) {
+            board.push_move(boardNum, mate);
+            answered = board.is_checkmate(team, true, nullptr, true);
+            board.pop_move(boardNum);
+            if (answered) {
+                break;
+            }
+        }
+        board.pop_move(boardNum);
+        if (!answered) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Stockfish::Move freezing_move(Board& board, int boardNum, Stockfish::Color team) {
+    if (board.is_single_board()) {
+        return Stockfish::MOVE_NONE;
+    }
+    const Stockfish::Color side = boardNum == BOARD_A ? team : ~team;
+    if (board.side_to_move(boardNum) != side) {
+        return Stockfish::MOVE_NONE;
+    }
+    for (Stockfish::Move move : board.checking_moves(boardNum)) {
+        board.push_move(boardNum, move);
+        const bool frozen = !board.is_draw()
+            && board_is_frozen(board, boardNum, ~team);
+        board.pop_move(boardNum);
+        if (frozen) {
+            return move;
+        }
+    }
+    return Stockfish::MOVE_NONE;
+}
+
+int frozen_race_board(Board& board, Stockfish::Color& outAttackers,
+                      const std::function<bool()>& abort) {
+    if (board.is_single_board()) {
+        return -1;
+    }
+    for (int raceBoard : {BOARD_A, BOARD_B}) {
+        const Stockfish::Color side = board.side_to_move(raceBoard);
+        const Stockfish::Color onTurn = raceBoard == BOARD_A ? side : ~side;
+        if (board_is_frozen(board, raceBoard, onTurn)) {
+            outAttackers = ~onTurn;
+            return raceBoard;
+        }
+        if (freezing_move(board, raceBoard, onTurn) != Stockfish::MOVE_NONE) {
+            outAttackers = onTurn;
+            return raceBoard;
+        }
+        // The freezing piece may still be on the other board, to be captured
+        // there and handed across. The capture is made for real, so a
+        // promoted piece arrives as the pawn it was.
+        const int other = 1 - raceBoard;
+        const Stockfish::Color otherSide = other == BOARD_A ? onTurn : ~onTurn;
+        if (board.side_to_move(other) != otherSide) {
+            continue;
+        }
+        for (Stockfish::Move capture : board.legal_moves(other)) {
+            if (!board.is_capture(other, capture)) {
+                continue;
+            }
+            if (abort && abort()) {
+                return -1;
+            }
+            board.push_move(other, capture);
+            const bool freezes = freezing_move(board, raceBoard, onTurn)
+                != Stockfish::MOVE_NONE;
+            board.pop_move(other);
+            if (freezes) {
+                outAttackers = onTurn;
+                return raceBoard;
+            }
+        }
+    }
+    return -1;
+}
+
+bool frozen_board_loss(Board& board,
+                       Stockfish::Color teamToPlay,
+                       const TimeState& time) {
+    if (board.is_single_board()) {
+        return false;
+    }
+    const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamToPlay,
+                            board.side_to_move(BOARD_B) == ~teamToPlay};
+    for (int frozen : {BOARD_A, BOARD_B}) {
+        if (!onTurn[frozen] || !board_is_frozen(board, frozen, teamToPlay)) {
+            continue;
+        }
+        // Every legal action, as the tree would generate it.
+        std::vector<Stockfish::Move> moves[2];
+        for (int boardNum : {BOARD_A, BOARD_B}) {
+            if (onTurn[boardNum]) {
+                moves[boardNum] = board.legal_moves(boardNum);
+            }
+        }
+        const JointActionRules rules{
+            onTurn[BOARD_A], onTurn[BOARD_B], time.can_sit(teamToPlay),
+            !moves[BOARD_A].empty(), !moves[BOARD_B].empty()};
+        for (std::vector<Stockfish::Move>& boardMoves : moves) {
+            boardMoves.push_back(Stockfish::MOVE_NONE);
+        }
+        const TimeState afterAction =
+            time.after(teamToPlay, onTurn[BOARD_A] && onTurn[BOARD_B]);
+        const int other = 1 - frozen;
+        bool sawAction = false;
+        for (Stockfish::Move moveA : moves[BOARD_A]) {
+            for (Stockfish::Move moveB : moves[BOARD_B]) {
+                const bool captureA = moveA != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_A, moveA);
+                const bool captureB = moveB != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_B, moveB);
+                if (!is_joint_action_legal(rules, moveA, moveB,
+                                           captureA, captureB)) {
+                    continue;
+                }
+                sawAction = true;
+                // An action that stays off the frozen board - a sit, or a
+                // pass bought with a capture - leaves the race to be played.
+                if ((frozen == BOARD_A ? moveA : moveB) == Stockfish::MOVE_NONE) {
+                    return false;
+                }
+                board.make_moves(moveA, moveB);
+                // The mate on the frozen board answers this action, unless
+                // the action itself ends the game: a draw, a win for the team,
+                // or a capture whose piece hands the partner an immediate
+                // mate, which the partner plays before the answer lands. The
+                // opponents also need an action holding the mate.
+                const bool escapes = board.is_draw()
+                    || board.is_checkmate(
+                        ~teamToPlay, afterAction.can_sit(~teamToPlay))
+                    || ((captureA || captureB)
+                        && Agent::has_immediate_mate(
+                            board, teamToPlay, afterAction))
+                    || !(afterAction.can_sit(~teamToPlay)
+                         || board.has_any_legal_move(other));
+                board.unmake_moves(moveA, moveB);
+                if (escapes) {
+                    return false;
+                }
+            }
+        }
+        return sawAction;
+    }
+    return false;
 }
 
 SearchThread::SearchThread()
@@ -555,14 +744,24 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             board, ctx.teamToPlay, root->get_team_to_play(),
             ctx.time, boardSearchPlies, &terminalEndInPly,
             false, searchPly == 0 && !ctx.time.can_sit(ctx.teamToPlay));
-        if (terminalOutcome != TerminalOutcome::NONE) {
+        // Only the tree adopts the frozen-board loss. The mate provers share
+        // classify_terminal_position() and report shortest lines, which a
+        // loss three plies out would lengthen.
+        TerminalOutcome treeOutcome = terminalOutcome;
+        if (treeOutcome == TerminalOutcome::NONE && searchPly > 0
+            && frozen_board_loss(board, ctx.teamToPlay, ctx.time)) {
+            // The forced move on the frozen board, then the mate there.
+            treeOutcome = TerminalOutcome::LOSS;
+            terminalEndInPly = 3;
+        }
+        if (treeOutcome != TerminalOutcome::NONE) {
             ctx.isTerminal = true;
-            if (terminalOutcome == TerminalOutcome::WIN) {
+            if (treeOutcome == TerminalOutcome::WIN) {
                 ctx.terminalValue = 1.0f;
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
                     ctx.leaf->mark_as_win(terminalEndInPly);
                 }
-            } else if (terminalOutcome == TerminalOutcome::LOSS) {
+            } else if (treeOutcome == TerminalOutcome::LOSS) {
                 ctx.terminalValue = -1.0f;
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
                     ctx.leaf->mark_as_loss(terminalEndInPly);

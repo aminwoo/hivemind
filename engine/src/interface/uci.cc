@@ -648,6 +648,11 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableMateProbe = value == "true";
             std::cout << "info string MateProbe set to " << value << std::endl;
         }
+    } else if (name == "FrozenRace") {
+        if (value == "true" || value == "false") {
+            searchConfig.frozenRace = value == "true";
+            std::cout << "info string FrozenRace set to " << value << std::endl;
+        }
     } else if (name == "ConditionalMateProbe") {
         if (value == "true" || value == "false") {
             searchConfig.conditionalMateProbe = value == "true";
@@ -827,6 +832,8 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::CPUCT_INIT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
+    cout << "option name FrozenRace type check default "
+         << (SearchParams::ENABLE_FROZEN_RACE ? "true" : "false") << endl;
     cout << "option name ConditionalMateProbe type check default "
          << (SearchParams::ROOT_CONDITIONAL_MATE_PROBE ? "true" : "false")
          << endl;
