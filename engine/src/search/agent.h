@@ -31,6 +31,9 @@ struct SearchOptions {
     // Stopping conditions (one must be set)
     size_t targetNodes = 0;      // Stop after this many nodes (0 = use time)
     int moveTimeMs = 0;          // Stop after this many milliseconds (0 = use nodes)
+    // How far time extensions may carry a moveTimeMs search in a critical
+    // position. At or below moveTimeMs the move time is the whole allocation.
+    int maxMoveTimeMs = 0;
     uint64_t mateProbeNodes = 0; // Override the Fairy-Stockfish root probe budget
     bool completeMateProbe = false; // Let a bounded probe finish after MCGS stops
     
@@ -43,6 +46,11 @@ struct SearchOptions {
     // stopped or until its own node/time cap, and retains its entire root
     // subtree for reuse rather than a subtree below a move it is about to play.
     bool background = false;
+    // The match clock this search is rooted at. Unset, the TimeAdvantage flag
+    // passed to run_search stands for a permanent lead or deficit, as it always
+    // has. Set, it decides who may sit at every node, and the flag passed to
+    // run_search is ignored in favour of what it implies.
+    std::optional<TimeState> clock;
     
     SearchParams::RuntimeConfig search;
     
@@ -151,6 +159,16 @@ struct RootLossProof {
 };
 
 /**
+ * Work several threads share in one loss scan: each takes the next defense
+ * from `nextDefense` and sizes its share from the nodes the threads have
+ * left between them.
+ */
+struct LossScanShare {
+    std::atomic<size_t> nextDefense{0};
+    std::atomic<uint64_t> remainingNodes{0};
+};
+
+/**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
  *
  * Runs multiple search threads in parallel, each with its own engine instance.
@@ -191,7 +209,9 @@ private:
     const Board* workerBoard_ = nullptr;
     std::vector<Engine*> workerEngines_;
     SearchInfo* workerSearchInfo_ = nullptr;
-    bool workerTeamHasTimeAdvantage_ = false;
+    TimeState workerTime_;
+    // Clock state the current search is rooted at; set by run_search.
+    TimeState searchTime_;
     size_t workerTargetNodes_ = 0;
     int workerMoveTimeMs_ = 0;
     std::exception_ptr workerException_;
@@ -206,12 +226,9 @@ private:
     // `running` back to true.
     std::atomic<bool> stopRequested_{false};
     // Stop signals for the two root scans. Both latch on a stop request. A
-    // node-limited search has no move time for the scans to carve their
-    // windows out of, and their node budgets cannot bound them in time (see
-    // MateSearchBudget), so the tree's own progress serves as the clock: the
-    // winning scan's share ends once the tree has searched its pre-pass share
-    // of the target, and both scans end when the workers finish. A timed
-    // search keeps its wall-clock deadlines and never sets these itself.
+    // node-limited search has no wall-clock deadline; its workers cancel both
+    // scans when the tree finishes. Timed workers do the same, and the winning
+    // scan also has the tree's deadline. A proven mate cancels the loss scan.
     std::atomic<bool> rootWinScanStop_{false};
     std::atomic<bool> rootLossScanStop_{false};
     std::atomic<SearchInfo*> currentSearchInfo_{nullptr};    // Active search info pointer
@@ -230,8 +247,8 @@ private:
     /**
      * Root pre-pass accounting.
      *
-     * The winning-mate and reverse-loss scans run inside the move time, bounded
-     * by MATE_SEARCH_MAX_TIME_PERCENT. Reverse proofs are also attached to
+     * The winning-mate and reverse-loss scans run inside the move time.
+     * Reverse proofs are also attached to
      * individual root actions, so a proof can prevent a blunder even when the
      * whole position is not proven lost. The cost and whole-root hit rate are
      * accumulated here so the trade can be read off real games.
@@ -257,7 +274,6 @@ private:
     void dispatch_workers(const Board& board,
                           const std::vector<Engine*>& engines,
                           SearchInfo& searchInfo,
-                          bool teamHasTimeAdvantage,
                           size_t targetNodes,
                           int moveTimeMs,
                           size_t workerCount);
@@ -275,14 +291,19 @@ private:
     void discard(std::shared_ptr<void> item, bool background);
     void retain_reuse_candidates(const std::shared_ptr<Node>& subtreeRoot,
                                  Board& board,
-                                 bool teamHasTimeAdvantage);
+                                 const TimeState& subtreeTime);
     void retain_reuse_level(const std::shared_ptr<Node>& node,
                             Board& board,
-                            bool teamHasTimeAdvantage,
+                            const TimeState& nodeTime,
                             int depth,
                             int level);
     bool try_reuse_mate_continuation(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        bool avoidRepetition = false) const;
+    /** Replays only a line whose remaining moves the lead in @p time covers. */
+    bool try_reuse_mate_continuation(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& outAction, int& outPlyToMate,
         bool avoidRepetition = false) const;
     static std::string format_root_aware_uci_score(
@@ -332,9 +353,8 @@ public:
     /**
      * @brief Node and time budget for the root forced-mate search.
      *
-     * The search runs on the calling CPU thread alongside MCTS workers, so it
-     * carries a cap of its own. Running out is reported as "not proven", never
-     * as a proof.
+     * Proof scans run alongside MCTS workers, with node caps and cancellation.
+     * Running out is reported as "not proven", never as a proof.
      *
      * A node count alone cannot bound it in absolute time: a joint proof node
      * enumerates board-move combinations and costs two orders of magnitude
@@ -342,7 +362,7 @@ public:
      * therefore also set a deadline, sampled every few probes so the clock
      * read stays negligible next to the work it guards. Node-limited searches
      * have no deadline to give and use `cancelled` instead, raised from the
-     * MCTS workers as the tree reaches the scan's share of the node target.
+     * MCTS workers when the tree finishes its node target.
      */
     struct MateSearchBudget {
         using Clock = std::chrono::steady_clock;
@@ -421,6 +441,16 @@ public:
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
         MateSearchBudget::Clock::time_point deadline = {});
+    /**
+     * As above under a clock. Every proof charges the actions it plays, and
+     * the shortcuts that sit the partner board for a whole line run only
+     * while the lead covers every move of it.
+     */
+    static bool find_root_mate(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
 
     /**
      * @brief Whether a joint action hands the opponents a mate they play first.
@@ -443,6 +473,59 @@ public:
         Board& board, const JointActionCandidate& action,
         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
         MateSearchBudget* budget = nullptr);
+    /** As above; the opponents answer under the clock @p action leaves. */
+    static bool action_loses_mate_race(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, const TimeState& time,
+        MateSearchBudget* budget = nullptr);
+
+    /**
+     * @brief Whether @p teamSide, on the boards it is on turn, has an action
+     *        that ends the game at once under @p time - a mate, or a win by
+     *        leaving the opponents no legal action.
+     */
+    static bool has_immediate_mate(Board& board, Stockfish::Color teamSide,
+                                   const TimeState& time);
+
+    enum class RaceVerdict { PROVEN, REFUTED, UNKNOWN };
+    struct FrozenRaceStats {
+        int targets = 0;
+        int races = 0;
+        int proven = 0;
+        int unplayedWitnesses = 0;
+        uint64_t nodes = 0;
+    };
+    /**
+     * @brief The probe thread's frozen-race stage: the leading root actions
+     *        and their leading replies, each checked for a frozen race and,
+     *        where there is one, proven within the short-race bound.
+     *
+     * A proof marks that node lost for its team to play, or - when that team
+     * wins - marks lost the child its proof plays, once the tree has generated
+     * it, so the node is won by propagation and keeps its move. Nothing else
+     * in the tree changes. Stops at @p budgetMs, when @p settled answers true,
+     * or when the stage's node budget is spent.
+     */
+    static void run_frozen_race_stage(
+        Board& rootBoard, const std::shared_ptr<Node>& root,
+        Stockfish::Color rootTeam, const TimeState& rootTime, int budgetMs,
+        const std::function<bool()>& settled,
+        const std::atomic<bool>* cancelled, FrozenRaceStats& stats);
+    /**
+     * @brief Prove that @p attackingTeam wins the race of a frozen board.
+     *
+     * @p raceBoard is frozen against the defenders, or the attackers can
+     * freeze it (after a feed, if need be). Every defender action is searched;
+     * the attackers pass or check on @p raceBoard and play anything on the
+     * other. REFUTED means only that this restricted strategy fails within
+     * @p maxAttackerMoves actions.
+     */
+    static RaceVerdict prove_frozen_race(
+        Board& board, Stockfish::Color attackingTeam, const TimeState& time,
+        Stockfish::Color teamToPlay, int raceBoard, int maxAttackerMoves,
+        MateSearchBudget& budget, int* outPlies = nullptr,
+        std::string* outLine = nullptr,
+        JointActionCandidate* outAction = nullptr);
 
     /**
      * @brief The action a solved node stands behind, empty when it claims no
@@ -469,6 +552,11 @@ public:
     static std::optional<JointActionCandidate> race_safe_alternative(
         Board& board, const Node& node, Stockfish::Color teamSide,
         bool teamHasTimeAdvantage, float qVetoDelta, float qValueWeight,
+        bool avoidSolvedDraw,
+        const std::atomic<bool>* cancelled = nullptr);
+    static std::optional<JointActionCandidate> race_safe_alternative(
+        Board& board, const Node& node, Stockfish::Color teamSide,
+        const TimeState& time, float qVetoDelta, float qValueWeight,
         bool avoidSolvedDraw,
         const std::atomic<bool>* cancelled = nullptr);
 
@@ -499,6 +587,16 @@ public:
         joint_mate::JointMateCache* cache = nullptr,
         bool* outRefutedAtBound = nullptr,
         const Node* treeNode = nullptr);
+    /** As above under a clock, charged action by action down every line. */
+    static bool prove_joint_forced_mate(
+        Board& board, Stockfish::Color attackingTeam,
+        const TimeState& time, int maxAttackerMoves,
+        MateSearchBudget& budget, JointActionCandidate& outAction,
+        int& outPlyToMate, std::vector<MateProofPly>* outLine = nullptr,
+        bool shortestFirst = true,
+        joint_mate::JointMateCache* cache = nullptr,
+        bool* outRefutedAtBound = nullptr,
+        const Node* treeNode = nullptr);
 
     /**
      * @brief One slice of verification for a root action.
@@ -516,6 +614,18 @@ public:
     static void verify_root_action_slice(
         Board& board, const JointActionCandidate& action,
         Stockfish::Color teamSide, RootActionVerdict& verdict,
+        uint64_t sliceNodes, int probeMs,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
+        uint64_t& nodesSpent, ConcurrentVerifierStats* stats = nullptr,
+        const Node* actionNode = nullptr,
+        int maxAttackerMoves =
+            SearchParams::SELECTED_MOVE_JOINT_MAX_ATTACKER_MOVES);
+    /** As above, with this team's clock @p time before the action. */
+    static void verify_root_action_slice(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, const TimeState& time,
+        RootActionVerdict& verdict,
         uint64_t sliceNodes, int probeMs,
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled, const Node* stopOnSolvedRoot,
@@ -541,6 +651,17 @@ public:
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled,
         int& outPlyToMate, SelectedMoveCertStats* stats = nullptr);
+    /**
+     * As above under a clock: skipped only while this team's lead outlasts
+     * any line the opponents could be asked to prove, and their proofs run
+     * under the clock @p action leaves them.
+     */
+    static bool action_walks_into_certified_mate(
+        Board& board, const JointActionCandidate& action,
+        Stockfish::Color teamSide, const TimeState& time,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled,
+        int& outPlyToMate, SelectedMoveCertStats* stats = nullptr);
 
     /**
      * @brief A replacement for @p chosen when it walks into a certified mate.
@@ -555,6 +676,12 @@ public:
     static std::optional<JointActionCandidate> certified_mate_free_alternative(
         Board& board, const Node& node, const JointActionCandidate& chosen,
         Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        MateSearchBudget::Clock::time_point deadline,
+        const std::atomic<bool>* cancelled = nullptr,
+        SelectedMoveCertStats* stats = nullptr);
+    static std::optional<JointActionCandidate> certified_mate_free_alternative(
+        Board& board, const Node& node, const JointActionCandidate& chosen,
+        Stockfish::Color teamSide, const TimeState& time,
         MateSearchBudget::Clock::time_point deadline,
         const std::atomic<bool>* cancelled = nullptr,
         SelectedMoveCertStats* stats = nullptr);
@@ -594,6 +721,20 @@ public:
         const std::function<void()>& onMate = {},
         bool avoidRepetition = false,
         uint64_t* outNodes = nullptr);
+    /**
+     * As above under a clock: the probe sits the partner board for the whole
+     * line, so a mate is reported only when this team's lead covers all of
+     * its moves.
+     */
+    static bool probe_position_mate(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        uint64_t nodeBudget, int budgetMs,
+        const std::function<bool()>& abort,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        std::string& outPrincipalVariation,
+        const std::function<void()>& onMate = {},
+        bool avoidRepetition = false,
+        uint64_t* outNodes = nullptr);
 
     static bool probe_root_mate(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
@@ -618,6 +759,26 @@ public:
         int& outPlyToMate,
         MateCertificateTier& outTier,
         const Node* treeNode = nullptr);
+    /**
+     * As above under a clock. The single-board and sat-board tiers need the
+     * lead to cover every move of the line; the joint tier follows the clock,
+     * so it may certify a team that is level or behind.
+     *
+     * A probe's candidate sits the board it does not move on. Where this
+     * clock does not allow that sit, the candidate's move is tried with each
+     * legal move on the other board instead, and @p outAction (when given)
+     * receives the joint action that was certified.
+     */
+    static bool certify_mate_candidate(
+        Board& board, Stockfish::Color teamSide,
+        const TimeState& time,
+        const JointActionCandidate& candidate,
+        int candidatePlyToMate,
+        MateSearchBudget& budget,
+        int& outPlyToMate,
+        MateCertificateTier& outTier,
+        const Node* treeNode = nullptr,
+        JointActionCandidate* outAction = nullptr);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.
@@ -627,6 +788,11 @@ public:
      */
     static bool find_root_forced_loss(
         Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        JointActionCandidate& outAction, int& outPlyToMate,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {});
+    static bool find_root_forced_loss(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
         MateSearchBudget::Clock::time_point deadline = {});
@@ -647,6 +813,31 @@ public:
         const std::vector<JointActionCandidate>* preferredActions = nullptr,
         Node* liveRoot = nullptr,
         bool scanWaitingChecks = true);
+    /** As above under a clock; each defense is charged before it is answered. */
+    static bool find_root_loss_proofs(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        std::vector<RootLossProof>& outProofs,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET,
+        MateSearchBudget::Clock::time_point deadline = {},
+        const std::atomic<bool>* cancelled = nullptr,
+        const std::vector<JointActionCandidate>* preferredActions = nullptr,
+        Node* liveRoot = nullptr,
+        bool scanWaitingChecks = true,
+        // Set when every defense was either proven lost or settled safe
+        // within the budget, so a larger one would only repeat the answer.
+        bool* outComplete = nullptr,
+        // Called with each proof as soon as it is found.
+        const std::function<void(const RootLossProof&)>& onProof = {},
+        // Proofs an earlier call already found in this position. Their
+        // defenses are not searched again and count toward a proven loss.
+        const std::vector<RootLossProof>* knownProofs = nullptr,
+        // Set when several threads search the defenses together, each
+        // calling with its own board: they take defenses from the share's
+        // queue and nodes from its pool (nodeBudget still sizes the focused
+        // defenses). Each call returns the known proofs and those it found;
+        // whether every defense loses is for the caller to tell from their
+        // union.
+        LossScanShare* share = nullptr);
     
     /**
      * @brief Extracts PV line starting from a specific child index.
@@ -657,7 +848,7 @@ public:
      */
     std::string extract_pv_from_child(
         Board& board, int childIdx, int maxDepth,
-        Stockfish::Color rootTeam, bool rootTeamHasTimeAdvantage);
+        Stockfish::Color rootTeam, const TimeState& rootTime);
 
     /**
      * @brief Extracts the best move from the root node after search.
@@ -730,7 +921,10 @@ public:
      * @brief Try to reuse the search tree from a previous search.
      *
      * Checks whether the current position matches a saved next-root candidate.
-     * @param positionHash Hash of the current position.
+     * Under a clock the search hash includes the exact lead, so a subtree is
+     * only adopted by a position whose clock is the one it was searched
+     * under: every node's legal actions and proofs hold as they stand.
+     * @param positionHash Search hash of the current position.
      * @param teamSide Team to play at the current position.
      * @param signature Exact board signature of the current position.
      * @return Shared pointer to reusable root, or nullptr if no reuse possible
@@ -747,6 +941,8 @@ public:
      * generated opponent response beneath it.
      */
     void store_next_root_candidates(Board& board, bool teamHasTimeAdvantage);
+    /** As above, from the clock state the root was searched under. */
+    void store_next_root_candidates(Board& board, const TimeState& rootTime);
 
     /**
      * @brief Keeps searching between moves, from the position our own move creates.
@@ -815,7 +1011,7 @@ private:
         bool partnerBoardAgnostic = false,
         std::vector<MateProofPly>* outPrincipalVariation = nullptr);
     static bool find_root_mate_impl(
-        Board& board, Stockfish::Color teamSide, bool teamHasTimeAdvantage,
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
         JointActionCandidate& outAction, int& outPlyToMate,
         uint64_t nodeBudget,
         std::vector<MateContinuation>* continuations,
@@ -827,6 +1023,10 @@ private:
         std::vector<MateProofPly>* outPrincipalVariation = nullptr,
         const std::atomic<bool>* cancelled = nullptr,
         SingleBoardMateCache* singleBoardMateCache = nullptr,
-        const Node* stopOnSolvedRoot = nullptr);
+        const Node* stopOnSolvedRoot = nullptr,
+        bool stopAtFirstProof = false, // Background search publishes immediately.
+        // Set when the scan settled every line it searched within its
+        // budget, so a larger one would only repeat the same answer.
+        bool* outComplete = nullptr);
     
 };

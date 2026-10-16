@@ -27,7 +27,11 @@ from hivemind.architectures.builder_util import (
     _Stem,
     _ValueHead,
 )
-from hivemind.constants import NUM_BUGHOUSE_CHANNELS_PER_BOARD
+from hivemind.constants import (
+    NUM_BUGHOUSE_CHANNELS_PER_BOARD,
+    NUM_CLOCK_CHANNELS_PER_BOARD,
+    NUM_CLOCKED_CHANNELS_PER_BOARD,
+)
 
 
 def _swap_boards(x, batch_size):
@@ -167,15 +171,18 @@ class TwinBoardNet(Module):
     :param block: "bottleneck" (depthwise inverted residual) or "dense" (two
         dense convolutions; channels_operating is unused)
     :param attention_style: "full" (LayerNorms and MLP) or "lite"
+    :param planes_per_board: input planes of each board's block: 39 with the
+        clock planes, 37 for a network from before them
     """
 
     def __init__(self, channels=192, channels_operating=384, kernels=(3,) * 10,
                  exchange_every=3, exchange_hidden=128, attention_dim=128,
                  attention_heads=4, channels_policy_head=73, channels_value_head=16,
                  value_fc_size=256, se_every=4, mid_attention=False, value_diff=False,
-                 block="bottleneck", attention_style="full"):
+                 block="bottleneck", attention_style="full",
+                 planes_per_board=NUM_CLOCKED_CHANNELS_PER_BOARD):
         super().__init__()
-        planes = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+        planes = self.planes_per_board = planes_per_board
         self.stem = _Stem(channels=channels, nb_input_channels=planes)
         if block == "bottleneck":
             self.blocks = nn.ModuleList([
@@ -214,7 +221,7 @@ class TwinBoardNet(Module):
 
     def forward(self, x):
         batch_size = x.shape[0]
-        board_a, board_b = x.split(NUM_BUGHOUSE_CHANNELS_PER_BOARD, dim=1)
+        board_a, board_b = x.split(self.planes_per_board, dim=1)
         out = self.stem(torch.cat((board_a, board_b), dim=0))
         for index, block in enumerate(self.blocks):
             out = block(out)
@@ -248,7 +255,8 @@ TWIN_BOARD_SIZES = {
 
 def get_twin_board_model(size="twin-m", mid_attention=False, value_diff=False,
                          block="bottleneck", attention_style="full", se_every=4,
-                         channels=None, blocks=None, attention_dim=None):
+                         channels=None, blocks=None, attention_dim=None,
+                         planes_per_board=NUM_CLOCKED_CHANNELS_PER_BOARD):
     """A named size, optionally overriding its shape (channels, blocks,
     attention_dim) and design options. Dense blocks use 3x3 kernels only."""
     base_channels, operating, base_blocks, base_attention = TWIN_BOARD_SIZES[size]
@@ -263,4 +271,35 @@ def get_twin_board_model(size="twin-m", mid_attention=False, value_diff=False,
                         kernels=kernels, attention_dim=attention,
                         attention_heads=max(1, attention // 32) if attention else 1,
                         mid_attention=mid_attention, value_diff=value_diff, se_every=se_every,
-                        block=block, attention_style=attention_style)
+                        block=block, attention_style=attention_style,
+                        planes_per_board=planes_per_board)
+
+
+STEM_WEIGHT = "stem.body.0.weight"
+
+
+def widen_to_clock_planes(state_dict):
+    """A state dict from before the clock planes, for a network that reads
+    them. The stem's weights for the two new planes start at zero, so the
+    network computes exactly what it did until training gives them weight.
+    A state dict that already reads them is returned as it is."""
+    weight = state_dict[STEM_WEIGHT]
+    if weight.shape[1] == NUM_CLOCKED_CHANNELS_PER_BOARD:
+        return state_dict
+    if weight.shape[1] != NUM_BUGHOUSE_CHANNELS_PER_BOARD:
+        raise ValueError(f"stem reads {weight.shape[1]} planes per board")
+    padding = weight.new_zeros(weight.shape[0], NUM_CLOCK_CHANNELS_PER_BOARD, *weight.shape[2:])
+    return {**state_dict, STEM_WEIGHT: torch.cat((weight, padding), dim=1)}
+
+
+def load_twin_board_checkpoint(checkpoint, map_location="cpu"):
+    """The network in a training checkpoint (a path or a loaded dict), widened
+    to the clock planes when it predates them, with its size and variant. The
+    returned variant records the widened input, so saving it keeps the shape."""
+    if not isinstance(checkpoint, dict):
+        checkpoint = torch.load(checkpoint, map_location=map_location)
+    size = checkpoint["size"]
+    variant = {**checkpoint.get("variant", {}), "planes_per_board": NUM_CLOCKED_CHANNELS_PER_BOARD}
+    model = get_twin_board_model(size, **variant)
+    model.load_state_dict(widen_to_clock_planes(checkpoint["model"]))
+    return model, size, variant

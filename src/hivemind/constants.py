@@ -11,6 +11,15 @@ NUM_BUGHOUSE_CHANNELS_PER_BOARD = (
     NUM_BASE_BUGHOUSE_CHANNELS_PER_BOARD + NUM_EXTRA_BUGHOUSE_CHANNELS_PER_BOARD
 )
 NUM_BUGHOUSE_CHANNELS = 2 * NUM_BUGHOUSE_CHANNELS_PER_BOARD
+# The sit right (the old TimeAdvantage flag), within each board's block.
+TIME_ADVANTAGE_CHANNEL = 31
+# twin-s networks read two more planes at the end of each board's block: the
+# team's time lead and the ratio of the two teams' move times (the engine's
+# environment/planes.h). RISE networks, and twin-s networks from before the
+# clock planes, read the 37 without them.
+NUM_CLOCK_CHANNELS_PER_BOARD = 2
+NUM_CLOCKED_CHANNELS_PER_BOARD = NUM_BUGHOUSE_CHANNELS_PER_BOARD + NUM_CLOCK_CHANNELS_PER_BOARD
+NUM_CLOCKED_CHANNELS = 2 * NUM_CLOCKED_CHANNELS_PER_BOARD
 NUM_POSITIONS_PER_CHUNK = 512
 
 POLICY_LABELS = [

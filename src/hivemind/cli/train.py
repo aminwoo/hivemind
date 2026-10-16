@@ -3,7 +3,8 @@
 trained iterations 1 to 6 (`hivemind rl-loop`): policy from root visits,
 WDL and moves-left from game results, no teacher data, lr 1e-4, 1.5 passes
 over the new games plus 0.5 over each replayed one, exporting the last
-weights. Runs `hivemind distill-train`."""
+weights. Runs `hivemind distill-train`. Directories `hivemind archive` (or the
+loop) moved to Hugging Face are downloaded back first."""
 
 import argparse
 from datetime import datetime
@@ -13,6 +14,7 @@ from pathlib import Path
 import sys
 
 from hivemind.cli.fetch_network import fetch_network, file_digest
+from hivemind.data import archive
 from hivemind.network import ARTIFACTS, DEFAULT_ONNX_PATH, TWIN_CHECKPOINT_PATH
 from hivemind.paths import PROJECT_ROOT
 
@@ -120,6 +122,8 @@ def main():
             except FileNotFoundError as error:
                 sys.exit(f"{error}; pass --init.")
 
+    for directory in dict.fromkeys([*args.data, *args.val, *args.replay, *args.teacher_val]):
+        archive.restore(directory)
     new, val, old = positions(args.data), positions(args.val), positions(args.replay)
     if not new or not val:
         sys.exit("--data and --val must contain HDST chunks (*.dst).")

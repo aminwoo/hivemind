@@ -182,7 +182,7 @@ uv run hivemind rise-selfplay --games 1000 --nodes 400 --mate-nodes 0 --seed 7
 ```
 
 Self-play also runs the bounded Fairy-Stockfish mate search for each searched
-position. It receives a fixed total allowance of 8,000,000 nodes across the two
+position. It receives a fixed total allowance of 10,000,000 nodes across the two
 boards by default and is allowed to finish after the MCGS node budget is reached,
 so mate-aware generation trades some throughput for stronger tactical play.
 Adjust the node allowance, or disable it, with:
@@ -225,7 +225,8 @@ worth confirming with a paired tournament rather than by nodes per second alone.
 
 Self-play diversifies each opening with raw-policy initialization. Its length is
 sampled from an exponential distribution with a mean of 8 macro plies and a
-maximum of 30; these positions are recorded in PGN but excluded from HVM5.
+maximum of 30; these positions are recorded in PGN but excluded from the
+training chunks.
 Subsequent actions sample MCTS visits with temperature 0.8, decayed by 0.93
 every two macro plies. Search budgets are randomized by ±5% per position.
 
@@ -251,6 +252,38 @@ legal joint actions — set it to match the real clocks before searching.
 > `setoption name Mode value go|sit` is the deprecated spelling of the same
 > setting (`sit` = `TimeAdvantage true`). It is still accepted but no longer
 > advertised.
+
+#### Clock model
+
+`TimeAdvantage` is one bit fixed for the whole search. The clock model searches
+on the lead itself:
+
+```text
+setoption name TimeModel value clock
+setoption name TimeLeadMs value 4200        # our lead over the diagonal opponents
+setoption name TeamMoveTimeMs value 1000     # how long our team takes per action
+setoption name OpponentMoveTimeMs value 1500
+```
+
+Without increment a team's lead is the same on both diagonals (White on A minus
+White on B equals Black on B minus Black on A), and the other team's is its
+negation. It moves only while one team is on turn on both boards: each action
+that team plays costs it its own move time. The search charges every path that
+way, so a team may sit only while its lead lasts, and at a lead of exactly zero
+neither team may. Both move times default to 100 ms, chess.com's fastest move.
+`TimeModel flag` (the default) keeps the `TimeAdvantage` behaviour.
+
+Networks read the clock through two planes at the end of each board's block
+(see [Input Representation](#input-representation)): the lead, counted in the
+moves the leading team can afford to wait, and the ratio of the two teams'
+move times. Networks from before those planes read 74 planes and still load;
+the engine drops the clock planes before running them. Those networks were
+trained with one team sitting for the whole game, so they misjudge level
+clocks until retrained. Training from one widens its first layer with zero
+weights for the two new planes (`hivemind.architectures.twin_board.
+widen_to_clock_planes`), so it starts out computing exactly what it did, and
+training data from before the planes is widened as it is read: the lead plane
+is +1 or -1 by the sit right, the speed plane 0.
 
 ### Opening diversity
 
@@ -301,8 +334,9 @@ uv run hivemind rl-loop
 
 Each iteration plays 100,000 self-play games and 1,000 validation games with
 the current generator, trains on them plus a replay of the previous three
-iterations' games, and plays 200 games at 100 ms per move against the
-generator. The new network replaces the generator unless it scores below 50%.
+iterations' games, and plays 1,000 games at 100 ms per move against the
+generator, and as many against the fixed first network (it0). The new network
+replaces the generator unless it scores below 50% against it.
 Every iteration's network and training checkpoint are uploaded to Hugging Face
 as `twin-s-noattn-itN.onnx` and `twin-s-noattn-itN.pt`, and a promoted one as
 `twin-s-noattn.onnx` and `twin-s-noattn.pt`, when `hf auth login` has logged
@@ -314,6 +348,56 @@ stopped; `touch data/distill/runs/rl-loop.stop` stops it between stages.
 Matches open from the 100 positions in `engine/openings.tsv`.
 `hivemind fetch-network` keeps installing the network and checkpoint pinned
 in `src/hivemind/network.py`; update that pin to publish a promotion.
+
+#### Training on the clock
+
+`--time-model clock` trains a network that reads the clock planes: self-play
+plays every game on a simulated clock (`selfplay --time-model clock`: half the
+games start level, the rest with a lead of 0.1-10 s either way, and each team
+moves in 0.1-3 s), and matches run on one too. Such a network cannot replace
+the flag model's generator, which engines from before the clock planes still
+load, so it trains as a lineage of its own, from a copy of the generator it
+starts from:
+
+```bash
+cp engine/models/twin-s-noattn.onnx engine/models/twin-s-clock.onnx
+cp engine/models/twin-s-noattn.onnx engine/models/twin-s-clock-it0.onnx
+mkdir -p artifacts/distill/twin-s-clock
+cp data/distill/runs/rl-it10/arms/C/last.pt artifacts/distill/twin-s-clock/last.pt
+uv run hivemind rl-loop --time-model clock --runs data/distill/runs-clock \
+    --generator engine/models/twin-s-clock.onnx \
+    --generator-checkpoint artifacts/distill/twin-s-clock/last.pt \
+    --selfplay-engine engine/build-clock-sp1/hivemind --match-engine engine/build-clock/hivemind
+```
+
+The first iteration widens the checkpoint's input layer with zero weights for
+the clock planes, so it starts out playing exactly as its parent. The engines
+must be builds with the clock model: one search worker for self-play
+(`-DHIVEMIND_SEARCH_WORKERS=1`) and the usual four for matches. Uploads name
+the lineage after its generator (`twin-s-clock-itN.onnx`), and contributors to
+a `--distributed` clock loop play clock games too (work-order protocol 2).
+
+#### Keeping data off the disk
+
+An iteration's games take about 9 GB on disk. The loop moves each finished
+segment to the private Hugging Face dataset
+`aminwoo/bughouse-twin-s-selfplay-archive` (`--archive`) as a zstd tarball
+about 13x smaller. It deletes the games only once the Hub's copy matches.
+Training downloads the games it needs, about 3 GB for the new iteration and
+the replay window, and deletes them again when it finishes. Use
+`--keep-selfplay` to keep everything on disk; without uploads (`--no-upload`,
+or no `hf auth login`) the loop keeps everything on disk anyway.
+`hivemind rl-loop --archive-only` moves all finished self-play and exits.
+
+`archive` and `restore` do the same for any data directory:
+
+```bash
+uv run hivemind archive data/nnue/train   # leaves data/nnue/train/archive.json
+uv run hivemind restore data/nnue/train   # brings the files back
+```
+
+`hivemind train` restores the directories it is given by itself; other
+training commands need a `restore` first.
 
 #### Sharing self-play with other machines
 
@@ -402,7 +486,9 @@ uv run hivemind prepare \
   --architecture crossboard-risev33 \
   --batch-size 256
 
-# RL training directly from native HVM5 self-play data
+# RL training directly from native HVM5 self-play data (from before the clock
+# planes: self-play now writes HVM6 chunks with 78 planes, which these RISE
+# commands do not read)
 uv run hivemind rise-train --mode rl --checkpoint artifacts/training/weights/rl/model-rl-final.tar --selfplay-dir engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
 ```
 
@@ -496,7 +582,7 @@ each epoch boundary and at the end of training.
 
 ### Input Representation
 
-The network uses a **74-channel input** (74×8×8), with 37 channels per board:
+The network uses a **78-channel input** (78×8×8), with 39 channels per board:
 
 | Per-board channels | Description                             |
 | ------------------ | --------------------------------------- |
@@ -509,6 +595,13 @@ The network uses a **74-channel input** (74×8×8), with 37 channels per board:
 | 32-33              | Last move source and destination        |
 | 34                 | Halfmove clock                          |
 | 35-36              | Twofold and threefold repetition        |
+| 37                 | Time lead: sign(lead) * min(1, log2(1 + moves the leader can wait) / 10) |
+| 38                 | Speed: log2(own move time / opponents' move time) / 5, clamped to ±1 |
+
+Both boards carry the team's same two clock values. Under `TimeModel flag` the
+lead plane is +1 or -1 by the sit right and the speed plane 0. Networks from
+before the clock planes (RISE, and twin-s up to iteration 10) read channels
+0-36 of each board, 74 in all.
 
 ### Output
 

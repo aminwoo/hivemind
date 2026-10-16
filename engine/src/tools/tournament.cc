@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -101,7 +102,8 @@ void append_game_pgn(
     const std::string& termination,
     const std::string& initialDualFen,
     Stockfish::Color initialTeam,
-    bool initialTimeAdvantage,
+    const TimeState& initialTime,
+    const TimeState& finalTime,
     const std::vector<std::string>& actions) {
     std::ofstream stream(path, std::ios::app);
     if (!stream) {
@@ -116,10 +118,19 @@ void append_game_pgn(
            << "[BlackTeam \"" << blackTeam << "\"]\n"
            << "[DualFEN \"" << initialDualFen << "\"]\n"
            << "[TeamToPlay \""
-           << (initialTeam == Stockfish::WHITE ? "white" : "black") << "\"]\n"
-           << "[TeamTimeAdvantage \""
-           << (initialTimeAdvantage ? "true" : "false") << "\"]\n"
-           << "[Result \"" << result << "\"]\n"
+           << (initialTeam == Stockfish::WHITE ? "white" : "black") << "\"]\n";
+    if (initialTime.is_clocked()) {
+        // Leads are the white team's over its diagonal opponents.
+        stream << "[TimeModel \"clock\"]\n"
+               << "[TimeLeadMs \"" << initialTime.lead_ms(Stockfish::WHITE) << "\"]\n"
+               << "[FinalTimeLeadMs \"" << finalTime.lead_ms(Stockfish::WHITE) << "\"]\n"
+               << "[WhiteTeamMoveTimeMs \"" << initialTime.move_time_ms(Stockfish::WHITE) << "\"]\n"
+               << "[BlackTeamMoveTimeMs \"" << initialTime.move_time_ms(Stockfish::BLACK) << "\"]\n";
+    } else {
+        stream << "[TeamTimeAdvantage \""
+               << (initialTime.can_sit(initialTeam) ? "true" : "false") << "\"]\n";
+    }
+    stream << "[Result \"" << result << "\"]\n"
            << "[Termination \"" << termination << "\"]\n\n";
     for (size_t index = 0; index < actions.size(); ++index) {
         stream << (index + 1) << ". " << actions[index] << ' ';
@@ -188,8 +199,19 @@ void write_summary(
            << "  \"baseline_q_value_weight\": " << config.baselineQValueWeight << ",\n"
            << "  \"contender_q_veto_delta\": " << config.contenderQVetoDelta << ",\n"
            << "  \"baseline_q_veto_delta\": " << config.baselineQVetoDelta << ",\n"
-           << "  \"positions_file\": \"" << config.positionsFile.string() << "\",\n"
-           << "  \"contender_wins\": " << result.contenderWins << ",\n"
+           << "  \"positions_file\": \"" << config.positionsFile.string() << "\",\n";
+    if (config.clockModel) {
+        stream << "  \"time_model\": \"clock\",\n"
+               << "  \"clock\": {\"level_start_fraction\": " << config.clock.levelStartFraction
+               << ", \"start_lead_ms\": [" << config.clock.startLeadMinMs << ", "
+               << config.clock.startLeadMaxMs << "], \"move_time_ms\": ["
+               << config.clock.moveTimeMinMs << ", " << config.clock.moveTimeMaxMs << "]},\n"
+               << "  \"contender_time_model\": \""
+               << (config.searchesOnClock(true) ? "clock" : "flag") << "\",\n"
+               << "  \"baseline_time_model\": \""
+               << (config.searchesOnClock(false) ? "clock" : "flag") << "\",\n";
+    }
+    stream << "  \"contender_wins\": " << result.contenderWins << ",\n"
            << "  \"baseline_wins\": " << result.baselineWins << ",\n"
            << "  \"draws\": " << result.draws << ",\n"
            << "  \"contender_score\": " << result.contenderScore() << ",\n"
@@ -235,7 +257,10 @@ void write_summary(
     write_breakdown_json(stream, "white", result.asWhite, true);
     write_breakdown_json(stream, "black", result.asBlack, true);
     write_breakdown_json(stream, "up_time", result.upTime, true);
-    write_breakdown_json(stream, "down_time", result.downTime, false);
+    write_breakdown_json(stream, "down_time", result.downTime, config.clockModel);
+    if (config.clockModel) {
+        write_breakdown_json(stream, "level_time", result.levelTime, false);
+    }
     stream << "  },\n"
            << "  \"terminations\": {\n"
            << "    \"checkmate\": " << result.checkmates << ",\n"
@@ -293,6 +318,9 @@ void print_final_summary(
     print_breakdown("Black", result.asBlack);
     print_breakdown("Up time", result.upTime);
     print_breakdown("Down time", result.downTime);
+    if (config.clockModel) {
+        print_breakdown("Level time", result.levelTime);
+    }
     std::cout << "\nTerminations:\n"
               << "  Checkmate: " << result.checkmates << '\n'
               << "  No legal action: " << result.noLegalActions << '\n'
@@ -511,6 +539,12 @@ int run_tournament(
     if (config.games == 0 || config.games % 2 != 0) {
         throw std::invalid_argument("Tournament games must be a positive even number");
     }
+    if (config.clockModel && (alphaBetaContender || alphaBetaBaseline)) {
+        // Alpha-beta knows only the flag, so it would search other rules than
+        // the ones the game is played and adjudicated under.
+        throw std::invalid_argument(
+            "--time-model clock is not supported for alpha-beta players yet");
+    }
     const bool anyMcts = !alphaBetaContender || !alphaBetaBaseline;
     if ((anyMcts && (config.nodes == 0) == (config.moveTimeMs <= 0)) ||
         config.maxMacroPlies == 0) {
@@ -605,21 +639,26 @@ int run_tournament(
         Stockfish::Color team = startPositions.empty()
             ? (pairIndex % 2 == 0 ? Stockfish::WHITE : Stockfish::BLACK)
             : startPositions[pairIndex % startPositions.size()].teamToPlay;
-        bool hasTimeAdvantage = startPositions.empty()
+        const bool hasTimeAdvantage = startPositions.empty()
             ? false
             : startPositions[pairIndex % startPositions.size()].teamHasTimeAdvantage;
+        // Both games of a pair draw the same clock, so the contender plays
+        // each team's side of it once.
+        std::mt19937_64 clockRandom(tournament_seed(config.seed ^ 0x434c4f434bULL, pairIndex));
+        TimeState time = config.clockModel
+            ? sample_clock(config.clock, clockRandom)
+            : TimeState::legacy(team, hasTimeAdvantage);
         const Stockfish::Color initialTeam = team;
-        const bool initialTimeAdvantage = hasTimeAdvantage;
+        const TimeState initialTime = time;
         const std::string initialDualFen =
             board.fen(BOARD_A) + "|" + board.fen(BOARD_B);
-        const bool contenderHasTimeAdvantage = contenderTeam == team
-            ? hasTimeAdvantage : !hasTimeAdvantage;
+        const int32_t contenderStartLead = time.lead_ms(contenderTeam);
         int winner = -1;
         std::string termination = "macro-ply limit";
         std::vector<std::string> actions;
 
         for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
-            const GameStatus status = adjudicate_game(board, team, hasTimeAdvantage);
+            const GameStatus status = adjudicate_game(board, team, time);
             if (status != GameStatus::ONGOING) {
                 winner = adjudicated_winner(status, team);
                 termination = adjudicated_termination(status);
@@ -637,8 +676,9 @@ int run_tournament(
                     limits.depth = depth;
                 }
                 const auto searchStart = std::chrono::steady_clock::now();
+                // Alpha-beta only knows the flag: whether the team may sit now.
                 const ab::Result searched = alphaBeta->search(
-                    board, team, hasTimeAdvantage, limits);
+                    board, team, time.can_sit(team), limits);
                 TournamentPerformance& performance = contenderActing
                     ? result.contenderPerformance : result.baselinePerformance;
                 ++performance.searches;
@@ -653,9 +693,9 @@ int run_tournament(
                 action.moveA = searched.best.a;
                 action.moveB = searched.best.b;
                 actions.push_back(action_uci(board, action));
+                time.advance(team, board.on_turn_on_both_boards(team));
                 board.make_moves(action.moveA, action.moveB);
                 team = ~team;
-                hasTimeAdvantage = !hasTimeAdvantage;
                 continue;
             }
             Engine& actingEngine = contenderActing ? *contender : *baseline;
@@ -671,9 +711,14 @@ int run_tournament(
             options.search.rootNoiseSeed = tournament_seed(
                 config.seed,
                 pairIndex * config.maxMacroPlies + macroPly);
+            // A flag-model side gets no clock: run_search then searches on
+            // the TimeAdvantage bit the clock gives it now.
+            if (config.searchesOnClock(contenderActing)) {
+                options.clock = time;
+            }
             const auto searchStart = std::chrono::steady_clock::now();
             const JointActionCandidate action = agent.run_search(
-                board, engines, team, hasTimeAdvantage, options);
+                board, engines, team, time.can_sit(team), options);
             const uint64_t searchNanos = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - searchStart).count());
@@ -696,12 +741,12 @@ int run_tournament(
                 throw std::runtime_error("Ongoing search returned no root edges");
             }
             actions.push_back(action_uci(board, action));
+            time.advance(team, board.on_turn_on_both_boards(team));
             board.make_moves(action.moveA, action.moveB);
             team = ~team;
-            hasTimeAdvantage = !hasTimeAdvantage;
         }
 
-        const GameStatus finalStatus = adjudicate_game(board, team, hasTimeAdvantage);
+        const GameStatus finalStatus = adjudicate_game(board, team, time);
         if (winner < 0 && finalStatus != GameStatus::ONGOING) {
             winner = adjudicated_winner(finalStatus, team);
             termination = adjudicated_termination(finalStatus);
@@ -721,7 +766,8 @@ int run_tournament(
             contenderTeam == Stockfish::WHITE ? result.asWhite : result.asBlack,
             contenderOutcome);
         record_outcome(
-            contenderHasTimeAdvantage ? result.upTime : result.downTime,
+            contenderStartLead > 0 ? result.upTime
+                : contenderStartLead < 0 ? result.downTime : result.levelTime,
             contenderOutcome);
         currentPairPoints += contenderOutcome > 0 ? 1.0 : contenderOutcome == 0 ? 0.5 : 0.0;
         if (gameIndex % 2 == 1) {
@@ -752,7 +798,7 @@ int run_tournament(
         append_game_pgn(
             pgnPath, gameIndex + 1, whiteTeam, blackTeam,
             winner, termination, initialDualFen, initialTeam,
-            initialTimeAdvantage, actions);
+            initialTime, time, actions);
         write_summary(
             summaryPath, contenderName, baselineName, config, result);
         std::cout << "tournament game " << (gameIndex + 1) << '/' << config.games

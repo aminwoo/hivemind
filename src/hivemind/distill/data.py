@@ -1,25 +1,56 @@
-"""Reader for the engine's `gennnue --format distill` chunks (HDST v2)."""
+"""Reader for the engine's `gennnue --format distill` chunks (HDST v2).
+
+Chunks carry 78 planes, the clock planes closing each board's block, or 74
+from before them. Those are widened as they are read, so every position comes
+out in the 78-plane layout."""
 
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from hivemind.constants import (
+    NUM_BUGHOUSE_CHANNELS,
+    NUM_BUGHOUSE_CHANNELS_PER_BOARD,
+    NUM_CLOCKED_CHANNELS,
+    NUM_CLOCKED_CHANNELS_PER_BOARD,
+    TIME_ADVANTAGE_CHANNEL,
+)
+
 MAGIC = b"HDST"
 VERSION = 2
 HEADER_BYTES = 28
-PLANES = 74
+PLANES = NUM_CLOCKED_CHANNELS
+LEGACY_PLANES = NUM_BUGHOUSE_CHANNELS
 POLICY_SIZE = 4672
 
 
 def _header(raw, path):
     if raw[:4] != MAGIC:
         raise ValueError(f"{path}: not an HDST chunk")
-    version, planes = np.frombuffer(raw, np.uint32, 2, 4)
-    if version != VERSION or planes != PLANES:
-        raise ValueError(f"{path}: version {version}, {planes} planes (expected {VERSION}, {PLANES})")
+    version, planes = (int(v) for v in np.frombuffer(raw, np.uint32, 2, 4))
+    if version != VERSION or planes not in (PLANES, LEGACY_PLANES):
+        raise ValueError(f"{path}: version {version}, {planes} planes "
+                         f"(expected {VERSION}, {PLANES} or {LEGACY_PLANES})")
     n, entries = (int(v) for v in np.frombuffer(raw, np.uint64, 2, 12))
-    return n, entries
+    return n, entries, planes
+
+
+def widen_legacy_planes(bits, values):
+    """Positions from before the clock planes, in the clocked layout. Those
+    games gave one team the right to sit for the whole game, so the lead plane
+    is +1 for a team that may sit and -1 for one that may not; the speed plane,
+    which those games never had, is 0."""
+    count = len(bits)
+    old, new = NUM_BUGHOUSE_CHANNELS_PER_BOARD, NUM_CLOCKED_CHANNELS_PER_BOARD
+    wide_bits = np.zeros((count, PLANES), np.int64)
+    wide_values = np.zeros((count, PLANES), np.float16)
+    for board in range(2):
+        wide_bits[:, board * new:board * new + old] = bits[:, board * old:(board + 1) * old]
+        wide_values[:, board * new:board * new + old] = values[:, board * old:(board + 1) * old]
+        may_sit = values[:, board * old + TIME_ADVANTAGE_CHANNEL] > 0.5
+        wide_values[:, board * new + old] = np.where(may_sit, 1.0, -1.0)
+    return wide_bits, wide_values
 
 
 def chunk_positions(path):
@@ -30,7 +61,7 @@ def chunk_positions(path):
 
 def read_chunk(path):
     raw = Path(path).read_bytes()
-    n, entries = _header(raw, path)
+    n, entries, planes = _header(raw, path)
     offset = HEADER_BYTES
 
     def take(dtype, count):
@@ -40,8 +71,8 @@ def read_chunk(path):
         return array
 
     chunk = {
-        "plane_bits": take(np.int64, n * PLANES).reshape(n, PLANES),
-        "plane_values": take(np.float16, n * PLANES).reshape(n, PLANES),
+        "plane_bits": take(np.int64, n * planes).reshape(n, planes),
+        "plane_values": take(np.float16, n * planes).reshape(n, planes),
         "value": take(np.float32, n),
         "wdl": take(np.float32, 3 * n).reshape(n, 3),
         "moves_left": take(np.float16, n),
@@ -53,8 +84,38 @@ def read_chunk(path):
     }
     if offset != len(raw) or int(chunk["policy_count"].sum()) != entries:
         raise ValueError(f"{path}: truncated or inconsistent chunk")
+    if planes == LEGACY_PLANES:
+        chunk["plane_bits"], chunk["plane_values"] = widen_legacy_planes(
+            chunk["plane_bits"], chunk["plane_values"])
     return chunk
 
+
+def chunk_problem(path):
+    """Why a chunk is unfit to train on, or None. Catches contributors whose
+    engine wrote broken values: non-finite or out-of-range targets and inputs,
+    or move probabilities that do not sum to one."""
+    try:
+        chunk = read_chunk(path)
+    except ValueError as error:  # truncated, or not a chunk
+        return f"{Path(path).name}: unreadable ({str(error).replace(str(path), 'it')})"
+    for field in ("plane_values", "value", "wdl", "moves_left", "policy_probability"):
+        if not np.isfinite(chunk[field].astype(np.float32)).all():
+            return f"{Path(path).name}: non-finite {field}"
+    if np.abs(chunk["plane_values"].astype(np.float32)).max(initial=0) > 16:
+        return f"{Path(path).name}: input planes out of range"
+    moves_left = chunk["moves_left"].astype(np.float32)  # remaining plies / 100, capped at 1
+    if (np.abs(chunk["value"]).max(initial=0) > 1 or (chunk["wdl"] < 0).any() or (chunk["wdl"] > 1).any()
+            or (moves_left < 0).any() or (moves_left > 1).any()):
+        return f"{Path(path).name}: value targets out of range"
+    probabilities = chunk["policy_probability"].astype(np.float64)
+    if (chunk["policy_index"] >= POLICY_SIZE).any() or (probabilities < 0).any():
+        return f"{Path(path).name}: policy out of range"
+    counts = chunk["policy_count"].ravel().astype(np.int64)
+    sums = np.add.reduceat(probabilities, np.cumsum(counts)[counts > 0] - counts[counts > 0]) \
+        if len(probabilities) else np.zeros(0)
+    if (np.abs(sums - 1) > 0.05).any():
+        return f"{Path(path).name}: move probabilities do not sum to one"
+    return None
 
 def head_chunk(chunk, count):
     """The first `count` positions of a chunk (policy entries follow the counts)."""
@@ -101,9 +162,9 @@ class DistillDataset:
         return len(self.value)
 
     def planes(self, index):
-        bits = self.plane_bits[index]                                # [B, 74]
+        bits = self.plane_bits[index]                                # [B, 78]
         values = self.plane_values[index].float()
-        squares = ((bits.unsqueeze(-1) >> self.shifts) & 1).float()  # [B, 74, 64]
+        squares = ((bits.unsqueeze(-1) >> self.shifts) & 1).float()  # [B, 78, 64]
         filled = torch.where(bits.unsqueeze(-1) != 0, squares, torch.ones_like(squares))
         return (filled * values.unsqueeze(-1)).view(-1, PLANES, 8, 8)
 

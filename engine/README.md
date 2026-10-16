@@ -14,10 +14,10 @@ Their `bestmove` is a single move; Bughouse keeps its dual-FEN positions,
 board-prefixed move history, and joint `(moveA,moveB)` output. Single-board
 play uses a neural PUCT search with legal moves and terminal rules from
 Fairy-Stockfish, without Bughouse sitting or partner capture feeds. Its active
-position occupies board A's 37 input planes; board B's 37 planes encode a
+position occupies board A's input planes; board B's planes encode a
 fixed starting position with White to move, empty pockets, and full castling
 rights, using the usual opposite-team perspective. Both time-advantage planes
-are zero. Draw contempt defaults to zero. Rook, bishop, and Antichess king
+and all four clock planes are zero. Draw contempt defaults to zero. Rook, bishop, and Antichess king
 promotions share the queen promotion's policy prior but are evaluated as their
 actual resulting positions.
 
@@ -156,15 +156,24 @@ cmake --build --preset ninja-fast -j "$(nproc)"
 ```
 
 Self-play allocates a fixed Fairy-Stockfish mate-search budget per searched
-position. The default 8,000,000 nodes are split across the active boards:
+position. The default 10,000,000 nodes are split across the active boards:
 
 ```bash
 ./build-ninja/hivemind selfplay \
   --network "$(realpath ../artifacts/training/weights/rl/model-rl-final-v3.0.onnx)" \
-  --games 1000 --nodes 400 --fairy-stockfish-mate-nodes 8000000
+  --games 1000 --nodes 400 --fairy-stockfish-mate-nodes 10000000
 ```
 
 Set `--fairy-stockfish-mate-nodes 0` to disable the probe.
+
+`--time-model clock` plays every game on a simulated clock instead of letting
+one team sit all game. Each game starts level with probability
+`--level-start-fraction` (0.5); otherwise the white team's lead is drawn
+log-uniformly from `--start-lead-min-ms` to `--start-lead-max-ms` (100 to
+10000) with a random sign. Each team's move time is drawn log-uniformly from
+`--move-time-min-ms` to `--move-time-max-ms` (100 to 3000). Searches and
+adjudication follow the lead, and the PGN records the starting and final lead
+and both move times.
 
 ### Background search for UCI frontends
 
@@ -205,6 +214,9 @@ python3 -m venv ~/.cache/hivemind-quantize
 ./build-ninja/hivemind --model models/network-int8.onnx
 ```
 
+A network from before the clock planes reads 74 planes; calibrate it on
+`dumpplanes --legacy-planes true`, which drops the clock planes.
+
 The engine recognises a Q/DQ network and builds it at builder optimization
 level 3: at the default level 5, TensorRT 11 times a fused kernel for the
 cross-board blocks that faults on the device. Against FP16, the INT8 teacher
@@ -212,6 +224,14 @@ agrees on the top move in 93% (board A) and 92% (board B) of positions, with
 a mean value difference of 0.023.
 
 ### Mate-probe threads
+
+MCTS checks mate in one before starting neural inference. Its deeper exact
+root mate scan searches up to M8 on a separate cancellable thread, with a
+private two-board position. It can use the whole MCTS search window, subject
+to its scaled node budget. The first verified proof stops MCTS and the loss
+scan and returns the mating move; stop requests, the move deadline and a
+finished MCTS search cancel it. Threads are joined before returning a move or
+replacing the tree.
 
 `MateThreads` (default `4`, max `256`) sets how many Fairy-Stockfish workers
 each mate probe searches with, in both MCTS and alpha-beta. The workers share
@@ -361,6 +381,11 @@ to play, and `true|false` time advantage. Comment lines begin with `#`. Each
 position is used for a complete color-swapped pair. Sequential stopping is
 evaluated only after both games in a pair; `summary.json` also records measured
 full-search NPS for each contestant and every effective search parameter.
+
+With `--time-model clock` and the self-play clock options, each pair draws one
+clock and both of its games use it, so the contender plays each team's side of
+the lead once. The positions file's time-advantage flags are then unused, and
+the breakdown splits games by the contender's starting lead: up, down or level.
 
 cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"

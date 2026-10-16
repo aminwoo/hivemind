@@ -16,8 +16,9 @@
  * distill` (raw teacher outputs) and `selfplay --distill-output` (search
  * results). The Python side reads them with hivemind.distill.data.
  *
- * Layout (v2): magic, version, planes per position, N, total policy entries
- * P, then planeBits u64[N*74], planeValues f16[N*74], value f32[N],
+ * Layout (v2): magic, version, planes per position C (78, or 74 from before
+ * the clock planes), N, total policy entries P, then planeBits u64[N*C],
+ * planeValues f16[N*C], value f32[N],
  * wdl f32[N*3] (loss, draw, win), movesLeft f16[N], ply u16[N],
  * outcome i8[N], policyCount u16[N*2] (board A, board B; 0 when the board is
  * not on turn), policyIndex u16[P] (every legal move and the pass),

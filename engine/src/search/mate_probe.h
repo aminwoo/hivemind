@@ -44,10 +44,14 @@ struct Result {
     uint64_t nodes = 0;
     /**
      * The whole line in UCI. Every ply is a move of the probed board alone,
-     * so Board can replay it; a line cut short by a table hit ends before
-     * the mate it scored.
+     * so Board can replay it. The search's own line stops where its depth
+     * ran out and the mate score came from the table; the rest is read from
+     * the table's best moves, and a line can still end short of the mate
+     * where an entry was overwritten.
      */
     std::vector<std::string> principalVariation;
+    /** How many plies of principalVariation were read from the table. */
+    int tablePlies = 0;
 };
 
 /**
@@ -75,6 +79,7 @@ struct Result {
  * transposition table in globals, so only one can be in flight at a time.
  * Each one searches with every worker set_threads() asked for, sharing one
  * transposition table, and nodeBudget is their combined total.
+
  */
 Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
              int budgetMs, const std::function<bool()>& abort = {});
@@ -95,5 +100,14 @@ void set_threads(int count);
 
 /** Workers each probe currently searches with. */
 int threads();
+
+/**
+ * Starts Fairy-Stockfish workers until the pool, main thread included, holds
+ * @p poolSize threads. They start at a lowered scheduling priority
+ * (common/thread_priority.h): probes run beside the tree's workers for as
+ * long as it searches, and should take only the cores it leaves idle.
+ * The caller serializes pool changes.
+ */
+void grow_pool(size_t poolSize);
 
 }  // namespace MateProbe

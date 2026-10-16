@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstdlib>
 #include <atomic>
+#include <chrono>
 
 #include <string>
 #include <vector>
@@ -41,6 +44,13 @@ constexpr const char* kFedBoardB =
 constexpr const char* kFedBoardANoMate =
     "4Q~bk1/pPp1pppp/3p4/3B4/3P1r2/B1P5/P1P1nPPP/R5RK"
     "[QQRBNNPPPqbbnnpp] b - - 0 25";
+
+// chess.com 186155189073, after 28...Nxe7.
+constexpr const char* kDropMateBoard =
+    "r2q1kr1/pppbnp1p/5P1p/1B1P1p1N/N2Pp3/P1Pp2P1/2B1BP1P/R2QK2R"
+    "[BNNQPqbnn] w KQ - 0 29";
+constexpr const char* kDropMatePartner =
+    "2r2r2/p2p2k1/1p2p2p/3b1pb1/P7/5P2/KP1p1PPP/2nR3R[P] w - - 1 41";
 
 Stockfish::Move move_of(Board& board, int boardNum, std::string uci) {
     return Stockfish::UCI::to_move(*board.pos[boardNum], uci);
@@ -156,6 +166,132 @@ TEST_F(MateRaceTest, OrdinaryPositionsAreNotVetoed) {
     ASSERT_NE(opening, Stockfish::MOVE_NONE);
     EXPECT_FALSE(Agent::action_loses_mate_race(
         board, joint(opening, Stockfish::MOVE_NONE), Stockfish::WHITE, false));
+}
+
+// chess.com 186155189073, after 28...Nxe7. The defender is also on turn
+// on the partner board, so a local mating line needs a two-board proof.
+TEST_F(MateRaceTest, LongerDropMateSurvivesTheShorterMateSearchBudget) {
+    for (bool swapped : {false, true}) {
+        Board board;
+        board.set_fen(BOARD_A, swapped ? kDropMatePartner : kDropMateBoard);
+        board.set_fen(BOARD_B, swapped ? kDropMateBoard : kDropMatePartner);
+        const auto before = Agent::board_signature(board);
+        JointActionCandidate action;
+        int ply = 0;
+        ASSERT_TRUE(Agent::find_root_mate(
+            board, swapped ? Stockfish::BLACK : Stockfish::WHITE,
+            true, action, ply, 200000,
+            std::chrono::steady_clock::now() + std::chrono::seconds(1)));
+        const int activeBoard = swapped ? BOARD_B : BOARD_A;
+        EXPECT_EQ(board.uci_move(
+            activeBoard, swapped ? action.moveB : action.moveA), "N@e6");
+        EXPECT_EQ(swapped ? action.moveA : action.moveB, Stockfish::MOVE_NONE);
+        EXPECT_EQ(ply, 9);
+        EXPECT_EQ(Agent::board_signature(board), before);
+    }
+}
+
+TEST_F(MateRaceTest, BothCheckingDropsHaveTwoBoardMateProofs) {
+    Board board;
+    board.set_fen(BOARD_A, kDropMateBoard);
+    board.set_fen(BOARD_B, kDropMatePartner);
+    const auto before = Agent::board_signature(board);
+    for (const auto* moveText : {"N@e6", "Q@g7"}) {
+        const auto action = joint(
+            move_of(board, BOARD_A, moveText), Stockfish::MOVE_NONE);
+        ASSERT_NE(action.moveA, Stockfish::MOVE_NONE);
+        Agent::MateSearchBudget budget;
+        budget.remainingNodes = 50000;
+        int ply = 0;
+        MateCertificateTier tier;
+        ASSERT_TRUE(Agent::certify_mate_candidate(
+            board, Stockfish::WHITE, true, action, 9, budget, ply, tier));
+        EXPECT_EQ(ply, 9);
+        EXPECT_NE(tier, MateCertificateTier::NONE);
+        EXPECT_EQ(Agent::board_signature(board), before);
+    }
+}
+
+TEST_F(MateRaceTest, DropMateScoutCannotIgnoreThePartnersLosingRace) {
+    Board board;
+    board.set_fen(BOARD_A, kDropMateBoard);
+    board.set_fen(BOARD_B, "6rk/6pp/8/4N3/8/8/8/K7[] w - - 0 1");
+    const auto before = Agent::board_signature(board);
+    JointActionCandidate action;
+    int ply = 0;
+    EXPECT_FALSE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, action, ply, 200000));
+    EXPECT_EQ(Agent::board_signature(board), before);
+}
+
+// chess.com 186127589087, after 30...Kf4 and before 28...Q@e2#.
+// Both mates belong to the white-A/black-B team. A partner's mate must not
+// turn Ne2 or Rxc1 into the recommendation on a board with its own mate in one.
+TEST_F(MateRaceTest, TwoImmediateMatesFinishBothBoards) {
+    constexpr const char* boardA =
+        "r7/p7/b1p1ppQ1/3p2nQ/3P1k2/2N5/PPP2P1P/R3K2R[Pqnpp] w KQ - 3 31";
+    constexpr const char* boardB =
+        "r3kbnr/ppp2pp1/2p4p/4P3/1pB1PPb1/2pPN3/P1b2P1P/nrB1K2R[RBBNNPPq] b kq - 5 28";
+    for (bool swapped : {false, true}) {
+        for (bool timeAdvantage : {false, true}) {
+            Board board;
+            board.set_fen(BOARD_A, swapped ? boardB : boardA);
+            board.set_fen(BOARD_B, swapped ? boardA : boardB);
+            const auto team = swapped ? Stockfish::BLACK : Stockfish::WHITE;
+            const auto before = Agent::board_signature(board);
+            JointActionCandidate action;
+            int ply = 0;
+            ASSERT_TRUE(Agent::find_root_mate(
+                board, team, timeAdvantage, action, ply));
+            EXPECT_EQ(ply, 1);
+            EXPECT_EQ(Agent::board_signature(board), before);
+            const auto pawnMove = swapped ? action.moveB : action.moveA;
+            const auto queenMove = swapped ? action.moveA : action.moveB;
+            const int pawnBoard = swapped ? BOARD_B : BOARD_A;
+            const int queenBoard = 1 - pawnBoard;
+            EXPECT_TRUE(board.uci_move(pawnBoard, pawnMove) == "P@e3"
+                        || board.uci_move(pawnBoard, pawnMove) == "P@g3");
+            EXPECT_EQ(board.uci_move(queenBoard, queenMove), "Q@e2");
+            board.make_moves(action.moveA, action.moveB);
+            EXPECT_TRUE(board.is_in_check(BOARD_A));
+            EXPECT_TRUE(board.is_in_check(BOARD_B));
+            EXPECT_TRUE(board.legal_moves(BOARD_A).empty());
+            EXPECT_TRUE(board.legal_moves(BOARD_B).empty());
+        }
+    }
+}
+
+TEST_F(MateRaceTest, SeparateRecommendationsCanRelyOnTheWaitingPartnersMate) {
+    for (int movingBoard : {BOARD_A, BOARD_B}) {
+        Board board;
+        board.set_fen(BOARD_A,
+            "r7/p7/b1p1ppQ1/3p2nQ/3P1k2/2N5/PPP2P1P/R3K2R[Pqnpp] w KQ - 3 31");
+        board.set_fen(BOARD_B,
+            "r3kbnr/ppp2pp1/2p4p/4P3/1pB1PPb1/2pPN3/P1b2P1P/nrB1K2R[RBBNNPPq] b kq - 5 28");
+        const auto move = move_of(
+            board, movingBoard, movingBoard == BOARD_A ? "c3e2" : "b1c1");
+        ASSERT_NE(move, Stockfish::MOVE_NONE);
+        board.push_move(movingBoard, move);
+        ASSERT_FALSE(board.is_checkmate(Stockfish::BLACK, false));
+
+        std::array<int, 2> searchPlies{0, 0};
+        searchPlies[movingBoard] = 1;
+        int endInPly = 0;
+        WaitingMateContinuation continuation;
+        EXPECT_EQ(classify_terminal_position(
+            board, Stockfish::BLACK, Stockfish::WHITE, true,
+            searchPlies, &endInPly, false, false, &continuation),
+            TerminalOutcome::LOSS);
+        EXPECT_EQ(endInPly, 3);
+        EXPECT_EQ(continuation.waitingBoard, 1 - movingBoard);
+        const auto mate = board.uci_move(
+            continuation.waitingBoard, continuation.matingMove);
+        if (movingBoard == BOARD_A) {
+            EXPECT_EQ(mate, "Q@e2");
+        } else {
+            EXPECT_TRUE(mate == "P@e3" || mate == "P@g3");
+        }
+    }
 }
 
 // The root veto is the last word, not the only one: a search that reaches this
@@ -302,6 +438,110 @@ TEST_F(MateRaceTest, TheProbeIsForTheTimeAheadTeamOnly) {
     EXPECT_EQ(plyToMate, 1);
 }
 
+// chess.com 186251789181 ply 105, our team white and 2.6 s ahead: board B
+// holds a mate in about nine (P@f3, among others) and board A none. The probe used to
+// spend board A's half of its budget before it looked at B, and Fairy cut
+// the mating line short at a table hit, so it could not tell the mate ended
+// in checkmate and waited out the rest of the budget too. Now the boards
+// alternate in growing slices and the line is carried on to the mate, which
+// lets the caller stop the probe long before either half is spent.
+TEST_F(MateRaceTest, TheProbeFindsAPartnerBoardMateWithoutWaitingOnTheOther) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "B2Nkbbr/p1pp1pp1/P3pnp1/3p4/3P2Pn/2P2P1P/P1P2P2/R1BQ1K1R[PRQppnnrr] w k - 1 23");
+    board.set_fen(BOARD_B,
+        "1Q~Nq3r/p6p/1bB1p3/kN1p4/1b6/2N4P/P1P2PKP/R7[Bppq] b - - 0 31");
+
+    std::atomic<bool> mated{false};
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::string pv;
+    const auto start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(Agent::probe_position_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 2600, 100, 100),
+        40000000, 8000,
+        [&] { return mated.load(); }, action, plyToMate, pv,
+        [&] { mated.store(true); }));
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    // Board B has more than one way to mate; any of them is the answer.
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_TRUE(board.is_legal_move(BOARD_B, action.moveB));
+    EXPECT_GE(plyToMate, 11);
+    // Each board may take 4 s or 20M nodes - seconds either way; the mate
+    // stops it in well under one.
+    EXPECT_LT(elapsedMs, 2000) << "the probe waited out a budget: " << pv;
+}
+
+TEST_F(MateRaceTest, TheProbeOnlyClaimsALineTheLeadPaysFor) {
+    Board board;
+    board.set_fen(BOARD_A, "6k1/5ppp/8/8/8/8/8/R5K1[] w - - 0 1");
+    board.set_fen(BOARD_B, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1");
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::string pv;
+    // Ahead by half an action: the probe's line sits the other board, and
+    // this lead does not cover even one move of it.
+    EXPECT_FALSE(Agent::probe_position_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 50, 100, 100),
+        200000, 2000, {}, action, plyToMate, pv))
+        << "claimed " << pv << " on a 50 ms lead";
+    ASSERT_TRUE(Agent::probe_position_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 100, 100, 100),
+        200000, 2000, {}, action, plyToMate, pv));
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "a1a8");
+}
+
+// The waiting-board classifier, where the mating move's charge decides it.
+// Board B: Black, the white team's partner, mates with a rook drop on the
+// first rank - unless the defenders may wait for a partner capture to supply
+// a blocker. Board A: Black, defending, is on turn there alone, with nothing
+// to capture yet. Its reply Qd4 forks both white rooks, so after it every
+// white move leaves Black a rook to take: a defender who may sit survives the
+// drop, one who may not is mated.
+constexpr const char* kForkBoardA = "5r1k/6pp/1q6/4p3/R6R/8/8/7K[] b - - 0 1";
+constexpr const char* kDropMateBoardB = "4k3/8/8/8/8/8/6PP/7K[r] b - - 0 1";
+
+TEST_F(MateRaceTest, WaitingBoardMateIsJudgedUnderTheClockItIsPlayedOn) {
+    Board board;
+    board.set_fen(BOARD_A, kForkBoardA);
+    board.set_fen(BOARD_B, kDropMateBoardB);
+    // The defenders hold no capture now, so the drop mates before any reply.
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        ASSERT_FALSE(board.is_capture(BOARD_A, move))
+            << board.uci_move(BOARD_A, move);
+    }
+    ASSERT_NE(move_of(board, BOARD_A, "b6d4"), Stockfish::MOVE_NONE);
+
+    // A permanent flag: the defenders never sit, and the mate stands.
+    int endInPly = 0;
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::WHITE, true,
+                  std::array<int, 2>{1, 1}, &endInPly),
+              TerminalOutcome::LOSS);
+
+    // White 150 ms ahead pays 100 ms for the drop, on turn on both boards
+    // after any real reply, and is still ahead: the mate stands.
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::WHITE,
+                  TimeState::clocked(Stockfish::WHITE, 150, 100, 100),
+                  std::array<int, 2>{1, 1}, &endInPly),
+              TerminalOutcome::LOSS);
+
+    // Only 50 ms ahead, the drop puts the defenders 50 ms ahead. After Qd4
+    // they may sit for the rook White cannot save, so nothing is forced.
+    EXPECT_EQ(classify_terminal_position(
+                  board, Stockfish::BLACK, Stockfish::WHITE,
+                  TimeState::clocked(Stockfish::WHITE, 50, 100, 100),
+                  std::array<int, 2>{1, 1}, &endInPly),
+              TerminalOutcome::NONE);
+}
+
 // A time-ahead attacker can sit through the defending partner's quiet moves.
 // Only a capture that supplies a legal drop can unfreeze the stalemated board.
 TEST_F(MateRaceTest, ProbeValidatesStalemateAgainstPartnerCaptures) {
@@ -392,6 +632,54 @@ TEST_F(MateRaceTest, ExactRootScanPrefersCheckmateOverStalemateAcrossBoards) {
     EXPECT_EQ(plyToMate, 1);
 }
 
+// Benchmark position 13, the black team on turn on both boards. Sitting board
+// A while Qxh4 takes a knight on board B feeds the mate N@f2+ Bxf2 Nxf2#, and
+// no board-B reply wins the race. Qxh4, N@f2+ and Nxf2# are each played on
+// turn on both boards, so the line charges three actions: a lead of five
+// falls well short of the full sat-partner horizon but still covers it.
+constexpr const char* kShortLeadFeedBoardA =
+    "r4q1k/ppp2p1p/2P2Nnp/4p3/8/2N1Bq~1b/PPPPB2P/R1BKR2n~"
+    "[NPPPpbb] b - - 0 1";
+constexpr const char* kShortLeadFeedBoardB =
+    "r2q1r2/p1p2pkp/3n1bp1/7n/3P2Qn/7P/PPPp1PP1/4R1K1[QRBNr] w - - 0 1";
+
+TEST_F(MateRaceTest, ALeadShortOfTheHorizonStillProvesAShortFeedMate) {
+    Board board;
+    board.set_fen(BOARD_A, kShortLeadFeedBoardA);
+    board.set_fen(BOARD_B, kShortLeadFeedBoardB);
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::BLACK,
+        TimeState::clocked(Stockfish::BLACK, 10000, 2000, 1000),
+        action, plyToMate));
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    ASSERT_NE(action.moveB, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, action.moveB), "g4h4");
+    EXPECT_EQ(plyToMate, 5);
+}
+
+// Board A holds seven mates in one. Ra8# and the queen drops on the back rank
+// are mate only while the defenders have nothing to drop between, so a piece
+// arriving from their partner would have saved them; Q@g7#, guarded by the
+// knight, is a contact mate no drop can block, and it ends the game at once.
+// The scan has to prefer it to every back-rank mate it meets first.
+TEST_F(MateRaceTest, ImmediateRootMatePrefersAnUnblockableMate) {
+    Board board;
+    board.set_fen(BOARD_A, "7k/7p/4N3/8/8/8/8/R3K3[Q] w - - 0 1");
+    board.set_fen(BOARD_B, "4k3/8/8/8/8/8/8/4K3[] w - - 0 1");
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, action, plyToMate));
+    EXPECT_EQ(plyToMate, 1);
+    ASSERT_NE(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "Q@g7");
+    EXPECT_EQ(action.moveB, Stockfish::MOVE_NONE);
+}
+
 // The probe's local line is not a win if the defending partner already has a
 // mate in one. That mate is played before Hivemind reaches its next move.
 TEST_F(MateRaceTest, ProbeRejectsLineWhenOpponentHasMateInOne) {
@@ -416,10 +704,14 @@ TEST_F(MateRaceTest, ProbeRejectsLineWhenOpponentHasMateInOne) {
         << "claimed " << pv << " while the opponent had Ra8#";
 }
 
-// Benchmark position 4 has a legal capture on the defending partner board,
-// but that capture does not refute B@f7's mate. An unrelated capture must not
-// suppress the Fairy proof merely because it could be paired with a pass.
-TEST_F(MateRaceTest, BenchmarkPositionFourStillReportsMate) {
+// Benchmark position 4. B@f7 mates board A in five on its own (B@f7+ Kf5
+// Qd3+ B@e4 Nxe4 dxe4 Qe3 and Qg5#), but the defending partner is on turn on
+// board B with captures to play. A capture there buys the defenders a pass on
+// board A even in check and puts the piece in their board-A player's hand:
+// exf5 hands over a queen, after which the probe's own line fails
+// (Kf5 Qd3+ B@e4 Nxe4 Q@b4+, and Nd6+ is illegal). The probe never searched
+// that reply, so its mate is no claim at all here.
+TEST_F(MateRaceTest, ProbeMateIsUnsupportedWhileTheirPartnerCanCapture) {
     Board board;
     board.set_fen(
         BOARD_A,
@@ -427,6 +719,26 @@ TEST_F(MateRaceTest, BenchmarkPositionFourStillReportsMate) {
     board.set_fen(
         BOARD_B,
         "rn2k2r/ppp1bppp/3p1n2/4pq2/3PP3/2N2N2/PPP2PPP/R1BQ1RK1/p w kq - 0 1");
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::string pv;
+    EXPECT_FALSE(Agent::probe_root_mate(
+        board, Stockfish::WHITE, true, 8000000, 2000, {},
+        action, plyToMate, pv))
+        << "claimed " << pv;
+}
+
+// The same board A with our partner to move on board B: the defenders have
+// no turn there, so nothing reaches board A and the probe's mate stands.
+TEST_F(MateRaceTest, ProbeMateStandsWhenTheirPartnerHasNoTurn) {
+    Board board;
+    board.set_fen(
+        BOARD_A,
+        "r1bq1b1r/ppp1p1pp/2n2nk1/3p2N1/3P4/8/PPP1PPPP/RNBQKB1R[Bb] w KQ - 2 2");
+    board.set_fen(
+        BOARD_B,
+        "rn2k2r/ppp1bppp/3p1n2/4pq2/3PP3/2N2N2/PPP2PPP/R1BQ1RK1/p b kq - 0 1");
 
     JointActionCandidate action;
     int plyToMate = 0;
@@ -827,4 +1139,300 @@ TEST_F(RootActionSliceTest, RefutationNeedsBudgetToSpare) {
         board, h6, Stockfish::BLACK, verdict, 5, 30, deadline_in(10000),
         nullptr, nullptr, nodes);
     EXPECT_EQ(verdict.state, RootActionVerdict::State::UNKNOWN);
+}
+
+// chess.com 159878252255 / 159878252253, before 18...N@d3+ on board B. Black
+// there (the white team) mates by N@d3+ exd3 Q@e2+ Bxe2 Qxe2#, every reply
+// forced. The defenders, behind on the clock, may answer the first check on
+// board A instead (the game's Nxc2+); the attackers then wait on board A,
+// which costs them nothing while neither team is on turn on both boards,
+// until the defenders have to play exd3. The lead (0.2 s against 0.85 s a
+// move) never covers the whole line, so the proof has to follow the clock.
+TEST_F(MateRaceTest, WaitsOutTheDefendersOtherBoardThroughASittingMate) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r1b2r1k/pp1pNppp/3p2pP/8/3n4/5P2/PPP1BP1P/R3K1R1[Qn] b Q - 0 27");
+    board.set_fen(BOARD_B,
+        "r1bk1bnr/pp2bppp/3N4/4P1B1/1B6/5p2/PPq1PPPP/R3KB1R"
+        "[PPNNQppnq] b KQ - 3 18");
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 200, 850, 900),
+        action, plyToMate, SearchParams::MATE_SEARCH_UNBOUNDED_NODES,
+        std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+    EXPECT_EQ(action.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, action.moveB), "N@d3");
+    EXPECT_EQ(plyToMate, 7);
+}
+
+// chess.com 186347789239 / 186347789241 after 25...Nxc1 on board B. White on
+// board A holds the queen and knight that Q@g8+ Rxg8 N@f7# needs; Black there
+// is not on turn and cannot stop it.
+constexpr const char* kFreezeBoardA =
+    "r2q1r1k/ppp3pp/2np1p2/2bBp1B1/4P2B/3P1N1b/PPP2P1P/R2Q1RK1[QN] w - - 0 12";
+constexpr const char* kFreezeBoardB =
+    "r1b1k2r/pppq1pp1/2n4p/3pPp1N/3Pn2B/2b2N2/PPP2PPP/R1n2R1K[P] w kq - 0 14";
+
+TEST_F(MateRaceTest, AQueenDropThatOnlyRxg8AnswersFreezesTheBoard) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.set_fen(BOARD_B, kFreezeBoardB);
+    EXPECT_FALSE(board_is_frozen(board, BOARD_A, Stockfish::WHITE));
+
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    EXPECT_TRUE(board_is_frozen(board, BOARD_A, Stockfish::BLACK));
+}
+
+TEST_F(MateRaceTest, ACheckADropCouldBlockLeavesTheBoardOpen) {
+    Board board;
+    // Ra8+ against Kh8 with g8 empty: a dropped piece could block it, and the
+    // partner may yet capture one, so the board is not frozen.
+    board.set_fen(BOARD_A, "R6k/6pp/8/8/8/8/6PP/6K1[] b - - 0 1");
+    board.set_fen(BOARD_B, kFreezeBoardB);
+    EXPECT_FALSE(board_is_frozen(board, BOARD_A, Stockfish::BLACK));
+}
+
+// After Q@g8+ Black's team must answer on board A unless it can pass there.
+// Board B, White to move for Black's team, has no capture to pass with.
+constexpr const char* kQuietBoardB =
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1";
+
+bool frozen_loss(Board& board, int64_t lead) {
+    return frozen_board_loss(
+        board, Stockfish::BLACK,
+        TimeState::clocked(Stockfish::BLACK, lead, 1100, 1000));
+}
+
+TEST_F(MateRaceTest, AFrozenTeamThatCannotSitIsMatedOnTheFrozenBoard) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    board.set_fen(BOARD_B, kQuietBoardB);
+    EXPECT_TRUE(frozen_loss(board, 0));
+
+    // Not on turn on board B, the team can only double-sit, which needs a lead.
+    board.set_fen(BOARD_B,
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR[] b KQkq - 0 1");
+    EXPECT_TRUE(frozen_loss(board, 0));
+}
+
+TEST_F(MateRaceTest, AFrozenTeamThatCanSitOrPassIsNotYetLost) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    board.set_fen(BOARD_B, kQuietBoardB);
+    // A lead pays for a sit on board A.
+    EXPECT_FALSE(frozen_loss(board, 4300));
+    // The game's board B offers Nxg7 and Rxc1: a capture there passes on A.
+    board.set_fen(BOARD_B, kFreezeBoardB);
+    EXPECT_FALSE(frozen_loss(board, 0));
+}
+
+TEST_F(MateRaceTest, AnEvasionThatCapturesTheMatingPieceAcrossIsAWayOut) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    // No mate on board B with White's empty hand and nothing to capture, but
+    // Rxg8 is a capture, so (Rxg8, pass) is legal and puts the queen in
+    // White's hand there while White is still on turn: Q@g7# lands first.
+    board.set_fen(BOARD_B, "7k/7p/5Pp1/8/8/8/8/6K1[] w - - 0 1");
+    EXPECT_FALSE(frozen_loss(board, 0));
+}
+
+TEST_F(MateRaceTest, AFrozenTeamThatMatesOnTheOtherBoardFirstIsNotLost) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    // Nf7# on board B goes with Rxg8 in one action, before N@f7 can follow.
+    // A knight check no drop blocks; the knight has nothing to capture, so
+    // no pass on board A is on offer either.
+    board.set_fen(BOARD_B, "6rk/6pp/8/4N3/8/8/8/6K1[] w - - 0 1");
+    EXPECT_FALSE(frozen_loss(board, 0));
+}
+
+// Nf7+ against Kh8 with Kf6 guarding g7: Kg8 and Kh7 are the only moves, and
+// either is met by Q@g7#.
+constexpr const char* kKnightCheckFrozen =
+    "7k/5N2/5K2/8/8/8/8/8[Q] b - - 0 1";
+
+TEST_F(MateRaceTest, AnEvasionThatDrawsIsAWayOut) {
+    Board board;
+    board.set_fen(BOARD_A, kKnightCheckFrozen);
+    board.set_fen(BOARD_B,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1");
+    ASSERT_TRUE(board_is_frozen(board, BOARD_A, Stockfish::BLACK));
+    // On the 99th quiet ply, either king move reaches the fifty-move draw.
+    board.set_fen(BOARD_A, "7k/5N2/5K2/8/8/8/8/8[Q] b - - 99 1");
+    EXPECT_FALSE(board_is_frozen(board, BOARD_A, Stockfish::BLACK));
+}
+
+Agent::RaceVerdict prove_race(Board& board, Stockfish::Color toPlay,
+                              int64_t blackLead, int* plies = nullptr) {
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 5000000;
+    budget.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    return Agent::prove_frozen_race(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::BLACK, blackLead, 1100, 1000), toPlay,
+        BOARD_A, SearchParams::FROZEN_RACE_MAX_ATTACKER_MOVES, budget, plies);
+}
+
+TEST_F(MateRaceTest, AShortFrozenRaceIsProven) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    board.set_fen(BOARD_B, kQuietBoardB);
+    // One paid sit takes the lead below zero; the attackers then sit board B
+    // themselves, and Rxg8 is met by N@f7#.
+    int plies = 0;
+    EXPECT_EQ(prove_race(board, Stockfish::BLACK, 1000, &plies),
+              Agent::RaceVerdict::PROVEN);
+    // (pass, quiet), the attackers' sit, Rxg8, N@f7#: four actions.
+    EXPECT_EQ(plies, 4);
+    Stockfish::Color attackers = Stockfish::BLACK;
+    EXPECT_EQ(frozen_race_board(board, attackers), BOARD_A);
+    EXPECT_EQ(attackers, Stockfish::WHITE);
+}
+
+TEST_F(MateRaceTest, AFrozenTeamThatMatesOnTheOtherBoardWinsTheRace) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_A, move_of(board, BOARD_A, "Q@g8"));
+    // The lead pays for (pass, Nf7#).
+    board.set_fen(BOARD_B, "6rk/6pp/8/4N3/8/8/8/6K1[] w - - 0 1");
+    EXPECT_NE(prove_race(board, Stockfish::BLACK, 1000),
+              Agent::RaceVerdict::PROVEN);
+}
+
+TEST_F(MateRaceTest, APendingFreezeIsProvenThroughTheFreezingMove) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    // Black's team on turn on board B only; White's Q@g8 still to come.
+    board.set_fen(BOARD_B, kQuietBoardB);
+    Stockfish::Color attackers = Stockfish::BLACK;
+    EXPECT_EQ(frozen_race_board(board, attackers), BOARD_A);
+    EXPECT_EQ(attackers, Stockfish::WHITE);
+    EXPECT_EQ(prove_race(board, Stockfish::BLACK, 0),
+              Agent::RaceVerdict::PROVEN);
+}
+
+TEST_F(MateRaceTest, APendingFreezeProofNamesTheFreezingMove) {
+    Board board;
+    board.set_fen(BOARD_A, kFreezeBoardA);
+    board.push_move(BOARD_B, move_of(board, BOARD_B, "b2c3"));
+    // Black's team has played on board B; White to act, Q@g8 on offer.
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 5000000;
+    budget.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    JointActionCandidate action;
+    ASSERT_EQ(Agent::prove_frozen_race(
+                  board, Stockfish::WHITE,
+                  TimeState::clocked(Stockfish::BLACK, 0, 1100, 1000),
+                  Stockfish::WHITE, BOARD_A,
+                  SearchParams::FROZEN_RACE_MAX_ATTACKER_MOVES, budget,
+                  nullptr, nullptr, &action),
+              Agent::RaceVerdict::PROVEN);
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "Q@g8");
+}
+
+TEST_F(MateRaceTest, ARaceTerminalFollowsTheTreesPrecedence) {
+    Board board;
+    // Q@g7# on board A also takes away the capture White's team needs to feed
+    // a blocker against Ra8+ on board B: both teams are mated at once. The
+    // tree, with Black to play, scores that a win for Black; so must the race.
+    board.set_fen(BOARD_A, "7k/8/4bK2/6N1/8/8/8/8[Q] w - - 0 1");
+    board.set_fen(BOARD_B, "R6k/6pp/8/8/8/8/6PP/6K1[] b - - 0 1");
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 5000000;
+    budget.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    EXPECT_NE(Agent::prove_frozen_race(
+                  board, Stockfish::WHITE,
+                  TimeState::clocked(Stockfish::BLACK, 0, 1100, 1000),
+                  Stockfish::WHITE, BOARD_A,
+                  SearchParams::FROZEN_RACE_MAX_ATTACKER_MOVES, budget),
+              Agent::RaceVerdict::PROVEN);
+}
+
+TEST_F(MateRaceTest, AFreezeThatNeedsAFeedIsDetected) {
+    Board board;
+    // Index 47 of the game: the queen White's Q@g8 needs is on c1 of board B,
+    // where Black's knight on e2 can take it.
+    board.set_fen(BOARD_A,
+        "r2q1r1k/ppp3pp/2np1p2/2bBp1B1/4P2B/3P1N1b/PPP2P1P/R2Q1RK1[N] w - - 0 12");
+    board.set_fen(BOARD_B,
+        "r1b1k2r/pppq1pp1/2n4p/3pPp1N/3Pn2B/2b2N2/PPP1nPPP/R1Q2R1K[P] b kq - 3 13");
+    Stockfish::Color attackers = Stockfish::BLACK;
+    EXPECT_EQ(frozen_race_board(board, attackers), BOARD_A);
+    EXPECT_EQ(attackers, Stockfish::WHITE);
+
+    board.set_fen(BOARD_A, kQuietBoardB);
+    board.set_fen(BOARD_B, kQuietBoardB);
+    EXPECT_EQ(frozen_race_board(board, attackers), -1);
+}
+
+// Measures the frozen-race certifier on game 186347789239. Opt-in: set
+// HIVEMIND_RACE_MEASURE=<seconds per case>.
+TEST_F(MateRaceTest, MeasureFrozenRaceOnTheGame) {
+    const char* seconds = std::getenv("HIVEMIND_RACE_MEASURE");
+    if (!seconds) {
+        GTEST_SKIP() << "set HIVEMIND_RACE_MEASURE to run";
+    }
+    struct Case {
+        const char* name;
+        const char* boardA;
+        const char* boardB;
+        std::vector<std::pair<int, const char*>> moves;
+        int64_t blackLead;
+        Stockfish::Color toPlay;
+    };
+    const std::vector<Case> cases = {
+        {"frozen, after Q@g8", kFreezeBoardA, kFreezeBoardB,
+         {{BOARD_B, "b2c3"}, {BOARD_A, "Q@g8"}, {BOARD_B, "c1e2"}},
+         5300, Stockfish::BLACK},
+        {"index 48, Q@g8 pending", kFreezeBoardA, kFreezeBoardB, {},
+         4300, Stockfish::BLACK},
+        {"index 47, Nxc1 then Q@g8",
+         "r2q1r1k/ppp3pp/2np1p2/2bBp1B1/4P2B/3P1N1b/PPP2P1P/R2Q1RK1[N] w - - 0 12",
+         "r1b1k2r/pppq1pp1/2n4p/3pPp1N/3Pn2B/2b2N2/PPP1nPPP/R1Q2R1K[P] b kq - 3 13",
+         {}, 4000, Stockfish::WHITE},
+    };
+    for (const Case& game : cases) {
+        Board board;
+        board.set_fen(BOARD_A, game.boardA);
+        board.set_fen(BOARD_B, game.boardB);
+        for (const auto& [boardNum, uci] : game.moves) {
+            board.push_move(boardNum, move_of(board, boardNum, uci));
+        }
+        for (int depth = 1; depth <= 14; ++depth) {
+            Agent::MateSearchBudget budget;
+            budget.remainingNodes = 1ULL << 40;
+            budget.deadline = std::chrono::steady_clock::now()
+                + std::chrono::seconds(std::atoi(seconds));
+            const uint64_t startNodes = budget.remainingNodes;
+            const auto start = std::chrono::steady_clock::now();
+            int plies = 0;
+            std::string line;
+            const Agent::RaceVerdict verdict = Agent::prove_frozen_race(
+                board, Stockfish::WHITE,
+                TimeState::clocked(Stockfish::BLACK, game.blackLead, 1100, 1000),
+                game.toPlay, BOARD_A, depth, budget, &plies, &line);
+            const double elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - start).count();
+            std::printf("%-28s A-moves %2d %s plies %d nodes %llu %.2fs %s\n",
+                        game.name, depth,
+                        verdict == Agent::RaceVerdict::PROVEN ? "PROVEN"
+                        : verdict == Agent::RaceVerdict::REFUTED ? "REFUTED"
+                        : "UNKNOWN",
+                        plies,
+                        static_cast<unsigned long long>(
+                            startNodes - budget.remainingNodes),
+                        elapsed, line.c_str());
+            std::fflush(stdout);
+            if (verdict != Agent::RaceVerdict::REFUTED) {
+                break;
+            }
+        }
+    }
 }

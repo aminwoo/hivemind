@@ -142,6 +142,8 @@ struct Engine::OrtState {
     struct Worker {
         std::vector<__half> inputHalf;
         std::vector<float> inputFloat;
+        // A legacy network's planes, the clock planes dropped.
+        std::vector<__half> legacyInputHalf;
         std::vector<Ort::Value> outputs;
         std::vector<std::vector<__half>> convertedOutputs;
         std::future<bool> pending;
@@ -271,6 +273,19 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         }
 #endif
         state.usesFp16 = inputType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+        const auto inputShape = session.GetInputTypeInfo(0)
+                                    .GetTensorTypeAndShapeInfo()
+                                    .GetShape();
+        m_inputChannels = inputShape.size() == 4 && inputShape[1] > 0
+            ? static_cast<int>(inputShape[1]) : NB_INPUT_CHANNELS;
+        if (m_inputChannels != NB_INPUT_CHANNELS
+            && m_inputChannels != NB_LEGACY_INPUT_CHANNELS) {
+            std::cerr << "Network takes " << m_inputChannels
+                      << " input planes; expected " << NB_INPUT_CHANNELS
+                      << " (or " << NB_LEGACY_INPUT_CHANNELS
+                      << " for a network from before the clock planes)" << std::endl;
+            return false;
+        }
         if (state.usesFp16 && !onCoreML) {
             std::cout
                 << "info string warning FP16 inference is usually slow on CPU; "
@@ -351,12 +366,15 @@ bool Engine::loadNetwork(const std::string& onnxFile,
         state.workers.resize(workerCount);
         for (size_t i = 0; i < state.workers.size(); ++i) {
             auto& worker = state.workers[i];
-            const size_t inputElements =
-                static_cast<size_t>(m_batchSize) * NB_INPUT_VALUES();
+            const size_t inputElements = static_cast<size_t>(m_batchSize)
+                * m_inputChannels * BOARD_HEIGHT * BOARD_WIDTH;
             if (state.usesFp16) {
                 worker.inputHalf.resize(inputElements);
             } else {
                 worker.inputFloat.resize(inputElements);
+            }
+            if (m_inputChannels != NB_INPUT_CHANNELS) {
+                worker.legacyInputHalf.resize(inputElements);
             }
             worker.convertedOutputs.resize(outputCount);
             worker.session = state.sessions[i % state.sessions.size()].get();
@@ -395,7 +413,13 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
     }
 
     // Copy rather than alias the caller's buffer: the search reuses its
-    // double-buffered observation slabs as soon as it has enqueued.
+    // double-buffered observation slabs as soon as it has enqueued. A legacy
+    // network gets the planes without the clock planes.
+    if (m_inputChannels != NB_INPUT_CHANNELS) {
+        drop_clock_planes(obs, worker.legacyInputHalf.data(),
+                          static_cast<size_t>(m_batchSize));
+        obs = worker.legacyInputHalf.data();
+    }
     if (m_ort->usesFp16) {
         std::memcpy(worker.inputHalf.data(), obs,
                     worker.inputHalf.size() * sizeof(__half));
@@ -406,10 +430,11 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
 
     auto& state = *m_ort;
     const int64_t batch = m_batchSize;
-    worker.pending = std::async(std::launch::async, [&state, &worker, batch]() {
+    const int64_t channels = m_inputChannels;
+    worker.pending = std::async(std::launch::async, [&state, &worker, batch, channels]() {
         try {
             const std::array<int64_t, 4> shape{
-                batch, NB_INPUT_CHANNELS, BOARD_HEIGHT, BOARD_WIDTH};
+                batch, channels, BOARD_HEIGHT, BOARD_WIDTH};
             Ort::Value input{nullptr};
             if (state.usesFp16) {
                 input = Ort::Value::CreateTensor(

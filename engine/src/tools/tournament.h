@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "search/search_params.h"
+#include "tools/clock_sampling.h"
 #include "Fairy-Stockfish/src/types.h"
 
 class Engine;
@@ -74,6 +75,24 @@ struct TournamentConfig {
     double sprtBeta = 0.05;
     uint64_t seed = 1;
     std::filesystem::path outputDirectory = "tournament_results";
+    // Clock model: each opening pair draws a starting lead and per-team move
+    // times from `clock`; the positions file's time-advantage flags are then
+    // unused. Both games of a pair share the clock, so the contender plays
+    // each side of it once.
+    bool clockModel = false;
+    ClockSampling clock;
+    // A side that searches on the flag model in a clocked game: before each
+    // search its TimeAdvantage is whether the clock has it ahead right now,
+    // and it searches as if that advantage lasted the whole game. The game is
+    // still played and adjudicated on the clock, so it can only sit while it
+    // really leads. This is how a pre-clock engine plays a clocked game.
+    bool contenderFlagSearch = false;
+    bool baselineFlagSearch = false;
+
+    bool searchesOnClock(bool isContender) const {
+        return clockModel
+            && !(isContender ? contenderFlagSearch : baselineFlagSearch);
+    }
 
     float pwCoefficientFor(bool isContender) const {
         return isContender ? contenderPwCoefficient : baselinePwCoefficient;
@@ -161,6 +180,8 @@ struct TournamentResult {
     TournamentBreakdown asBlack;
     TournamentBreakdown upTime;
     TournamentBreakdown downTime;
+    // Clock model only: games the contender started with a lead of zero.
+    TournamentBreakdown levelTime;
     size_t checkmates = 0;
     size_t noLegalActions = 0;
     size_t drawnTerminations = 0;

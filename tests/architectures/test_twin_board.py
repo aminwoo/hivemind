@@ -1,18 +1,27 @@
 import pytest
 import torch
 
-from hivemind.architectures.twin_board import TWIN_BOARD_SIZES, get_twin_board_model
-from hivemind.constants import NUM_BUGHOUSE_CHANNELS_PER_BOARD
+from hivemind.architectures.twin_board import (
+    TWIN_BOARD_SIZES,
+    get_twin_board_model,
+    load_twin_board_checkpoint,
+    widen_to_clock_planes,
+)
+from hivemind.constants import (
+    NUM_BUGHOUSE_CHANNELS_PER_BOARD,
+    NUM_CLOCKED_CHANNELS,
+    NUM_CLOCKED_CHANNELS_PER_BOARD,
+)
 
 
 def _swap(x):
-    a, b = x.split(NUM_BUGHOUSE_CHANNELS_PER_BOARD, dim=1)
+    a, b = x.split(NUM_CLOCKED_CHANNELS_PER_BOARD, dim=1)
     return torch.cat((b, a), dim=1)
 
 
 def test_outputs_match_the_engine_contract():
     model = get_twin_board_model("twin-s").eval()
-    value, (pi_a, pi_b), auxiliary, wdl, plys = model(torch.rand(3, 74, 8, 8))
+    value, (pi_a, pi_b), auxiliary, wdl, plys = model(torch.rand(3, NUM_CLOCKED_CHANNELS, 8, 8))
     assert value.shape == (3, 1) and wdl.shape == (3, 3) and plys.shape == (3, 1)
     assert pi_a.shape == pi_b.shape == (3, 4672)
     assert auxiliary.shape == (3, 4)
@@ -38,7 +47,7 @@ def test_swapping_boards_swaps_policies_and_keeps_the_value(variant):
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.add_(0.01 * torch.randn_like(parameter))
-    x = torch.rand(4, 74, 8, 8)
+    x = torch.rand(4, NUM_CLOCKED_CHANNELS, 8, 8)
     with torch.no_grad():
         value, (pi_a, pi_b), _, wdl, plys = model(x)
         value_s, (pi_a_s, pi_b_s), _, wdl_s, plys_s = model(_swap(x))
@@ -56,6 +65,39 @@ def test_all_sizes_build():
 
 def test_variants_keep_the_engine_contract():
     model = get_twin_board_model("twin-s", mid_attention=True, value_diff=True).eval()
-    value, (pi_a, pi_b), auxiliary, wdl, plys = model(torch.rand(2, 74, 8, 8))
+    value, (pi_a, pi_b), auxiliary, wdl, plys = model(torch.rand(2, NUM_CLOCKED_CHANNELS, 8, 8))
     assert value.shape == (2, 1) and pi_a.shape == pi_b.shape == (2, 4672) and auxiliary.shape == (2, 4)
     assert model.mid_attention_after == 3  # after the 4th of twin-s's 8 blocks
+
+
+def _without_clock_planes(x):
+    old = NUM_BUGHOUSE_CHANNELS_PER_BOARD
+    a, b = x.split(NUM_CLOCKED_CHANNELS_PER_BOARD, dim=1)
+    return torch.cat((a[:, :old], b[:, :old]), dim=1)
+
+
+def test_a_widened_network_computes_what_it_did(tmp_path):
+    """A network from before the clock planes, widened, gives its old outputs
+    whatever the clock planes hold, until training gives them weight."""
+    torch.manual_seed(0)
+    old = get_twin_board_model("twin-s", planes_per_board=NUM_BUGHOUSE_CHANNELS_PER_BOARD).eval()
+    with torch.no_grad():
+        for parameter in old.parameters():
+            parameter.add_(0.01 * torch.randn_like(parameter))
+    path = tmp_path / "old.pt"
+    torch.save({"model": old.state_dict(), "size": "twin-s", "variant": {}}, path)
+
+    widened, size, variant = load_twin_board_checkpoint(path)
+    widened.eval()
+    assert size == "twin-s" and variant["planes_per_board"] == NUM_CLOCKED_CHANNELS_PER_BOARD
+    x = torch.rand(3, NUM_CLOCKED_CHANNELS, 8, 8)
+    with torch.no_grad():
+        expected = old(_without_clock_planes(x))
+        actual = widened(x)
+    for e, a in zip((expected[0], *expected[1], expected[3], expected[4]),
+                    (actual[0], *actual[1], actual[3], actual[4])):
+        torch.testing.assert_close(a, e, atol=1e-6, rtol=1e-5)
+    # Widening a widened network changes nothing.
+    state = widened.state_dict()
+    assert widen_to_clock_planes(state) is state
+

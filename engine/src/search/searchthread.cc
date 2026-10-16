@@ -1,5 +1,6 @@
 #include "search/searchthread.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -10,6 +11,7 @@
 #include "nn/backend_compat.h"
 
 #include "environment/joint_action.h"
+#include "search/agent.h"
 #include "common/utils.h"
 #include "common/globals.h"
 
@@ -35,9 +37,15 @@ std::vector<Stockfish::Move> immediate_mates_on_board(
     return mates;
 }
 
+/**
+ * @param time The clock at this position. The defenders, on turn on one board
+ *        only, reply without charge; the opponents' mating move is then made
+ *        on turn on both boards after a real reply, and charged, so the mate
+ *        is judged under the clock it would actually be played on.
+ */
 bool has_unavoidable_waiting_board_mate(Board& board,
                                         Stockfish::Color teamToPlay,
-                                        bool teamToPlayHasTimeAdvantage,
+                                        const TimeState& time,
                                         bool waitingMateWinsRace,
                                         const std::array<int, 2>& boardSearchPlies,
                                         WaitingMateContinuation* continuation) {
@@ -49,11 +57,25 @@ bool has_unavoidable_waiting_board_mate(Board& board,
     if (boardAOnTurn == boardBOnTurn) {
         return false;
     }
+    const bool teamToPlayHasTimeAdvantage = time.can_sit(teamToPlay);
+    // On turn on one board, the defenders' reply costs nothing. A real reply
+    // leaves the opponents on turn on both boards, so their mating move is
+    // charged; after a sit the defenders keep the reply board, and it is not.
+    const TimeState afterReply = time.after(teamToPlay, false);
+    const TimeState afterMateFollowingMove = afterReply.after(~teamToPlay, true);
+    const TimeState afterMateFollowingSit = afterReply.after(~teamToPlay, false);
+    const bool opponentHasTimeAdvantage = afterReply.can_sit(~teamToPlay);
 
     const int activeBoard = boardAOnTurn ? BOARD_A : BOARD_B;
     const int waitingBoard = 1 - activeBoard;
+    // Candidates are the moves that mate under the weakest right the
+    // defenders could hold when they land; each is checked below under the
+    // clock of the reply it follows. Under a fixed flag these are one.
+    const bool weakestDefenderRight = teamToPlayHasTimeAdvantage
+        && afterMateFollowingMove.can_sit(teamToPlay)
+        && afterMateFollowingSit.can_sit(teamToPlay);
     const std::vector<Stockfish::Move> matingMoves = immediate_mates_on_board(
-        board, waitingBoard, teamToPlay, teamToPlayHasTimeAdvantage);
+        board, waitingBoard, teamToPlay, weakestDefenderRight);
     if (matingMoves.empty()) {
         return false;
     }
@@ -75,21 +97,19 @@ bool has_unavoidable_waiting_board_mate(Board& board,
 
         bool matePersists = false;
         Stockfish::Move persistentMate = Stockfish::MOVE_NONE;
-        std::array<int, 2> replySearchPlies = boardSearchPlies;
-        if (reply != Stockfish::MOVE_NONE) {
-            ++replySearchPlies[activeBoard];
-        }
+        const TimeState& afterMate = reply != Stockfish::MOVE_NONE
+            ? afterMateFollowingMove : afterMateFollowingSit;
         if ((waitingMateWinsRace
              || !board.is_checkmate(
-                 ~teamToPlay, !teamToPlayHasTimeAdvantage))
-            && !board.is_draw(replySearchPlies)) {
+                 ~teamToPlay, opponentHasTimeAdvantage))
+            && !board.is_draw()) {
             for (Stockfish::Move matingMove : matingMoves) {
                 if (!board.is_legal_move(waitingBoard, matingMove)) {
                     continue;
                 }
                 board.push_move(waitingBoard, matingMove);
                 matePersists = board.is_checkmate(
-                    teamToPlay, teamToPlayHasTimeAdvantage);
+                    teamToPlay, afterMate.can_sit(teamToPlay));
                 board.pop_move(waitingBoard);
                 if (matePersists) {
                     persistentMate = matingMove;
@@ -127,19 +147,34 @@ TerminalOutcome classify_terminal_position(Board& board,
                                              bool partnerBoardAgnostic,
                                              bool allowMatedTeamToMove,
                                              WaitingMateContinuation* waitingMate) {
+    return classify_terminal_position(
+        board, teamToPlay, rootTeam,
+        TimeState::legacy(rootTeam, rootTeamHasTimeAdvantage),
+        boardSearchPlies, endInPly, partnerBoardAgnostic,
+        allowMatedTeamToMove, waitingMate);
+}
+
+TerminalOutcome classify_terminal_position(Board& board,
+                                             Stockfish::Color teamToPlay,
+                                             Stockfish::Color rootTeam,
+                                             const TimeState& time,
+                                             const std::array<int, 2>& boardSearchPlies,
+                                             int* endInPly,
+                                             bool partnerBoardAgnostic,
+                                             bool allowMatedTeamToMove,
+                                             WaitingMateContinuation* waitingMate) {
     if (waitingMate) {
         *waitingMate = {};
     }
     if (endInPly) {
         *endInPly = 0;
     }
-    const bool teamToPlayHasTimeAdvantage = teamToPlay == rootTeam
-        ? rootTeamHasTimeAdvantage
-        : !rootTeamHasTimeAdvantage;
+    const bool teamToPlayHasTimeAdvantage = time.can_sit(teamToPlay);
+    const bool opponentHasTimeAdvantage = time.can_sit(~teamToPlay);
     Board::LegalMoveCache legalMoveCache;
 
     if (board.is_checkmate(
-            ~teamToPlay, !teamToPlayHasTimeAdvantage, &legalMoveCache,
+            ~teamToPlay, opponentHasTimeAdvantage, &legalMoveCache,
             partnerBoardAgnostic)) {
         if (endInPly) {
             *endInPly = 1;
@@ -163,14 +198,20 @@ TerminalOutcome classify_terminal_position(Board& board,
         }
         return TerminalOutcome::LOSS;
     }
-    if (board.is_draw(boardSearchPlies)) {
+    // Only the game's own draws end a line: a threefold repetition on
+    // either board, or the fifty-move rule. A position seen once before -
+    // in the game or earlier in the search - is not one: the side to move
+    // there may play differently this time, and in bughouse a repetition on
+    // one board leaves the other free to decide the game. It also keeps a
+    // node's verdict independent of where the search started, which tree
+    // reuse relies on.
+    if (board.is_draw()) {
         return TerminalOutcome::DRAW;
     }
     if (!partnerBoardAgnostic
         && (boardSearchPlies[BOARD_A] > 0 || boardSearchPlies[BOARD_B] > 0)
         && has_unavoidable_waiting_board_mate(
-            board, teamToPlay, teamToPlayHasTimeAdvantage,
-            teamToPlay == rootTeam,
+            board, teamToPlay, time, teamToPlay == rootTeam,
             boardSearchPlies, waitingMate)) {
         if (endInPly) {
             // One forced reply, then the opponent's mating move. Terminal
@@ -195,6 +236,193 @@ TerminalOutcome classify_terminal_position(Board& board,
         board, teamToPlay, rootTeam, rootTeamHasTimeAdvantage,
         {searchPly, searchPly}, endInPly, partnerBoardAgnostic,
         allowMatedTeamToMove, waitingMate);
+}
+
+bool board_is_frozen(Board& board, int boardNum, Stockfish::Color team) {
+    if (board.is_single_board()) {
+        return false;
+    }
+    const Stockfish::Color side = boardNum == BOARD_A ? team : ~team;
+    const Stockfish::Position& position = *board.pos[boardNum];
+    if (position.side_to_move() != side || !position.checkers()) {
+        return false;
+    }
+    // A check with an empty square between king and checker could be blocked
+    // by a piece the partner has yet to capture, so only a check no drop can
+    // meet - double, contact or a leaper's - fixes the team's moves here for
+    // good, whatever the other board does.
+    const Stockfish::Bitboard checkers = position.checkers();
+    if (!Stockfish::more_than_one(checkers)) {
+        const Stockfish::Square king = position.square<Stockfish::KING>(side);
+        if (Stockfish::between_bb(king, Stockfish::lsb(checkers))
+            & ~position.pieces()) {
+            return false;
+        }
+    }
+    const std::vector<Stockfish::Move> moves = board.legal_moves(boardNum);
+    if (moves.empty()) {
+        return false;
+    }
+    for (Stockfish::Move move : moves) {
+        board.push_move(boardNum, move);
+        // A move that draws - the fifty-move rule, a threefold - ends the game
+        // before any mate can answer it.
+        if (board.is_draw()) {
+            board.pop_move(boardNum);
+            return false;
+        }
+        // The mate must hold however the partner board stands, as if the
+        // partner could always supply a blocker: it is played straight after
+        // this move, and nothing on the other board can come between them.
+        bool answered = false;
+        for (Stockfish::Move mate : board.checking_moves(boardNum)) {
+            board.push_move(boardNum, mate);
+            answered = board.is_checkmate(team, true, nullptr, true);
+            board.pop_move(boardNum);
+            if (answered) {
+                break;
+            }
+        }
+        board.pop_move(boardNum);
+        if (!answered) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Stockfish::Move freezing_move(Board& board, int boardNum, Stockfish::Color team) {
+    if (board.is_single_board()) {
+        return Stockfish::MOVE_NONE;
+    }
+    const Stockfish::Color side = boardNum == BOARD_A ? team : ~team;
+    if (board.side_to_move(boardNum) != side) {
+        return Stockfish::MOVE_NONE;
+    }
+    for (Stockfish::Move move : board.checking_moves(boardNum)) {
+        board.push_move(boardNum, move);
+        const bool frozen = !board.is_draw()
+            && board_is_frozen(board, boardNum, ~team);
+        board.pop_move(boardNum);
+        if (frozen) {
+            return move;
+        }
+    }
+    return Stockfish::MOVE_NONE;
+}
+
+int frozen_race_board(Board& board, Stockfish::Color& outAttackers,
+                      const std::function<bool()>& abort) {
+    if (board.is_single_board()) {
+        return -1;
+    }
+    for (int raceBoard : {BOARD_A, BOARD_B}) {
+        const Stockfish::Color side = board.side_to_move(raceBoard);
+        const Stockfish::Color onTurn = raceBoard == BOARD_A ? side : ~side;
+        if (board_is_frozen(board, raceBoard, onTurn)) {
+            outAttackers = ~onTurn;
+            return raceBoard;
+        }
+        if (freezing_move(board, raceBoard, onTurn) != Stockfish::MOVE_NONE) {
+            outAttackers = onTurn;
+            return raceBoard;
+        }
+        // The freezing piece may still be on the other board, to be captured
+        // there and handed across. The capture is made for real, so a
+        // promoted piece arrives as the pawn it was.
+        const int other = 1 - raceBoard;
+        const Stockfish::Color otherSide = other == BOARD_A ? onTurn : ~onTurn;
+        if (board.side_to_move(other) != otherSide) {
+            continue;
+        }
+        for (Stockfish::Move capture : board.legal_moves(other)) {
+            if (!board.is_capture(other, capture)) {
+                continue;
+            }
+            if (abort && abort()) {
+                return -1;
+            }
+            board.push_move(other, capture);
+            const bool freezes = freezing_move(board, raceBoard, onTurn)
+                != Stockfish::MOVE_NONE;
+            board.pop_move(other);
+            if (freezes) {
+                outAttackers = onTurn;
+                return raceBoard;
+            }
+        }
+    }
+    return -1;
+}
+
+bool frozen_board_loss(Board& board,
+                       Stockfish::Color teamToPlay,
+                       const TimeState& time) {
+    if (board.is_single_board()) {
+        return false;
+    }
+    const bool onTurn[2] = {board.side_to_move(BOARD_A) == teamToPlay,
+                            board.side_to_move(BOARD_B) == ~teamToPlay};
+    for (int frozen : {BOARD_A, BOARD_B}) {
+        if (!onTurn[frozen] || !board_is_frozen(board, frozen, teamToPlay)) {
+            continue;
+        }
+        // Every legal action, as the tree would generate it.
+        std::vector<Stockfish::Move> moves[2];
+        for (int boardNum : {BOARD_A, BOARD_B}) {
+            if (onTurn[boardNum]) {
+                moves[boardNum] = board.legal_moves(boardNum);
+            }
+        }
+        const JointActionRules rules{
+            onTurn[BOARD_A], onTurn[BOARD_B], time.can_sit(teamToPlay),
+            !moves[BOARD_A].empty(), !moves[BOARD_B].empty()};
+        for (std::vector<Stockfish::Move>& boardMoves : moves) {
+            boardMoves.push_back(Stockfish::MOVE_NONE);
+        }
+        const TimeState afterAction =
+            time.after(teamToPlay, onTurn[BOARD_A] && onTurn[BOARD_B]);
+        const int other = 1 - frozen;
+        bool sawAction = false;
+        for (Stockfish::Move moveA : moves[BOARD_A]) {
+            for (Stockfish::Move moveB : moves[BOARD_B]) {
+                const bool captureA = moveA != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_A, moveA);
+                const bool captureB = moveB != Stockfish::MOVE_NONE
+                    && board.is_capture(BOARD_B, moveB);
+                if (!is_joint_action_legal(rules, moveA, moveB,
+                                           captureA, captureB)) {
+                    continue;
+                }
+                sawAction = true;
+                // An action that stays off the frozen board - a sit, or a
+                // pass bought with a capture - leaves the race to be played.
+                if ((frozen == BOARD_A ? moveA : moveB) == Stockfish::MOVE_NONE) {
+                    return false;
+                }
+                board.make_moves(moveA, moveB);
+                // The mate on the frozen board answers this action, unless
+                // the action itself ends the game: a draw, a win for the team,
+                // or a capture whose piece hands the partner an immediate
+                // mate, which the partner plays before the answer lands. The
+                // opponents also need an action holding the mate.
+                const bool escapes = board.is_draw()
+                    || board.is_checkmate(
+                        ~teamToPlay, afterAction.can_sit(~teamToPlay))
+                    || ((captureA || captureB)
+                        && Agent::has_immediate_mate(
+                            board, teamToPlay, afterAction))
+                    || !(afterAction.can_sit(~teamToPlay)
+                         || board.has_any_legal_move(other));
+                board.unmake_moves(moveA, moveB);
+                if (escapes) {
+                    return false;
+                }
+            }
+        }
+        return sawAction;
+    }
+    return false;
 }
 
 SearchThread::SearchThread()
@@ -353,7 +581,7 @@ bool SearchThread::wait_for_pending_evaluation(Node& node) {
 }
 
 void SearchThread::collect_batch(SearchBatch& batch, Board& board,
-                                 bool teamHasTimeAdvantage,
+                                 const TimeState& rootTime,
                                  bool allowReservationWait) {
     const int batchSize = currentBatchSize;
     vector<LeafContext>& batchContexts = batch.contexts;
@@ -405,7 +633,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         
         // Select and expand to get a leaf node (MCGS: with transposition lookup)
         LeafSelection selection = select_and_expand(
-            board, teamHasTimeAdvantage, &blockedNodes);
+            board, rootTime, &blockedNodes);
         if (!selection.leaf) {
             if (selection.pendingEvaluation) {
                 reservationCollisions++;
@@ -469,7 +697,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         ctx.leaf = leaf;
         ctx.hasEvaluationReservation = selection.hasEvaluationReservation;
         ctx.teamToPlay = leaf->get_team_to_play();
-        ctx.sitPlaneActive = (ctx.teamToPlay == root->get_team_to_play()) == teamHasTimeAdvantage;
+        ctx.time = selection.time;
         
         // Check for terminal states
         // Track search moves independently per board. A combined tree depth is
@@ -514,16 +742,26 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
         int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
             board, ctx.teamToPlay, root->get_team_to_play(),
-            teamHasTimeAdvantage, boardSearchPlies, &terminalEndInPly,
-            false, searchPly == 0 && !teamHasTimeAdvantage);
-        if (terminalOutcome != TerminalOutcome::NONE) {
+            ctx.time, boardSearchPlies, &terminalEndInPly,
+            false, searchPly == 0 && !ctx.time.can_sit(ctx.teamToPlay));
+        // Only the tree adopts the frozen-board loss. The mate provers share
+        // classify_terminal_position() and report shortest lines, which a
+        // loss three plies out would lengthen.
+        TerminalOutcome treeOutcome = terminalOutcome;
+        if (treeOutcome == TerminalOutcome::NONE && searchPly > 0
+            && frozen_board_loss(board, ctx.teamToPlay, ctx.time)) {
+            // The forced move on the frozen board, then the mate there.
+            treeOutcome = TerminalOutcome::LOSS;
+            terminalEndInPly = 3;
+        }
+        if (treeOutcome != TerminalOutcome::NONE) {
             ctx.isTerminal = true;
-            if (terminalOutcome == TerminalOutcome::WIN) {
+            if (treeOutcome == TerminalOutcome::WIN) {
                 ctx.terminalValue = 1.0f;
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
                     ctx.leaf->mark_as_win(terminalEndInPly);
                 }
-            } else if (terminalOutcome == TerminalOutcome::LOSS) {
+            } else if (treeOutcome == TerminalOutcome::LOSS) {
                 ctx.terminalValue = -1.0f;
                 if (SearchParams::ENABLE_MCTS_SOLVER) {
                     ctx.leaf->mark_as_loss(terminalEndInPly);
@@ -557,11 +795,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             restore_selection();
             continue;
         }
-        bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == root->get_team_to_play())
-            ? teamHasTimeAdvantage
-            : !teamHasTimeAdvantage;
-        ctx.leafHash = board.search_hash_key(
-            ctx.teamToPlay, leafTeamHasTimeAdvantage);
+        ctx.leafHash = board.search_hash_key(ctx.teamToPlay, ctx.time);
 
         ctx.boardAOnTurn = board.side_to_move(BOARD_A) == ctx.teamToPlay;
         ctx.boardBOnTurn = board.side_to_move(BOARD_B) == ~ctx.teamToPlay;
@@ -592,8 +826,8 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                         ctx.capturesB, ctx.policyIndicesB);
 
         // Convert board to planes for this batch slot
-        board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(), 
-                        ctx.teamToPlay, ctx.sitPlaneActive);
+        board_to_planes(board, obs + validInferenceCount * NB_INPUT_VALUES(),
+                        ctx.teamToPlay, ctx.time);
         validInferenceCount++;
         
         batchContexts.push_back(std::move(ctx));
@@ -622,7 +856,6 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
 
 void SearchThread::process_batch(
     SearchBatch& batch,
-    bool teamHasTimeAdvantage,
     const Engine::HalfInferenceOutputs& inferenceOutputs) {
     vector<LeafContext>& batchContexts = batch.contexts;
     int inferenceIdx = 0;
@@ -664,10 +897,9 @@ void SearchThread::process_batch(
                     + inferenceIdx * jointFactorRank * jointVocabularySize
                 : nullptr;
 
-            // Compute whether the team at this leaf has time advantage
-            // Time advantage alternates: if root team has it, opponent team doesn't
-            Stockfish::Color rootTeam = root->get_team_to_play();
-            bool leafTeamHasTimeAdvantage = (ctx.teamToPlay == rootTeam) ? teamHasTimeAdvantage : !teamHasTimeAdvantage;
+            // Whether the team at this leaf may sit, from the clock state its
+            // path reached it with.
+            const bool leafTeamHasTimeAdvantage = ctx.time.can_sit(ctx.teamToPlay);
             
             vector<float> priorsA;
             vector<float> priorsB;
@@ -819,14 +1051,19 @@ void SearchThread::abort_batch(SearchBatch& batch) {
 }
 
 void SearchThread::run_iteration(Board& board, Engine* engine,
-                                 bool teamHasTimeAdvantage) {
+                                 const TimeState& rootTime,
+                                 const std::atomic<bool>* keepRunning) {
     ensureBufferSize(engine->getBatchSize());
 
     if (pendingBatchIndex < 0) {
         SearchBatch& initialBatch = batches[0];
-        collect_batch(initialBatch, board, teamHasTimeAdvantage, true);
+        collect_batch(initialBatch, board, rootTime, true);
         if (initialBatch.validInferenceCount == 0) {
-            process_batch(initialBatch, teamHasTimeAdvantage, {});
+            process_batch(initialBatch, {});
+            return;
+        }
+        if (keepRunning && !keepRunning->load(std::memory_order_acquire)) {
+            abort_batch(initialBatch);
             return;
         }
         if (!engine->enqueueInferenceHalf(
@@ -842,7 +1079,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
     SearchBatch& completedBatch = batches[completedBatchIndex];
     SearchBatch& lookaheadBatch = batches[lookaheadBatchIndex];
 
-    collect_batch(lookaheadBatch, board, teamHasTimeAdvantage, false);
+    collect_batch(lookaheadBatch, board, rootTime, false);
 
     Engine::HalfInferenceOutputs inferenceOutputs;
     if (!engine->synchronizeInferenceHalf(
@@ -853,10 +1090,16 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
         throw std::runtime_error("Batch inference completion failed");
     }
     pendingBatchIndex = -1;
-    process_batch(completedBatch, teamHasTimeAdvantage, inferenceOutputs);
+    process_batch(completedBatch, inferenceOutputs);
 
+    // A mate or stop may land while inference is in flight. Release the
+    // lookahead reservations instead of submitting another batch afterward.
+    if (keepRunning && !keepRunning->load(std::memory_order_acquire)) {
+        abort_batch(lookaheadBatch);
+        return;
+    }
     if (lookaheadBatch.validInferenceCount == 0) {
-        process_batch(lookaheadBatch, teamHasTimeAdvantage, {});
+        process_batch(lookaheadBatch, {});
         return;
     }
     if (!engine->enqueueInferenceHalf(
@@ -868,7 +1111,7 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
 }
 
 void SearchThread::finish_pending_iteration(Board& board, Engine* engine,
-                                            bool teamHasTimeAdvantage) {
+                                            const TimeState& rootTime) {
     if (pendingBatchIndex < 0) {
         return;
     }
@@ -882,7 +1125,7 @@ void SearchThread::finish_pending_iteration(Board& board, Engine* engine,
         abort_batch(completedBatch);
         throw std::runtime_error("Batch inference completion failed");
     }
-    process_batch(completedBatch, teamHasTimeAdvantage, inferenceOutputs);
+    process_batch(completedBatch, inferenceOutputs);
 }
 
 void SearchThread::discard_pending_iteration(Board& board, Engine* engine) {
@@ -905,7 +1148,7 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
     const JointActionCandidate& action,
     shared_ptr<Node>& child,
     bool& hasEvaluationReservation,
-    bool teamHasTimeAdvantage) {
+    const TimeState& childTime) {
     if (!runtimeConfig.enableMCGS || !runtimeConfig.enableTranspositions
         || !transpositionTable) {
         return {child->is_expanded(), nullptr};
@@ -914,12 +1157,8 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
         return {child->is_expanded(), nullptr};
     }
 
-    const bool childTeamHasTimeAdvantage =
-        child->get_team_to_play() == root->get_team_to_play()
-        ? teamHasTimeAdvantage
-        : !teamHasTimeAdvantage;
     const uint64_t childHash = board.search_hash_key(
-        child->get_team_to_play(), childTeamHasTimeAdvantage);
+        child->get_team_to_play(), childTime);
     child->set_hash(childHash);
 
     shared_ptr<Node> canonicalNode = transpositionTable->insertOrGet(
@@ -978,11 +1217,23 @@ SearchThread::CanonicalChildResult SearchThread::canonicalize_child(
  * creating a new one. This transforms the tree into a DAG for better convergence.
  * 
  * @param board The current board state (will be modified during selection)
- * @param teamHasTimeAdvantage Whether the searching team has time advantage
+ * @param rootTime Clock state at the root. Each action on the way down is
+ *        charged to the team playing it, so every node is judged - who may
+ *        sit, its hash, its terminal status - by the clock its path reached.
  */
 LeafSelection SearchThread::select_and_expand(
     Board& board,
     bool teamHasTimeAdvantage,
+    const std::unordered_set<const Node*>* blockedNodes) {
+    const Stockfish::Color rootTeam = root
+        ? root->get_team_to_play() : Stockfish::WHITE;
+    return select_and_expand(
+        board, TimeState::legacy(rootTeam, teamHasTimeAdvantage), blockedNodes);
+}
+
+LeafSelection SearchThread::select_and_expand(
+    Board& board,
+    const TimeState& rootTime,
     const std::unordered_set<const Node*>* blockedNodes) {
     shared_ptr<Node> currentNode = rootOwner.lock();
     if (!currentNode) {
@@ -991,6 +1242,15 @@ LeafSelection SearchThread::select_and_expand(
     shared_ptr<Node> nextNode;
     int childIdx;
     bool hasEvaluationReservation = false;
+    TimeState pathTime = rootTime;
+    // The clock state after the current node's team plays its action, read
+    // from the position before that action is made.
+    auto time_after_action = [&](Node& node) {
+        TimeState next = pathTime;
+        const Stockfish::Color actingTeam = node.get_team_to_play();
+        next.advance(actingTeam, board.on_turn_on_both_boards(actingTeam));
+        return next;
+    };
 
     // Root node has no incoming action, -1 means no child selected yet
     trajectoryBuffer.emplace_back(currentNode, JointActionCandidate(), -1);
@@ -1045,12 +1305,13 @@ LeafSelection SearchThread::select_and_expand(
                 &expandedChildReserved);
             
             if (nextNode) {
+                const TimeState childTime = time_after_action(*currentNode);
                 // Make moves with the actual expanded action
                 board.make_moves(expandedAction.moveA, expandedAction.moveB);
 
                 const CanonicalChildResult canonicalResult = canonicalize_child(
                     board, currentNode.get(), childIdx, expandedAction, nextNode,
-                    expandedChildReserved, teamHasTimeAdvantage);
+                    expandedChildReserved, childTime);
                 if (canonicalResult.pendingEvaluation) {
                     return {
                         nullptr, false, canonicalResult.pendingEvaluation,
@@ -1070,6 +1331,7 @@ LeafSelection SearchThread::select_and_expand(
                 trajectoryBuffer.back().selectedChildIdx = childIdx;
                 
                 trajectoryBuffer.emplace_back(nextNode, expandedAction, -1);
+                pathTime = childTime;
 
                 if (canonicalResult.expanded) {
                     currentNode = nextNode;
@@ -1078,7 +1340,9 @@ LeafSelection SearchThread::select_and_expand(
                 }
                 
                 // Return the newly expanded leaf
-                return {nextNode, expandedChildReserved};
+                LeafSelection expandedLeaf{nextNode, expandedChildReserved};
+                expandedLeaf.time = pathTime;
+                return expandedLeaf;
             }
         }
 
@@ -1100,11 +1364,12 @@ LeafSelection SearchThread::select_and_expand(
         hasEvaluationReservation = selection.hasEvaluationReservation;
 
         JointActionCandidate action = currentNode->get_joint_action(childIdx);
+        const TimeState childTime = time_after_action(*currentNode);
         board.make_moves(action.moveA, action.moveB);
 
         const CanonicalChildResult canonicalResult = canonicalize_child(
             board, currentNode.get(), childIdx, action, nextNode,
-            hasEvaluationReservation, teamHasTimeAdvantage);
+            hasEvaluationReservation, childTime);
         if (canonicalResult.pendingEvaluation) {
             return {
                 nullptr, false, canonicalResult.pendingEvaluation,
@@ -1123,9 +1388,12 @@ LeafSelection SearchThread::select_and_expand(
         trajectoryBuffer.back().selectedChildIdx = childIdx;
         trajectoryBuffer.emplace_back(nextNode, action, -1);
         currentNode = nextNode;
+        pathTime = childTime;
     }
 
-    return {currentNode, hasEvaluationReservation};
+    LeafSelection selected{currentNode, hasEvaluationReservation};
+    selected.time = pathTime;
+    return selected;
 }
 
 /**

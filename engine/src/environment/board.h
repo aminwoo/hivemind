@@ -1,6 +1,7 @@
 #pragma once
 
 #include "environment/constants.h"
+#include "environment/time_state.h"
 #include "environment/zobrist.h"
 
 #include <sstream>
@@ -100,6 +101,27 @@ class Board {
             return mix_hash(hash_key(teamHasTimeAdvantage),
                             0x5445414d00000000ULL
                                 | static_cast<uint64_t>(teamToPlay));
+        }
+
+        /**
+         * Search-node identity under a clock state. A legacy state hashes
+         * exactly as its flag does; a clocked one adds the exact lead and both
+         * move times, since two leads that differ by any amount can give
+         * different sit rights a few actions later. Transpositions, tree
+         * reuse, proofs and hints are all keyed by this.
+         */
+        unsigned long search_hash_key(Stockfish::Color teamToPlay,
+                                      const TimeState& time) {
+            if (!time.is_clocked()) {
+                return search_hash_key(teamToPlay, time.can_sit(teamToPlay));
+            }
+            return mix_hash(search_hash_key(teamToPlay, false), time.exact_key());
+        }
+
+        /** Whether @p team is on turn on both boards, so both its clocks run. */
+        bool on_turn_on_both_boards(Stockfish::Color team) const {
+            return pos[BOARD_A]->side_to_move() == team
+                && pos[BOARD_B]->side_to_move() == ~team;
         }
 
         /**

@@ -104,6 +104,13 @@ void UCI::go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite) {
         std::cout << "bestmove (none)" << std::endl;
         return;
     }
+    if (clockModel) {
+        // Alpha-beta has no clock: it searches the lead's current sign as a
+        // permanent TimeAdvantage flag, never charging the actions it plays.
+        std::cout << "info string TimeModel clock is not supported by alphabeta "
+                     "search; it searches the current lead as a permanent "
+                     "TimeAdvantage" << std::endl;
+    }
     ab::Limits limits;
     limits.nodes = nodes;
     limits.moveTimeMs = moveTime;
@@ -141,7 +148,7 @@ void UCI::go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite) {
             std::cout << line.str() << std::endl;
         };
         const ab::Result result = abSearcher->search(
-            board, teamSide, teamHasTimeAdvantage, limits, &abStop, report);
+            board, teamSide, team_may_sit(), limits, &abStop, report);
         if (result.hasMove) {
             std::cout << "bestmove " << ab::format_joint_move(board, result.best) << std::endl;
         } else {
@@ -316,12 +323,20 @@ void UCI::go(std::istringstream& is) {
         opts.targetNodes = nodes;
     } else if (moveTime > 0) {
         opts = SearchOptions::uci(moveTime, multiPV, isPonder);
+        opts.maxMoveTimeMs = maxMoveTimeMs;
+    } else if (infinite) {
+        // "go infinite" thinks until stop. It runs as a node search towards
+        // a ceiling no analysis is meant to reach, so a session left running
+        // ends with a bestmove instead of filling memory with the tree.
+        opts = SearchOptions::uci(0, multiPV, isPonder);
+        opts.targetNodes = SearchParams::ANALYSIS_MAX_NODES;
     } else {
         // Default to 1 second if nothing specified
         opts = SearchOptions::uci(1000, multiPV, isPonder);
     }
     opts.enablePonder = ponderEnabled;
     opts.search = current_search_config();
+    opts.clock = current_clock();
 
     // "go background": the opponents are to move at the current position, so
     // this is the permanent brain, rooted at the position the front end
@@ -633,6 +648,17 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.enableMateProbe = value == "true";
             std::cout << "info string MateProbe set to " << value << std::endl;
         }
+    } else if (name == "FrozenRace") {
+        if (value == "true" || value == "false") {
+            searchConfig.frozenRace = value == "true";
+            std::cout << "info string FrozenRace set to " << value << std::endl;
+        }
+    } else if (name == "ConditionalMateProbe") {
+        if (value == "true" || value == "false") {
+            searchConfig.conditionalMateProbe = value == "true";
+            std::cout << "info string ConditionalMateProbe set to " << value
+                      << std::endl;
+        }
     } else if (name == "MateThreads") {
         MateProbe::set_threads(std::stoi(value));
         std::cout << "info string MateThreads set to " << MateProbe::threads()
@@ -718,6 +744,25 @@ void UCI::setoption(std::istringstream& is) {
             teamHasTimeAdvantage = value == "true";
             std::cout << "info string TimeAdvantage set to " << value << std::endl;
         }
+    } else if (name == "TimeModel") {
+        if (value == "flag" || value == "clock") {
+            clockModel = value == "clock";
+            std::cout << "info string TimeModel set to " << value << std::endl;
+        }
+    } else if (name == "TimeLeadMs") {
+        timeLeadMs = std::clamp(std::stoi(value), -TimeState::MAX_LEAD_MS,
+                                TimeState::MAX_LEAD_MS);
+        std::cout << "info string TimeLeadMs set to " << timeLeadMs << std::endl;
+    } else if (name == "TeamMoveTimeMs") {
+        teamMoveTimeMs = std::clamp(std::stoi(value), 1, 3600000);
+        std::cout << "info string TeamMoveTimeMs set to " << teamMoveTimeMs << std::endl;
+    } else if (name == "OpponentMoveTimeMs") {
+        opponentMoveTimeMs = std::clamp(std::stoi(value), 1, 3600000);
+        std::cout << "info string OpponentMoveTimeMs set to "
+                  << opponentMoveTimeMs << std::endl;
+    } else if (name == "MaxMoveTimeMs") {
+        maxMoveTimeMs = std::clamp(std::stoi(value), 0, 3600000);
+        std::cout << "info string MaxMoveTimeMs set to " << maxMoveTimeMs << std::endl;
     } else if (name == "Mode") {
         // Deprecated alias for TimeAdvantage, kept so existing GUI profiles keep
         // working. "sit" meant the team was up on time and could wait; "go"
@@ -730,6 +775,19 @@ void UCI::setoption(std::istringstream& is) {
                       << std::endl;
         }
     }
+}
+
+std::optional<TimeState> UCI::current_clock() const {
+    if (!clockModel) {
+        return std::nullopt;
+    }
+    return TimeState::clocked(
+        teamSide, timeLeadMs, teamMoveTimeMs, opponentMoveTimeMs);
+}
+
+bool UCI::team_may_sit() const {
+    const std::optional<TimeState> clock = current_clock();
+    return clock ? clock->can_sit(teamSide) : teamHasTimeAdvantage;
 }
 
 void UCI::send_uci_response() {
@@ -774,6 +832,11 @@ void UCI::send_uci_response() {
          << static_cast<int>(SearchParams::CPUCT_INIT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name MateProbe type check default "
          << (SearchParams::ENABLE_MATE_PROBE ? "true" : "false") << endl;
+    cout << "option name FrozenRace type check default "
+         << (SearchParams::ENABLE_FROZEN_RACE ? "true" : "false") << endl;
+    cout << "option name ConditionalMateProbe type check default "
+         << (SearchParams::ROOT_CONDITIONAL_MATE_PROBE ? "true" : "false")
+         << endl;
     cout << "option name MateThreads type spin default "
          << MateProbe::DEFAULT_THREADS << " min 1 max "
          << MateProbe::MAX_THREADS << endl;
@@ -803,6 +866,14 @@ void UCI::send_uci_response() {
          << " min 1 max 100000" << endl;
     cout << "option name Team type combo default white var white var black" << endl;
     cout << "option name TimeAdvantage type check default false" << endl;
+    cout << "option name TimeModel type combo default flag var flag var clock" << endl;
+    cout << "option name TimeLeadMs type spin default 0 min "
+         << -TimeState::MAX_LEAD_MS << " max " << TimeState::MAX_LEAD_MS << endl;
+    cout << "option name TeamMoveTimeMs type spin default "
+         << TimeState::DEFAULT_MOVE_TIME_MS << " min 1 max 3600000" << endl;
+    cout << "option name OpponentMoveTimeMs type spin default "
+         << TimeState::DEFAULT_MOVE_TIME_MS << " min 1 max 3600000" << endl;
+    cout << "option name MaxMoveTimeMs type spin default 0 min 0 max 3600000" << endl;
     cout << "option name RequireMoveOn type combo default none var none var A var B" << endl;
     cout << "info string CUDA engines " << engines.size()
          << " search workers " << engines.size() * SearchParams::NUM_SEARCH_THREADS
@@ -829,7 +900,9 @@ void UCI::policy() {
     float* movesLeft = new float[loadedBatchSize];
 
     // Convert board to planes
-    board_to_planes(board, obs, teamSide, teamHasTimeAdvantage);
+    const std::optional<TimeState> clock = current_clock();
+    board_to_planes(board, obs, teamSide,
+                    clock ? *clock : TimeState::legacy(teamSide, teamHasTimeAdvantage));
 
     // Run inference
     Engine* engine = engines[0].get();

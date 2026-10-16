@@ -24,8 +24,11 @@ from typing import NamedTuple
 
 # Bump when self-play settings or the submission format change: contributors
 # and the trainer must agree on how games are played.
-PROTOCOL = 1
+# 2: work orders name the time model, and clock-model self-play carries the
+# clock input planes (78), so contributors from before them must not join.
+PROTOCOL = 2
 PR_TITLE = "Self-play games: "
+LFS_RULE = "*.dst filter=lfs diff=lfs merge=lfs -text"
 
 
 def sha256(path):
@@ -138,6 +141,14 @@ class HubExchange:
     def create(self):
         # Private until it is opened to other contributors (a repository setting).
         self.api.create_repo(self.repo, repo_type="dataset", private=True, exist_ok=True)
+        # Without a pattern the Hub adds each chunk to .gitattributes in its
+        # pull request, so every batch after the first merged one conflicts.
+        path = self.api.hf_hub_download(self.repo, ".gitattributes", repo_type="dataset")
+        lines = Path(path).read_text().splitlines()
+        if LFS_RULE not in lines:
+            self.api.upload_file(path_or_fileobj=("\n".join(lines + [LFS_RULE]) + "\n").encode(),
+                                 path_in_repo=".gitattributes", repo_id=self.repo, repo_type="dataset",
+                                 commit_message="Store self-play chunks (*.dst) in LFS by pattern")
 
     def publish(self, order, generator):
         """The generator must already be on the model repository (rl-loop's

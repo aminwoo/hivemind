@@ -37,8 +37,10 @@
 
 namespace {
 
-constexpr std::array<char, 4> CHUNK_MAGIC = {'H', 'V', 'M', '5'};
-constexpr uint32_t CHUNK_VERSION = 5;
+// HVM6: the clock planes close each board's block, stored as (v + 1) / 2
+// since a chunk keeps planes as unsigned bytes.
+constexpr std::array<char, 4> CHUNK_MAGIC = {'H', 'V', 'M', '6'};
+constexpr uint32_t CHUNK_VERSION = 6;
 constexpr uint16_t PASS_POLICY_INDEX = static_cast<uint16_t>(NB_POLICY_VALUES());
 
 struct SparsePolicyEntry {
@@ -109,7 +111,7 @@ public:
 private:
     void write_policy(std::ostream& stream, const std::vector<SparsePolicyEntry>& policy) {
         if (policy.size() > std::numeric_limits<uint16_t>::max()) {
-            throw std::runtime_error("Sparse policy is too large for HVM5");
+            throw std::runtime_error("Sparse policy is too large for HVM6");
         }
         write_scalar(stream, static_cast<uint16_t>(policy.size()));
         for (const SparsePolicyEntry& entry : policy) {
@@ -122,7 +124,7 @@ private:
         std::ostream& stream,
         const std::vector<SparseJointPolicyEntry>& policy) {
         if (policy.size() > std::numeric_limits<uint16_t>::max()) {
-            throw std::runtime_error("Sparse joint policy is too large for HVM5");
+            throw std::runtime_error("Sparse joint policy is too large for HVM6");
         }
         write_scalar(stream, static_cast<uint16_t>(policy.size()));
         for (const SparseJointPolicyEntry& entry : policy) {
@@ -270,9 +272,9 @@ public:
     void evaluate(Engine& engine,
                   Board& board,
                   Stockfish::Color team,
-                  bool hasTimeAdvantage) {
+                  const TimeState& time) {
         std::array<float, NB_INPUT_VALUES()> planes{};
-        board_to_planes(board, planes.data(), team, hasTimeAdvantage);
+        board_to_planes(board, planes.data(), team, time);
         for (size_t batch = 0; batch < batchSize_; ++batch) {
             std::copy(planes.begin(), planes.end(),
                       observations_.begin() + static_cast<std::ptrdiff_t>(batch * planes.size()));
@@ -328,10 +330,11 @@ JointActionCandidate sample_raw_policy_action(
     RawPolicyEvaluator& evaluator,
     Board& board,
     Stockfish::Color team,
-    bool hasTimeAdvantage,
+    const TimeState& time,
     double temperature,
     std::mt19937_64& randomEngine) {
-    evaluator.evaluate(engine, board, team, hasTimeAdvantage);
+    evaluator.evaluate(engine, board, team, time);
+    const bool hasTimeAdvantage = time.can_sit(team);
     const bool boardAOnTurn = board.side_to_move(BOARD_A) == team;
     const bool boardBOnTurn = board.side_to_move(BOARD_B) == ~team;
     std::vector<Stockfish::Move> actionsA;
@@ -404,13 +407,14 @@ bool action_leads_to_terminal(
     Board& board,
     const JointActionCandidate& action,
     Stockfish::Color team,
-    bool hasTimeAdvantage) {
+    const TimeState& time) {
+    TimeState next = time;
+    next.advance(team, board.on_turn_on_both_boards(team));
     Board future(board);
     future.make_moves(action.moveA, action.moveB);
     const Stockfish::Color nextTeam = ~team;
-    const bool nextTeamHasTimeAdvantage = !hasTimeAdvantage;
-    return future.is_checkmate(nextTeam, nextTeamHasTimeAdvantage)
-        || future.is_checkmate(team, hasTimeAdvantage)
+    return future.is_checkmate(nextTeam, next.can_sit(nextTeam))
+        || future.is_checkmate(team, next.can_sit(team))
         || future.is_draw();
 }
 
@@ -569,13 +573,19 @@ JointActionCandidate select_action(
 std::array<uint8_t, NB_INPUT_VALUES()> encode_planes(
     Board& board,
     Stockfish::Color team,
-    bool hasTimeAdvantage) {
+    const TimeState& time) {
     std::array<float, NB_INPUT_VALUES()> raw{};
     std::array<uint8_t, NB_INPUT_VALUES()> encoded{};
-    board_to_planes(board, raw.data(), team, hasTimeAdvantage);
+    board_to_planes(board, raw.data(), team, time);
+    constexpr size_t square = 64;
+    constexpr size_t block = NB_INPUT_CHANNELS_PER_BOARD * square;
+    constexpr size_t clockStart = NB_LEGACY_INPUT_CHANNELS_PER_BOARD * square;
     for (size_t index = 0; index < raw.size(); ++index) {
+        // The clock planes are signed; the chunk keeps them as (v + 1) / 2.
+        const bool clockPlane = index % block >= clockStart;
+        const float value = clockPlane ? (raw[index] + 1.0f) / 2.0f : raw[index];
         encoded[index] = static_cast<uint8_t>(std::lround(
-            std::clamp(raw[index], 0.0f, 1.0f) * 255.0f));
+            std::clamp(value, 0.0f, 1.0f) * 255.0f));
     }
     return encoded;
 }
@@ -602,7 +612,9 @@ void append_pgn(
     size_t rawPolicyMacroPlies,
     size_t rawPolicyEvents,
     float initialClockSeconds,
-    const std::string& termination) {
+    const std::string& termination,
+    const TimeState& initialTime,
+    const TimeState& finalTime) {
     std::ofstream stream(path, std::ios::app);
     if (!stream) {
         throw std::runtime_error("Unable to append " + path.string());
@@ -620,9 +632,18 @@ void append_pgn(
            << "[WhiteA \"Hivemind-A1\"]\n"
            << "[BlackA \"Hivemind-B2\"]\n"
            << "[WhiteB \"Hivemind-B1\"]\n"
-           << "[BlackB \"Hivemind-A2\"]\n"
-           << "[TimeAdvantage \"" << (startingTeam == 0 ? "Hivemind-B" : "Hivemind-A") << "\"]\n"
-           << "[RawPolicyMacroPlies \"" << rawPolicyMacroPlies << "\"]\n"
+           << "[BlackB \"Hivemind-A2\"]\n";
+    if (initialTime.is_clocked()) {
+        // Leads are Hivemind-A's (the white team's) over its diagonal opponents.
+        stream << "[TimeModel \"clock\"]\n"
+               << "[TimeLeadMs \"" << initialTime.lead_ms(Stockfish::WHITE) << "\"]\n"
+               << "[FinalTimeLeadMs \"" << finalTime.lead_ms(Stockfish::WHITE) << "\"]\n"
+               << "[WhiteTeamMoveTimeMs \"" << initialTime.move_time_ms(Stockfish::WHITE) << "\"]\n"
+               << "[BlackTeamMoveTimeMs \"" << initialTime.move_time_ms(Stockfish::BLACK) << "\"]\n";
+    } else {
+        stream << "[TimeAdvantage \"" << (startingTeam == 0 ? "Hivemind-B" : "Hivemind-A") << "\"]\n";
+    }
+    stream << "[RawPolicyMacroPlies \"" << rawPolicyMacroPlies << "\"]\n"
            << "[RawPolicyEvents \"" << rawPolicyEvents << "\"]\n"
            << "[PlyCount \"" << moves.size() << "\"]\n"
            << "[Result \"" << result << "\"]\n"
@@ -725,6 +746,8 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         size_t rawPolicyMacroPlies;
         size_t rawPolicyEvents;
         std::string termination;
+        TimeState initialTime;
+        TimeState finalTime;
     };
     std::map<size_t, FinishedGame> finishedGames;
     size_t nextOutput = 0;
@@ -755,14 +778,19 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         append_pgn(
             pgnPath, gameNumber + 1, game.pgnMoves, game.winner, game.startingTeam,
             game.rawPolicyMacroPlies, game.rawPolicyEvents,
-            config.initialClockSeconds, game.termination);
+            config.initialClockSeconds, game.termination,
+            game.initialTime, game.finalTime);
         std::cout << "selfplay game " << (gameNumber + 1) << '/' << config.games
                   << " raw " << game.rawPolicyMacroPlies
                   << " samples " << sampleCount
                   << " events " << game.pgnMoves.size()
-                  << " termination " << game.termination << '\n'
-                  // Piped to `hivemind contribute`, which counts these lines.
-                  << std::flush;
+                  << " termination " << game.termination;
+        if (game.initialTime.is_clocked()) {
+            std::cout << " lead " << game.initialTime.lead_ms(Stockfish::WHITE)
+                      << "->" << game.finalTime.lead_ms(Stockfish::WHITE) << " ms";
+        }
+        // Piped to `hivemind contribute`, which counts these lines.
+        std::cout << '\n' << std::flush;
     };
     auto playGames = [&](const std::vector<Engine*>& threadEngines) {
         std::vector<__half> distillPlanes(NB_INPUT_VALUES());
@@ -780,7 +808,13 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             Agent agent;
             const int startingTeam = static_cast<int>(randomEngine() & 1ULL);
             Stockfish::Color team = startingTeam == 0 ? Stockfish::WHITE : Stockfish::BLACK;
-            bool hasTimeAdvantage = false;
+            // The flag model lets the team that does not start sit all game.
+            // Only the clock model draws from the random stream here, so flag
+            // games replay exactly as before.
+            TimeState time = config.clockModel
+                ? sample_clock(config.clock, randomEngine)
+                : TimeState::legacy(team, false);
+            const TimeState initialTime = time;
             int winner = -1;
             std::string termination = "macro-ply limit";
             std::vector<TrainingSample> samples;
@@ -797,7 +831,8 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             std::array<size_t, 2> consecutiveResignPlies = {0, 0};
 
             for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
-                const GameStatus status = adjudicate_game(board, team, hasTimeAdvantage);
+                const bool hasTimeAdvantage = time.can_sit(team);
+                const GameStatus status = adjudicate_game(board, team, time);
                 if (status != GameStatus::ONGOING) {
                     winner = adjudicated_winner(status, team);
                     termination = adjudicated_termination(status);
@@ -806,10 +841,10 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
 
                 if (rawInitializationActive && macroPly < initializationLength) {
                     const JointActionCandidate rawAction = sample_raw_policy_action(
-                        rawPolicyEngine, rawPolicyEvaluator, board, team, hasTimeAdvantage,
+                        rawPolicyEngine, rawPolicyEvaluator, board, team, time,
                         sample_raw_policy_temperature(config, randomEngine), randomEngine);
-                    if (!action_leads_to_terminal(
-                            board, rawAction, team, hasTimeAdvantage)) {
+                    if (!action_leads_to_terminal(board, rawAction, team, time)) {
+                        time.advance(team, board.on_turn_on_both_boards(team));
                         if (rawAction.moveA != Stockfish::MOVE_NONE) {
                             append_pgn_move(
                                 board, BOARD_A, rawAction.moveA, moveNumbers, pgnMoves.size(),
@@ -825,7 +860,6 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                         rawPolicyMacroPlies++;
                         rawPolicyEvents = pgnMoves.size();
                         team = ~team;
-                        hasTimeAdvantage = !hasTimeAdvantage;
                         continue;
                     }
                     rawInitializationActive = false;
@@ -837,7 +871,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     macroPly, std::numeric_limits<uint16_t>::max()));
                 sample.team = team == Stockfish::WHITE ? 0 : 1;
                 sample.hasTimeAdvantage = hasTimeAdvantage ? 1 : 0;
-                sample.planes = encode_planes(board, team, hasTimeAdvantage);
+                sample.planes = encode_planes(board, team, time);
 
                 agent.reset_search_state();
                 SearchOptions searchOptions;
@@ -856,6 +890,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                 searchOptions.search.rootDirichletAlpha = config.dirichletAlpha;
                 searchOptions.search.rootDirichletEpsilon = config.dirichletEpsilon;
                 searchOptions.search.rootNoiseSeed = selfplay_seed(runId, gameIndex * config.maxMacroPlies + macroPly);
+                if (config.clockModel) {
+                    searchOptions.clock = time;
+                }
                 const JointActionCandidate choice = agent.run_search(
                     board, threadEngines, team, hasTimeAdvantage, searchOptions);
                 std::vector<RootEdgeStats> edges = agent.root_edge_stats();
@@ -885,7 +922,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     // WDL stays zero: search has a value but no WDL distribution,
                     // so these records carry no WDL or moves-left target.
                     distill::Record record;
-                    board_to_planes(board, distillPlanes.data(), team, hasTimeAdvantage);
+                    board_to_planes(board, distillPlanes.data(), team, time);
                     distill::pack_planes(distillPlanes.data(), record);
                     record.value = rootQ;
                     record.ply = sample.macroPly;
@@ -913,9 +950,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
 
                 const JointActionCandidate action = select_action(
                     edges, mcts_temperature(config, macroPly), randomEngine);
+                time.advance(team, board.on_turn_on_both_boards(team));
                 if (action.moveA == Stockfish::MOVE_NONE && action.moveB == Stockfish::MOVE_NONE) {
                     team = ~team;
-                    hasTimeAdvantage = !hasTimeAdvantage;
                     continue;
                 }
 
@@ -933,10 +970,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                 }
 
                 team = ~team;
-                hasTimeAdvantage = !hasTimeAdvantage;
             }
 
-            const GameStatus finalStatus = adjudicate_game(board, team, hasTimeAdvantage);
+            const GameStatus finalStatus = adjudicate_game(board, team, time);
             if (winner < 0 && finalStatus != GameStatus::ONGOING) {
                 winner = adjudicated_winner(finalStatus, team);
                 termination = adjudicated_termination(finalStatus);
@@ -958,7 +994,8 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             }
             finishedGames.emplace(gameIndex, FinishedGame{
                 std::move(samples), std::move(distillRecords), std::move(pgnMoves), winner,
-                startingTeam, rawPolicyMacroPlies, rawPolicyEvents, std::move(termination)});
+                startingTeam, rawPolicyMacroPlies, rawPolicyEvents, std::move(termination),
+                initialTime, time});
             for (auto next = finishedGames.find(nextOutput); next != finishedGames.end();
                  next = finishedGames.find(nextOutput)) {
                 writeGame(next->first, next->second);

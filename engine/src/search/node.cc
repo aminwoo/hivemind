@@ -64,8 +64,8 @@ void Node::propagate_proof_to_parents() {
         edges = parentEdges;
     }
 
-    // Never hold this node's mutex while updating a parent. Each parent accepts
-    // a child proof at most once, which also terminates duplicate paths/cycles.
+    // Never hold this node's mutex while updating a parent. Proof counts change
+    // once per edge; later distance updates propagate only strict improvements.
     for (const ParentEdge& edge : edges) {
         if (std::shared_ptr<Node> parent = edge.parent.lock()) {
             parent->update_child_node_type_from(
@@ -123,8 +123,8 @@ bool Node::update_child_node_type_from(
     {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
 
-        if (nodeType.load(std::memory_order_relaxed) != NodeType::UNSOLVED
-            || childIdx < 0
+        const NodeType currentType = nodeType.load(std::memory_order_relaxed);
+        if (currentType == NodeType::DRAW || childIdx < 0
             || static_cast<size_t>(childIdx) >= children.size()
             || (expectedChild && children[childIdx].get() != expectedChild)) {
             return false;
@@ -137,14 +137,17 @@ bool Node::update_child_node_type_from(
                 static_cast<int>(children.size() - oldSize),
                 std::memory_order_relaxed);
         }
-        if (childNodeTypes[childIdx] != NodeType::UNSOLVED) {
+        if (childNodeTypes[childIdx] != NodeType::UNSOLVED
+            && childNodeTypes[childIdx] != childType) {
             return false;
         }
 
-        childNodeTypes[childIdx] = childType;
-        unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
-        if (childType == NodeType::WIN) {
-            provenWinningChildCount++;
+        if (childNodeTypes[childIdx] == NodeType::UNSOLVED) {
+            childNodeTypes[childIdx] = childType;
+            unsolvedChildCount.fetch_sub(1, std::memory_order_relaxed);
+            if (childType == NodeType::WIN) {
+                provenWinningChildCount++;
+            }
         }
 
         // Child values are from the child's perspective, so a losing child is
@@ -153,10 +156,15 @@ bool Node::update_child_node_type_from(
             const int childPly = children[childIdx]
                 ? children[childIdx]->get_end_in_ply()
                 : 0;
-            endInPly.store(childPly + 1, std::memory_order_relaxed);
-            nodeType.store(NodeType::WIN, std::memory_order_release);
-            becameSolved = true;
-        } else if (unsolvedChildCount.load(std::memory_order_relaxed) == 0
+            if (currentType == NodeType::UNSOLVED
+                || (currentType == NodeType::WIN
+                    && childPly + 1 < endInPly.load(std::memory_order_relaxed))) {
+                endInPly.store(childPly + 1, std::memory_order_relaxed);
+                nodeType.store(NodeType::WIN, std::memory_order_release);
+                becameSolved = true;
+            }
+        } else if (currentType != NodeType::WIN
+                   && unsolvedChildCount.load(std::memory_order_relaxed) == 0
                    && m_is_expanded.load(std::memory_order_relaxed)
                    && !candidateGenerator.hasNext()) {
             // A loss/draw is proven only after every legal action is expanded.
@@ -177,9 +185,12 @@ bool Node::update_child_node_type_from(
             }
 
             if (allWins && allowLossProof) {
-                endInPly.store(longestPly + 1, std::memory_order_relaxed);
-                nodeType.store(NodeType::LOSS, std::memory_order_release);
-                becameSolved = true;
+                if (currentType == NodeType::UNSOLVED
+                    || longestPly + 1 < endInPly.load(std::memory_order_relaxed)) {
+                    endInPly.store(longestPly + 1, std::memory_order_relaxed);
+                    nodeType.store(NodeType::LOSS, std::memory_order_release);
+                    becameSolved = true;
+                }
             } else if (hasDrawn) {
                 nodeType.store(NodeType::DRAW, std::memory_order_release);
                 becameSolved = true;

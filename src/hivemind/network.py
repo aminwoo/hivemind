@@ -22,6 +22,9 @@ TWIN_REVISION = "c9603be902877d163b892b71a4e39bde045e300e"
 # Where `hivemind rl-loop --distributed` publishes work orders and contributors
 # (`hivemind contribute`) submit self-play games: a Hugging Face dataset.
 SELFPLAY_EXCHANGE = f"hf://{TWIN_REPOSITORY}-selfplay"
+# Where `hivemind rl-loop` moves finished self-play, and `hivemind archive`
+# any data directory, as zstd tarballs: a private Hugging Face dataset.
+SELFPLAY_ARCHIVE = f"{TWIN_REPOSITORY}-selfplay-archive"
 # The crossboard-risev33 teacher twin-s was distilled from. Its training
 # checkpoint is the only one published, and checkpoint inference loads only
 # the RISE architectures.

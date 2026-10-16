@@ -28,6 +28,14 @@
 
 class AgentTreeReuseTestPeer {
 public:
+    static void retain_mate(
+        Agent& agent, Board& board, Stockfish::Color teamSide,
+        const JointActionCandidate& action, int plyToMate) {
+        agent.mateContinuations_.push_back({
+            board.search_hash_key(teamSide, true), Agent::board_signature(board),
+            teamSide, true, action, plyToMate});
+    }
+
     static void set_root(Agent& agent, const std::shared_ptr<Node>& root) {
         agent.rootNode = root;
     }
@@ -51,8 +59,8 @@ public:
         bool teamHasTimeAdvantage, JointActionCandidate& action,
         int& plyToMate) {
         return Agent::find_root_mate_impl(
-            board, teamSide, teamHasTimeAdvantage, action, plyToMate,
-            SearchParams::MATE_SEARCH_NODE_BUDGET,
+            board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+            action, plyToMate, SearchParams::MATE_SEARCH_NODE_BUDGET,
             &agent.mateContinuations_);
     }
 
@@ -64,14 +72,45 @@ public:
             board, teamSide, teamHasTimeAdvantage, action, plyToMate);
     }
 
+    static bool reuse_mate_continuation(
+        const Agent& agent, Board& board, Stockfish::Color teamSide,
+        const TimeState& time, JointActionCandidate& action,
+        int& plyToMate) {
+        return agent.try_reuse_mate_continuation(
+            board, teamSide, time, action, plyToMate);
+    }
+
+    /** The reverse scan's form: the attacker wins any mate race. */
+    static bool find_root_mate_winning_races(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        JointActionCandidate& action, int& plyToMate) {
+        return Agent::find_root_mate_impl(
+            board, teamSide, time, action, plyToMate,
+            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            Agent::MateSearchBudget::Clock::time_point{}, true, true);
+    }
+
+    static bool find_root_mate_with_pv(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        JointActionCandidate& action, int& plyToMate,
+        std::vector<MateProofPly>& principalVariation) {
+        return Agent::find_root_mate_impl(
+            board, teamSide, time, action, plyToMate,
+            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            Agent::MateSearchBudget::Clock::time_point{}, true, false,
+            &principalVariation);
+    }
+
     static bool find_root_mate_with_pv(
         Board& board, Stockfish::Color teamSide,
         bool teamHasTimeAdvantage, JointActionCandidate& action,
         int& plyToMate,
-        std::vector<MateProofPly>& principalVariation) {
+        std::vector<MateProofPly>& principalVariation,
+        uint64_t nodeBudget = SearchParams::MATE_SEARCH_NODE_BUDGET) {
         return Agent::find_root_mate_impl(
-            board, teamSide, teamHasTimeAdvantage, action, plyToMate,
-            SearchParams::MATE_SEARCH_NODE_BUDGET, nullptr, nullptr, true,
+            board, teamSide, TimeState::legacy(teamSide, teamHasTimeAdvantage),
+            action, plyToMate,
+            nodeBudget, nullptr, nullptr, true,
             Agent::MateSearchBudget::Clock::time_point{}, true, false,
             &principalVariation);
     }
@@ -130,8 +169,9 @@ uint64_t recomputed_position_key(Board& board, int boardNum) {
 }
 
 TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
-    EXPECT_EQ(NB_INPUT_CHANNELS, 74);
-    EXPECT_EQ(NB_INPUT_CHANNELS_PER_BOARD, 37);
+    EXPECT_EQ(NB_INPUT_CHANNELS, 78);
+    EXPECT_EQ(NB_INPUT_CHANNELS_PER_BOARD, 39);
+    EXPECT_EQ(NB_LEGACY_INPUT_CHANNELS, 74);
 
     Board board;
     std::vector<float> planes(NB_INPUT_VALUES());
@@ -142,6 +182,12 @@ TEST_F(EngineTest, NewInputRepresentationStartsWithEmptyHistoryPlanes) {
             for (int square = 0; square < 64; ++square) {
                 EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + channel, square), 0.0f);
             }
+        }
+        // A flag without the right to sit is a permanent deficit, and
+        // carries no speeds.
+        for (int square = 0; square < 64; ++square) {
+            EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + 37, square), -1.0f);
+            EXPECT_FLOAT_EQ(plane_value(planes, boardOffset + 38, square), 0.0f);
         }
     }
 }
@@ -965,8 +1011,11 @@ TEST_F(EngineTest, CurrentDrawPrecedesFutureWaitingBoardMate) {
         board.push_move(boardNum, move);
     }
 
+    // Two more occurrences make board A a threefold, the game's own draw;
+    // a twofold is not one for the search.
     board.record_position(BOARD_A);
-    ASSERT_TRUE(board.is_draw(2));
+    board.record_position(BOARD_A);
+    ASSERT_TRUE(board.is_draw());
     EXPECT_EQ(classify_terminal_position(
                   board, Stockfish::BLACK, Stockfish::BLACK, false, 2),
               TerminalOutcome::DRAW);
@@ -2204,6 +2253,55 @@ TEST(MctsSolverTest, PropagatesDrawAfterAllMovesAreSolved) {
     EXPECT_EQ(parent.get_node_type(), NodeType::DRAW);
 }
 
+TEST(MctsSolverTest, LaterMateInOneReplacesTheFirstProvenWin) {
+    SearchParams::RuntimeConfig config;
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {static_cast<Stockfish::Move>(1), static_cast<Stockfish::Move>(2)},
+        {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(root->expand_next_joint_child(nullptr, 0, expanded, config), nullptr);
+    ASSERT_EQ(root->get_num_generated(), 2U);
+
+    // The more popular edge proves a longer mate first. A worker still in
+    // flight subsequently finds mate in one on the other edge.
+    root->update(0, 1.0f);
+    root->get_child(0)->mark_as_loss(6);
+    ASSERT_EQ(root->get_node_type(), NodeType::WIN);
+    ASSERT_EQ(root->get_end_in_ply(), 7);
+    root->get_child(1)->mark_as_loss(0);
+
+    EXPECT_EQ(root->get_best_move_idx_with_q_weight(), 1);
+    EXPECT_EQ(root->get_end_in_ply(), 1);
+    EXPECT_FALSE(root->update_child_node_type(1, NodeType::LOSS));
+    EXPECT_EQ(root->get_end_in_ply(), 1);
+}
+
+TEST(MctsSolverTest, ShorterMateUpdatesEverySolvedAncestor) {
+    SearchParams::RuntimeConfig config;
+    auto parent = std::make_shared<Node>(Stockfish::BLACK);
+    auto root = std::make_shared<Node>(Stockfish::WHITE);
+    ASSERT_TRUE(parent->try_init_and_expand(
+        {static_cast<Stockfish::Move>(3)}, {Stockfish::MOVE_NONE},
+        {1.0f}, {1.0f}, false, true, false, config));
+    ASSERT_TRUE(root->try_init_and_expand(
+        {static_cast<Stockfish::Move>(1), static_cast<Stockfish::Move>(2)},
+        {Stockfish::MOVE_NONE}, {0.9f, 0.1f}, {1.0f},
+        false, true, false, config));
+    JointActionCandidate expanded;
+    ASSERT_NE(root->expand_next_joint_child(nullptr, 0, expanded, config), nullptr);
+    parent->replace_child(0, root);
+    root->get_child(0)->mark_as_loss(6);
+    ASSERT_EQ(parent->get_node_type(), NodeType::LOSS);
+    ASSERT_EQ(parent->get_end_in_ply(), 8);
+
+    root->get_child(1)->mark_as_loss(0);
+    EXPECT_EQ(parent->get_node_type(), NodeType::LOSS);
+    EXPECT_EQ(parent->get_end_in_ply(), 2);
+    EXPECT_FALSE(parent->update_child_node_type(0, NodeType::WIN));
+}
+
 TEST(MctsSolverTest, ProvenLossKeepsBestSearchedMoveInsteadOfDelayingMate) {
     Node parent(Stockfish::WHITE);
     const std::vector<Stockfish::Move> actionsA = {
@@ -2492,12 +2590,24 @@ TEST(PonderModeTest, HardLimitCapsTimeExtensions) {
     EXPECT_EQ(info.get_effective_move_time(), 1000);
     EXPECT_EQ(info.get_extension_count(), 0);
 
-    // A ceiling above the move time still allows an extension, truncated to it.
+    // A ceiling above the move time is split evenly between the extensions.
     SearchInfo headroom(std::chrono::steady_clock::now(), 1000);
     headroom.set_hard_limit(1200);
     ASSERT_TRUE(headroom.try_extend_time(2.0f, 2));
+    EXPECT_EQ(headroom.get_effective_move_time(), 1100);
+    ASSERT_TRUE(headroom.try_extend_time(2.0f, 2));
     EXPECT_EQ(headroom.get_effective_move_time(), 1200);
     EXPECT_FALSE(headroom.try_extend_time(2.0f, 2));
+}
+
+TEST(PonderModeTest, LateExtensionGetsItsShareOfTheCeiling) {
+    // 900 ms into a 1000 ms move, a remaining-time extension would add only
+    // 50 ms; under a granted ceiling it still adds its share of the headroom.
+    SearchInfo info(
+        std::chrono::steady_clock::now() - std::chrono::milliseconds(900), 1000);
+    info.set_hard_limit(3000);
+    ASSERT_TRUE(info.try_extend_time(1.5f, 2));
+    EXPECT_EQ(info.get_effective_move_time(), 2000);
 }
 
 TEST(PonderModeTest, SearchOptionsPonderFlags) {
@@ -2580,6 +2690,69 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     ASSERT_NE(reused, nullptr);
     EXPECT_EQ(reused->get_node_type(), NodeType::WIN);
     EXPECT_EQ(reused->get_end_in_ply(), 3);
+}
+
+TEST_F(EngineTest, TreeReuseNeedsTheClockTheTreeWasSearchedUnder) {
+    Board board;
+    // White to move on board A alone: its own move is free. Black then has
+    // both boards and pays 200 ms for its reply, so White's next root sits
+    // at a 500 ms lead.
+    const TimeState rootTime =
+        TimeState::clocked(Stockfish::WHITE, 300, 100, 200);
+    auto root = std::make_shared<Node>(
+        Stockfish::WHITE, board.search_hash_key(Stockfish::WHITE, rootTime));
+    const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
+    ASSERT_NE(ownMove, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(root->try_init_and_expand(
+        {ownMove}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        true, true, false, SearchParams::RuntimeConfig{}));
+    const std::shared_ptr<Node> opponentNode = root->get_children().front();
+
+    Board afterOwnMove(board);
+    afterOwnMove.make_moves(ownMove, Stockfish::MOVE_NONE);
+    const Stockfish::Move reply = find_move(afterOwnMove, BOARD_A, "e7e5");
+    ASSERT_NE(reply, Stockfish::MOVE_NONE);
+    ASSERT_TRUE(opponentNode->try_init_and_expand(
+        {reply}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+        false, true, true, SearchParams::RuntimeConfig{}));
+    const std::shared_ptr<Node> replyNode = opponentNode->get_children().front();
+
+    Board nextRoot(afterOwnMove);
+    nextRoot.make_moves(reply, Stockfish::MOVE_NONE);
+    const auto reuse = [&](const TimeState& now) {
+        Agent agent;
+        AgentTreeReuseTestPeer::set_root(agent, root);
+        agent.store_next_root_candidates(board, rootTime);
+        return agent.try_reuse_tree(
+            nextRoot.search_hash_key(Stockfish::WHITE, now), Stockfish::WHITE,
+            Agent::board_signature(nextRoot), false);
+    };
+
+    EXPECT_EQ(reuse(TimeState::clocked(Stockfish::WHITE, 500, 100, 200)), replyNode);
+    // 50 ms of drift is the same class, but deeper down it can change who may
+    // sit, so the retained nodes' actions no longer hold.
+    EXPECT_EQ(reuse(TimeState::clocked(Stockfish::WHITE, 450, 100, 200)), nullptr);
+}
+
+TEST_F(EngineTest, CaptureFeedMateMustSurviveTheRecaptureThatSuppliesABlocker) {
+    // Rxa4 feeds a rook for a first-rank drop mate on board B, but Black,
+    // then on turn on board A, can take back with Qxa4 and hand White on B
+    // a rook to block with: no mate. (Position from the Codex review.)
+    Board board;
+    board.set(
+        "5r1k/6pp/8/4p3/r2q4/8/8/R6K[] w - - 0 1"
+        "|"
+        "4k3/8/8/8/8/8/6PP/7K[] b - - 0 1");
+    for (const TimeState& time : {TimeState::legacy(Stockfish::WHITE, true),
+                                  TimeState::clocked(Stockfish::WHITE, 50, 100, 100)}) {
+        JointActionCandidate action;
+        int plyToMate = 0;
+        const bool found = AgentTreeReuseTestPeer::find_root_mate_winning_races(
+            board, Stockfish::WHITE, time, action, plyToMate);
+        EXPECT_FALSE(found && plyToMate == 1
+                     && board.uci_move(BOARD_A, action.moveA) == "a1a4")
+            << "claimed the capture feed as mate in one";
+    }
 }
 
 TEST_F(EngineTest, TreeReuseIndexesPositionsThreeJointPliesDeep) {
@@ -2733,6 +2906,28 @@ TEST_F(EngineTest, CaptureFeedRootMateReportsWholeProofLine) {
     EXPECT_TRUE(line.is_checkmate(Stockfish::BLACK, false));
 }
 
+TEST_F(EngineTest, ScoutedDropMateReportsTheWholeTwoBoardProofLine) {
+    Board board;
+    board.set(
+        "r2q1kr1/pppbnp1p/5P1p/1B1P1p1N/N2Pp3/P1Pp2P1/2B1BP1P/R2QK2R"
+        "[BNNQPqbnn] w KQ - 0 29|"
+        "2r2r2/p2p2k1/1p2p2p/3b1pb1/P7/5P2/KP1p1PPP/2nR3R[P] w - - 1 41");
+    JointActionCandidate action;
+    int ply = 0;
+    std::vector<MateProofPly> pv;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_with_pv(
+        board, Stockfish::WHITE, true, action, ply, pv, 200000));
+    ASSERT_EQ(ply, 9);
+    ASSERT_EQ(pv.size(), static_cast<size_t>(ply));
+    EXPECT_EQ(board.uci_move(BOARD_A, pv.front().moveA), "N@e6");
+    for (const auto& step : pv) {
+        ASSERT_TRUE(board.is_legal_move(BOARD_A, step.moveA));
+        ASSERT_TRUE(board.is_legal_move(BOARD_B, step.moveB));
+        board.make_moves(step.moveA, step.moveB);
+    }
+    EXPECT_TRUE(board.is_checkmate(Stockfish::BLACK, false));
+}
+
 TEST_F(EngineTest, RootMateProofRetainsEveryDefenderContinuation) {
     Board board;
     board.set(
@@ -2810,6 +3005,33 @@ TEST_F(EngineTest, RootMateContinuationRejectsPartnerBoardChange) {
     EXPECT_FALSE(AgentTreeReuseTestPeer::reuse_mate_continuation(
         agent, board, Stockfish::WHITE, true,
         cachedAction, cachedPlyToMate));
+}
+
+TEST_F(EngineTest, FreshMateInOneOverridesCachedLongerMate) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2");
+    board.set_fen(BOARD_B,
+        "k7/8/8/8/4n3/8/6PP/6RK[] b - - 0 1");
+    Agent agent(1);
+    JointActionCandidate cached;
+    cached.moveA = find_move(board, BOARD_A, "d1h5");
+    ASSERT_NE(cached.moveA, Stockfish::MOVE_NONE);
+    AgentTreeReuseTestPeer::retain_mate(agent, board, Stockfish::WHITE, cached, 9);
+    JointActionCandidate reused;
+    int cachedPly = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, board, Stockfish::WHITE, true, reused, cachedPly));
+    ASSERT_EQ(cachedPly, 9);
+
+    SearchOptions options;
+    options.targetNodes = 100;
+    // Both the cached proof and the immediate preflight return before workers
+    // are dispatched, so no inference backend or loaded network is needed.
+    const auto chosen = agent.run_search(
+        board, {nullptr}, Stockfish::WHITE, true, options);
+    EXPECT_EQ(chosen.moveA, Stockfish::MOVE_NONE);
+    EXPECT_EQ(board.uci_move(BOARD_B, chosen.moveB), "e4f2");
 }
 
 TEST_F(EngineTest, ReusedTreeIsReindexedIntoTranspositionTable) {
@@ -3507,6 +3729,136 @@ TEST_F(EngineTest, CertifiesCandidateWithNoPartnerIntervention) {
     EXPECT_GT(certifiedPly, 0);
 }
 
+namespace {
+
+// Whether every sit in @p line was legal when it was played, with the clock
+// charged ply by ply as the search charges it.
+::testing::AssertionResult line_sits_within_clock(
+    Board board, const std::vector<MateProofPly>& line,
+    Stockfish::Color team, TimeState time) {
+    Stockfish::Color mover = team;
+    for (size_t ply = 0; ply < line.size(); ++ply) {
+        const MateProofPly& step = line[ply];
+        const bool onA = board.side_to_move(BOARD_A) == mover;
+        const bool onB = board.side_to_move(BOARD_B) == ~mover;
+        const bool captureA = step.moveA != Stockfish::MOVE_NONE
+            && board.is_capture(BOARD_A, step.moveA);
+        const bool captureB = step.moveB != Stockfish::MOVE_NONE
+            && board.is_capture(BOARD_B, step.moveB);
+        const JointActionRules rules{
+            onA, onB, time.can_sit(mover),
+            onA && board.has_any_legal_move(BOARD_A),
+            onB && board.has_any_legal_move(BOARD_B)};
+        if (!is_joint_action_legal(
+                rules, step.moveA, step.moveB, captureA, captureB)) {
+            return ::testing::AssertionFailure()
+                << "illegal sit at ply " << ply << " with a lead of "
+                << time.lead_ms(mover) << " ms";
+        }
+        time.advance(mover, onA && onB);
+        board.make_moves(step.moveA, step.moveB);
+        mover = ~mover;
+    }
+    return ::testing::AssertionSuccess();
+}
+
+constexpr const char* kSatPartnerMate =
+    "r2q3r/ppp5/2n1Npkp/3p4/3P4/2P1P3/P1P2PPP/R2QK1NR[PNpppnbbrq] w KQ - 0 2"
+    "|"
+    "r1bk4/ppp1npNp/2nb3B/3B2B1/3P4/2P5/P1P2PPP/R2QK2R[bpp] b KQ";
+
+}  // namespace
+
+TEST_F(EngineTest, RootMateScanSitsOnlyWhileTheLeadLasts) {
+    Board board;
+    board.set(kSatPartnerMate);
+
+    // With a lead that covers the whole line, the sat-board proof stands.
+    JointActionCandidate action;
+    int plyToMate = 0;
+    std::vector<MateProofPly> line;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_with_pv(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 10000, 100, 100),
+        action, plyToMate, line));
+    EXPECT_EQ(board.uci_move(BOARD_A, action.moveA), "d1h5");
+    EXPECT_EQ(plyToMate, 9);
+
+    // 250 ms pays for two sits of a line that needs five: the proof above,
+    // which the scan used to return on any lead, is not one this clock allows.
+    const TimeState shortLead =
+        TimeState::clocked(Stockfish::WHITE, 250, 100, 100);
+    EXPECT_FALSE(line_sits_within_clock(board, line, Stockfish::WHITE, shortLead));
+    // Whatever the scan proves now, it may only sit while the clock allows.
+    line.clear();
+    if (AgentTreeReuseTestPeer::find_root_mate_with_pv(
+            board, Stockfish::WHITE, shortLead, action, plyToMate, line)) {
+        EXPECT_TRUE(line_sits_within_clock(board, line, Stockfish::WHITE, shortLead));
+    }
+}
+
+TEST_F(EngineTest, MateContinuationsReplayOnlyWhileTheLeadCoversThem) {
+    Board board;
+    board.set(kSatPartnerMate);
+    Agent agent;
+    JointActionCandidate rootAction;
+    int rootPlyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::find_root_mate_and_retain(
+        agent, board, Stockfish::WHITE, true, rootAction, rootPlyToMate));
+
+    Board continuation(board);
+    continuation.make_moves(rootAction.moveA, rootAction.moveB);
+    continuation.push_move(BOARD_A, continuation.legal_moves(BOARD_A).front());
+
+    JointActionCandidate action;
+    int plyToMate = 0;
+    ASSERT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, continuation, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, 10000, 100, 100),
+        action, plyToMate));
+    const int movesLeft = (plyToMate + 1) / 2;
+    ASSERT_GE(movesLeft, 2);
+    // Exactly the moves the stored line still sits through, then 50 ms short.
+    EXPECT_TRUE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, continuation, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, movesLeft * 100, 100, 100),
+        action, plyToMate));
+    EXPECT_FALSE(AgentTreeReuseTestPeer::reuse_mate_continuation(
+        agent, continuation, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, movesLeft * 100 - 50, 100, 100),
+        action, plyToMate));
+}
+
+TEST_F(EngineTest, CertificateTiersFollowTheClock) {
+    Board board;
+    board.set(kSatPartnerMate);
+    JointActionCandidate candidate;
+    int candidatePly = 0;
+    ASSERT_TRUE(Agent::find_root_mate(
+        board, Stockfish::WHITE, true, candidate, candidatePly));
+
+    const auto certify = [&](const TimeState& time, MateCertificateTier& tier) {
+        Agent::MateSearchBudget budget;
+        budget.remainingNodes = SearchParams::INTERNAL_MATE_CERT_NODE_BUDGET;
+        int certifiedPly = 0;
+        tier = MateCertificateTier::NONE;
+        return Agent::certify_mate_candidate(
+            board, Stockfish::WHITE, time, candidate, candidatePly,
+            budget, certifiedPly, tier);
+    };
+    MateCertificateTier tier = MateCertificateTier::NONE;
+    EXPECT_TRUE(certify(TimeState::clocked(Stockfish::WHITE, 10000, 100, 100), tier));
+    EXPECT_EQ(tier, MateCertificateTier::CHECKS_ONLY);
+
+    // Too short a lead for the sat-board tiers: only the joint tier, which
+    // follows the clock, may certify.
+    if (certify(TimeState::clocked(Stockfish::WHITE, 250, 100, 100), tier)) {
+        EXPECT_EQ(tier, MateCertificateTier::FULL_JOINT);
+    }
+    // A team that may not sit is never certified a sat-board line.
+    EXPECT_FALSE(certify(TimeState::clocked(Stockfish::WHITE, -250, 100, 100), tier));
+}
+
 TEST_F(EngineTest, CandidateCertificateRejectsExhaustedRaceScan) {
     Board board;
     board.set(
@@ -3699,6 +4051,119 @@ TEST_F(EngineTest, CandidateCertificateRejectsCrossBoardDefense) {
         budget, certifiedPly, tier));
     EXPECT_EQ(tier, MateCertificateTier::NONE);
     EXPECT_EQ(certifiedPly, 0);
+}
+
+namespace {
+
+// Board A: 1.Kf7 Kh7 2.Rh1#, a mate with no capture in it. Board B: our
+// partner (black) is on turn, so white's team is on turn on both boards.
+// Inert: bare kings, nothing there can ever be captured. Leaky: our partner's
+// knight on a1 is lost to Rc1 and Rxa1 (or axb3 / Rxc2 if it runs) once the
+// opponents get two moves there, and a knight in the defender's hand blocks
+// the rook's check on the h-file.
+constexpr const char* kQuietMateBoardA = "7k/8/5K2/8/8/8/8/R7[] w - - 0 1";
+constexpr const char* kInertBoardB = "7k/8/8/8/8/8/8/K7[] b - - 0 1";
+constexpr const char* kLeakyBoardB = "2R5/8/8/7k/8/8/P7/n6K[] b - - 0 1";
+
+struct BehindCertificate {
+    bool certified = false;
+    MateCertificateTier tier = MateCertificateTier::NONE;
+    JointActionCandidate action;
+    int plyToMate = 0;
+    bool budgetSpent = false;
+};
+
+// Certifies 1.Kf7 as a probe would hand it over - sitting board B - under a
+// white-team lead of @p leadMs at 100 ms a move for both teams.
+BehindCertificate certify_quiet_mate(const char* boardB, int64_t leadMs) {
+    Board board;
+    board.set(std::string(kQuietMateBoardA) + "|" + boardB);
+    Stockfish::Move kingStep = Stockfish::MOVE_NONE;
+    for (Stockfish::Move move : board.legal_moves(BOARD_A)) {
+        if (board.uci_move(BOARD_A, move) == "f6f7") {
+            kingStep = move;
+        }
+    }
+    EXPECT_NE(kingStep, Stockfish::MOVE_NONE);
+    const JointActionCandidate probeCandidate(
+        kingStep, 1.0f, 0, Stockfish::MOVE_NONE, 1.0f, 0,
+        JointActionRules{true, true, true, true, true}, false, false);
+    Agent::MateSearchBudget budget;
+    budget.remainingNodes = 4'000'000;
+    BehindCertificate result;
+    result.certified = Agent::certify_mate_candidate(
+        board, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, leadMs, 100, 100),
+        probeCandidate, 3, budget, result.plyToMate, result.tier, nullptr,
+        &result.action);
+    result.budgetSpent = budget.exhausted || budget.remainingNodes == 0;
+    EXPECT_EQ(board.fen(BOARD_A) + "|" + board.fen(BOARD_B),
+              [&] {
+                  Board fresh;
+                  fresh.set(std::string(kQuietMateBoardA) + "|" + boardB);
+                  return fresh.fen(BOARD_A) + "|" + fresh.fen(BOARD_B);
+              }());
+    return result;
+}
+
+}  // namespace
+
+// Behind on time, the defenders may sit board A and spend their lead on
+// board B, and white has to move there each time. With nothing on board B
+// to capture or mate with, that only delays the mate: it is a mate however
+// far behind white is, and the joint tier, which plays the real clock, says
+// so. The probe's sit on board B is illegal here, so the certified action
+// pairs Kf7 with a move there.
+TEST_F(EngineTest, CertifiesAMateBehindOnTimeWhenTheOtherBoardIsInert) {
+    for (const int64_t leadMs : {-300, 0}) {
+        SCOPED_TRACE(leadMs);
+        const BehindCertificate result = certify_quiet_mate(kInertBoardB, leadMs);
+        ASSERT_TRUE(result.certified);
+        EXPECT_EQ(result.tier, MateCertificateTier::FULL_JOINT);
+        Board board;
+        board.set(std::string(kQuietMateBoardA) + "|" + kInertBoardB);
+        EXPECT_EQ(board.uci_move(BOARD_A, result.action.moveA), "f6f7");
+        EXPECT_NE(result.action.moveB, Stockfish::MOVE_NONE);
+        EXPECT_GE(result.plyToMate, 3);
+    }
+}
+
+// The same capture-free line is no mate once the opponents get the two
+// moves on board B it takes to win the knight: whether they buy them with a
+// lead or white hands them over by having to move there, the knight comes
+// to the defender's hand and blocks the h-file. A line with no capture in it
+// is not a proof while the other board can still feed a defence. Its fixed
+// test position is the probe's: Fairy finds this mate on board A alone.
+TEST_F(EngineTest, RejectsACaptureFreeMateTheOtherBoardFeedsADefenceTo) {
+    // Level, the solver refutes the line outright. Behind, the defenders'
+    // waiting multiplies the lines past this budget; out of nodes is no
+    // certificate either, which is all a caller acts on.
+    const BehindCertificate level = certify_quiet_mate(kLeakyBoardB, 0);
+    EXPECT_FALSE(level.certified);
+    EXPECT_FALSE(level.budgetSpent);
+    const BehindCertificate behind = certify_quiet_mate(kLeakyBoardB, -300);
+    EXPECT_FALSE(behind.certified);
+    EXPECT_EQ(behind.tier, MateCertificateTier::NONE);
+    // Far enough ahead to sit board B through the whole line, the knight
+    // never comes under fire and the single-board proof stands.
+    const BehindCertificate ahead = certify_quiet_mate(kLeakyBoardB, 1000);
+    EXPECT_TRUE(ahead.certified);
+    EXPECT_EQ(ahead.tier, MateCertificateTier::CHECKS_ONLY);
+}
+
+// The exact edge on the leaky board. At 100 ms white sits board B for Kf7
+// and is then level: the defenders may not sit, Kh7 is forced, and Rh1+
+// beside a king move leaves black's partner on turn with nothing to capture.
+// At 99 ms the sit leaves the defenders 1 ms ahead: they wait on board A,
+// white has to move on board B, Rc1 follows, and the knight is lost in time
+// to block. The sat-board rule would ask for 300 ms; the clock needs 100.
+TEST_F(EngineTest, CertificateFollowsTheClockToTheMillisecond) {
+    const BehindCertificate atEdge = certify_quiet_mate(kLeakyBoardB, 100);
+    EXPECT_TRUE(atEdge.certified);
+    EXPECT_EQ(atEdge.tier, MateCertificateTier::FULL_JOINT);
+    const BehindCertificate short1 = certify_quiet_mate(kLeakyBoardB, 99);
+    EXPECT_FALSE(short1.certified);
+    EXPECT_FALSE(short1.budgetSpent);
 }
 
 TEST_F(EngineTest, JointForcedMateBudgetExhaustionIsConservative) {

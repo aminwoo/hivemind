@@ -147,6 +147,7 @@ constexpr float WDL_VALUE_WEIGHT = 0.0f;
  */
 constexpr float MOVES_LEFT_DISCOUNT = 0.05f;
 
+
 // =============================================================================
 // Draw Contempt Parameters
 // =============================================================================
@@ -263,6 +264,13 @@ constexpr double PERMANENT_BRAIN_MAX_MS = 60000.0;
 constexpr int PONDER_MAX_NODES = 500000;
 constexpr double PONDER_MAX_MS = 60000.0;
 
+/**
+ * Ceiling on a `go infinite` search, which otherwise runs until stop. The
+ * tree costs about 0.75 KB a node, so this is some 1.5 GB: within a 4 GB
+ * WebAssembly heap, and minutes of analysis at browser speeds.
+ */
+constexpr int ANALYSIS_MAX_NODES = 2000000;
+
 // =============================================================================
 // Early Stopping and Time Management Parameters
 // =============================================================================
@@ -334,36 +342,61 @@ constexpr float INSTABILITY_TIME_FRACTION = 0.4f;
 constexpr bool ENABLE_MCTS_SOLVER = true;
 
 /**
- * Maximum attacker moves for the root single-board forced-mate search.
+ * Maximum attacker moves for the root single-board and joint forced-mate search.
  * The search is iteratively deepened from 2, so a shorter mate is preferred.
  */
-constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 5;
+constexpr int MATE_SEARCH_MAX_ATTACKER_MOVES = 8;
 
 /**
- * Node budget (attacker moves plus defender replies tried) for the whole root
- * forced-mate pre-pass, shared across its deepening iterations.
- *
- * The pre-pass runs synchronously before MCTS, so it needs a cap of its own:
- * without one, an exposed king plus a full hand reaches multiple seconds. This
- * is the hard ceiling (~100 ms); Agent::search() scales it down further with the
- * budget of the search it precedes. Exhausting it only means "not proven" - the
- * position then goes to MCTS as usual, where the in-tree solver can still prove
- * the mate.
+ * Default node budget (attacker moves plus defender replies tried) for a
+ * direct call to the forced-mate scans. The scans run_search() starts beside
+ * the tree have no budget of their own: they run in rounds for as long as the
+ * tree searches (ROOT_SCAN_FIRST_ROUND_NODES below).
  */
-// Safety net, not the operating limit: MATE_SEARCH_MAX_TIME_PERCENT is what
-// bounds the pre-pass, and this used to bind first and stop a scan with time
-// still on its clock. A root forced-loss proof needing ~4M probes - a
-// cross-board feed mate - fits inside a 10s move and was cut off at 100k.
 constexpr uint64_t MATE_SEARCH_NODE_BUDGET = 10000000;
 
-/// Floor for the scaled budget, so even a very short search still gets a scan.
+/// A small budget for callers that want a quick scan.
 constexpr uint64_t MATE_SEARCH_MIN_NODE_BUDGET = 2000;
 
-// A universal loss proof must cover every legal defense. Timed searches
-// reserve enough cheap probes for this optional reverse proof. This applies to
-// both clock states: find_root_forced_loss() models the appropriate sit rules,
-// and skipping down-time roots suppresses exact losses that it can prove.
-constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
+/**
+ * The root scans beside the tree search run in rounds until the tree stops:
+ * its deadline, the stop command, a solved root or its node target. Each
+ * round is a complete scan with this many times the nodes of the last, so
+ * every stage of the scan keeps its share of the work however long the
+ * search turns out to be, and the rounds a longer search adds repeat at most
+ * a third of what it spends. A scan that settles every line it searches
+ * within a round stops there.
+ */
+constexpr uint64_t ROOT_SCAN_FIRST_ROUND_NODES = 40000;
+constexpr uint64_t ROOT_SCAN_ROUND_GROWTH = 4;
+/**
+ * The loss scan's first round. It shares each round fairly among every
+ * defense and starts each round afresh, so a small first round leaves a few
+ * hundred nodes per defense - too few to settle any - and the proof waits
+ * for a late round. At 40k the benchmark's lost positions were proven by the
+ * tree after 230-650 ms; from 250k the scan proves them in 70-120 ms, as the
+ * single 2M-node pass it replaced did.
+ */
+constexpr uint64_t ROOT_LOSS_SCAN_FIRST_ROUND_NODES = 250000;
+/**
+ * Threads that share each loss-scan round, taking its defenses from one
+ * queue. On the 12-core dev box (RTX 4070) two cut the mate benchmark's
+ * time-to-mate by a fifth at no cost to tree nodes per second; four cost
+ * the tree a tenth of its nodes. The browser build has a fixed thread pool,
+ * so it keeps one.
+ */
+#ifdef __EMSCRIPTEN__
+constexpr size_t ROOT_LOSS_SCAN_THREADS = 1;
+#else
+constexpr size_t ROOT_LOSS_SCAN_THREADS = 2;
+#endif
+
+/**
+ * Node limit standing for "until the search stops" where an API needs a
+ * number: far beyond any search, with room for the percentage arithmetic
+ * the scans do on their budgets.
+ */
+constexpr uint64_t MATE_SEARCH_UNBOUNDED_NODES = uint64_t{1} << 48;
 
 // Capture-feed proofs are searched independently in both board directions and
 // draw an allowance of their own, sized by the caller's budget. A fixed floor
@@ -371,11 +404,6 @@ constexpr uint64_t FORCED_LOSS_MIN_TIMED_NODE_BUDGET = 40000;
 // worst case of a long one, so the two directions simply split this share of
 // the caller's allowance evenly - neither can starve the other.
 constexpr uint64_t MATE_CAPTURE_FEED_NODE_BUDGET_PERCENT = 100;
-
-// Wall clock the Fairy-Stockfish mate probe may use when the search has no move
-// time to carve a pre-pass window out of, as in analysis. Timed searches hand
-// it whatever is left of MATE_SEARCH_MAX_TIME_PERCENT instead.
-constexpr int MATE_PROBE_UNTIMED_BUDGET_MS = 500;
 
 // Longest mate the probe will stop for, and accept. It doubles as an evidence
 // bound: a mate this short out of a pruned search is worth collapsing the root
@@ -413,8 +441,50 @@ constexpr bool ENABLE_STOCKFISH_MATE_SEARCH = false;
 constexpr uint64_t MATE_PROBE_FEED_NODE_BUDGET = 20000;
 constexpr int MATE_PROBE_FEED_MAX_MS = 40;
 
-// Total Fairy-Stockfish nodes available to the root probe across both boards.
-constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 8000000;
+// Total Fairy-Stockfish nodes for the root probe across both boards, unless
+// SearchOptions::mateProbeNodes sets another. The probe thread moves on to
+// its next job (the other board, the concurrent verifier, internal probes)
+// when it is spent; the tree stopping ends every job sooner.
+constexpr uint64_t MATE_PROBE_ROOT_NODE_BUDGET = 10000000;
+/**
+ * The root probe alternates between the boards in slices that double each
+ * round, starting here, so a mate on board B is not kept waiting behind a
+ * board A with none for half the search.
+ */
+constexpr int MATE_PROBE_FIRST_SLICE_MS = 50;
+constexpr uint64_t MATE_PROBE_FIRST_SLICE_NODES = 200000;
+/**
+ * Probes that carry a mate's line on where the probe's own line, read from
+ * the table, stopped short of it, so a long mate can be seen to end in
+ * checkmate and stop the search at once rather than wait for the other
+ * board's probe; each is cheap, the table already holding the line.
+ */
+constexpr int MATE_PROBE_LINE_EXTENSIONS = MATE_PROBE_MAX_MATE_MOVES;
+constexpr uint64_t MATE_PROBE_LINE_EXTENSION_NODES = 200000;
+constexpr int MATE_PROBE_LINE_EXTENSION_MS = 20;
+
+/**
+ * Nodes the root may spend certifying a conditional mate: one its probe found
+ * with the other board sat, which the clock does not grant (level, behind,
+ * or a lead short of the line). The joint certifier plays the real clock, so
+ * a certificate is a proven mate; without one the mate only orders the
+ * tree's expansion. The move time bounds it as well.
+ */
+constexpr uint64_t ROOT_CONDITIONAL_MATE_CERT_NODE_BUDGET = 2000000;
+/**
+ * The conditional probe and its certificate together take at most this share
+ * of the root probe's nodes and time. The probe thread runs the concurrent
+ * verifier after it, whose proofs of the opponents' mates a team that is not
+ * ahead needs most; the whole allowance here measurably delayed them.
+ */
+constexpr int ROOT_CONDITIONAL_MATE_SHARE_PERCENT = 25;
+/**
+ * Whether the root asks for conditional mates at all. Off: on 386 positions
+ * where the game's single-board mate was not covered by the lead, it certified
+ * none at 1 s or 10 s, and at 1 s its share delayed the verifier's proofs of
+ * mates against a team behind on time.
+ */
+constexpr bool ROOT_CONDITIONAL_MATE_PROBE = false;
 
 // Use the same evidence bound for accepting a probe mate and ending a move.
 // A separate five-move early-exit cap made accepted mates beyond it wait for
@@ -431,6 +501,31 @@ constexpr bool mate_probe_can_end_search(int plyToMate) {
 // it is the one part of the pre-pass that can be switched off without giving up
 // the check-only scans, so it gets its own flag.
 constexpr bool ENABLE_MATE_PROBE = true;
+
+/**
+ * Short frozen races, proven exactly on the probe thread: a board where one
+ * team is frozen, or about to be, so the other board is all its hope (see
+ * Agent::prove_frozen_race). The proof grows about forty-fold per attacker
+ * action - 0.6M nodes at three, 20-40M at four - so only short races, a lead
+ * of two seconds or so, fit; a longer one is left to the tree. A proof only
+ * ever marks a node won or lost.
+ */
+constexpr bool ENABLE_FROZEN_RACE = true;
+constexpr int FROZEN_RACE_MAX_ATTACKER_MOVES = 3;
+/// Root actions whose leading replies the stage also looks at, after every
+/// visited root action, and how many replies under each.
+constexpr int FROZEN_RACE_TOP_K = 4;
+constexpr int FROZEN_RACE_REPLY_TOP_K = 2;
+constexpr int FROZEN_RACE_MIN_VISITS = 4;
+/// What the stage may spend in one search, and on one target.
+constexpr uint64_t FROZEN_RACE_NODE_BUDGET = 2000000;
+/// Its share of the move time - never more than half of what is left, so the
+/// concurrent verifier after it keeps the rest - and its cap when the search
+/// has no move time.
+constexpr int FROZEN_RACE_TIME_PERCENT = 20;
+constexpr int FROZEN_RACE_MAX_MS = 250;
+/// How long the stage waits for the tree to generate a proof's move.
+constexpr int FROZEN_RACE_IDLE_MS = 20;
 
 // Experimental probing below the root. Each mode adds one effect so hit-rate,
 // playing-strength, and solver experiments can be measured independently.
@@ -508,33 +603,6 @@ constexpr int internal_mate_probe_root_time_percent(
 }
 
 /**
- * Share of the move time the root proof pre-pass may occupy. Both clock states
- * run the winning scan and the bounded loss scan.
- *
- * Node budgets cannot enforce this on their own: a joint proof node costs
- * ~70us against ~1us for a single-board check node, a spread no single node
- * count covers. Sized so the slowest proof the scan still completes - a
- * seven-ply capture feed, ~210ms of a 1500ms move - fits with margin; a proof
- * that lands returns immediately and hands the rest of the move time back, so
- * the average cost is far below the cap.
- *
- * A node-limited search has no move time, so the same share is taken of its
- * node target instead: the winning scan ends once the tree has searched this
- * percentage of the nodes, and the loss scan ends when the tree is complete.
- * Without that, a scan whose probes ran far over their per-node estimate held
- * bestmove for minutes after a 20000-node tree had finished in two seconds.
- */
-constexpr int MATE_SEARCH_MAX_TIME_PERCENT = 20;
-
-// The winning scan and reverse (move-safety) scan share the work already done
-// by concurrent MCTS, but the winning scan can consume its entire deadline.
-// Give the reverse scan a small bounded tail in which to certify the current
-// MCTS favourites. This is capped so long time controls do not turn it into a
-// second multi-second search.
-constexpr int ROOT_LOSS_EXTRA_TIME_PERCENT = 80;
-constexpr int ROOT_LOSS_EXTRA_MAX_MS = 800;
-
-/**
  * Concentrate part of the reverse scan on moves MCTS may actually play.
  *
  * A quiet two-board position can have several thousand legal joint actions.
@@ -553,6 +621,11 @@ constexpr uint64_t ROOT_LOSS_FOCUSED_BUDGET_PERCENT = 50;
 // to prove whether every check evasion loses. This catches short skewers and
 // capture feeds that have a tiny joint policy because one half is a pass.
 constexpr uint64_t ROOT_LOSS_WAITING_CHECK_NODE_BUDGET = 40000;
+
+// Keep deeper direct lines and optional waiting checks from hiding cheap
+// capture-feed proofs within a reverse scan's shared deadline.
+constexpr int ROOT_LOSS_DIRECT_SCOUT_MAX_ATTACKER_MOVES = 5;
+constexpr int ROOT_LOSS_WAITING_CHECK_TIME_DIVISOR = 2;
 
 /**
  * Tiny synchronous mate-in-one probe performed before neural workers start.
@@ -658,23 +731,6 @@ constexpr int selected_move_cert_reserve_ms(int moveTimeMs) {
 constexpr uint32_t MATE_SEARCH_TIME_CHECK_INTERVAL = 64;
 
 /**
- * Conversion factors from the search's own budget to mate-search nodes.
- *
- * A mate-search node is a make/unmake plus a mate test, roughly fifty times
- * cheaper than an MCTS node with its network evaluation, so these keep the
- * pre-pass at a few percent of the search it precedes instead of a fixed cost
- * that can dominate a short one (self-play runs searches of a few hundred nodes).
- */
-constexpr uint64_t MATE_SEARCH_NODES_PER_SEARCH_NODE = 10;
-// Give a 1-second UCI search the full root-mate budget.  This prevents
-// short searches from falling through to MCTS before the single-board solver
-// has had enough work to prove tactical mates such as Qh5.
-// Roughly what the scan gets through in a millisecond. At 50 it under-read
-// throughput by ~40x, so the time-scaled budget was far smaller than the
-// window it was scaling.
-constexpr uint64_t MATE_SEARCH_NODES_PER_MILLISECOND = 2000;
-
-/**
  * A joint proof node can enumerate and apply many board-move combinations,
  * making it substantially more expensive than one node in the optimized
  * single-board mate scan. Scale the shared pre-pass allowance accordingly.
@@ -688,6 +744,12 @@ constexpr uint64_t MATE_JOINT_SEARCH_BUDGET_DIVISOR = 10;
  * this; the cap is there for the ones that do not exist.
  */
 constexpr uint64_t JOINT_MATE_REDUCED_ATTEMPT_NODES = 4000;
+
+// Before a mixed-turn root spends its allowance excluding short joint mates,
+// scout a local checking line and verify it with partner moves included. The
+// scout supplies only a candidate; only the second search can prove a win.
+constexpr uint64_t ROOT_MATE_SCOUT_NODES = 10000;
+constexpr uint64_t ROOT_MATE_SCOUT_VERIFY_NODES = 20000;
 
 /**
  * Widening at the joint solver's attacker nodes: the slice each forcing
@@ -768,6 +830,8 @@ struct RuntimeConfig {
     bool enableTranspositions = ENABLE_TRANSPOSITIONS;
     bool enableRootMateSearch = ENABLE_MATE_EARLY_EXIT;
     bool enableMateProbe = ENABLE_MATE_PROBE;
+    bool conditionalMateProbe = ROOT_CONDITIONAL_MATE_PROBE;
+    bool frozenRace = ENABLE_FROZEN_RACE;
     bool certifySelectedMove = ENABLE_SELECTED_MOVE_CERTIFICATION;
     InternalMateProbeMode internalMateProbeMode = INTERNAL_MATE_PROBE_MODE;
     float internalMateProbeBias = INTERNAL_MATE_PROBE_BIAS;

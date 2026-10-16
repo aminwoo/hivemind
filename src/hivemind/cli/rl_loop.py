@@ -12,7 +12,9 @@
   6. matches the result against the fixed pre-RL network (twin-s-noattn-it0)
 
 Self-play and training use the settings of `hivemind selfplay` and `hivemind
-train`. Every finished stage leaves a marker in RUNS/rl-itN/stages, so a rerun
+train`. With --time-model clock, self-play and matches run on a simulated clock
+(the engine's --time-model clock) and networks read the clock input planes; run
+such a lineage with its own --generator, --generator-checkpoint and --runs. Every finished stage leaves a marker in RUNS/rl-itN/stages, so a rerun
 resumes at the first unfinished one (an interrupted segment or match is moved
 to rl-itN/aborted and redone); the layout is that of data/distill/rl_loop.sh,
 whose runs this continues. Training and matches wait while a game is running
@@ -23,6 +25,13 @@ order on --exchange, `hivemind contribute` plays games for it on any number of
 machines, and the loop collects their batches (and keeps playing its own
 segments, unless --no-local-selfplay) until the iteration has --games games.
 Batches that arrive later still count, as replay data for later iterations.
+
+Each finished self-play segment moves to the private --archive dataset on
+Hugging Face as a zstd tarball (about 13x smaller than the chunks), and is
+deleted from disk once the Hub's copy checks out; rl-itN/search/archive.json
+lists what went where. Training downloads the games it needs, with the teacher
+validation set, and deletes them again once it has finished. --keep-selfplay
+keeps everything on disk; --archive-only archives and exits.
 
 Stop between stages with: touch RUNS/rl-loop.stop"""
 
@@ -39,8 +48,10 @@ import sys
 import time
 
 from hivemind.cli import selfplay, train
+from hivemind.data import archive
+from hivemind.distill.data import chunk_problem
 from hivemind.distill.exchange import PROTOCOL, HubExchange, install, open_exchange, sha256
-from hivemind.network import DEFAULT_ONNX_PATH, SELFPLAY_EXCHANGE, TWIN_REPOSITORY
+from hivemind.network import DEFAULT_ONNX_PATH, SELFPLAY_ARCHIVE, SELFPLAY_EXCHANGE, TWIN_REPOSITORY
 from hivemind.paths import PROJECT_ROOT
 
 RUNS = PROJECT_ROOT / "data" / "distill" / "runs"
@@ -144,7 +155,8 @@ def sync_hub(api, repo, generator, checkpoint, log, runs):
         if marker.is_file():
             m = json.loads(marker.read_text())
             elo = "" if m["elo"] is None else f" ({m['elo']:+.0f} Elo)"
-            message += f": {m['wins']}-{m['losses']}-{m['draws']} vs the previous generator at 100 ms{elo}"
+            at = f"{m.get('movetime', 100)} ms" + (", clock" if m.get("time_model") == "clock" else "")
+            message += f": {m['wins']}-{m['losses']}-{m['draws']} vs the previous generator at {at}{elo}"
     commit = api.create_commit(
         repo_id=repo, commit_message=message,
         operations=[CommitOperationAdd(path_in_repo=name, path_or_fileobj=str(path)) for path, name in uploads])
@@ -163,6 +175,22 @@ def upload_blocker(api, repo, token):
     if repo.split("/")[0] not in owners:
         return f"Hugging Face account {account['name']} cannot upload to {repo}"
     return None
+
+
+def finished_selfplay(it):
+    """The paths under rl-itN/search that hold finished self-play: the games,
+    records and log of every finished segment and collected batch, and the
+    validation games once played. The pilot, rl-it1, left no stage markers and
+    is finished as a whole. An interrupted segment's files stay for its rerun
+    to move aside."""
+    stages = it / "stages"
+    if not stages.is_dir():
+        return None
+    names = sorted(marker.stem for marker in stages.glob("seg*.done"))
+    paths = [path for name in names for path in (f"train/{name}", f"train_run/{name}", f"logs/{name}.log")]
+    if (stages / "val.done").is_file():
+        paths += ["val", "val_run", "logs/val.log"]
+    return paths
 
 
 class Loop:
@@ -245,7 +273,8 @@ class Loop:
         log.parent.mkdir(parents=True, exist_ok=True)
         self.log(f"it{self.n} self-play {name}: {games} games, seed {seed}")
         command = selfplay.engine_command(self.args.selfplay_engine, self.generator_sp1, games, seed,
-                                          data, records, self.args.parallel_games)
+                                          data, records, self.args.parallel_games,
+                                          selfplay.time_model_options(self.args.time_model))
         with log.open("w") as stream:
             if subprocess.run(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT).returncode:
                 raise StageFailed(f"self-play {name} failed (see {log})")
@@ -257,12 +286,14 @@ class Loop:
         if not positions:
             raise StageFailed(f"{name}: empty corpus")
         self.mark(name, {"games": games, "seed": seed, "positions": positions, "generator": generator})
+        self.archive(self.n)
 
     def games_played(self):
         return sum(json.loads(marker.read_text())["games"] for marker in (self.it / "stages").glob("seg*.done"))
 
     def publish(self, accepting):
-        order = {"protocol": PROTOCOL, "iteration": self.n, "accepting": accepting, "games": self.args.games}
+        order = {"protocol": PROTOCOL, "iteration": self.n, "accepting": accepting, "games": self.args.games,
+                 "time_model": self.args.time_model}
         try:
             self.exchange.publish(order, self.generator)
         except Exception as error:
@@ -293,6 +324,12 @@ class Loop:
             data = self.runs / f"rl-it{n}" / "search" / "train" / name
             shutil.rmtree(data, ignore_errors=True)
             self.exchange.fetch(submission, data)
+            problem = next(filter(None, map(chunk_problem, sorted(data.glob("*.dst")))), None)
+            if problem:
+                shutil.rmtree(data)
+                self.exchange.finish(submission, False, f"Unusable games: {problem}.")
+                self.log(f"closed {submission.folder} from {manifest.get('contributor')} unused: {problem}")
+                continue
             positions = train.positions([data])
             if not positions:
                 shutil.rmtree(data)
@@ -352,8 +389,13 @@ class Loop:
                 else train.generator_checkpoint(self.generator, self.checkpoint))
         if not init.is_file():
             raise StageFailed(f"missing {init}")
+        replays = replay_iterations(self.n, self.args.window)
+        for m in [self.n, *replays]:
+            archive.restore(self.runs / f"rl-it{m}" / "search", self.log)
+        for directory in self.teacher_val:
+            archive.restore(directory, self.log)
         new = train_dirs(self.runs, self.n)
-        old = [d for m in replay_iterations(self.n, self.args.window) for d in train_dirs(self.runs, m)]
+        old = [d for m in replays for d in train_dirs(self.runs, m)]
         npos, opos = train.positions(new), train.positions(old)
         if not npos:
             raise StageFailed("no new self-play positions")
@@ -379,21 +421,31 @@ class Loop:
         self.mark("train", {"steps": steps, "replay_fraction": fraction, "new_positions": npos,
                             "replay_positions": opos, "init": sha256(init),
                             "onnx": sha256(self.it / "models" / "C.onnx")})
+        self.archive(self.n, *replays)
+        if not self.args.keep_selfplay:
+            for directory in self.teacher_val:
+                archive.evict(directory)
 
-    def match(self, name, baseline):
+    def match(self, name, baseline, baseline_time_model=None):
+        """baseline_time_model "flag" makes a clocked match's baseline search on
+        the binary time advantage, for a network that cannot read the clock."""
         if self.done(f"match_{name}"):
             return
         self.check_stop()
         out, log = self.arms / f"match_{name}", self.arms / f"match_{name}.log"
-        games = self.args.match_games
+        games, movetime, clock = self.args.match_games, self.args.match_movetime, self.args.time_model
+        flag_baseline = clock == "clock" and baseline_time_model == "flag"
         while True:
             self.aside(out, log)
             self.wait_for_quiet()
-            self.log(f"it{self.n} match vs {name} ({baseline}, {games} games at 100 ms)")
+            self.log(f"it{self.n} match vs {name} ({baseline}, {games} games at {movetime} ms"
+                     + (", on a simulated clock" if clock == "clock" else "") + ")")
             command = [str(self.args.match_engine), "tournament",
                        "--contender", str(self.it / "models" / "C.onnx"), "--baseline", str(baseline),
-                       "--movetime", "100", "--games", str(games), "--seed", str(self.n),
-                       "--positions", str(self.args.openings), "--output", str(out)]
+                       "--movetime", str(movetime), "--games", str(games), "--seed", str(self.n),
+                       "--positions", str(self.args.openings), "--output", str(out),
+                       *(("--time-model", "clock") if clock == "clock" else ()),
+                       *(("--baseline-time-model", "flag") if flag_baseline else ())]
             with log.open("w") as stream:
                 process = subprocess.Popen(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT)
                 status = None
@@ -411,7 +463,9 @@ class Loop:
             if status:
                 raise StageFailed(f"match vs {name} failed (see {log})")
             break
-        summary = match_summary(out / "summary.json", games)
+        summary = {**match_summary(out / "summary.json", games), "movetime": movetime, "time_model": clock}
+        if flag_baseline:
+            summary["baseline_time_model"] = "flag"
         self.log(f"it{self.n} vs {name}: {json.dumps(summary)}")
         self.mark(f"match_{name}", summary)
 
@@ -444,6 +498,26 @@ class Loop:
                     time.sleep(RETRY_SECONDS)
         self.log(f"it{self.n}: continuing without uploading")
 
+    def archive(self, *iterations):
+        """Move the finished self-play of these iterations, and what their
+        interrupted stages left in rl-itN/aborted, to --archive. Not fatal:
+        what is left stays on disk and the next call retries."""
+        if self.args.keep_selfplay:
+            return
+        for m in iterations:
+            it = self.runs / f"rl-it{m}"
+            for directory, paths in ((it / "search", finished_selfplay(it)), (it / "aborted", None)):
+                if not directory.is_dir():
+                    continue
+                try:
+                    freed = archive.archive(self.api, self.args.archive, directory, self.log, paths)
+                except Exception as error:
+                    self.log(f"it{self.n}: archiving {directory} to {self.args.archive} failed: {error!r}; "
+                             f"it stays on disk")
+                    return
+                if freed:
+                    self.log(f"{it.name}: freed {freed / 1e9:.1f} GB on disk")
+
     def iteration(self, n):
         self.n, self.it = n, self.runs / f"rl-it{n}"
         self.arms = self.it / "arms"
@@ -457,6 +531,7 @@ class Loop:
         # The generator is fixed for a whole iteration's self-play.
         if not (self.it / "stages" / "generator").is_file():
             (self.it / "stages" / "generator").write_text(sha256(self.generator) + "\n")
+        self.archive(*range(1, n + 1))
         args = self.args
         if self.exchange:
             self.distributed_selfplay()
@@ -482,7 +557,7 @@ class Loop:
         self.promote()
         self.upload()
         if self.fixed.is_file():
-            self.attempt(self.match, "it0", self.fixed)
+            self.attempt(self.match, "it0", self.fixed, self.args.fixed_time_model)
         else:
             self.log(f"it{n}: no {self.fixed.name}, skipping the match against it")
         self.mark("iteration", {})
@@ -492,9 +567,12 @@ class Loop:
 
     def run(self, first, last):
         self.log(f"loop: iterations {first}..{last or 'forever'}, {self.args.games} games "
-                 f"({self.args.segment_games} per segment), window {self.args.window}, "
+                 f"({self.args.segment_games} per segment), {self.args.time_model} time model, "
+                 f"generator {self.generator.name}, matches {self.args.match_games} games at "
+                 f"{self.args.match_movetime} ms, window {self.args.window}, "
                  f"passes new {self.args.new_passes} / replay {self.args.replay_passes}, "
-                 f"upload {'off' if self.args.no_upload else self.args.repo}"
+                 f"upload {'off' if self.args.no_upload else self.args.repo}, "
+                 f"self-play {'kept on disk' if self.args.keep_selfplay else 'moved to ' + self.args.archive}"
                  + (f", distributed via {self.exchange}" if self.exchange else ""))
         n = first
         while last is None or n <= last:
@@ -531,8 +609,24 @@ def main():
     parser.add_argument("--new-passes", type=float, default=1.5)
     parser.add_argument("--replay-passes", type=float, default=0.5)
     parser.add_argument("--parallel-games", type=positive_int, default=6)
-    parser.add_argument("--match-games", type=even_int, default=200,
-                        help="Games per match, in colour-swapped pairs")
+    parser.add_argument("--match-games", type=even_int, default=1000,
+                        help="Games per match (vs the generator and vs it0), in colour-swapped "
+                             "pairs (default: %(default)s)")
+    parser.add_argument("--match-movetime", type=positive_int, default=100,
+                        help="Milliseconds per move in matches (default: %(default)s)")
+    parser.add_argument("--time-model", choices=("flag", "clock"), default="flag",
+                        help="flag: one team may sit all game, as iterations 1-10 trained; clock: "
+                             "self-play and matches on a simulated clock, for networks that read "
+                             "the clock planes (default: %(default)s)")
+    parser.add_argument("--fixed-time-model", choices=("flag", "clock"),
+                        help="What the fixed it0 baseline searches on in clock matches; flag for an it0 "
+                             "from before the clock planes, which misreads them (default: --time-model)")
+    parser.add_argument("--generator", type=Path, default=DEFAULT_ONNX_PATH,
+                        help="The generator network, replaced on promotion; another lineage needs "
+                             "its own (default: %(default)s)")
+    parser.add_argument("--generator-checkpoint", type=Path, default=train.GENERATOR_CHECKPOINT,
+                        help="The generator's training checkpoint, which the first iteration "
+                             "trains from (default: %(default)s)")
     parser.add_argument("--batch-size", type=positive_int, default=1024)
     parser.add_argument("--openings", type=Path, default=OPENINGS, help="Match opening positions (TSV)")
     parser.add_argument("--runs", type=Path, default=RUNS, help="Directory of the rl-itN runs")
@@ -540,6 +634,13 @@ def main():
                         help="Hugging Face model repository; uploads are skipped when this machine "
                              "is not logged in to an account that can write to it")
     parser.add_argument("--no-upload", action="store_true", help="Do not upload to Hugging Face")
+    parser.add_argument("--archive", default=SELFPLAY_ARCHIVE,
+                        help="Private Hugging Face dataset that finished self-play moves to, compressed, "
+                             "freeing the disk")
+    parser.add_argument("--keep-selfplay", action="store_true",
+                        help="Keep all self-play on disk rather than moving it to --archive")
+    parser.add_argument("--archive-only", action="store_true",
+                        help="Move all finished self-play to --archive, then exit")
     parser.add_argument("--pause-for", default="reaper|wineserver",
                         help="pgrep -x pattern of processes (Steam and Proton games by default) that "
                              "pause training and matches; empty disables")
@@ -557,31 +658,49 @@ def main():
         parser.error("--new-passes must be positive and --replay-passes non-negative")
     if args.last is not None and args.first is not None and args.last < args.first:
         parser.error("--last is before --first")
+    if args.fixed_time_model is None:
+        args.fixed_time_model = args.time_model
+    if args.fixed_time_model == "clock" and args.time_model != "clock":
+        parser.error("--fixed-time-model clock needs --time-model clock")
+    if args.archive_only and args.keep_selfplay:
+        parser.error("--archive-only and --keep-selfplay contradict each other")
     if args.segment_games is None:
         args.segment_games = 1000 if args.distributed else 10_000
     args.local_selfplay = not args.no_local_selfplay
 
-    if not DEFAULT_ONNX_PATH.is_file():
-        sys.exit(f"Generator not found at {DEFAULT_ONNX_PATH}; run `hivemind fetch-network`.")
-    if not args.selfplay_engine.is_file():
-        sys.exit(f"Self-play engine not found at {args.selfplay_engine}; build it with\n"
-                 f"  {selfplay.BUILD_COMMAND}")
-    if not args.match_engine.is_file():
-        sys.exit(f"Match engine not found at {args.match_engine}; run `hivemind build-engine`.")
-    if not args.openings.is_file():
-        sys.exit(f"Openings not found at {args.openings}; pass --openings.")
+    args.generator = args.generator.resolve()
+    args.generator_checkpoint = args.generator_checkpoint.resolve()
+    if not args.generator.is_file():
+        sys.exit(f"Generator not found at {args.generator}; run `hivemind fetch-network` "
+                 f"or pass --generator.")
+    if not args.archive_only:
+        if not args.selfplay_engine.is_file():
+            sys.exit(f"Self-play engine not found at {args.selfplay_engine}; build it with\n"
+                     f"  {selfplay.BUILD_COMMAND}")
+        if not args.match_engine.is_file():
+            sys.exit(f"Match engine not found at {args.match_engine}; run `hivemind build-engine`.")
+        if not args.openings.is_file():
+            sys.exit(f"Openings not found at {args.openings}; pass --openings.")
     args.openings = args.openings.resolve()
     args.selfplay_engine = args.selfplay_engine.resolve()
     args.match_engine = args.match_engine.resolve()
     args.runs = args.runs.resolve()
 
-    loop = Loop(args)
-    skipped = None
+    loop = Loop(args, generator=args.generator, checkpoint=args.generator_checkpoint)
+    skipped = unarchived = None
     if not args.no_upload:
         from huggingface_hub import HfApi, get_token
         loop.api = HfApi()
         skipped = upload_blocker(loop.api, args.repo, get_token())
         args.no_upload = skipped is not None
+        if not args.keep_selfplay:
+            unarchived = upload_blocker(loop.api, args.archive, get_token())
+    elif not args.keep_selfplay:
+        unarchived = "--no-upload"
+    if unarchived:
+        if args.archive_only:
+            sys.exit(f"Cannot archive to {args.archive}: {unarchived}.")
+        args.keep_selfplay = True
 
     import fcntl
     args.runs.mkdir(parents=True, exist_ok=True)
@@ -596,6 +715,13 @@ def main():
         loop.log(f"cleared an earlier stop request ({stop})")
     if skipped:
         loop.log(f"not uploading: {skipped}")
+    if unarchived:
+        loop.log(f"keeping self-play on disk: {unarchived}")
+    if args.archive_only:
+        loop.n = args.first or next_iteration(args.runs)
+        loop.log(f"archiving the finished self-play of it1..it{loop.n} to {args.archive}")
+        loop.archive(*range(1, loop.n + 1))
+        return
     if args.distributed:
         loop.exchange = open_exchange(args.exchange, args.repo, loop.api)
         if isinstance(loop.exchange, HubExchange) and args.no_upload:

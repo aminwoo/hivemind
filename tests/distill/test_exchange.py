@@ -93,3 +93,27 @@ def test_hub_exchange_refuses_a_generator_the_model_repo_lacks(tmp_path):
     exchange = HubExchange(FakeHub("0" * 64), "me/games", "me/net")
     with pytest.raises(RuntimeError):
         exchange.publish({"protocol": PROTOCOL, "iteration": 7, "accepting": True, "games": 100}, generator)
+
+
+def test_hub_exchange_stores_chunks_in_lfs_by_pattern(tmp_path):
+    """Pull requests must not each add their chunks to .gitattributes, or
+    every batch after the first merged one conflicts."""
+    attributes = tmp_path / ".gitattributes"
+    attributes.write_text("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+    uploads = []
+
+    class Hub:
+        def create_repo(self, repo, repo_type, private, exist_ok):
+            pass
+
+        def hf_hub_download(self, repo, filename, repo_type):
+            return str(attributes)
+
+        def upload_file(self, path_or_fileobj, path_in_repo, repo_id, repo_type, commit_message):
+            uploads.append(path_or_fileobj.decode())
+            attributes.write_text(uploads[-1])
+
+    exchange = HubExchange(Hub(), "me/games", "me/net")
+    exchange.create()
+    exchange.create()
+    assert uploads == ["*.bin filter=lfs diff=lfs merge=lfs -text\n*.dst filter=lfs diff=lfs merge=lfs -text\n"]

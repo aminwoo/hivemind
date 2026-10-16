@@ -77,11 +77,12 @@ def contributor_name(exchange):
     return re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-") or "contributor"
 
 
-def play(engine, model, games, parallel_games, batch, work):
+def play(engine, model, games, parallel_games, batch, work, time_model="flag"):
     """Play one batch into work/batch; returns that directory."""
     out, log = work / batch, work / f"{batch}.log"
     seed = int(batch.rsplit("-", 1)[1], 16)
-    command = selfplay.engine_command(engine, model, games, seed, out, out / "games", parallel_games)
+    command = selfplay.engine_command(engine, model, games, seed, out, out / "games", parallel_games,
+                                      selfplay.time_model_options(time_model))
     count = 0
     with log.open("w") as stream:
         process = subprocess.Popen(command, cwd=ENGINE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -167,7 +168,8 @@ def main():
         model = for_this_machine(exchange.generator(order, work / "models"))
         batch = f"{name}-{secrets.randbits(63) or 1:016x}"
         say(f"iteration {n}: playing {args.games} games ({batch})")
-        out = play(engine, model, args.games, args.parallel_games, batch, work)
+        out = play(engine, model, args.games, args.parallel_games, batch, work,
+                   order.get("time_model", "flag"))
         manifest = {"protocol": PROTOCOL, "iteration": n, "generator": order["generator"]["sha256"],
                     "games": args.games, "positions": train.positions([out]),
                     "seed": int(batch.rsplit("-", 1)[1], 16), "contributor": name, "folder": f"it{n}/{batch}",

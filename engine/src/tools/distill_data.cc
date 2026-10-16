@@ -20,9 +20,15 @@ constexpr uint32_t VERSION = 2;
 }  // namespace
 
 uint16_t half_bits(__half value) {
+#if defined(HIVEMIND_BACKEND_TENSORRT) || defined(HIVEMIND_ORT_FP16)
     uint16_t bits;
     std::memcpy(&bits, &value, sizeof(bits));
     return bits;
+#else
+    // The FP32 backend's __half is a float: copying its first two bytes
+    // stored mantissa bits, not a half.
+    return hm::float_to_half_bits(value);
+#endif
 }
 
 void pack_planes(const __half* planes, Record& record) {

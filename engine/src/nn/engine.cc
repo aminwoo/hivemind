@@ -324,6 +324,7 @@ Engine::ExecutionState::~ExecutionState() {
     if (deviceJointFactorsABuffer) cudaFree(deviceJointFactorsABuffer);
     if (deviceJointFactorsBBuffer) cudaFree(deviceJointFactorsBBuffer);
     if (hostObsHalf) cudaFreeHost(hostObsHalf);
+    if (hostLegacyObsHalf) cudaFreeHost(hostLegacyObsHalf);
     if (hostValueHalf) cudaFreeHost(hostValueHalf);
     if (hostPolicyAHalf) cudaFreeHost(hostPolicyAHalf);
     if (hostPolicyBHalf) cudaFreeHost(hostPolicyBHalf);
@@ -567,10 +568,19 @@ bool Engine::buildEngineFromONNX(const std::string& onnxFile) {
         ? QUANTIZED_BUILDER_OPTIMIZATION_LEVEL : BUILDER_OPTIMIZATION_LEVEL);
     
     const char* inputName = network->getInput(0)->getName();
+    const nvinfer1::Dims networkInput = network->getInput(0)->getDimensions();
+    const int modelChannels = networkInput.nbDims == 4 && networkInput.d[1] > 0
+        ? static_cast<int>(networkInput.d[1]) : NB_INPUT_CHANNELS;
+    if (modelChannels != NB_INPUT_CHANNELS && modelChannels != NB_LEGACY_INPUT_CHANNELS) {
+        std::cerr << "Network takes " << modelChannels << " input planes; expected "
+                  << NB_INPUT_CHANNELS << " (or " << NB_LEGACY_INPUT_CHANNELS
+                  << " for a network from before the clock planes)" << std::endl;
+        return false;
+    }
     nvinfer1::Dims dims{};
     dims.nbDims = 4;
     dims.d[0] = m_batchSize;
-    dims.d[1] = NB_INPUT_CHANNELS;
+    dims.d[1] = modelChannels;
     dims.d[2] = BOARD_HEIGHT;
     dims.d[3] = BOARD_WIDTH;
     for (int workerIndex = 0; workerIndex < SearchParams::NUM_SEARCH_THREADS; ++workerIndex) {
@@ -694,22 +704,35 @@ bool Engine::initializeResources() {
     }
 
     nvinfer1::Dims inputDims = m_engine->getTensorShape(m_inputName.c_str());
+    m_inputChannels = inputDims.nbDims == 4 && inputDims.d[1] > 0
+        ? static_cast<int>(inputDims.d[1]) : NB_INPUT_CHANNELS;
     if (inputDims.nbDims != 4 ||
-        (inputDims.d[1] > 0 && inputDims.d[1] != NB_INPUT_CHANNELS) ||
+        (m_inputChannels != NB_INPUT_CHANNELS
+         && m_inputChannels != NB_LEGACY_INPUT_CHANNELS) ||
         (inputDims.d[2] > 0 && inputDims.d[2] != BOARD_HEIGHT) ||
         (inputDims.d[3] > 0 && inputDims.d[3] != BOARD_WIDTH)) {
         std::cerr << "Unexpected TensorRT input shape" << std::endl;
         return false;
     }
 
+    if (m_inputChannels == NB_LEGACY_INPUT_CHANNELS) {
+        std::cout << "Network takes the " << NB_LEGACY_INPUT_CHANNELS
+                  << " input planes from before the clock planes; they are "
+                     "dropped before inference" << std::endl;
+    }
+
     m_batchSize = inputDims.d[0] > 0 ? inputDims.d[0] : SearchParams::BATCH_SIZE;
     nvinfer1::Dims dims{};
     dims.nbDims = 4;
     dims.d[0] = m_batchSize;
-    dims.d[1] = NB_INPUT_CHANNELS;
+    dims.d[1] = m_inputChannels;
     dims.d[2] = BOARD_HEIGHT;
     dims.d[3] = BOARD_WIDTH;
+    // Callers always hand over every plane; a legacy network's device input
+    // holds only the ones it reads.
     size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(__half);
+    size_t deviceInputSize = m_batchSize * m_inputChannels * BOARD_HEIGHT
+        * BOARD_WIDTH * sizeof(__half);
     size_t valSize = m_batchSize * sizeof(__half);
     size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT * BOARD_WIDTH * sizeof(__half);
     size_t wdlSize = m_batchSize * 3 * sizeof(__half);
@@ -740,7 +763,10 @@ bool Engine::initializeResources() {
                       << workerIndex << std::endl;
             return false;
         }
-        if (!checkCuda(cudaMalloc(&state->deviceObsBuffer, inputSize), "cudaMalloc(input)") ||
+        if ((m_inputChannels != NB_INPUT_CHANNELS
+             && !checkCuda(cudaMallocHost(&state->hostLegacyObsHalf, deviceInputSize),
+                           "cudaMallocHost(legacy input)")) ||
+            !checkCuda(cudaMalloc(&state->deviceObsBuffer, deviceInputSize), "cudaMalloc(input)") ||
             !checkCuda(cudaMalloc(&state->deviceValueBuffer, valSize), "cudaMalloc(value)") ||
             !checkCuda(cudaMalloc(&state->devicePolicyABuffer, polSize), "cudaMalloc(policy A)") ||
             !checkCuda(cudaMalloc(&state->devicePolicyBBuffer, polSize), "cudaMalloc(policy B)") ||
@@ -780,7 +806,7 @@ bool Engine::initializeResources() {
         // fault and poisoned every worker stream.  Initialize each context's
         // graph here, serially, before any inference worker can use the engine.
         if (!checkCuda(cudaMemsetAsync(
-                state->deviceObsBuffer, 0, inputSize, state->stream),
+                state->deviceObsBuffer, 0, deviceInputSize, state->stream),
                 "cudaMemsetAsync(input warmup)") ||
             !state->context->enqueueV3(state->stream) ||
             !checkCuda(cudaStreamSynchronize(state->stream),
@@ -856,7 +882,7 @@ bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
         return false;
     }
 
-    const size_t inputSize = m_batchSize * NB_INPUT_CHANNELS * BOARD_HEIGHT
+    const size_t inputSize = m_batchSize * m_inputChannels * BOARD_HEIGHT
         * BOARD_WIDTH * sizeof(__half);
     const size_t valSize = m_batchSize * sizeof(__half);
     const size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT
@@ -866,8 +892,17 @@ bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
     const size_t jointFactorsSize = m_batchSize * m_jointFactorRank
         * (NB_POLICY_VALUES() + 1) * sizeof(__half);
 
+    // A legacy network gets the planes without the clock planes. The staging
+    // buffer is this worker's own and is not touched again until the
+    // inference it feeds has been synchronized.
+    const __half* input = obs;
+    if (m_inputChannels != NB_INPUT_CHANNELS) {
+        drop_clock_planes(obs, static_cast<__half*>(state.hostLegacyObsHalf),
+                          static_cast<size_t>(m_batchSize));
+        input = static_cast<const __half*>(state.hostLegacyObsHalf);
+    }
     if (!checkCuda(cudaMemcpyAsync(
-            state.deviceObsBuffer, obs, inputSize, cudaMemcpyHostToDevice,
+            state.deviceObsBuffer, input, inputSize, cudaMemcpyHostToDevice,
             state.stream), "cudaMemcpyAsync(input)")) {
         return false;
     }

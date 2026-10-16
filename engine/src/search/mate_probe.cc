@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
 
 #include "common/globals.h"
+#include "common/thread_priority.h"
 
 #include "Fairy-Stockfish/src/movegen.h"
 #include "Fairy-Stockfish/src/position.h"
@@ -243,11 +245,66 @@ Result probe(const std::string& fen, int maxMateMoves, uint64_t nodeBudget,
     Stockfish::Position line;
     std::deque<Stockfish::StateInfo> lineStates(1);
     line.set(variant, fen, false, &lineStates.back(), Stockfish::Threads.main());
+    bool wholeLinePlayed = true;
     for (const Stockfish::Move move : best.pv) {
         if (!line.pseudo_legal(move) || !line.legal(move)) {
+            wholeLinePlayed = false;
             break;
         }
         result.principalVariation.push_back(Stockfish::UCI::move(line, move));
+        lineStates.emplace_back();
+        line.do_move(move, lineStates.back());
+    }
+
+    // The search's line ends where its depth ran out: the mate score beyond
+    // that came out of the table, by way of quiescence or mate-distance
+    // pruning, without the moves. The table still holds each position's best
+    // move from the deeper searches that scored it, so the line is carried on
+    // from there, as far as the mate it claims, while the entries last. The
+    // workers have stopped and the probe lock is held, so nothing writes the
+    // table meanwhile.
+    const Stockfish::Color attacker = line.side_to_move();
+    // The defender's replies all lose, so the search keeps no best move for
+    // a defender position. Its reply is read from the table one ply down
+    // instead: the one whose position the table scores as the longest mate,
+    // the defence the search would have found. Every child sits at the same
+    // ply, so their stored mate scores compare directly.
+    const auto longest_defence = [&] {
+        Stockfish::Move longest = Stockfish::MOVE_NONE;
+        int longestValue = Stockfish::VALUE_INFINITE;
+        Stockfish::StateInfo replyState;
+        for (const auto& reply : Stockfish::MoveList<Stockfish::LEGAL>(line)) {
+            line.do_move(reply, replyState);
+            bool found = false;
+            const Stockfish::TTEntry* entry =
+                Stockfish::TT.probe(line.key(), found);
+            const int value = found ? entry->value() : Stockfish::VALUE_NONE;
+            line.undo_move(reply);
+            if (found && entry->move() != Stockfish::MOVE_NONE
+                && value != Stockfish::VALUE_NONE
+                && value >= Stockfish::VALUE_MATE_IN_MAX_PLY
+                && value < longestValue) {
+                longest = reply;
+                longestValue = value;
+            }
+        }
+        return longest;
+    };
+    const size_t matePlies = static_cast<size_t>(2 * mateInMoves - 1);
+    while (wholeLinePlayed && result.principalVariation.size() < matePlies
+           && Stockfish::MoveList<Stockfish::LEGAL>(line).size() > 0) {
+        bool found = false;
+        const Stockfish::TTEntry* entry = Stockfish::TT.probe(line.key(), found);
+        Stockfish::Move move = found ? entry->move() : Stockfish::MOVE_NONE;
+        if (move == Stockfish::MOVE_NONE && line.side_to_move() != attacker) {
+            move = longest_defence();
+        }
+        if (move == Stockfish::MOVE_NONE || !line.pseudo_legal(move)
+            || !line.legal(move)) {
+            break;
+        }
+        result.principalVariation.push_back(Stockfish::UCI::move(line, move));
+        ++result.tablePlies;
         lineStates.emplace_back();
         line.do_move(move, lineStates.back());
     }
@@ -267,11 +324,36 @@ void set_threads(int count) {
         delete Stockfish::Threads.back();
         Stockfish::Threads.pop_back();
     }
-    while (Stockfish::Threads.size() < poolSize) {
-        auto* worker = new Stockfish::Thread(Stockfish::Threads.size());
-        worker->clear();
-        Stockfish::Threads.push_back(worker);
+    grow_pool(poolSize);
+}
+
+void grow_pool(size_t poolSize) {
+    const auto start_workers = [poolSize] {
+        while (Stockfish::Threads.size() < poolSize) {
+            auto* worker = new Stockfish::Thread(Stockfish::Threads.size());
+            worker->clear();
+            Stockfish::Threads.push_back(worker);
+        }
+    };
+#if defined(__linux__) && !defined(__EMSCRIPTEN__)
+    // A thread starts with its creator's priority, so the workers are
+    // created from one that has lowered its own. A failure there is the
+    // caller's, as it was when the caller created them.
+    std::exception_ptr failure;
+    std::thread([&] {
+        try {
+            lower_mate_search_thread_priority();
+            start_workers();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }).join();
+    if (failure) {
+        std::rethrow_exception(failure);
     }
+#else
+    start_workers();
+#endif
 }
 
 int threads() {

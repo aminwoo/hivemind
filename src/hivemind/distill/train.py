@@ -27,7 +27,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from hivemind.architectures.twin_board import TWIN_BOARD_SIZES, get_twin_board_model
+from hivemind.architectures.twin_board import (
+    TWIN_BOARD_SIZES,
+    get_twin_board_model,
+    load_twin_board_checkpoint,
+)
 from hivemind.distill.data import DistillDataset, chunk_paths, chunk_positions, head_chunk, read_chunk
 from hivemind.paths import PROJECT_ROOT
 
@@ -280,14 +284,13 @@ def main():
                "blocks": args.blocks, "channels": args.channels, "attention_dim": args.attention_dim,
                "attention_style": args.attention_style, "block": args.block, "se_every": args.se_every}
     size = args.size
-    initial = None
     if args.init:
-        initial = torch.load(args.init, map_location="cpu")
-        size, variant = initial["size"], initial.get("variant", {})
+        # A network from before the clock planes starts reading them with
+        # zero weights, computing exactly what it did until training moves them.
+        model, size, variant = load_twin_board_checkpoint(args.init)
         print(f"starting from {args.init} ({size}, {variant})", flush=True)
-    model = get_twin_board_model(size, **variant)
-    if initial is not None:
-        model.load_state_dict(initial["model"])
+    else:
+        model = get_twin_board_model(size, **variant)
     model = model.to(device)
     if device.type == "cuda" and not args.no_compile:
         # In place, so state_dict keys are unchanged. The whole model does not
@@ -352,11 +355,9 @@ def export(out, size, checkpoint_name="best.pt"):
     """ONNX export with the teacher's inputs and outputs (value, pi_a, pi_b, wdl_out, moves_left)."""
     from hivemind.training.trainer_agent import export_to_onnx
 
-    checkpoint = torch.load(out / checkpoint_name)
-    model = get_twin_board_model(size, **checkpoint.get("variant", {}))
-    model.load_state_dict(checkpoint["model"])
+    model, size, _ = load_twin_board_checkpoint(out / checkpoint_name)
     model.eval()
-    export_to_onnx(model, 1, torch.ones(1, 74, 8, 8), out, f"distill-{size}",
+    export_to_onnx(model, 1, torch.ones(1, 2 * model.planes_per_board, 8, 8), out, f"distill-{size}",
                    has_auxiliary_output=True, dynamic_batch_size=True)
     print(f"exported {out}")
 

@@ -6,15 +6,26 @@ import pytest
 import torch
 
 from hivemind.architectures.twin_board import get_twin_board_model
-from hivemind.distill.data import MAGIC, PLANES, VERSION, DistillDataset, head_chunk, read_chunk
+from hivemind.constants import NUM_BUGHOUSE_CHANNELS_PER_BOARD, NUM_CLOCKED_CHANNELS_PER_BOARD
+from hivemind.distill.data import (
+    LEGACY_PLANES,
+    MAGIC,
+    PLANES,
+    VERSION,
+    DistillDataset,
+    chunk_problem,
+    head_chunk,
+    read_chunk,
+)
 from hivemind.distill.train import concat_batches, losses
 
 
 def _pack(planes):
     """The engine's packing: a 0/1 bitboard with value 1, or one value everywhere."""
-    bits = np.zeros(PLANES, np.int64)
-    values = np.zeros(PLANES, np.float16)
-    for index, plane in enumerate(planes.reshape(PLANES, 64)):
+    count = planes.shape[0]
+    bits = np.zeros(count, np.int64)
+    values = np.zeros(count, np.float16)
+    for index, plane in enumerate(planes.reshape(count, 64)):
         if np.all(plane == plane[0]):
             values[index] = plane[0]
         else:
@@ -23,8 +34,8 @@ def _pack(planes):
     return bits, values
 
 
-def _write_chunk(path, rng, n=16):
-    planes = np.zeros((n, PLANES, 64), np.float32)
+def _write_chunk(path, rng, n=16, planes_count=PLANES):
+    planes = np.zeros((n, planes_count, 64), np.float32)
     planes[:, :12] = rng.random((n, 12, 64)) < 0.1          # piece bitboards
     planes[:, 12:22] = (rng.integers(0, 5, (n, 10, 1)) / 16.0)  # pocket fills
     planes[:, 0, 63] = 1                                     # exercise bit 63 (sign bit)
@@ -36,7 +47,7 @@ def _write_chunk(path, rng, n=16):
     probability = rng.random(entries).astype(np.float16)
     with open(path, "wb") as stream:
         stream.write(MAGIC)
-        stream.write(struct.pack("<II", VERSION, PLANES))
+        stream.write(struct.pack("<II", VERSION, planes_count))
         stream.write(struct.pack("<QQ", n, entries))
         stream.write(np.stack([p[0] for p in packed]).tobytes())
         stream.write(np.stack([p[1] for p in packed]).tobytes())
@@ -48,7 +59,7 @@ def _write_chunk(path, rng, n=16):
         stream.write(counts.tobytes())
         stream.write(index.tobytes())
         stream.write(probability.tobytes())
-    return planes.reshape(n, PLANES, 8, 8), counts
+    return planes.reshape(n, planes_count, 8, 8), counts
 
 
 def test_planes_round_trip_and_policy_targets(tmp_path):
@@ -63,6 +74,64 @@ def test_planes_round_trip_and_policy_targets(tmp_path):
     assert legal[~mask].all() and (legal[mask].sum(1) <= torch.from_numpy(counts[:, 0].astype(np.int64))[mask]).all()
     assert (target[~legal] == 0).all()
 
+
+def test_chunks_from_before_the_clock_planes_are_widened(tmp_path):
+    rng = np.random.default_rng(3)
+    path = tmp_path / "old.dst"
+    legacy, _ = _write_chunk(path, rng, planes_count=LEGACY_PLANES)
+    # Rewrite the sit-right planes: the first half of the positions may sit.
+    sit = 31
+    legacy = legacy.reshape(len(legacy), LEGACY_PLANES, 64)
+    may_sit = np.arange(len(legacy)) < len(legacy) // 2
+    for board in range(2):
+        legacy[:, board * NUM_BUGHOUSE_CHANNELS_PER_BOARD + sit] = may_sit[:, None]
+    packed = [_pack(p) for p in legacy]
+    raw = bytearray(path.read_bytes())
+    bits = np.stack([p[0] for p in packed]).tobytes()
+    values = np.stack([p[1] for p in packed]).tobytes()
+    raw[28:28 + len(bits)] = bits
+    raw[28 + len(bits):28 + len(bits) + len(values)] = values
+    path.write_bytes(bytes(raw))
+
+    chunk = read_chunk(path)
+    dataset = DistillDataset([chunk], torch.device("cpu"))
+    planes = dataset.planes(torch.arange(len(legacy))).reshape(len(legacy), PLANES, 64).numpy()
+    old, new = NUM_BUGHOUSE_CHANNELS_PER_BOARD, NUM_CLOCKED_CHANNELS_PER_BOARD
+    for board in range(2):
+        np.testing.assert_allclose(planes[:, board * new:board * new + old],
+                                   legacy[:, board * old:(board + 1) * old], atol=1e-3)
+        lead, speed = planes[:, board * new + old], planes[:, board * new + old + 1]
+        np.testing.assert_array_equal(lead[:, 0], np.where(may_sit, 1.0, -1.0))
+        assert np.all(lead == lead[:, :1]) and np.all(speed == 0)
+
+
+def test_chunk_problem_flags_values_a_broken_engine_wrote(tmp_path):
+    n = 16
+    path = tmp_path / "c.dst"
+    _, counts = _write_chunk(path, np.random.default_rng(3), n=n)
+    raw = bytearray(path.read_bytes())
+    entries = int(counts.sum())
+    probabilities = np.frombuffer(raw[-2 * entries:], np.float16).astype(np.float64)
+    sizes = counts.ravel().astype(np.int64)
+    sizes = sizes[sizes > 0]
+    probabilities /= np.repeat(np.add.reduceat(probabilities, np.cumsum(sizes) - sizes), sizes)
+    raw[-2 * entries:] = probabilities.astype(np.float16).tobytes()
+    path.write_bytes(raw)
+    assert chunk_problem(path) is None
+
+    unnormalized = bytearray(raw)
+    unnormalized[-2 * entries:] = (probabilities * 3).astype(np.float16).tobytes()
+    path.write_bytes(unnormalized)
+    assert "sum to one" in chunk_problem(path)
+
+    nan_planes = bytearray(raw)
+    values = 28 + n * PLANES * 8  # header, then the plane bitboards
+    nan_planes[values:values + 2] = np.array([np.nan], np.float16).tobytes()
+    path.write_bytes(nan_planes)
+    assert "non-finite plane_values" in chunk_problem(path)
+
+    path.write_bytes(raw[:-1])
+    assert "unreadable" in chunk_problem(path)
 
 def test_policy_loss_ignores_illegal_logits(tmp_path):
     """The engine never sees illegal moves' logits, so the loss must not either."""
