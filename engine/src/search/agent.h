@@ -31,6 +31,9 @@ struct SearchOptions {
     // Stopping conditions (one must be set)
     size_t targetNodes = 0;      // Stop after this many nodes (0 = use time)
     int moveTimeMs = 0;          // Stop after this many milliseconds (0 = use nodes)
+    // How far time extensions may carry a moveTimeMs search in a critical
+    // position. At or below moveTimeMs the move time is the whole allocation.
+    int maxMoveTimeMs = 0;
     uint64_t mateProbeNodes = 0; // Override the Fairy-Stockfish root probe budget
     bool completeMateProbe = false; // Let a bounded probe finish after MCGS stops
     

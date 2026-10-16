@@ -2590,12 +2590,24 @@ TEST(PonderModeTest, HardLimitCapsTimeExtensions) {
     EXPECT_EQ(info.get_effective_move_time(), 1000);
     EXPECT_EQ(info.get_extension_count(), 0);
 
-    // A ceiling above the move time still allows an extension, truncated to it.
+    // A ceiling above the move time is split evenly between the extensions.
     SearchInfo headroom(std::chrono::steady_clock::now(), 1000);
     headroom.set_hard_limit(1200);
     ASSERT_TRUE(headroom.try_extend_time(2.0f, 2));
+    EXPECT_EQ(headroom.get_effective_move_time(), 1100);
+    ASSERT_TRUE(headroom.try_extend_time(2.0f, 2));
     EXPECT_EQ(headroom.get_effective_move_time(), 1200);
     EXPECT_FALSE(headroom.try_extend_time(2.0f, 2));
+}
+
+TEST(PonderModeTest, LateExtensionGetsItsShareOfTheCeiling) {
+    // 900 ms into a 1000 ms move, a remaining-time extension would add only
+    // 50 ms; under a granted ceiling it still adds its share of the headroom.
+    SearchInfo info(
+        std::chrono::steady_clock::now() - std::chrono::milliseconds(900), 1000);
+    info.set_hard_limit(3000);
+    ASSERT_TRUE(info.try_extend_time(1.5f, 2));
+    EXPECT_EQ(info.get_effective_move_time(), 2000);
 }
 
 TEST(PonderModeTest, SearchOptionsPonderFlags) {

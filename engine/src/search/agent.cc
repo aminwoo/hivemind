@@ -5690,10 +5690,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     // scans below: they are part of this move's thinking time, and resetting
     // the clock afterward would let a slow scan overrun the allotted move time.
     SearchInfo searchInfo(searchStart, treeMoveTimeMs);
-    // The requested move time is the entire allocation for this move, so the
-    // instability and eval-drop extensions below re-spend time within it
-    // rather than adding to it.
-    searchInfo.set_hard_limit(treeMoveTimeMs);
+    // The requested move time is the entire allocation for this move unless
+    // the front end grants a ceiling above it: then the eval-drop and
+    // instability extensions below may spend up to that ceiling, less the
+    // same certification reserve.
+    searchInfo.set_hard_limit(
+        moveTimeMs > 0 && options.maxMoveTimeMs > moveTimeMs && !options.isPonder
+            ? std::max(treeMoveTimeMs, options.maxMoveTimeMs - selectedMoveCertReserveMs)
+            : treeMoveTimeMs);
     isPondering_.store(options.isPonder, std::memory_order_release);
     currentSearchInfo_.store(&searchInfo, std::memory_order_release);
 
@@ -7520,8 +7524,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             if (selectedMoveCertReserveMs > 0 && !leaderSettled
                 && rootNode->get_node_type() == NodeType::UNSOLVED) {
                 const auto certStart = MateSearchBudget::Clock::now();
+                // The reserve follows the tree's allocation, extensions included.
                 const auto certDeadline = certStart + chrono::milliseconds(
-                    std::max(1, moveTimeMs
+                    std::max(1, searchInfo.get_effective_move_time()
+                                    + selectedMoveCertReserveMs
                                     - static_cast<int>(searchInfo.elapsed())));
                 SelectedMoveCertStats certStats;
                 const std::optional<JointActionCandidate> mateFree =

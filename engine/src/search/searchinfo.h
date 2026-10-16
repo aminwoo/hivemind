@@ -162,8 +162,9 @@ struct SearchInfo {
      * @brief Set an absolute ceiling that time extensions may not cross.
      *
      * A UCI `go movetime` is the whole allocation for the move, not a target
-     * to overshoot, so a search given one caps its extensions at it. Zero
-     * leaves extensions unbounded.
+     * to overshoot, so a search given one caps its extensions at it unless
+     * MaxMoveTimeMs grants more; a ceiling above the move time is then split
+     * evenly between the extensions. Zero leaves extensions unbounded.
      */
     void set_hard_limit(int hardLimitMs) {
         hardLimitMs_.store(hardLimitMs, std::memory_order_relaxed);
@@ -195,6 +196,11 @@ struct SearchInfo {
         
         int extension = static_cast<int>(remaining * (factor - 1.0f));
         const int hardLimit = hardLimitMs_.load(std::memory_order_relaxed);
+        if (hardLimit > moveTime && maxExtensions > 0) {
+            // A granted ceiling is shared evenly between the extensions, so a
+            // late flip of the best move gets as much as an early one.
+            extension = (hardLimit - moveTime + maxExtensions - 1) / maxExtensions;
+        }
         if (hardLimit > 0) {
             extension = std::min(extension, hardLimit - effectiveMoveTime);
         }

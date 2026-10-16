@@ -37,6 +37,9 @@ private:
     // on both boards pays from its lead.
     int teamMoveTimeMs = TimeState::DEFAULT_MOVE_TIME_MS;
     int opponentMoveTimeMs = TimeState::DEFAULT_MOVE_TIME_MS;
+    // Ceiling for a `go movetime` search extended in a critical position;
+    // 0, or anything at or below the movetime, keeps the movetime exact.
+    int maxMoveTimeMs = 0;
 
     /** The clock a search should root on, or none under TimeModel flag. */
     std::optional<TimeState> current_clock() const;

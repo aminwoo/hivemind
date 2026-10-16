@@ -323,6 +323,7 @@ void UCI::go(std::istringstream& is) {
         opts.targetNodes = nodes;
     } else if (moveTime > 0) {
         opts = SearchOptions::uci(moveTime, multiPV, isPonder);
+        opts.maxMoveTimeMs = maxMoveTimeMs;
     } else if (infinite) {
         // "go infinite" thinks until stop. It runs as a node search towards
         // a ceiling no analysis is meant to reach, so a session left running
@@ -754,6 +755,9 @@ void UCI::setoption(std::istringstream& is) {
         opponentMoveTimeMs = std::clamp(std::stoi(value), 1, 3600000);
         std::cout << "info string OpponentMoveTimeMs set to "
                   << opponentMoveTimeMs << std::endl;
+    } else if (name == "MaxMoveTimeMs") {
+        maxMoveTimeMs = std::clamp(std::stoi(value), 0, 3600000);
+        std::cout << "info string MaxMoveTimeMs set to " << maxMoveTimeMs << std::endl;
     } else if (name == "Mode") {
         // Deprecated alias for TimeAdvantage, kept so existing GUI profiles keep
         // working. "sit" meant the team was up on time and could wait; "go"
@@ -862,6 +866,7 @@ void UCI::send_uci_response() {
          << TimeState::DEFAULT_MOVE_TIME_MS << " min 1 max 3600000" << endl;
     cout << "option name OpponentMoveTimeMs type spin default "
          << TimeState::DEFAULT_MOVE_TIME_MS << " min 1 max 3600000" << endl;
+    cout << "option name MaxMoveTimeMs type spin default 0 min 0 max 3600000" << endl;
     cout << "option name RequireMoveOn type combo default none var none var A var B" << endl;
     cout << "info string CUDA engines " << engines.size()
          << " search workers " << engines.size() * SearchParams::NUM_SEARCH_THREADS
