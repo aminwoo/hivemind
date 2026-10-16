@@ -409,6 +409,7 @@ void UCI::go_single_board(int moveTime, size_t nodes, int depth, bool infinite, 
     single_board::Limits limits;
     limits.nodes = nodes;
     limits.maxDepth = depth > 0 ? depth : 128;
+    limits.policyTemperature = searchConfig.policyTemperature;
     limits.moveTimeMs = infinite ? 0 : nodes > 0 && moveTime == 0 ? 0
         : moveTime > 0 ? moveTime : 1000;
     singleStop.store(false);
@@ -646,6 +647,20 @@ void UCI::setoption(std::istringstream& is) {
             searchConfig.pwMassNormalize = value == "true";
             std::cout << "info string PWMassNormalize set to " << value << std::endl;
         }
+    } else if (name == "PolicyTemperaturePermille") {
+        const int permille = std::clamp(std::stoi(value), 100, 10000);
+        const float temperature = static_cast<float>(permille) / 1000.0f;
+        // Retained nodes hold priors made at the old temperature.
+        if (temperature != searchConfig.policyTemperature && agent) {
+            agent->reset_search_state();
+        }
+        searchConfig.policyTemperature = temperature;
+        std::cout << "info string PolicyTemperaturePermille set to " << permille << std::endl;
+    } else if (name == "PUCTWidening") {
+        if (value == "true" || value == "false") {
+            searchConfig.puctWidening = value == "true";
+            std::cout << "info string PUCTWidening set to " << value << std::endl;
+        }
     } else if (name == "MateProbe") {
         if (value == "true" || value == "false") {
             searchConfig.enableMateProbe = value == "true";
@@ -836,6 +851,10 @@ void UCI::send_uci_response() {
     cout << "option name PWMassCapPermille type spin default "
          << static_cast<int>(SearchParams::PW_MASS_CAP * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name PWMassNormalize type check default false" << endl;
+    cout << "option name PUCTWidening type check default "
+         << (SearchParams::PUCT_WIDENING ? "true" : "false") << endl;
+    cout << "option name PolicyTemperaturePermille type spin default "
+         << static_cast<int>(SearchParams::POLICY_TEMPERATURE * 1000.0f) << " min 100 max 10000" << endl;
     cout << "option name CPUCTInitPermille type spin default "
          << static_cast<int>(SearchParams::CPUCT_INIT * 1000.0f) << " min 1 max 10000" << endl;
     cout << "option name MateProbe type check default "

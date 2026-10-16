@@ -211,6 +211,129 @@ private:
                                static_cast<int>(childIdx)});
     }
 
+    // First-play Q for an unvisited edge. Caller holds nodeMutex.
+    float selection_fpu_q_locked(const SearchParams::RuntimeConfig& config,
+                                 int visits) const {
+        if (!config.enableDynamicFpu || visits <= 0) {
+            return SearchParams::Q_INIT;
+        }
+        const float parentQ = valueSum / static_cast<float>(visits);
+        return std::clamp(
+            parentQ - config.fpuReduction
+                * std::sqrt(std::max(0.0f, visitedPolicySum)),
+            parentQ - 1.0f, parentQ + 1.0f);
+    }
+
+    // An edge's Q as PUCT selection sees it, virtual loss included. Takes the
+    // caller's snapshot of visits and virtual loss so Q and U agree.
+    static float selection_q(const EdgeStats& edge, uint32_t n, int vl, float fpuQ) {
+        const uint32_t nEffective = n + static_cast<uint32_t>(vl);
+        if (nEffective == 0) {
+            return fpuQ;
+        }
+        if (vl == 0) {
+            return edge.q.load(std::memory_order_relaxed);
+        }
+        switch (SearchParams::get_virtual_style(n)) {
+        case SearchParams::VirtualStyle::VIRTUAL_LOSS:
+            return (edge.valueSum.load(std::memory_order_relaxed)
+                    - static_cast<float>(vl))
+                / static_cast<float>(nEffective);
+        case SearchParams::VirtualStyle::VIRTUAL_OFFSET:
+            return edge.q.load(std::memory_order_relaxed)
+                - static_cast<float>(vl)
+                * static_cast<float>(SearchParams::VIRTUAL_OFFSET_STRENGTH);
+        default:
+            return edge.q.load(std::memory_order_relaxed);
+        }
+    }
+
+    // PUCT widening: does the next ungenerated joint action outscore every
+    // visited child, scored as selection would score them (mate-hint bonus
+    // included)? Caller holds nodeMutex (shared is enough).
+    //
+    // Approximate once the FPU is factored: only the next action in prior
+    // order is tested, and a later one with a better estimate waits for it.
+    bool next_action_wins_puct_locked(const SearchParams::RuntimeConfig& config,
+                                      int visits,
+                                      const JointActionCandidate* preferredAction) const {
+        if (visits <= 0 || visitedEdges.empty()) {
+            return false;
+        }
+        const JointActionCandidate next = candidateGenerator.peekNext();
+        if (next.jointPrior <= 0.0f) {
+            return false;
+        }
+        const float explorationBase = SearchParams::get_cpuct(
+            static_cast<float>(visits), config.cpuctInit, config.cpuctBase)
+            * std::sqrt(static_cast<float>(visits));
+        const float fpuQ = selection_fpu_q_locked(config, visits);
+        const bool hasNonLosingAlternative =
+            nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
+            && provenWinningChildCount < static_cast<int>(children.size());
+        const bool factored = config.factoredFpuVisits > 0.0f;
+        float bestScore = -std::numeric_limits<float>::infinity();
+        // Visit-weighted value sums: all visited edges, and those sharing the
+        // next action's board-A or board-B move.
+        float sumAll = 0.0f, sumA = 0.0f, sumB = 0.0f;
+        float visitsAll = 0.0f, visitsA = 0.0f, visitsB = 0.0f;
+        for (int childIdx : visitedEdges) {
+            if (childIdx < 0 || static_cast<size_t>(childIdx) >= children.size()
+                || !children[childIdx]) {
+                continue;
+            }
+            const EdgeStats& edge = edges[childIdx];
+            const int vl = edge.virtualLoss.load(std::memory_order_relaxed);
+            const uint32_t n = static_cast<uint32_t>(
+                edge.visits.load(std::memory_order_relaxed));
+            const JointActionCandidate& action =
+                candidateGenerator.getGenerated(static_cast<size_t>(childIdx));
+            // A proven-losing child is not selectable but is still evidence.
+            if (!(hasNonLosingAlternative
+                  && children[childIdx]->get_node_type() == NodeType::WIN)) {
+                const float nEffective = static_cast<float>(n + static_cast<uint32_t>(vl));
+                float score = selection_q(edge, n, vl, fpuQ)
+                    + explorationBase * edge.prior / (1.0f + nEffective);
+                if (preferredAction && action.moveA == preferredAction->moveA
+                    && action.moveB == preferredAction->moveB) {
+                    score += config.internalMateProbeBias
+                        / (1.0f + nEffective
+                            / std::max(config.internalMateProbeBiasDecayVisits, 1.0f));
+                }
+                bestScore = std::max(bestScore, score);
+            }
+            if (factored && n > 0) {
+                const float weight = static_cast<float>(n);
+                const float weightedQ =
+                    weight * edge.q.load(std::memory_order_relaxed);
+                sumAll += weightedQ;
+                visitsAll += weight;
+                if (action.moveA == next.moveA) {
+                    sumA += weightedQ;
+                    visitsA += weight;
+                }
+                if (action.moveB == next.moveB) {
+                    sumB += weightedQ;
+                    visitsB += weight;
+                }
+            }
+        }
+        float nextQ = fpuQ;
+        if (factored && (visitsA > 0.0f || visitsB > 0.0f)) {
+            const bool both = visitsA > 0.0f && visitsB > 0.0f;
+            const float estimate = both
+                ? sumA / visitsA + sumB / visitsB - sumAll / visitsAll
+                : visitsA > 0.0f ? sumA / visitsA : sumB / visitsB;
+            // The additive estimate is only as sure as its weaker marginal.
+            const float support = both
+                ? 1.0f / (1.0f / visitsA + 1.0f / visitsB)
+                : visitsA + visitsB;
+            nextQ += support / (support + config.factoredFpuVisits)
+                * (std::clamp(estimate, -1.0f, 1.0f) - fpuQ);
+        }
+        return nextQ + explorationBase * next.jointPrior > bestScore;
+    }
+
 public:
     struct ChildSelection {
         std::shared_ptr<Node> child;
@@ -344,8 +467,14 @@ public:
         return candidateGenerator.hasNext();
     }
 
-    bool should_expand_new_child(const SearchParams::RuntimeConfig& config) const {
+    bool should_expand_new_child(const SearchParams::RuntimeConfig& config,
+                                 const JointActionCandidate* preferredAction = nullptr) const {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
+        return should_expand_new_child_locked(config, preferredAction);
+    }
+
+    bool should_expand_new_child_locked(const SearchParams::RuntimeConfig& config,
+                                        const JointActionCandidate* preferredAction) const {
         if (candidateGenerator.hasPromoted()) {
             return true;
         }
@@ -373,13 +502,17 @@ public:
         const float massStart = m_depth.load(std::memory_order_relaxed) == 0
             && config.rootPwMassStart >= 0.0f ? config.rootPwMassStart : config.pwMassStart;
         const float legalMass = config.pwMassNormalize ? candidateGenerator.legal_prior_mass() : 1.0f;
+        bool widen;
         if (massStart <= 0.0f || legalMass <= 0.0f) {
-            return expandedCount < countLimit;
+            widen = expandedCount < countLimit;
+        } else {
+            const int cap = static_cast<int>(std::ceil(config.pwMassCap * static_cast<float>(countLimit)));
+            widen = expandedCount < std::max(1, cap)
+                && expandedPriorSum < legalMass * SearchParams::get_widening_mass_target(
+                    visits, massStart, config.pwMassExponent);
         }
-        const int cap = static_cast<int>(std::ceil(config.pwMassCap * static_cast<float>(countLimit)));
-        return expandedCount < std::max(1, cap)
-            && expandedPriorSum < legalMass * SearchParams::get_widening_mass_target(
-                visits, massStart, config.pwMassExponent);
+        return widen || (config.puctWidening
+                         && next_action_wins_puct_locked(config, visits, preferredAction));
     }
 
     /**
@@ -415,12 +548,21 @@ public:
                                                    const SearchParams::RuntimeConfig& config,
                                                    int* outChildIdx = nullptr,
                                                    bool reserveForSelection = false,
-                                                   bool* outEvaluationReserved = nullptr) {
+                                                   bool* outEvaluationReserved = nullptr,
+                                                   bool recheckWidening = false,
+                                                   const JointActionCandidate* preferredAction = nullptr) {
         std::unique_lock<std::shared_mutex> guard(nodeMutex);
         if (outEvaluationReserved) {
             *outEvaluationReserved = false;
         }
         if (!candidateGenerator.hasNext()) {
+            return nullptr;
+        }
+        // Score-based widening is decided under a shared lock, so another
+        // worker may have opened the approved action since; recheck before
+        // opening the next one. (Count widening keeps its old behaviour.)
+        if (config.puctWidening && recheckWidening
+            && !should_expand_new_child_locked(config, preferredAction)) {
             return nullptr;
         }
 

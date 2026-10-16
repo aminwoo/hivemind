@@ -119,6 +119,14 @@ constexpr float FPU_REDUCTION = 1.0f;
 /// Initial Q-value for an unvisited edge when network values use [-1, +1] (or fallback).
 constexpr float Q_INIT = -1.0f;
 
+/// Policy softmax temperature for search priors (experimental): each board's
+/// legal-move logits are divided by it before the softmax, so above 1 the
+/// priors flatten and below 1 they sharpen. Fitted to it3's own 800-node
+/// visit distributions (200k it4 self-play decisions), cross-entropy is lowest
+/// at exactly 1.0, so the network is calibrated to its search; whether
+/// another value plays better is an Elo question.
+constexpr float POLICY_TEMPERATURE = 1.0f;
+
 // =============================================================================
 // Auxiliary Neural Network Head Parameters (WDL & Moves-Left)
 // =============================================================================
@@ -791,6 +799,28 @@ constexpr float PW_MASS_START = 0.0f;
 constexpr float PW_MASS_EXPONENT = 0.175f;
 constexpr float PW_MASS_CAP = 2.0f;
 
+/// PUCT widening: beyond the count formula, which becomes a floor, a node
+/// also opens its next joint action whenever that action's PUCT score -
+/// first-play Q plus c * sqrt(N) * P_next - beats every visited child (mate
+/// hint included). The generator yields actions in prior order, so this is
+/// PUCT over all joint actions, materialised lazily: widening follows the
+/// values found rather than the visit count alone.
+///
+/// On by default: 400-game screens at 100 ms (twin-s-clock it3, clock model,
+/// 4 workers) against count widening alone scored 218-180-2 (+33 Elo, 95% CI
+/// -1..+68); its variants (FPU reduction 0.5, no count floor, factored FPU
+/// k = 16 / 64) scored +31, +18, +42 and +17, about +28 +/- 15 pooled over
+/// 2,000 games, at unchanged NPS. Not yet confirmed at 2,000 games.
+constexpr bool PUCT_WIDENING = true;
+
+/// Factored first-play value for that next action (experimental; 0 = off):
+/// estimate Q(a, b) from the visited joint actions sharing its board-A move
+/// a or its board-B move b, as Q_A(a) + Q_B(b) - Q_mean (or the one marginal
+/// seen), and blend it into the usual FPU by support / (support + this many
+/// pseudo-visits). Only PUCT widening reads it: a child opened by the count
+/// formula is visited at once, so its first-play value never matters.
+constexpr float FACTORED_FPU_VISITS = 0.0f;
+
 // =============================================================================
 // Solver-aware Gumbel root search
 // =============================================================================
@@ -840,6 +870,7 @@ struct RuntimeConfig {
     float drawContempt = DRAW_CONTEMPT;
     bool enableDynamicFpu = ENABLE_DYNAMIC_FPU;
     float fpuReduction = FPU_REDUCTION;
+    float policyTemperature = POLICY_TEMPERATURE;
     bool enableWdlEval = ENABLE_WDL_EVAL;
     float wdlValueWeight = WDL_VALUE_WEIGHT;
     float movesLeftDiscount = MOVES_LEFT_DISCOUNT;
@@ -852,6 +883,8 @@ struct RuntimeConfig {
     float pwMassCap = PW_MASS_CAP;
     float rootPwMassStart = -1.0f; // Negative inherits the internal mass target.
     bool pwMassNormalize = false; // Experimental coverage of legal joint prior mass.
+    bool puctWidening = PUCT_WIDENING;
+    float factoredFpuVisits = FACTORED_FPU_VISITS;
     float qValueWeight = Q_VALUE_WEIGHT;
     float qVetoDelta = Q_VETO_DELTA;
     float rootDirichletAlpha = 0.0f;

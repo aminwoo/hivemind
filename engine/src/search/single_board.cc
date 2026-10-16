@@ -196,7 +196,8 @@ Result search(Board& board, Engine& engine, const Limits& limits,
             }
             indices.push_back(index);
         }
-        return Evaluation{values[0], get_normalized_probability(policyA.data(), indices)};
+        return Evaluation{values[0], get_normalized_probability(
+            policyA.data(), indices, limits.policyTemperature)};
     };
     return search(board, evaluate, limits, stop);
 }

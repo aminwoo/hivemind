@@ -183,6 +183,14 @@ void write_summary(
            << "  \"baseline_root_pw_mass\": " << config.baselineRootPwMassStart << ",\n"
            << "  \"contender_pw_mass_normalize\": " << (config.contenderPwMassNormalize ? "true" : "false") << ",\n"
            << "  \"baseline_pw_mass_normalize\": " << (config.baselinePwMassNormalize ? "true" : "false") << ",\n"
+           << "  \"contender_puct_widening\": " << (config.contenderPuctWidening ? "true" : "false") << ",\n"
+           << "  \"baseline_puct_widening\": " << (config.baselinePuctWidening ? "true" : "false") << ",\n"
+           << "  \"contender_factored_fpu\": " << config.contenderFactoredFpuVisits << ",\n"
+           << "  \"baseline_factored_fpu\": " << config.baselineFactoredFpuVisits << ",\n"
+           << "  \"contender_fpu_reduction\": " << config.contenderFpuReduction << ",\n"
+           << "  \"baseline_fpu_reduction\": " << config.baselineFpuReduction << ",\n"
+           << "  \"contender_policy_temperature\": " << config.contenderPolicyTemperature << ",\n"
+           << "  \"baseline_policy_temperature\": " << config.baselinePolicyTemperature << ",\n"
            << "  \"contender_cpuct_init\": " << config.contenderCpuctInit << ",\n"
            << "  \"baseline_cpuct_init\": " << config.baselineCpuctInit << ",\n"
            << "  \"contender_mcgs\": " << (config.contenderMcgs ? "true" : "false") << ",\n"
@@ -595,6 +603,17 @@ int run_tournament(
     for (float start : {config.contenderRootPwMassStart, config.baselineRootPwMassStart}) {
         if (!std::isfinite(start) || (start != -1.0f && (start < 0.0f || start >= 1.0f))) {
             throw std::invalid_argument("Tournament root mass start must be -1 or in [0, 1)");
+        }
+    }
+    for (const float value : {config.contenderFactoredFpuVisits, config.baselineFactoredFpuVisits,
+                              config.contenderFpuReduction, config.baselineFpuReduction}) {
+        if (!std::isfinite(value) || value < 0.0f) {
+            throw std::invalid_argument("Tournament factored FPU and FPU reduction must be finite and non-negative");
+        }
+    }
+    for (const float value : {config.contenderPolicyTemperature, config.baselinePolicyTemperature}) {
+        if (!std::isfinite(value) || value < 0.1f || value > 10.0f) {
+            throw std::invalid_argument("Tournament policy temperature must be in [0.1, 10]");
         }
     }
     const auto finite_in_range = [](float value, float minimum, float maximum) {

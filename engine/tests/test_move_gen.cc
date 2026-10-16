@@ -1059,6 +1059,23 @@ TEST_F(EngineTest, PassProbabilityUsesNetworkLogitWithoutFloor) {
     EXPECT_LT(probabilities.back(), 1e-6f);
 }
 
+TEST(PolicyTemperatureTest, TemperatureScalesLogitsBeforeSoftmax) {
+    // Odds 1:4 at T 1; halving the logits (T 2) gives odds 1:2, and a
+    // temperature of 0.5 squares them to 1:16. Illegal moves stay at zero.
+    const std::vector<float> logits = {
+        0.0f, std::log(4.0f), -std::numeric_limits<float>::infinity()};
+    const auto plain = normalize_logits(logits);
+    EXPECT_NEAR(plain[0], 0.2f, 1e-6f);
+    EXPECT_NEAR(plain[1], 0.8f, 1e-6f);
+    const auto flat = normalize_logits(logits, 2.0f);
+    EXPECT_NEAR(flat[0], 1.0f / 3.0f, 1e-6f);
+    EXPECT_NEAR(flat[1], 2.0f / 3.0f, 1e-6f);
+    EXPECT_EQ(flat[2], 0.0f);
+    const auto sharp = normalize_logits(logits, 0.5f);
+    EXPECT_NEAR(sharp[0], 1.0f / 17.0f, 1e-6f);
+    EXPECT_NEAR(sharp[1], 16.0f / 17.0f, 1e-6f);
+}
+
 TEST_F(EngineTest, HalfPolicyNormalizationMatchesFloatPolicy) {
     Board board;
     auto actions = board.legal_moves(BOARD_A);
@@ -1201,6 +1218,7 @@ TEST(NodeTest, ProgressiveWideningGatesJointActionExpansion) {
     SearchParams::RuntimeConfig config;
     config.pwCoefficient = 1.0f;
     config.pwMassStart = 0.0f;  // the count formula alone
+    config.puctWidening = false;
     Node node(Stockfish::WHITE);
     node.set_depth(1);
     std::vector<Stockfish::Move> actionsA = {
@@ -1239,6 +1257,7 @@ TEST(NodeTest, PriorMassWideningFollowsPolicyConfidence) {
     config.pwMassStart = 0.35f;
     config.pwMassExponent = 0.175f;
     config.pwMassCap = 2.0f;
+    config.puctWidening = false;  // the mass rule alone
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3), Stockfish::Move(4)};
     std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
@@ -1282,6 +1301,89 @@ TEST(NodeTest, PriorMassWideningFollowsPolicyConfidence) {
     // Four visits allow 2 x ceil(4^0.3) = 4 children; four are expanded.
     ASSERT_TRUE(capped.has_unexpanded_joint_actions());
     EXPECT_FALSE(capped.should_expand_new_child(config));
+}
+
+TEST(NodeTest, PuctWideningOpensNextActionWhenItOutscoresVisitedChildren) {
+    SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 0.001f;  // the count floor allows one child
+    config.fpuReduction = 0.0f;
+    std::vector<Stockfish::Move> actionsA = {
+        Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
+    std::vector<Stockfish::Move> actionsB = {Stockfish::MOVE_NONE};
+
+    // A disappointing first child: the second action's U term, 8.5 * 0.3,
+    // dwarfs the first child's -0.5 + 8.5 * 0.5 / 9.
+    Node weak(Stockfish::WHITE);
+    weak.set_depth(1);
+    ASSERT_TRUE(weak.try_init_and_expand(
+        actionsA, actionsB, {0.5f, 0.3f, 0.2f}, {1.0f}, false, true, false, config));
+    for (int visit = 0; visit < 8; ++visit) {
+        weak.update(0, -0.5f);
+    }
+    config.puctWidening = false;
+    EXPECT_FALSE(weak.should_expand_new_child(config));
+    config.puctWidening = true;
+    EXPECT_TRUE(weak.should_expand_new_child(config));
+
+    // Expansion rechecks the decision under its own lock: the first call
+    // opens the approved action, and a second worker holding the same stale
+    // approval is refused, since the new child has not been visited yet.
+    JointActionCandidate action;
+    EXPECT_NE(weak.expand_next_joint_child(
+        nullptr, 0, action, config, nullptr, false, nullptr, true), nullptr);
+    EXPECT_EQ(weak.expand_next_joint_child(
+        nullptr, 0, action, config, nullptr, false, nullptr, true), nullptr);
+    EXPECT_EQ(weak.get_children().size(), 2U);
+
+    // A confident, winning first child keeps the node narrow.
+    config.fpuReduction = 1.0f;
+    Node strong(Stockfish::WHITE);
+    strong.set_depth(1);
+    ASSERT_TRUE(strong.try_init_and_expand(
+        actionsA, actionsB, {0.95f, 0.04f, 0.01f}, {1.0f}, false, true, false, config));
+    for (int visit = 0; visit < 8; ++visit) {
+        strong.update(0, 0.9f);
+    }
+    EXPECT_FALSE(strong.should_expand_new_child(config));
+}
+
+TEST(NodeTest, FactoredFpuValuesNextActionBySharedMoves) {
+    // Joint order: (a1,b1) 0.42, (a1,b2) 0.28, (a2,b1) 0.18, then (a2,b2) 0.12.
+    // a2 has done well on board A, so (a2,b2) is estimated at
+    // Q_A(a2) + Q_B(b2) - Q_mean = 0.5 - 0.5 + 1/6 instead of the pessimistic FPU.
+    SearchParams::RuntimeConfig config;
+    config.pwCoefficient = 0.001f;
+    config.fpuReduction = 0.5f;
+    config.puctWidening = true;
+    const Stockfish::Move a1 = Stockfish::Move(1), a2 = Stockfish::Move(2),
+                          b1 = Stockfish::Move(3), b2 = Stockfish::Move(4);
+    Node node(Stockfish::WHITE);
+    node.set_depth(1);
+    ASSERT_TRUE(node.try_init_and_expand(
+        {a1, a2}, {b1, b2}, {0.7f, 0.3f}, {0.6f, 0.4f}, false, true, true, config));
+    JointActionCandidate action;
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+    ASSERT_NE(node.expand_next_joint_child(nullptr, 0, action, config), nullptr);
+    ASSERT_EQ(action.moveA, a2);
+    ASSERT_EQ(action.moveB, b1);
+    ASSERT_EQ(node.peek_next_joint_action().moveA, a2);
+    ASSERT_EQ(node.peek_next_joint_action().moveB, b2);
+    for (int visit = 0; visit < 4; ++visit) {
+        node.update(0, -0.5f);
+        node.update(1, -0.5f);
+        node.update(2, 0.5f);
+    }
+
+    // Plain FPU: -0.64 + 10.4 * 0.12 = 0.61 loses to (a2,b1) at 0.87.
+    config.factoredFpuVisits = 0.0f;
+    EXPECT_FALSE(node.should_expand_new_child(config));
+    // Factored: support 1 / (1/4 + 1/4) = 2 gives the estimate 2 / 3 of the
+    // weight, so (a2,b2) scores 1.15.
+    config.factoredFpuVisits = 1.0f;
+    EXPECT_TRUE(node.should_expand_new_child(config));
+    // Heavy shrinkage back toward the FPU leaves it unopened.
+    config.factoredFpuVisits = 1000.0f;
+    EXPECT_FALSE(node.should_expand_new_child(config));
 }
 
 TEST(JointCandidateGeneratorTest, LegalMassMatchesEnumerationAcrossSittingRules) {
@@ -1559,6 +1661,7 @@ TEST(NodeTest, RootVisitsGeneratedChildBeforeWidening) {
     Node node(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
     config.pwMassStart = 0.0f;  // the count formula alone
+    config.puctWidening = false;
     config.enableGumbelRootSearch = false;
     std::vector<Stockfish::Move> actionsA = {
         Stockfish::Move(1), Stockfish::Move(2), Stockfish::Move(3)};
@@ -1578,6 +1681,7 @@ TEST(NodeTest, RootVisitsGeneratedChildBeforeWidening) {
 TEST(NodeTest, InFlightVisitAllowsBatchToWiden) {
     SearchParams::RuntimeConfig config;
     config.pwMassStart = 0.0f;  // the count formula alone
+    config.puctWidening = false;
     Node node(Stockfish::WHITE);
     node.set_depth(1);
     std::vector<Stockfish::Move> actionsA = {
@@ -2043,6 +2147,7 @@ TEST_F(EngineTest, ReservedCanonicalExpansionRestoresBoardAndEdgeState) {
     auto root = std::make_shared<Node>(Stockfish::WHITE);
     SearchParams::RuntimeConfig config;
     config.pwMassStart = 0.0f;  // the count formula alone
+    config.puctWidening = false;
     config.enableTranspositions = true;
     ASSERT_TRUE(root->try_init_and_expand(
         {legalMoves[0], legalMoves[1]}, {Stockfish::MOVE_NONE},
