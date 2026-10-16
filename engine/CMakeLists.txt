@@ -72,7 +72,9 @@ if(HIVEMIND_FAST_BUILD OR MSVC)
     endif()
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION FALSE)
 else()
-    list(APPEND HIVEMIND_COMMON_FLAGS -Ofast -flto)
+    # Not -Ofast: its -ffinite-math-only folds away the search's NaN and
+    # infinity checks, which stalled release builds at ~10 nodes per second.
+    list(APPEND HIVEMIND_COMMON_FLAGS -O3 -flto)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
