@@ -134,10 +134,13 @@ def main() -> int:
         # ONNX Runtime's CPU provider is dramatically faster with an FP32
         # graph. Released networks are commonly FP16 for TensorRT, so convert
         # once while packaging rather than making every inference pay for CPU
-        # casts/fallback kernels.
+        # casts/fallback kernels. On macOS the network runs through Core ML,
+        # which computes in FP16 and needs the rewrite that keeps it in one
+        # partition.
+        converter = "convert_onnx_coreml.py" if sys.platform == "darwin" else "convert_onnx_fp32.py"
         run([
             sys.executable,
-            str(ENGINE_DIR / "scripts" / "convert_onnx_fp32.py"),
+            str(ENGINE_DIR / "scripts" / converter),
             str(model),
             str(models_dir / "hivemind.onnx"),
         ])
@@ -154,36 +157,64 @@ def main() -> int:
         if os.name != "nt":
             lib_dir = bundle / "lib"
             lib_dir.mkdir(exist_ok=True)
-            shutil.copy2(runtime, lib_dir / runtime.name)
+            # On macOS the executable links the library's install name
+            # (@rpath/libonnxruntime.1.dylib), not the file it was found as.
+            name = runtime.name
+            if sys.platform == "darwin":
+                install_name = subprocess.run(["otool", "-D", str(runtime)], check=True,
+                                              capture_output=True, text=True).stdout.split()[-1]
+                name = Path(install_name).name
+            shutil.copy2(runtime.resolve(), lib_dir / name)
+            # The Neural Engine runs these networks several times faster than
+            # the GPU at the search's batch size; HIVEMIND_COREML=gpu, all or
+            # off overrides it.
+            coreml = ("export HIVEMIND_COREML=\"${HIVEMIND_COREML:-ane}\"\n"
+                      if sys.platform == "darwin" else "")
             launcher = bundle / "hivemind"
             launcher.write_text(
                 "#!/bin/sh\n"
                 "set -eu\n"
                 "bundle_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n"
                 "export LD_LIBRARY_PATH=\"$bundle_dir/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\n"
+                + coreml +
                 "exec \"$bundle_dir/bin/hivemind.bin\" \"$@\"\n",
                 encoding="utf-8",
             )
             launcher.chmod(0o755)
 
         executable = "bin\\hivemind.exe" if os.name == "nt" else "./hivemind"
-        requirements = (
-            "- 64-bit Windows 10 or newer\n"
-            "  - Microsoft Visual C++ 2019 or newer Redistributable\n"
-            if os.name == "nt"
-            else "- A recent 64-bit Linux distribution\n"
-        )
+        if os.name == "nt":
+            requirements = ("- 64-bit Windows 10 or newer\n"
+                            "  - Microsoft Visual C++ 2019 or newer Redistributable\n")
+        elif sys.platform == "darwin":
+            requirements = "- A Mac with Apple silicon (M1 or newer), macOS 13 or newer\n"
+        else:
+            requirements = "- A recent 64-bit Linux distribution\n"
+        if sys.platform == "darwin":
+            hardware = ("Release powered by ONNX Runtime. The network runs on the Neural "
+                        "Engine through Core ML (set HIVEMIND_COREML=gpu, all or off to "
+                        "change that); nothing else needs installing.\n\n")
+            model_note = ("macOS quarantines downloaded programs. If it refuses to open "
+                          "hivemind, run once in this folder:\n"
+                          "  xattr -dr com.apple.quarantine .\n")
+        else:
+            hardware = ("Portable FP32 release powered by ONNX Runtime. No CUDA, TensorRT, "
+                        "or NVIDIA GPU is required.\n\n")
+            model_note = ("The input network is converted to FP32 while packaging because "
+                          "ONNX Runtime's CPU provider is substantially faster with FP32.\n")
         (bundle / "README.txt").write_text(
             f"Hivemind {bundle_name}\n"
             f"{'=' * (10 + len(bundle_name))}\n\n"
-            "Portable FP32 release powered by ONNX Runtime. No CUDA, TensorRT, "
-            "or NVIDIA GPU is required.\n\n"
+            + hardware +
             f"Requirements:\n  {requirements}"
             "- A UCI-compatible chess GUI, or a terminal\n\n"
-            f"Run {executable}. The bundled FP32 model is discovered automatically, "
+            f"Run {executable}. The bundled model is discovered automatically, "
             "including when a GUI starts the engine from another working directory.\n\n"
-            "The input network is converted to FP32 while packaging because "
-            "ONNX Runtime's CPU provider is substantially faster with FP32.\n",
+            "The engine plays clock-aware bughouse by default (UCI option TimeModel "
+            "clock): send the team's lead and both teams' move times with the "
+            "TimeLeadMs, TeamMoveTimeMs and OpponentMoveTimeMs options. "
+            "TimeModel flag searches on the TimeAdvantage option instead.\n\n"
+            + model_note,
             encoding="utf-8",
         )
 
