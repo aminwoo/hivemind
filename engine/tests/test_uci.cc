@@ -37,6 +37,12 @@ public:
     }
 
     static Board& board(UCI& uci) { return uci.board; }
+
+    static void set_network_reads_clock(UCI& uci, bool reads) {
+        uci.networkReadsClock = reads;
+    }
+
+    static bool clock_model(const UCI& uci) { return uci.current_clock().has_value(); }
 };
 
 namespace {
@@ -305,3 +311,19 @@ TEST_F(UCIOpeningNoiseTest, VariantDefaultsUseZeroDrawContemptAndCorrectStarting
 }
 
 }  // namespace
+
+TEST_F(UCIOpeningNoiseTest, ClockAwarePlayIsTheDefaultForNetworksThatReadTheClock) {
+    UCI clockNetwork;
+    UCIOpeningNoiseTestPeer::set_network_reads_clock(clockNetwork, true);
+    EXPECT_TRUE(UCIOpeningNoiseTestPeer::clock_model(clockNetwork));
+    std::istringstream flag("name TimeModel value flag");
+    clockNetwork.setoption(flag);
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::clock_model(clockNetwork));
+
+    // A network from before the clock planes keeps the flag unless asked.
+    UCI legacyNetwork;
+    EXPECT_FALSE(UCIOpeningNoiseTestPeer::clock_model(legacyNetwork));
+    std::istringstream clock("name TimeModel value clock");
+    legacyNetwork.setoption(clock);
+    EXPECT_TRUE(UCIOpeningNoiseTestPeer::clock_model(legacyNetwork));
+}

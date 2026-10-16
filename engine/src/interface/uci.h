@@ -30,7 +30,11 @@ private:
     bool teamHasTimeAdvantage = false;
     // TimeModel clock: searches root on the lead below and charge every
     // action to the team that plays it, instead of the permanent flag above.
-    bool clockModel = false;
+    // The default, but only for networks that read the clock planes; an
+    // explicit TimeModel option applies to any network.
+    bool clockModel = true;
+    bool timeModelSet = false;
+    bool networkReadsClock = false;
     // Our team's lead over its diagonal opponents; negative when behind.
     int timeLeadMs = 0;
     // How long each team takes for one action, which is what a team on turn
@@ -41,6 +45,8 @@ private:
     // 0, or anything at or below the movetime, keeps the movetime exact.
     int maxMoveTimeMs = 0;
 
+    /** Whether searches run under TimeModel clock. */
+    bool clock_model_active() const;
     /** The clock a search should root on, or none under TimeModel flag. */
     std::optional<TimeState> current_clock() const;
     /** Whether our team may sit now, under whichever time model is active. */
