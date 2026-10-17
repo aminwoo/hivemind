@@ -307,6 +307,25 @@ sample and starts a fresh root, while later positions retain the normal
 deterministic search and tree reuse. Set `OpeningNoise` to `false` (the default),
 `OpeningNoisePlies` to 0, or epsilon to 0 to disable it.
 
+### Reports While Searching
+
+By default a search prints its rank-1 line (`info depth … pv …`) whenever the
+search reaches a new depth, which stops after the first few thousand nodes.
+Set `ReportIntervalMs` to print the whole MultiPV block, in the same format as
+the final block, every interval instead. It applies to `go nodes`,
+`go movetime`, timed and `go infinite` searches of the bughouse MCTS search;
+single-board variants and `SearchMode alphabeta` keep their usual output.
+Periodic blocks leave out root moves no visit has reached yet, except rank 1,
+which is always the move `bestmove` would play at that moment.
+
+```text
+# Print every ranked line every 250 ms; 0 (the default) prints only the rank-1 line at each new depth
+setoption name ReportIntervalMs value 250
+```
+
+A GUI can tell a build that can report every ranked line while it searches by
+the `option name ReportIntervalMs` line in its `uci` reply.
+
 ### Paired Model Tournament
 
 ```bash
