@@ -43,6 +43,14 @@ struct TournamentConfig {
     float baselineRootPwMassStart = -1.0f;
     bool contenderPwMassNormalize = false;
     bool baselinePwMassNormalize = false;
+    bool contenderPuctWidening = SearchParams::PUCT_WIDENING;
+    bool baselinePuctWidening = SearchParams::PUCT_WIDENING;
+    float contenderFactoredFpuVisits = SearchParams::FACTORED_FPU_VISITS;
+    float baselineFactoredFpuVisits = SearchParams::FACTORED_FPU_VISITS;
+    float contenderFpuReduction = SearchParams::FPU_REDUCTION;
+    float baselineFpuReduction = SearchParams::FPU_REDUCTION;
+    float contenderPolicyTemperature = SearchParams::POLICY_TEMPERATURE;
+    float baselinePolicyTemperature = SearchParams::POLICY_TEMPERATURE;
     float contenderCpuctInit = SearchParams::CPUCT_INIT;
     float baselineCpuctInit = SearchParams::CPUCT_INIT;
     bool contenderMcgs = SearchParams::ENABLE_MCGS;
@@ -109,6 +117,10 @@ struct TournamentConfig {
         searchConfig.pwMassCap = isContender ? contenderPwMassCap : baselinePwMassCap;
         searchConfig.rootPwMassStart = isContender ? contenderRootPwMassStart : baselineRootPwMassStart;
         searchConfig.pwMassNormalize = isContender ? contenderPwMassNormalize : baselinePwMassNormalize;
+        searchConfig.puctWidening = isContender ? contenderPuctWidening : baselinePuctWidening;
+        searchConfig.factoredFpuVisits = isContender ? contenderFactoredFpuVisits : baselineFactoredFpuVisits;
+        searchConfig.fpuReduction = isContender ? contenderFpuReduction : baselineFpuReduction;
+        searchConfig.policyTemperature = isContender ? contenderPolicyTemperature : baselinePolicyTemperature;
         searchConfig.cpuctInit = isContender ? contenderCpuctInit : baselineCpuctInit;
         searchConfig.enableMCGS = isContender ? contenderMcgs : baselineMcgs;
         searchConfig.enableTranspositions = isContender

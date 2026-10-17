@@ -916,7 +916,7 @@ void SearchThread::process_batch(
             } else {
                 // On turn with legal moves - can also pass (MOVE_NONE)
                 priorsA = get_normalized_probability(
-                    batchPiA, ctx.policyIndicesA);
+                    batchPiA, ctx.policyIndicesA, runtimeConfig.policyTemperature);
             }
             
             if (ctx.actionsB.size() == 1) {
@@ -925,7 +925,7 @@ void SearchThread::process_batch(
             } else {
                 // On turn with legal moves - can also pass (MOVE_NONE)
                 priorsB = get_normalized_probability(
-                    batchPiB, ctx.policyIndicesB);
+                    batchPiB, ctx.policyIndicesB, runtimeConfig.policyTemperature);
             }
 
             auto action_factors = [jointFactorRank, jointVocabularySize](
@@ -1296,13 +1296,15 @@ LeafSelection SearchThread::select_and_expand(
         }
 
         // Grow the large Cartesian joint-action space as the node earns visits.
-        if (currentNode->should_expand_new_child(runtimeConfig)) {
+        const JointActionCandidate* hintAction =
+            mateHint ? &mateHint->action : nullptr;
+        if (currentNode->should_expand_new_child(runtimeConfig, hintAction)) {
             // Expand first to atomically get the action
             JointActionCandidate expandedAction;
             bool expandedChildReserved = false;
             nextNode = currentNode->expand_next_joint_child(
                 nullptr, 0, expandedAction, runtimeConfig, &childIdx, true,
-                &expandedChildReserved);
+                &expandedChildReserved, true, hintAction);
             
             if (nextNode) {
                 const TimeState childTime = time_after_action(*currentNode);
@@ -1349,11 +1351,10 @@ LeafSelection SearchThread::select_and_expand(
         // Standard PUCT selection among expanded children
         Node::ChildSelection selection =
             currentNode->select_child_and_apply_virtual_loss(
-                runtimeConfig, blockedNodes,
-                mateHint ? &mateHint->action : nullptr);
+                runtimeConfig, blockedNodes, hintAction);
         if (!selection.child || selection.childIdx < 0) {
             if (!selection.pendingEvaluation
-                && currentNode->should_expand_new_child(runtimeConfig)) {
+                && currentNode->should_expand_new_child(runtimeConfig, hintAction)) {
                 continue;
             }
             return {

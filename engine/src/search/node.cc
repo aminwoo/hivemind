@@ -449,13 +449,7 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
 
     const size_t limit = std::min(numExpanded, children.size());
 
-    const float parentQ = visits > 0 ? (valueSum / static_cast<float>(visits)) : 0.0f;
-    const float fpuQ = config.enableDynamicFpu && visits > 0
-        ? std::clamp(
-            parentQ - config.fpuReduction
-                * std::sqrt(std::max(0.0f, visitedPolicySum)),
-            parentQ - 1.0f, parentQ + 1.0f)
-        : SearchParams::Q_INIT;
+    const float fpuQ = selection_fpu_q_locked(config, visits);
 
     const bool hasNonLosingAlternative =
         nodeType.load(std::memory_order_relaxed) == NodeType::UNSOLVED
@@ -502,26 +496,7 @@ Node::ChildSelection Node::select_child_and_apply_virtual_loss(
             const uint32_t n_i = static_cast<uint32_t>(
                 edge.visits.load(std::memory_order_relaxed));
             const uint32_t n_effective = n_i + static_cast<uint32_t>(vl_i);
-            
-            float q_i;
-            if (n_effective == 0) {
-                q_i = fpuQ;
-            } else if (vl_i == 0) {
-                q_i = edge.q.load(std::memory_order_relaxed);
-            } else {
-                const SearchParams::VirtualStyle style = SearchParams::get_virtual_style(n_i);
-                if (style == SearchParams::VirtualStyle::VIRTUAL_LOSS) {
-                    q_i = (edge.valueSum.load(std::memory_order_relaxed)
-                           - static_cast<float>(vl_i))
-                        / static_cast<float>(n_effective);
-                } else if (style == SearchParams::VirtualStyle::VIRTUAL_OFFSET) {
-                    q_i = edge.q.load(std::memory_order_relaxed)
-                        - static_cast<float>(vl_i)
-                        * static_cast<float>(SearchParams::VIRTUAL_OFFSET_STRENGTH);
-                } else {
-                    q_i = edge.q.load(std::memory_order_relaxed);
-                }
-            }
+            const float q_i = selection_q(edge, n_i, vl_i, fpuQ);
 
             float score;
             int gumbelProgress = 0;

@@ -157,6 +157,10 @@ void printUsage(const char* progName) {
     cout << "    --{contender,baseline}-pw-mass-exponent <x> --{contender,baseline}-pw-mass-cap <x>" << endl;
     cout << "    --{contender,baseline}-root-pw-mass <m0> (-1 inherits internal target)" << endl;
     cout << "    --{contender,baseline}-pw-mass-normalize <bool> --{contender,baseline}-cpuct-init <x>" << endl;
+    cout << "    --{contender,baseline}-puct-widening <bool> (also widen when the next action wins PUCT)" << endl;
+    cout << "    --{contender,baseline}-factored-fpu <k> (its FPU from shared-move siblings; 0 = off)" << endl;
+    cout << "    --{contender,baseline}-fpu-reduction <x>" << endl;
+    cout << "    --{contender,baseline}-policy-temperature <t> (search prior softmax temperature)" << endl;
     cout << "    --contender-threads <n> --baseline-threads <n> --positions <tsv>" << endl;
     cout << "    --contender-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
@@ -655,6 +659,14 @@ int main(int argc, char* argv[]) {
                 else if (option == "--baseline-root-pw-mass") config.baselineRootPwMassStart = stof(value);
                 else if (option == "--contender-pw-mass-normalize") config.contenderPwMassNormalize = parse_bool_argument(value);
                 else if (option == "--baseline-pw-mass-normalize") config.baselinePwMassNormalize = parse_bool_argument(value);
+                else if (option == "--contender-puct-widening") config.contenderPuctWidening = parse_bool_argument(value);
+                else if (option == "--baseline-puct-widening") config.baselinePuctWidening = parse_bool_argument(value);
+                else if (option == "--contender-factored-fpu") config.contenderFactoredFpuVisits = stof(value);
+                else if (option == "--baseline-factored-fpu") config.baselineFactoredFpuVisits = stof(value);
+                else if (option == "--contender-fpu-reduction") config.contenderFpuReduction = stof(value);
+                else if (option == "--baseline-fpu-reduction") config.baselineFpuReduction = stof(value);
+                else if (option == "--contender-policy-temperature") config.contenderPolicyTemperature = stof(value);
+                else if (option == "--baseline-policy-temperature") config.baselinePolicyTemperature = stof(value);
                 else if (option == "--contender-cpuct-init") config.contenderCpuctInit = stof(value);
                 else if (option == "--baseline-cpuct-init") config.baselineCpuctInit = stof(value);
                 else if (option == "--contender-mcgs") config.contenderMcgs = parse_bool_argument(value);

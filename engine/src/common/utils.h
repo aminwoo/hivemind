@@ -125,8 +125,11 @@ inline Stockfish::Square flip_vertical(Stockfish::Square sq) {
     return Stockfish::Square(int(sq) ^ 56);
 }
 
-inline std::vector<float> normalize_logits(const std::vector<float>& logits) {
+/// Softmax over the finite logits, each divided by `temperature` first.
+inline std::vector<float> normalize_logits(const std::vector<float>& logits,
+                                           float temperature = 1.0f) {
     std::vector<float> probabilities(logits.size(), 0.0f);
+    const float inverseTemperature = 1.0f / temperature;
     float maxLogit = -std::numeric_limits<float>::infinity();
     for (float logit : logits) {
         if (std::isfinite(logit)) {
@@ -144,7 +147,7 @@ inline std::vector<float> normalize_logits(const std::vector<float>& logits) {
     double sum = 0.0;
     for (size_t i = 0; i < logits.size(); ++i) {
         if (std::isfinite(logits[i])) {
-            probabilities[i] = std::exp(logits[i] - maxLogit);
+            probabilities[i] = std::exp((logits[i] - maxLogit) * inverseTemperature);
             sum += probabilities[i];
         }
     }
@@ -227,7 +230,8 @@ inline float policy_value_to_float(T value) {
 
 template <typename T>
 inline std::vector<float> get_normalized_probability(
-    const T* policyOutput, const std::vector<int>& policyIndices) {
+    const T* policyOutput, const std::vector<int>& policyIndices,
+    float temperature = 1.0f) {
     std::vector<float> logits(policyIndices.size());
     for (size_t i = 0; i < policyIndices.size(); ++i) {
         const int policyIdx = policyIndices[i];
@@ -235,7 +239,7 @@ inline std::vector<float> get_normalized_probability(
             ? policy_value_to_float(policyOutput[policyIdx])
             : -std::numeric_limits<float>::infinity();
     }
-    return normalize_logits(logits);
+    return normalize_logits(logits, temperature);
 }
 
 template <typename T>

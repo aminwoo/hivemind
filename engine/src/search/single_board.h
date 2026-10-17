@@ -20,6 +20,7 @@ struct Limits {
     size_t nodes = 0;
     int moveTimeMs = 1000;
     int maxDepth = 128;
+    float policyTemperature = 1.0f;  // search prior softmax temperature
 };
 struct Result {
     Stockfish::Move move = Stockfish::MOVE_NONE;
