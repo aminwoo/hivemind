@@ -58,6 +58,10 @@ private:
     int batchSize = SearchParams::BATCH_SIZE;
     std::atomic<bool> ongoingSearch{false};
     int multiPV = 1;  // Number of principal variations to display
+    // How often a search prints its whole MultiPV block while it runs
+    // (0 = only the rank-1 line at each new depth). Its presence in `uci` is
+    // how a GUI knows the engine can report every ranked line as it searches.
+    int reportIntervalMs = 0;
     bool ponderEnabled = true;  // Whether to output ponder move and accept ponder search
     // Whether "go background" starts a search. Listed in the uci response so
     // a front end can tell this build accepts the command at all: an older

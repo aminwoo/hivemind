@@ -28,6 +28,10 @@ public:
         return uci.ponderEnabled;
     }
 
+    static int report_interval_ms(const UCI& uci) {
+        return uci.reportIntervalMs;
+    }
+
     static void use_alphabeta(UCI& uci) {
         uci.alphaBetaMode = true;
     }
@@ -206,6 +210,27 @@ TEST_F(UCIOpeningNoiseTest, AdvertisesOptionsInUciHandshake) {
     EXPECT_NE(output.str().find(
         "option name MateThreads type spin default 4 min 1 max 256"),
         std::string::npos);
+    EXPECT_NE(output.str().find(
+        "option name ReportIntervalMs type spin default 0 min 0 max 60000"),
+        std::string::npos);
+}
+
+TEST_F(UCIOpeningNoiseTest, ReportIntervalIsClampedAndConfirmed) {
+    UCI uci;
+    EXPECT_EQ(UCIOpeningNoiseTestPeer::report_interval_ms(uci), 0);
+
+    testing::internal::CaptureStdout();
+    set_option(uci, "ReportIntervalMs", "250");
+    const std::string output = testing::internal::GetCapturedStdout();
+    EXPECT_NE(output.find("info string ReportIntervalMs set to 250"),
+              std::string::npos);
+    EXPECT_EQ(UCIOpeningNoiseTestPeer::report_interval_ms(uci), 250);
+
+    testing::internal::CaptureStdout();
+    set_option(uci, "ReportIntervalMs", "-5");
+    set_option(uci, "ReportIntervalMs", "999999");
+    testing::internal::GetCapturedStdout();
+    EXPECT_EQ(UCIOpeningNoiseTestPeer::report_interval_ms(uci), 60000);
 }
 
 TEST_F(UCIOpeningNoiseTest, MateThreadsSetsTheProbeWorkerCount) {
