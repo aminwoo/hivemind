@@ -41,6 +41,9 @@ private:
     // on both boards pays from its lead.
     int teamMoveTimeMs = TimeState::DEFAULT_MOVE_TIME_MS;
     int opponentMoveTimeMs = TimeState::DEFAULT_MOVE_TIME_MS;
+    // What the root action alone costs the team when it pays for it, if the
+    // front end knows (0 = TeamMoveTimeMs): the budget of the move it searches.
+    int rootMoveTimeMs = 0;
     // Ceiling for a `go movetime` search extended in a critical position;
     // 0, or anything at or below the movetime, keeps the movetime exact.
     int maxMoveTimeMs = 0;

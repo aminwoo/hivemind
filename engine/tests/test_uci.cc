@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -43,6 +44,8 @@ public:
     }
 
     static bool clock_model(const UCI& uci) { return uci.current_clock().has_value(); }
+
+    static std::optional<TimeState> clock(const UCI& uci) { return uci.current_clock(); }
 };
 
 namespace {
@@ -64,6 +67,47 @@ class UCIOpeningNoiseTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() { initialize_engine_state(); }
 };
+
+TEST_F(UCIOpeningNoiseTest, RootMoveTimeChargesOnlyTheRootAction) {
+    UCI uci;
+    set_option(uci, "TimeModel", "clock");
+    set_option(uci, "Team", "white");
+    set_option(uci, "TimeLeadMs", "3000");
+    set_option(uci, "TeamMoveTimeMs", "1000");
+    set_option(uci, "OpponentMoveTimeMs", "500");
+    ASSERT_TRUE(UCIOpeningNoiseTestPeer::clock(uci).has_value());
+    EXPECT_EQ(UCIOpeningNoiseTestPeer::clock(uci)->next_move_time_ms(Stockfish::WHITE), 1000);
+
+    set_option(uci, "RootMoveTimeMs", "400");
+    const TimeState budgeted = *UCIOpeningNoiseTestPeer::clock(uci);
+    EXPECT_EQ(budgeted.move_time_ms(Stockfish::WHITE), 1000);
+    EXPECT_EQ(budgeted.next_move_time_ms(Stockfish::WHITE), 400);
+    EXPECT_EQ(budgeted.after(Stockfish::WHITE, true).lead_ms(Stockfish::WHITE), 2600);
+
+    set_option(uci, "RootMoveTimeMs", "0");
+    EXPECT_EQ(UCIOpeningNoiseTestPeer::clock(uci)->next_move_time_ms(Stockfish::WHITE), 1000);
+}
+
+TEST_F(UCIOpeningNoiseTest, RootMoveTimePersistsLikeTheOtherClockOptions) {
+    // An option, like TeamMoveTimeMs: it holds across new positions and games
+    // until the front end changes it, which is why a front end that budgets
+    // only some moves must send 0 for the others.
+    UCI uci;
+    set_option(uci, "TimeModel", "clock");
+    set_option(uci, "TimeLeadMs", "3000");
+    set_option(uci, "TeamMoveTimeMs", "1000");
+    set_option(uci, "RootMoveTimeMs", "400");
+    std::istringstream first("startpos moves 1e2e4");
+    uci.position(first);
+    uci.new_game();
+    std::istringstream second("startpos");
+    uci.position(second);
+    const auto clock = UCIOpeningNoiseTestPeer::clock(uci);
+    ASSERT_TRUE(clock.has_value());
+    EXPECT_EQ(clock->next_move_time_ms(Stockfish::WHITE), 400);
+    EXPECT_EQ(clock->move_time_ms(Stockfish::WHITE), 1000);
+    EXPECT_EQ(clock->lead_ms(Stockfish::WHITE), 3000);
+}
 
 TEST_F(UCIOpeningNoiseTest, IsDisabledByDefault) {
     UCI uci;

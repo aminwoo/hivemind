@@ -283,6 +283,63 @@ TEST_F(RootMateSearchTest, CancellationDoesNotSubmitAnotherBatchWhenSubmittingBe
     check_cancellation_does_not_submit(*engine, options, true);
 }
 
+// The descent charges the root team's first action its budget, so every child
+// of a root on turn on both boards carries the budgeted lead, and later actions
+// pay the usual move time. Here the budget decides who may sit after the move:
+// at the usual 1000 ms white falls 200 ms behind, at its 400 ms budget it
+// still leads by 400.
+TEST_F(RootMateSearchTest, TheRootActionPaysItsBudgetAndOnlyIt) {
+    Board board;
+    board.set(
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR[] w KQkq - 0 1|"
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR[] b KQkq - 0 1");
+    ASSERT_TRUE(board.on_turn_on_both_boards(Stockfish::WHITE));
+    const TimeState plain = TimeState::clocked(Stockfish::WHITE, 800, 1000, 500);
+    const TimeState budgeted = TimeState::clocked(Stockfish::WHITE, 800, 1000, 500, 400);
+    ASSERT_TRUE(plain.after(Stockfish::WHITE, true).can_sit(Stockfish::BLACK));
+    ASSERT_FALSE(budgeted.after(Stockfish::WHITE, true).can_sit(Stockfish::BLACK));
+    EXPECT_NE(board.search_hash_key(Stockfish::WHITE, plain),
+              board.search_hash_key(Stockfish::WHITE, budgeted));
+
+    for (const TimeState& rootTime : {plain, budgeted}) {
+        auto root = std::make_shared<Node>(
+            Stockfish::WHITE, board.search_hash_key(Stockfish::WHITE, rootTime));
+        root->configure_root_search(options.search);
+        SearchInfo info(Clock::now(), 1000);
+        SearchThread worker;
+        worker.set_root_node(root);
+        worker.set_search_info(&info);
+        worker.set_runtime_config(options.search);
+        std::atomic<bool> keepRunning{true};
+        for (int i = 0; i < 40; ++i) {
+            worker.run_iteration(board, engine.get(), rootTime, &keepRunning);
+        }
+        worker.finish_pending_iteration(board, engine.get(), rootTime);
+
+        // Each child is keyed by its exact clock: the lead after the root
+        // action at the cost this root was given.
+        const TimeState childTime = rootTime.after(Stockfish::WHITE, true);
+        int checked = 0;
+        for (int index = 0; index < static_cast<int>(root->get_num_generated()); ++index) {
+            const std::shared_ptr<Node> child = root->get_child(index);
+            if (!child) {
+                continue;
+            }
+            const JointActionCandidate action = root->get_joint_action(index);
+            Board after(board);
+            after.make_moves(action.moveA, action.moveB);
+            EXPECT_EQ(child->get_hash(), after.search_hash_key(Stockfish::BLACK, childTime))
+                << "child " << index;
+            ++checked;
+        }
+        EXPECT_GT(checked, 5);
+        // Below the root the budget is gone: white's next action costs its
+        // usual time again.
+        EXPECT_EQ(childTime.next_move_time_ms(Stockfish::WHITE), 1000);
+        worker.release_tree_references();
+    }
+}
+
 // One worker on its own is deterministic, and submitting before the backup
 // changes only when the GPU sees each batch, so both orders grow the same tree.
 TEST_F(RootMateSearchTest, SubmittingBeforeBackupSearchesLikeTheDefault) {

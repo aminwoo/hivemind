@@ -775,6 +775,9 @@ void UCI::setoption(std::istringstream& is) {
     } else if (name == "TeamMoveTimeMs") {
         teamMoveTimeMs = std::clamp(std::stoi(value), 1, 3600000);
         std::cout << "info string TeamMoveTimeMs set to " << teamMoveTimeMs << std::endl;
+    } else if (name == "RootMoveTimeMs") {
+        rootMoveTimeMs = std::clamp(std::stoi(value), 0, 3600000);
+        std::cout << "info string RootMoveTimeMs set to " << rootMoveTimeMs << std::endl;
     } else if (name == "OpponentMoveTimeMs") {
         opponentMoveTimeMs = std::clamp(std::stoi(value), 1, 3600000);
         std::cout << "info string OpponentMoveTimeMs set to "
@@ -805,7 +808,7 @@ std::optional<TimeState> UCI::current_clock() const {
         return std::nullopt;
     }
     return TimeState::clocked(
-        teamSide, timeLeadMs, teamMoveTimeMs, opponentMoveTimeMs);
+        teamSide, timeLeadMs, teamMoveTimeMs, opponentMoveTimeMs, rootMoveTimeMs);
 }
 
 bool UCI::team_may_sit() const {
@@ -900,6 +903,7 @@ void UCI::send_uci_response() {
          << TimeState::DEFAULT_MOVE_TIME_MS << " min 1 max 3600000" << endl;
     cout << "option name OpponentMoveTimeMs type spin default "
          << TimeState::DEFAULT_MOVE_TIME_MS << " min 1 max 3600000" << endl;
+    cout << "option name RootMoveTimeMs type spin default 0 min 0 max 3600000" << endl;
     cout << "option name MaxMoveTimeMs type spin default 0 min 0 max 3600000" << endl;
     cout << "option name RequireMoveOn type combo default none var none var A var B" << endl;
     cout << "info string CUDA engines " << engines.size()

@@ -8226,7 +8226,12 @@ void Agent::run_background_search(Board& board,
 
     SearchOptions backgroundOptions;
     backgroundOptions.search = options.search;
-    backgroundOptions.clock = options.clock;
+    // A next-move time budgets the move a front end is about to search. This
+    // tree starts with the opponents' reply, so our next move in it has no
+    // budget yet and costs our usual time.
+    if (options.clock) {
+        backgroundOptions.clock = options.clock->without_next_move_time();
+    }
     backgroundOptions.search.rootDirichletAlpha = 0.0f;
     backgroundOptions.search.rootDirichletEpsilon = 0.0f;
     backgroundOptions.background = true;
