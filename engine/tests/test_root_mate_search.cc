@@ -235,7 +235,13 @@ TEST_F(RootMateSearchTest, WorkerFailureAlsoJoinsTheScan) {
     EXPECT_FALSE(agent.is_running());
 }
 
-TEST_F(RootMateSearchTest, CancellationDoesNotSubmitAnotherInferenceBatch) {
+// Cancels a worker with a real batch in flight. With submitBeforeBackup the
+// lookahead is submitted before the backup instead of after; either way no
+// batch may be submitted once the search is told to stop.
+void check_cancellation_does_not_submit(Engine& engineRef, SearchOptions options,
+                                        bool submitBeforeBackup) {
+    Engine* engine = &engineRef;
+    options.search.submitBeforeBackup = submitBeforeBackup;
     Board board;
     const auto before = Agent::board_signature(board);
     const auto time = TimeState::legacy(Stockfish::WHITE, true);
@@ -250,11 +256,11 @@ TEST_F(RootMateSearchTest, CancellationDoesNotSubmitAnotherInferenceBatch) {
     std::atomic<bool> keepRunning{true};
 
     // Expand the root, then leave a real neural batch in flight.
-    worker.run_iteration(board, engine.get(), time, &keepRunning);
-    worker.run_iteration(board, engine.get(), time, &keepRunning);
+    worker.run_iteration(board, engine, time, &keepRunning);
+    worker.run_iteration(board, engine, time, &keepRunning);
     const int completed = info.get_nodes_searched();
     keepRunning.store(false, std::memory_order_release);
-    worker.run_iteration(board, engine.get(), time, &keepRunning);
+    worker.run_iteration(board, engine, time, &keepRunning);
     EXPECT_GT(info.get_nodes_searched(), completed);
 
     Engine::HalfInferenceOutputs outputs;
@@ -264,9 +270,71 @@ TEST_F(RootMateSearchTest, CancellationDoesNotSubmitAnotherInferenceBatch) {
 
     // Aborted reservations must not prevent this worker from searching again.
     keepRunning.store(true, std::memory_order_release);
-    worker.run_iteration(board, engine.get(), time, &keepRunning);
-    worker.finish_pending_iteration(board, engine.get(), time);
+    worker.run_iteration(board, engine, time, &keepRunning);
+    worker.finish_pending_iteration(board, engine, time);
     EXPECT_GT(info.get_nodes_searched(), completed + 1);
+}
+
+TEST_F(RootMateSearchTest, CancellationDoesNotSubmitAnotherInferenceBatch) {
+    check_cancellation_does_not_submit(*engine, options, false);
+}
+
+TEST_F(RootMateSearchTest, CancellationDoesNotSubmitAnotherBatchWhenSubmittingBeforeBackup) {
+    check_cancellation_does_not_submit(*engine, options, true);
+}
+
+// One worker on its own is deterministic, and submitting before the backup
+// changes only when the GPU sees each batch, so both orders grow the same tree.
+TEST_F(RootMateSearchTest, SubmittingBeforeBackupSearchesLikeTheDefault) {
+    const auto time = TimeState::legacy(Stockfish::WHITE, true);
+    std::vector<std::pair<int, std::vector<int>>> results;
+    for (const bool submitBeforeBackup : {false, true}) {
+        Board board;
+        options.search.submitBeforeBackup = submitBeforeBackup;
+        auto root = std::make_shared<Node>(
+            Stockfish::WHITE, board.search_hash_key(Stockfish::WHITE, time));
+        root->configure_root_search(options.search);
+        SearchInfo info(Clock::now(), 1000);
+        SearchThread worker;
+        worker.set_root_node(root);
+        worker.set_search_info(&info);
+        worker.set_runtime_config(options.search);
+        std::atomic<bool> keepRunning{true};
+        for (int i = 0; i < 20; ++i) {
+            worker.run_iteration(board, engine.get(), time, &keepRunning);
+        }
+        worker.finish_pending_iteration(board, engine.get(), time);
+        worker.release_tree_references();
+        results.emplace_back(info.get_nodes_searched(), root->get_child_visits());
+    }
+    EXPECT_GT(results[0].first, 10);
+    EXPECT_GT(results[0].second.size(), 1u);
+    EXPECT_EQ(results[0], results[1]);
+}
+
+// The search reads a batch's outputs after submitting the next batch, so a
+// batch's outputs must survive the next request: marks left in them are still
+// there after the next synchronize, and the next request got buffers of its own.
+TEST_F(RootMateSearchTest, OutputsSurviveTheNextRequest) {
+    std::vector<__half> input(NB_INPUT_VALUES());
+    Engine::HalfInferenceOutputs first, second;
+    ASSERT_TRUE(engine->enqueueInferenceHalf(input.data()));
+    ASSERT_TRUE(engine->synchronizeInferenceHalf(first));
+    const __half mark = __float2half_rn(0.625f);
+    auto* value = const_cast<__half*>(first.value);
+    auto* policyA = const_cast<__half*>(first.policyA);
+    auto* policyB = const_cast<__half*>(first.policyB);
+    value[0] = mark;
+    policyA[0] = mark;
+    policyB[NB_POLICY_VALUES() - 1] = mark;
+
+    ASSERT_TRUE(engine->enqueueInferenceHalf(input.data()));
+    ASSERT_TRUE(engine->synchronizeInferenceHalf(second));
+    EXPECT_EQ(__half2float(first.value[0]), 0.625f);
+    EXPECT_EQ(__half2float(first.policyA[0]), 0.625f);
+    EXPECT_EQ(__half2float(first.policyB[NB_POLICY_VALUES() - 1]), 0.625f);
+    EXPECT_NE(__half2float(second.value[0]), 0.625f);
+    EXPECT_NE(__half2float(second.policyA[0]), 0.625f);
 }
 
 }  // namespace

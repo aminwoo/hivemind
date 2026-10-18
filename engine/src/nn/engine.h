@@ -88,7 +88,9 @@ public:
                           size_t workerIndex = 0);
 
     // Each worker may have one request in flight. The pinned input must remain
-    // unchanged until synchronizeInferenceHalf returns.
+    // unchanged until synchronizeInferenceHalf returns. The outputs it hands
+    // out stay valid until that worker's next synchronize, so a caller may
+    // enqueue the next request before it has read them.
     bool enqueueInferenceHalf(const __half* obs, size_t workerIndex = 0);
     bool synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
                                   size_t workerIndex = 0);
@@ -138,6 +140,16 @@ private:
         void* hostMovesLeftHalf = nullptr;
         void* hostJointFactorsAHalf = nullptr;
         void* hostJointFactorsBHalf = nullptr;
+        // A second set of host outputs. synchronizeInferenceHalf() hands out
+        // the set the finished inference wrote and swaps the two, so the next
+        // enqueue writes the other set while the caller still reads these.
+        void* spareValueHalf = nullptr;
+        void* sparePolicyAHalf = nullptr;
+        void* sparePolicyBHalf = nullptr;
+        void* spareWdlHalf = nullptr;
+        void* spareMovesLeftHalf = nullptr;
+        void* spareJointFactorsAHalf = nullptr;
+        void* spareJointFactorsBHalf = nullptr;
     };
 #else
     // Opaque so onnxruntime headers stay out of every translation unit that

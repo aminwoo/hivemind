@@ -34,6 +34,21 @@ constexpr int BATCH_SIZE = 8;
 #endif
 constexpr int NUM_SEARCH_THREADS = HIVEMIND_NUM_SEARCH_THREADS;
 
+/**
+ * Submit each worker's lookahead batch to the GPU before backing up the batch
+ * that just came back, instead of after. The lookahead is collected before
+ * that backup either way, so selection sees the same tree; only the GPU
+ * stops idling for the backup (~68 us of a ~350 us cycle on the RTX 4070
+ * with twin-s-clock). Measured 76.9k vs 66.7k nps at 100 ms with 4 workers.
+ * Needs a backend whose outputs survive the next enqueue (see
+ * Engine::enqueueInferenceHalf); the TensorRT and ONNX Runtime ones do.
+ *
+ * On by default: against the old order at 100 ms (twin-s-clock it5, clock
+ * model, 4 workers) it scored 265-250-2 (+10 Elo, 95% CI about -20..+40)
+ * over 517 of a planned 1,000 games, at 68.5k vs 61.2k nps (+12%).
+ */
+constexpr bool SUBMIT_BEFORE_BACKUP = true;
+
 // =============================================================================
 // Virtual Loss Settings (aligned with CrazyAra)
 // =============================================================================
@@ -854,6 +869,7 @@ constexpr int ROOT_JOINT_POLICY_TOP_K = 32;
 constexpr float JOINT_POLICY_RESIDUAL_SCALE = 1.0f;
 
 struct RuntimeConfig {
+    bool submitBeforeBackup = SUBMIT_BEFORE_BACKUP;
     float cpuctInit = CPUCT_INIT;
     float cpuctBase = CPUCT_BASE;
     bool enableMCGS = ENABLE_MCGS;

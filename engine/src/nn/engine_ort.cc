@@ -144,8 +144,12 @@ struct Engine::OrtState {
         std::vector<float> inputFloat;
         // A legacy network's planes, the clock planes dropped.
         std::vector<__half> legacyInputHalf;
-        std::vector<Ort::Value> outputs;
-        std::vector<std::vector<__half>> convertedOutputs;
+        // Two sets of outputs: synchronizeInferenceHalf() hands out the set
+        // the finished request filled and the next request fills the other,
+        // so a caller may enqueue again before it is done reading.
+        std::array<std::vector<Ort::Value>, 2> outputSets;
+        std::array<std::vector<std::vector<__half>>, 2> convertedSets;
+        size_t outputSet = 0;
         std::future<bool> pending;
         bool hasPending = false;
         Ort::Session* session = nullptr;
@@ -376,7 +380,9 @@ bool Engine::loadNetwork(const std::string& onnxFile,
             if (m_inputChannels != NB_INPUT_CHANNELS) {
                 worker.legacyInputHalf.resize(inputElements);
             }
-            worker.convertedOutputs.resize(outputCount);
+            for (auto& converted : worker.convertedSets) {
+                converted.resize(outputCount);
+            }
             worker.session = state.sessions[i % state.sessions.size()].get();
         }
 
@@ -431,7 +437,8 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
     auto& state = *m_ort;
     const int64_t batch = m_batchSize;
     const int64_t channels = m_inputChannels;
-    worker.pending = std::async(std::launch::async, [&state, &worker, batch, channels]() {
+    std::vector<Ort::Value>& outputs = worker.outputSets[worker.outputSet];
+    worker.pending = std::async(std::launch::async, [&state, &worker, &outputs, batch, channels]() {
         try {
             const std::array<int64_t, 4> shape{
                 batch, channels, BOARD_HEIGHT, BOARD_WIDTH};
@@ -448,7 +455,7 @@ bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
                     worker.inputFloat.size(), shape.data(), shape.size());
             }
 
-            worker.outputs = worker.session->Run(
+            outputs = worker.session->Run(
                 Ort::RunOptions{nullptr}, state.inputNames.data(), &input, 1,
                 state.outputNames.data(), state.outputNames.size());
             return true;
@@ -479,19 +486,24 @@ bool Engine::synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
     if (!ok) return false;
 
     auto& state = *m_ort;
+    const std::vector<Ort::Value>& results = worker.outputSets[worker.outputSet];
+    std::vector<std::vector<__half>>& convertedResults = worker.convertedSets[worker.outputSet];
+    // The caller reads this set until its next synchronize; the next request
+    // fills the other.
+    worker.outputSet ^= 1;
     auto at = [&](int idx) -> const __half* {
-        if (idx < 0 || static_cast<size_t>(idx) >= worker.outputs.size()) {
+        if (idx < 0 || static_cast<size_t>(idx) >= results.size()) {
             return nullptr;
         }
         const size_t outputIndex = static_cast<size_t>(idx);
         if (state.outputTypes[outputIndex] ==
             ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16) {
             return static_cast<const __half*>(
-                worker.outputs[outputIndex].GetTensorRawData());
+                results[outputIndex].GetTensorRawData());
         }
-        const auto* values = worker.outputs[outputIndex].GetTensorData<float>();
-        auto& converted = worker.convertedOutputs[outputIndex];
-        const size_t count = worker.outputs[outputIndex]
+        const auto* values = results[outputIndex].GetTensorData<float>();
+        auto& converted = convertedResults[outputIndex];
+        const size_t count = results[outputIndex]
                                  .GetTensorTypeAndShapeInfo()
                                  .GetElementCount();
         converted.resize(count);

@@ -158,6 +158,7 @@ void printUsage(const char* progName) {
     cout << "    --{contender,baseline}-root-pw-mass <m0> (-1 inherits internal target)" << endl;
     cout << "    --{contender,baseline}-pw-mass-normalize <bool> --{contender,baseline}-cpuct-init <x>" << endl;
     cout << "    --{contender,baseline}-puct-widening <bool> (also widen when the next action wins PUCT)" << endl;
+    cout << "    --{contender,baseline}-submit-before-backup <bool> (send the next batch to the GPU before backing up)" << endl;
     cout << "    --{contender,baseline}-factored-fpu <k> (its FPU from shared-move siblings; 0 = off)" << endl;
     cout << "    --{contender,baseline}-fpu-reduction <x>" << endl;
     cout << "    --{contender,baseline}-policy-temperature <t> (search prior softmax temperature)" << endl;
@@ -661,6 +662,8 @@ int main(int argc, char* argv[]) {
                 else if (option == "--baseline-pw-mass-normalize") config.baselinePwMassNormalize = parse_bool_argument(value);
                 else if (option == "--contender-puct-widening") config.contenderPuctWidening = parse_bool_argument(value);
                 else if (option == "--baseline-puct-widening") config.baselinePuctWidening = parse_bool_argument(value);
+                else if (option == "--contender-submit-before-backup") config.contenderSubmitBeforeBackup = parse_bool_argument(value);
+                else if (option == "--baseline-submit-before-backup") config.baselineSubmitBeforeBackup = parse_bool_argument(value);
                 else if (option == "--contender-factored-fpu") config.contenderFactoredFpuVisits = stof(value);
                 else if (option == "--baseline-factored-fpu") config.baselineFactoredFpuVisits = stof(value);
                 else if (option == "--contender-fpu-reduction") config.contenderFpuReduction = stof(value);
