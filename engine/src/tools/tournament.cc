@@ -185,6 +185,8 @@ void write_summary(
            << "  \"baseline_pw_mass_normalize\": " << (config.baselinePwMassNormalize ? "true" : "false") << ",\n"
            << "  \"contender_puct_widening\": " << (config.contenderPuctWidening ? "true" : "false") << ",\n"
            << "  \"baseline_puct_widening\": " << (config.baselinePuctWidening ? "true" : "false") << ",\n"
+           << "  \"contender_submit_before_backup\": " << (config.contenderSubmitBeforeBackup ? "true" : "false") << ",\n"
+           << "  \"baseline_submit_before_backup\": " << (config.baselineSubmitBeforeBackup ? "true" : "false") << ",\n"
            << "  \"contender_factored_fpu\": " << config.contenderFactoredFpuVisits << ",\n"
            << "  \"baseline_factored_fpu\": " << config.baselineFactoredFpuVisits << ",\n"
            << "  \"contender_fpu_reduction\": " << config.contenderFpuReduction << ",\n"

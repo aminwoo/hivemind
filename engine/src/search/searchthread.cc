@@ -1090,11 +1090,41 @@ void SearchThread::run_iteration(Board& board, Engine* engine,
         throw std::runtime_error("Batch inference completion failed");
     }
     pendingBatchIndex = -1;
-    process_batch(completedBatch, inferenceOutputs);
 
     // A mate or stop may land while inference is in flight. Release the
     // lookahead reservations instead of submitting another batch afterward.
-    if (keepRunning && !keepRunning->load(std::memory_order_acquire)) {
+    const auto stopRequested = [keepRunning] {
+        return keepRunning && !keepRunning->load(std::memory_order_acquire);
+    };
+    if (runtimeConfig.submitBeforeBackup && !stopRequested()
+        && lookaheadBatch.validInferenceCount > 0) {
+        // The GPU computes the lookahead while this thread backs up. The
+        // engine double-buffers its host outputs, so this enqueue does not
+        // overwrite the outputs process_batch is about to read.
+        if (!engine->enqueueInferenceHalf(
+                lookaheadBatch.observations, inferenceWorkerIndex)) {
+            process_batch(completedBatch, inferenceOutputs);
+            abort_batch(lookaheadBatch);
+            throw std::runtime_error("Batch inference submission failed");
+        }
+        pendingBatchIndex = lookaheadBatchIndex;
+        try {
+            process_batch(completedBatch, inferenceOutputs);
+        } catch (...) {
+            // The worker's caller skips the pending-batch cleanup when a
+            // search throws, so drain the lookahead here: no request may
+            // outlive this search.
+            pendingBatchIndex = -1;
+            Engine::HalfInferenceOutputs discarded;
+            engine->synchronizeInferenceHalf(discarded, inferenceWorkerIndex);
+            abort_batch(lookaheadBatch);
+            throw;
+        }
+        return;
+    }
+    process_batch(completedBatch, inferenceOutputs);
+
+    if (stopRequested()) {
         abort_batch(lookaheadBatch);
         return;
     }

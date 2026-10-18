@@ -332,6 +332,10 @@ Engine::ExecutionState::~ExecutionState() {
     if (hostMovesLeftHalf) cudaFreeHost(hostMovesLeftHalf);
     if (hostJointFactorsAHalf) cudaFreeHost(hostJointFactorsAHalf);
     if (hostJointFactorsBHalf) cudaFreeHost(hostJointFactorsBHalf);
+    for (void* spare : {spareValueHalf, sparePolicyAHalf, sparePolicyBHalf, spareWdlHalf,
+                        spareMovesLeftHalf, spareJointFactorsAHalf, spareJointFactorsBHalf}) {
+        if (spare) cudaFreeHost(spare);
+    }
     if (stream) cudaStreamDestroy(stream);
 }
 
@@ -752,7 +756,9 @@ bool Engine::initializeResources() {
             (!checkCuda(cudaMalloc(&state->deviceJointFactorsABuffer, jointFactorsSize), "cudaMalloc(joint factors A)") ||
              !checkCuda(cudaMalloc(&state->deviceJointFactorsBBuffer, jointFactorsSize), "cudaMalloc(joint factors B)") ||
              !checkCuda(cudaMallocHost(&state->hostJointFactorsAHalf, jointFactorsSize), "cudaMallocHost(joint factors A)") ||
-             !checkCuda(cudaMallocHost(&state->hostJointFactorsBHalf, jointFactorsSize), "cudaMallocHost(joint factors B)"))) {
+             !checkCuda(cudaMallocHost(&state->hostJointFactorsBHalf, jointFactorsSize), "cudaMallocHost(joint factors B)") ||
+             !checkCuda(cudaMallocHost(&state->spareJointFactorsAHalf, jointFactorsSize), "cudaMallocHost(spare joint factors A)") ||
+             !checkCuda(cudaMallocHost(&state->spareJointFactorsBHalf, jointFactorsSize), "cudaMallocHost(spare joint factors B)"))) {
             return false;
         }
         state->context.reset(m_engine->createExecutionContext());
@@ -777,7 +783,12 @@ bool Engine::initializeResources() {
             !checkCuda(cudaMallocHost(&state->hostPolicyAHalf, polSize), "cudaMallocHost(policy A half)") ||
             !checkCuda(cudaMallocHost(&state->hostPolicyBHalf, polSize), "cudaMallocHost(policy B half)") ||
             !checkCuda(cudaMallocHost(&state->hostWdlHalf, wdlSize), "cudaMallocHost(WDL half)") ||
-            !checkCuda(cudaMallocHost(&state->hostMovesLeftHalf, movesLeftSize), "cudaMallocHost(moves left half)")) {
+            !checkCuda(cudaMallocHost(&state->hostMovesLeftHalf, movesLeftSize), "cudaMallocHost(moves left half)") ||
+            !checkCuda(cudaMallocHost(&state->spareValueHalf, valSize), "cudaMallocHost(spare value)") ||
+            !checkCuda(cudaMallocHost(&state->sparePolicyAHalf, polSize), "cudaMallocHost(spare policy A)") ||
+            !checkCuda(cudaMallocHost(&state->sparePolicyBHalf, polSize), "cudaMallocHost(spare policy B)") ||
+            !checkCuda(cudaMallocHost(&state->spareWdlHalf, wdlSize), "cudaMallocHost(spare WDL)") ||
+            !checkCuda(cudaMallocHost(&state->spareMovesLeftHalf, movesLeftSize), "cudaMallocHost(spare moves left)")) {
             return false;
         }
         if (!state->context->setTensorAddress(m_inputName.c_str(), state->deviceObsBuffer) ||
@@ -854,8 +865,8 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
     halvesToFloats(outputs.value, value, valueElements);
     halvesToFloats(outputs.policyA, piA, policyElements);
     halvesToFloats(outputs.policyB, piB, policyElements);
-    halvesToFloats(state.hostWdlHalf, wdl, wdlElements);
-    halvesToFloats(state.hostMovesLeftHalf, movesLeft, movesLeftElements);
+    halvesToFloats(outputs.wdl, wdl, wdlElements);
+    halvesToFloats(outputs.movesLeft, movesLeft, movesLeftElements);
 
     return true;
 }
@@ -977,6 +988,15 @@ bool Engine::synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
     outputs.jointFactorsA = static_cast<const __half*>(state.hostJointFactorsAHalf);
     outputs.jointFactorsB = static_cast<const __half*>(state.hostJointFactorsBHalf);
     outputs.jointFactorRank = m_jointFactorRank;
+    // The caller reads these until its next synchronize; the next enqueue
+    // writes the other set.
+    std::swap(state.hostValueHalf, state.spareValueHalf);
+    std::swap(state.hostPolicyAHalf, state.sparePolicyAHalf);
+    std::swap(state.hostPolicyBHalf, state.sparePolicyBHalf);
+    std::swap(state.hostWdlHalf, state.spareWdlHalf);
+    std::swap(state.hostMovesLeftHalf, state.spareMovesLeftHalf);
+    std::swap(state.hostJointFactorsAHalf, state.spareJointFactorsAHalf);
+    std::swap(state.hostJointFactorsBHalf, state.spareJointFactorsBHalf);
 
     return true;
 }

@@ -45,6 +45,8 @@ struct TournamentConfig {
     bool baselinePwMassNormalize = false;
     bool contenderPuctWidening = SearchParams::PUCT_WIDENING;
     bool baselinePuctWidening = SearchParams::PUCT_WIDENING;
+    bool contenderSubmitBeforeBackup = SearchParams::SUBMIT_BEFORE_BACKUP;
+    bool baselineSubmitBeforeBackup = SearchParams::SUBMIT_BEFORE_BACKUP;
     float contenderFactoredFpuVisits = SearchParams::FACTORED_FPU_VISITS;
     float baselineFactoredFpuVisits = SearchParams::FACTORED_FPU_VISITS;
     float contenderFpuReduction = SearchParams::FPU_REDUCTION;
@@ -118,6 +120,7 @@ struct TournamentConfig {
         searchConfig.rootPwMassStart = isContender ? contenderRootPwMassStart : baselineRootPwMassStart;
         searchConfig.pwMassNormalize = isContender ? contenderPwMassNormalize : baselinePwMassNormalize;
         searchConfig.puctWidening = isContender ? contenderPuctWidening : baselinePuctWidening;
+        searchConfig.submitBeforeBackup = isContender ? contenderSubmitBeforeBackup : baselineSubmitBeforeBackup;
         searchConfig.factoredFpuVisits = isContender ? contenderFactoredFpuVisits : baselineFactoredFpuVisits;
         searchConfig.fpuReduction = isContender ? contenderFpuReduction : baselineFpuReduction;
         searchConfig.policyTemperature = isContender ? contenderPolicyTemperature : baselinePolicyTemperature;
