@@ -45,17 +45,25 @@ public:
      * @param teamLeadMs Its lead over its diagonal opponents; negative when behind.
      * @param teamMoveTimeMs How long @p team takes for one action.
      * @param opponentMoveTimeMs How long the other team takes for one action.
+     * @param teamNextMoveTimeMs What @p team's next action alone costs, when it
+     *        is known to differ from its usual move time (0 = the usual): a
+     *        front end that has budgeted the move it is about to search.
      */
     static TimeState clocked(Stockfish::Color team,
                              int64_t teamLeadMs,
                              int32_t teamMoveTimeMs = DEFAULT_MOVE_TIME_MS,
-                             int32_t opponentMoveTimeMs = DEFAULT_MOVE_TIME_MS) {
+                             int32_t opponentMoveTimeMs = DEFAULT_MOVE_TIME_MS,
+                             int32_t teamNextMoveTimeMs = 0) {
         TimeState state;
         state.clocked_ = true;
         const int64_t whiteLead = team == Stockfish::WHITE ? teamLeadMs : -teamLeadMs;
         state.whiteLeadMs_ = clamp_lead(whiteLead);
         state.moveTimeMs_[team] = std::max<int32_t>(1, teamMoveTimeMs);
         state.moveTimeMs_[~team] = std::max<int32_t>(1, opponentMoveTimeMs);
+        if (teamNextMoveTimeMs > 0) {
+            state.nextMoveTeam_ = team;
+            state.nextMoveTimeMs_ = teamNextMoveTimeMs;
+        }
         return state;
     }
 
@@ -65,8 +73,23 @@ public:
         return team == Stockfish::WHITE ? whiteLeadMs_ : -whiteLeadMs_;
     }
 
+    /** How long @p team usually takes for one action. */
     int32_t move_time_ms(Stockfish::Color team) const {
         return moveTimeMs_[team];
+    }
+
+    /** This state with no next-move time: every action at its team's usual time. */
+    TimeState without_next_move_time() const {
+        TimeState plain = *this;
+        plain.nextMoveTeam_ = Stockfish::WHITE;
+        plain.nextMoveTimeMs_ = 0;
+        return plain;
+    }
+
+    /** What @p team's next action costs when it is charged. */
+    int32_t next_move_time_ms(Stockfish::Color team) const {
+        return nextMoveTimeMs_ > 0 && team == nextMoveTeam_
+            ? nextMoveTimeMs_ : moveTimeMs_[team];
     }
 
     /** Whether @p team may sit: wait on a board instead of moving there. */
@@ -88,20 +111,27 @@ public:
         }
         return can_sit(team)
             && static_cast<int64_t>(lead_ms(team))
-                   >= static_cast<int64_t>(std::max(actions, 1)) * moveTimeMs_[team];
+                   >= next_move_time_ms(team)
+                       + static_cast<int64_t>(std::max(actions, 1) - 1) * moveTimeMs_[team];
     }
 
     /**
      * @brief Charge the action @p actingTeam is about to play.
      *
      * Call it with the position before the action. Only a team on turn on both
-     * boards pays; legacy leads never move.
+     * boards pays; legacy leads never move. A next-move time set for the
+     * acting team is used up by this action, whether or not it pays.
      */
     void advance(Stockfish::Color actingTeam, bool actingTeamOnBothBoards) {
+        const int64_t cost = next_move_time_ms(actingTeam);
+        if (actingTeam == nextMoveTeam_) {
+            // Back to the plain clock, owner included, so equal states compare equal.
+            nextMoveTeam_ = Stockfish::WHITE;
+            nextMoveTimeMs_ = 0;
+        }
         if (!clocked_ || !actingTeamOnBothBoards) {
             return;
         }
-        const int64_t cost = moveTimeMs_[actingTeam];
         whiteLeadMs_ = clamp_lead(
             static_cast<int64_t>(whiteLeadMs_)
             + (actingTeam == Stockfish::WHITE ? -cost : cost));
@@ -114,14 +144,20 @@ public:
         return next;
     }
 
-    /** Exact identity of a clocked state: the lead and both move times. */
+    /** Exact identity of a clocked state: the lead, both move times and any next-move time. */
     uint64_t exact_key() const {
         const uint64_t lead = static_cast<uint32_t>(whiteLeadMs_);
         const uint64_t moveTimes =
             (static_cast<uint64_t>(static_cast<uint32_t>(moveTimeMs_[Stockfish::WHITE])) << 32)
             | static_cast<uint32_t>(moveTimeMs_[Stockfish::BLACK]);
-        return (0x434c4f434b000000ULL ^ (lead * 0x9e3779b97f4a7c15ULL))
+        uint64_t key = (0x434c4f434b000000ULL ^ (lead * 0x9e3779b97f4a7c15ULL))
             ^ (moveTimes * 0xbf58476d1ce4e5b9ULL) ^ (clocked_ ? 1 : 0);
+        if (nextMoveTimeMs_ > 0) {
+            const uint64_t next = (static_cast<uint64_t>(nextMoveTeam_) << 32)
+                | static_cast<uint32_t>(nextMoveTimeMs_);
+            key ^= (next + 0x6e657874ULL) * 0x94d049bb133111ebULL;
+        }
+        return key;
     }
 
     /**
@@ -158,4 +194,8 @@ private:
     // states through legacy() or clocked(); this only keeps the type regular.
     int32_t whiteLeadMs_ = -MAX_LEAD_MS;
     std::array<int32_t, 2> moveTimeMs_{DEFAULT_MOVE_TIME_MS, DEFAULT_MOVE_TIME_MS};
+    // The cost of nextMoveTeam_'s next action when it differs from its usual
+    // move time; 0 when it does not. Used up by that team's next action.
+    Stockfish::Color nextMoveTeam_ = Stockfish::WHITE;
+    int32_t nextMoveTimeMs_ = 0;
 };

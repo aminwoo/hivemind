@@ -205,6 +205,77 @@ TEST(TimeStateTest, AfterChargesACopy) {
     EXPECT_EQ(clock.after(Stockfish::WHITE, false), clock);
 }
 
+TEST(TimeStateTest, ANextMoveTimeChargesOnlyThatTeamsNextAction) {
+    // White usually takes 1 s an action but has budgeted 400 ms for this one.
+    const TimeState clock = TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500, 400);
+    EXPECT_EQ(clock.move_time_ms(Stockfish::WHITE), 1000);
+    EXPECT_EQ(clock.next_move_time_ms(Stockfish::WHITE), 400);
+    EXPECT_EQ(clock.next_move_time_ms(Stockfish::BLACK), 500);
+
+    // The next action pays the budget, every later one the usual time.
+    const TimeState once = clock.after(Stockfish::WHITE, true);
+    EXPECT_EQ(once.lead_ms(Stockfish::WHITE), 2600);
+    EXPECT_EQ(once.next_move_time_ms(Stockfish::WHITE), 1000);
+    EXPECT_EQ(once.after(Stockfish::WHITE, true).lead_ms(Stockfish::WHITE), 1600);
+
+    // An action that does not pay uses it up all the same.
+    const TimeState free = clock.after(Stockfish::WHITE, false);
+    EXPECT_EQ(free.lead_ms(Stockfish::WHITE), 3000);
+    EXPECT_EQ(free.after(Stockfish::WHITE, true).lead_ms(Stockfish::WHITE), 2000);
+
+    // The other team's actions neither use it nor pay it.
+    const TimeState answered = clock.after(Stockfish::BLACK, true);
+    EXPECT_EQ(answered.lead_ms(Stockfish::WHITE), 3500);
+    EXPECT_EQ(answered.next_move_time_ms(Stockfish::WHITE), 400);
+
+    // Sitting through a line counts the cheaper first action: 400 + 2 x 1000.
+    EXPECT_TRUE(TimeState::clocked(Stockfish::WHITE, 2400, 1000, 500, 400)
+                    .can_sit_through(Stockfish::WHITE, 3));
+    EXPECT_FALSE(TimeState::clocked(Stockfish::WHITE, 2399, 1000, 500, 400)
+                     .can_sit_through(Stockfish::WHITE, 3));
+
+    // Without one the state is exactly the plain clock.
+    EXPECT_EQ(TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500, 0),
+              TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500));
+}
+
+TEST(TimeStateTest, DroppingTheNextMoveTimeLeavesThePlainClock) {
+    const TimeState budgeted = TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500, 400);
+    EXPECT_EQ(budgeted.without_next_move_time(),
+              TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500));
+    EXPECT_EQ(budgeted.without_next_move_time().next_move_time_ms(Stockfish::WHITE), 1000);
+    const TimeState legacy = TimeState::legacy(Stockfish::BLACK, true);
+    EXPECT_EQ(legacy.without_next_move_time(), legacy);
+}
+
+TEST(TimeStateTest, ABlackTeamsNextMoveTimeWorksTheSameWay) {
+    const TimeState clock = TimeState::clocked(Stockfish::BLACK, 3000, 1000, 500, 400);
+    EXPECT_EQ(clock.next_move_time_ms(Stockfish::BLACK), 400);
+    EXPECT_EQ(clock.next_move_time_ms(Stockfish::WHITE), 500);
+    const TimeState paid = clock.after(Stockfish::BLACK, true);
+    EXPECT_EQ(paid.lead_ms(Stockfish::BLACK), 2600);
+    // Used up, paid or free, the state is the plain clock again.
+    EXPECT_EQ(paid, TimeState::clocked(Stockfish::BLACK, 2600, 1000, 500));
+    EXPECT_EQ(clock.after(Stockfish::BLACK, false),
+              TimeState::clocked(Stockfish::BLACK, 3000, 1000, 500));
+    EXPECT_EQ(clock.after(Stockfish::WHITE, true).next_move_time_ms(Stockfish::BLACK), 400);
+}
+
+TEST_F(TimeStateBoardTest, ANextMoveTimeIsPartOfTheRootsIdentityOnly) {
+    Board board;
+    const TimeState plain = TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500);
+    const TimeState budgeted = TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500, 400);
+    const TimeState otherBudget = TimeState::clocked(Stockfish::WHITE, 3000, 1000, 500, 700);
+    EXPECT_NE(board.search_hash_key(Stockfish::WHITE, plain),
+              board.search_hash_key(Stockfish::WHITE, budgeted));
+    EXPECT_NE(board.search_hash_key(Stockfish::WHITE, budgeted),
+              board.search_hash_key(Stockfish::WHITE, otherBudget));
+    // Once the root action is played the states below it are plain clocks.
+    EXPECT_EQ(budgeted.after(Stockfish::WHITE, false), plain.after(Stockfish::WHITE, false));
+    EXPECT_EQ(board.search_hash_key(Stockfish::WHITE, budgeted.after(Stockfish::WHITE, false)),
+              board.search_hash_key(Stockfish::WHITE, plain));
+}
+
 TEST_F(TimeStateBoardTest, NodeIdentityIsTheExactClock) {
     Board board;
     // Same class, but two more charged actions leave one ahead and one behind.
