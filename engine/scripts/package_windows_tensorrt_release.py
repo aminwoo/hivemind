@@ -76,7 +76,7 @@ def main() -> int:
     parser.add_argument("--cuda-root", required=True, type=Path,
                         help="Extracted NVIDIA CUDA Runtime root")
     parser.add_argument("--output", type=Path, default=WORKSPACE_DIR / "dist")
-    parser.add_argument("--name", default="hivemind-v3.0.0-windows-x86_64-tensorrt")
+    parser.add_argument("--name", default="hivemind-v3.0.1-windows-x86_64-tensorrt")
     parser.add_argument("--build-dir", type=Path,
                         default=ENGINE_DIR / "build-windows-tensorrt-release")
     args = parser.parse_args()
@@ -133,6 +133,7 @@ def main() -> int:
         shutil.copy2(model, models_dir / "hivemind.onnx")
         shutil.copy2(WORKSPACE_DIR / "LICENSE", bundle / "LICENSE.txt")
         shutil.copy2(ENGINE_DIR / "LICENSE", bundle / "FAIRY-STOCKFISH-LICENSE.txt")
+        shutil.copy2(WORKSPACE_DIR / "docs" / "distribution.md", bundle / "DISTRIBUTION.md")
         copy_license(tensorrt_root, bundle, "TENSORRT-LICENSE.txt")
         copy_license(cuda_root, bundle, "CUDA-RUNTIME-LICENSE.txt")
 
@@ -142,7 +143,8 @@ def main() -> int:
             "Self-contained FP16 NVIDIA TensorRT build for 64-bit Windows.\n\n"
             "Requirements:\n"
             "  - 64-bit Windows 10 or newer\n"
-            "  - A supported NVIDIA GPU and current proprietary NVIDIA driver\n"
+            "  - NVIDIA Turing or newer GPU (compute capability 7.5+, e.g. RTX 20 series+)\n"
+            "  - NVIDIA driver R580 or newer; R610+ recommended for bundled CUDA 13.3\n"
             "  - Microsoft Visual C++ 2019 or newer Redistributable\n"
             "  - Enough free disk space for the GPU-specific TensorRT plan\n\n"
             "Configure bin\\hivemind.exe as the engine in a UCI-compatible GUI. "
@@ -150,7 +152,11 @@ def main() -> int:
             "another working directory.\n\n"
             "The first launch builds and caches a TensorRT plan beside the bundled "
             "ONNX model. This can take several minutes. Later launches reuse that "
-            "plan. TensorRT plans are GPU- and software-version-specific.\n",
+            "plan. TensorRT plans are GPU- and software-version-specific.\n\n"
+            "The GPU ZIP is approximately 2 GB; allow at least 6 GB free for the "
+            "download, extracted libraries, and cache. The smaller CPU ZIP is "
+            "the easiest starting point. See DISTRIBUTION.md for compatibility, "
+            "checksums, and validation details.\n",
             encoding="utf-8",
         )
 

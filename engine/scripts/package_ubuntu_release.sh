@@ -11,7 +11,7 @@ engine_dir="$(cd "$script_dir/.." && pwd)"
 workspace_dir="$(cd "$engine_dir/.." && pwd)"
 model=""
 output_dir="$workspace_dir/dist"
-bundle_name="hivemind-v3.0.0-linux-x86_64-tensorrt"
+bundle_name="hivemind-v3.0.1-linux-x86_64-tensorrt"
 tensorrt_dir="${TensorRT_DIR:-$HOME/opt/TensorRT-11.1.0.106}"
 cuda_dir="${CUDA_TOOLKIT_ROOT_DIR:-/usr/local/cuda}"
 
@@ -58,6 +58,7 @@ cp "$build_dir/hivemind.bin" "$bundle_dir/bin/"
 cp "$model" "$bundle_dir/models/hivemind.onnx"
 cp "$workspace_dir/LICENSE" "$bundle_dir/LICENSE.txt"
 cp "$engine_dir/LICENSE" "$bundle_dir/FAIRY-STOCKFISH-LICENSE.txt"
+cp "$workspace_dir/docs/distribution.md" "$bundle_dir/DISTRIBUTION.md"
 
 # NVIDIA's redistributable TensorRT package ships no license file, only the
 # documents copied below. Bundle whatever attribution it does carry and warn,
@@ -150,8 +151,9 @@ Hivemind for Ubuntu x86-64
 =========================
 
 Requirements:
-  - A 64-bit Ubuntu installation
-  - A supported NVIDIA GPU and current proprietary NVIDIA driver
+  - Ubuntu 24.04 x86-64 or newer (release CI baseline)
+  - NVIDIA Turing or newer GPU (compute capability 7.5+, e.g. RTX 20 series+)
+  - NVIDIA driver R580 or newer; R610+ recommended for bundled CUDA 13.3
   - Enough free disk space for the GPU-specific TensorRT plan
 
 Run:
@@ -161,6 +163,11 @@ The first launch builds and caches a TensorRT plan beside the bundled ONNX
 model. This can take several minutes. Later launches reuse that plan. TensorRT
 plans are GPU- and software-version-specific; distribute this ONNX-based bundle
 instead of copying a plan generated on another computer.
+
+The GPU ZIP is approximately 2 GB; allow at least 6 GB of free space for the
+download, extracted libraries, and cached plan. The much smaller CPU ZIP is
+the easiest way to start and needs no NVIDIA GPU. See DISTRIBUTION.md for
+compatibility, checksums, and hardware validation instructions.
 
 Hivemind speaks UCI on stdin/stdout and can be configured as an engine in a
 compatible GUI by selecting the top-level `hivemind` launcher.

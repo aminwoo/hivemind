@@ -33,6 +33,9 @@ CROSSBOARD_REVISION = "eac7b7a415061b63bdce672d064aa5b8030e9ae8"
 CROSSBOARD_NAME = "hivemind-it04-crossboard-risev33-loss1.556-p82.0"
 # SHA-256 values from the Hugging Face LFS metadata at each revision.
 ARTIFACTS = {
+    "clock": Artifact("aminwoo/bughouse-twin-s-clock",
+                      "749f54a59260330ea2771d69988c9255ba8a89ac", "twin-s-clock.onnx",
+                      "6b34125d0e1294b64fe82e63e1295323fcf2712155a62b65d64e04092eb2eb9a"),
     "onnx": Artifact(TWIN_REPOSITORY, TWIN_REVISION, "twin-s-noattn.onnx",
                      "efef8ca12634a26d55f8d34313459d36ae1469411208384d5c5f636bc43742c2"),
     "checkpoint": Artifact(TWIN_REPOSITORY, TWIN_REVISION, "twin-s-noattn.pt",

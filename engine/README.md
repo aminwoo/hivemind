@@ -1,8 +1,12 @@
+For ready-to-run downloads, start with the [download guide](../README.md#download-and-run).
+The [distribution guide](../docs/distribution.md) lists exact release requirements,
+first-launch behavior, checksums, and hardware validation commands.
+
 ## Inference backends
 
 Hivemind supports Bughouse, Chess, Crazyhouse, Antichess, Chess960, Atomic,
 and Three-check with the same ONNX network.
-Use `--model engine/models/twin-s-noattn.onnx` from the repository root for all
+Use `--model engine/models/twin-s-clock.onnx` from the repository root for all
 variants. The default UCI variant is Bughouse; select single-board play with
 `setoption name UCI_Variant value chess`, `crazyhouse`, `antichess`, `chess960`,
 `atomic`, or `3check`. Chess960 also accepts the standard combination of
@@ -27,8 +31,8 @@ has not been established by a rating test. Antichess and Atomic kings use the
 existing king input planes. Three-check counters are tracked by the rules and
 search but have no dedicated input planes in this Bughouse-trained model.
 
-Download the [published network](https://huggingface.co/aminwoo/bughouse-twin-s)
-from the repository root with `python tools/fetch_network.py`. Files are verified
+Download the [published network](https://huggingface.co/aminwoo/bughouse-twin-s-clock)
+from the repository root with `python tools/fetch_network.py --variant clock`. Files are verified
 and installed into `engine/models`. See the [network setup instructions](../README.md#download-the-network)
 for native FP16, CPU conversion, and training checkpoints. Pass `--model PATH`
 to explicitly select the network for your backend.
@@ -469,7 +473,7 @@ the local TensorRT and CUDA runtime libraries:
 ```bash
 ./scripts/package_ubuntu_release.sh \
     --model /path/to/model.onnx \
-    --name hivemind-v3.0.0-linux-x86_64-tensorrt
+    --name hivemind-v3.0.1-linux-x86_64-tensorrt
 ```
 
 Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
@@ -483,23 +487,25 @@ python engine/scripts/package_windows_tensorrt_release.py `
   --model C:\path\to\model.onnx `
   --tensorrt-root C:\path\to\TensorRT-11.1.0.106 `
   --cuda-root C:\path\to\cuda-runtime `
-  --name hivemind-v3.0.0-windows-x86_64-tensorrt
+  --name hivemind-v3.0.1-windows-x86_64-tensorrt
 ```
 
-## Portable Windows and Linux release bundles
+## Portable Windows, Linux, and macOS release bundles
 
-Build the ONNX Runtime CPU bundle natively on either operating system:
+Build the ONNX Runtime bundle natively on the target operating system:
 
 ```bash
 python tools/fetch_onnxruntime.py
 python -m pip install numpy onnx
 python engine/scripts/package_portable_release.py \
-    --model model-fp16.onnx --name hivemind-v3.0.0-linux-x86_64-onnxruntime
+    --model model-fp16.onnx --name hivemind-v3.0.1-linux-x86_64-onnxruntime
 ```
 
 On Windows, use the same Python command and a
-`hivemind-v3.0.0-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
+`hivemind-v3.0.1-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
 an automatically converted FP32 model, ONNX Runtime, licenses, and checksums.
 It does not require a GPU.
-Tagged builds create ONNX Runtime and TensorRT archives for both Linux and
-Windows through `.github/workflows/portable-release.yml`.
+Tagged builds create CPU bundles for Linux/Windows, a Core ML bundle for Apple
+silicon Macs, and TensorRT bundles for Linux/Windows through
+`.github/workflows/portable-release.yml`. Assets are staged in a draft release
+for hardware validation before publication; see the [release process](../docs/distribution.md#release-process).

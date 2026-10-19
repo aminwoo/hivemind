@@ -10,13 +10,42 @@ A free and strong UCI Bughouse chess engine powered by deep reinforcement learni
 
 </div>
 
+## Download and run
+
+[Download the latest release](https://github.com/aminwoo/hivemind/releases/latest).
+The engine, **twin-s-clock network**, and inference runtime are included.
+No Python, source build, or separate network download is needed.
+
+| Your computer | Choose | Approximate ZIP size |
+|---|---|---|
+| Windows x86-64 | `windows-x86_64-onnxruntime` — easiest starting point | 9 MB |
+| Linux x86-64 (Ubuntu 24.04+) | `linux-x86_64-onnxruntime` — easiest starting point | 15 MB |
+| Mac with Apple silicon (macOS 14+) | `macos-arm64-onnxruntime` — Core ML / Neural Engine | 15 MB |
+| Windows or Linux with a supported NVIDIA GPU | Matching `tensorrt` bundle — GPU performance option | About 2 GB |
+
+1. Download the matching ZIP and its `.sha256` file, and [verify the checksum](docs/distribution.md#verify-your-download).
+2. Extract the entire ZIP into a writable folder. Keep `bin`, `lib`, and `models` together.
+3. Select `bin\hivemind.exe` (Windows) or the top-level `hivemind` launcher
+   (Linux/macOS) in your bughouse-compatible GUI. From a terminal, run
+   `.\bin\hivemind.exe` or `./hivemind`; it speaks UCI and waits for commands.
+
+For NVIDIA builds, use a Turing or newer GPU (compute capability 7.5+, such as
+RTX 20 series or newer) and driver R580+; R610+ is recommended with bundled
+CUDA 13.3. You do not need to install CUDA or TensorRT. **First launch can take
+several minutes** while building a GPU-specific cache. Allow at least 6 GB free
+for the download, extracted bundle, and cache. CPU bundles start without this step.
+
+The macOS download is currently unsigned and not notarized. See
+[macOS launch instructions and compatibility details](docs/distribution.md).
+The release notes list the validation performed for each platform.
+
 ## Overview
 
 Hivemind is a neural network-based engine for [Bughouse chess](https://en.wikipedia.org/wiki/Bughouse_chess), a four-player chess variant played on two boards. The engine uses Monte Carlo Tree Search (MCTS) with a deep neural network for position evaluation and move prediction.
 
 ### Key Features
 
-- **Neural Network Policy & Value Estimation** - The default network, twin-s, is a small two-board network distilled from a RISEv3 teacher and improved by self-play RL
+- **Neural Network Policy & Value Estimation** - Release bundles include twin-s-clock, a small two-board network improved by self-play RL with clock-aware evaluation
 - **Monte Carlo Graph Search (MCGS)** - Shares nodes across transpositions for improved search efficiency
 - **TensorRT Acceleration** - High-performance GPU inference using NVIDIA TensorRT
 - **UCI Protocol** - Standard Universal Chess Interface for GUI compatibility
@@ -67,17 +96,19 @@ See [the development guide](docs/development.md) for commands and migration note
 
 ## Download the Network
 
-The default network is twin-s, hosted at
-[aminwoo/bughouse-twin-s](https://huggingface.co/aminwoo/bughouse-twin-s): the
-network promoted by self-play RL iteration 4, which beat the distilled
-iteration 0 by +93 Elo at 100 ms per move and searches about three times as
-many nodes per second as the crossboard RISEv3 teacher it was distilled from.
-That teacher is still published at
-[aminwoo/bughouse-rise-v3](https://huggingface.co/aminwoo/bughouse-rise-v3).
-The downloader pins a release revision and verifies its SHA-256 checksum:
+Release bundles already include **twin-s-clock (RL iteration 3)** from
+[aminwoo/bughouse-twin-s-clock](https://huggingface.co/aminwoo/bughouse-twin-s-clock).
+For a source build, download the same pinned, SHA-256-verified network:
 
 ```bash
-python tools/fetch_network.py                                  # twin-s, FP32 input/output
+python tools/fetch_network.py --variant clock
+```
+
+The training tools retain the older twin-s defaults for compatibility with
+existing training runs. The older network and its crossboard teacher remain available:
+
+```bash
+python tools/fetch_network.py --variant onnx                   # older twin-s
 python tools/fetch_network.py --variant crossboard             # crossboard teacher
 python tools/fetch_network.py --variant crossboard-fp16        # teacher, native FP16 input/output
 python tools/fetch_network.py --variant crossboard-checkpoint  # teacher's PyTorch training checkpoint
@@ -90,8 +121,8 @@ CPU backend, convert the download once:
 
 ```bash
 python engine/scripts/convert_onnx_fp32.py \
-  engine/models/twin-s-noattn.onnx \
-  engine/models/twin-s-noattn-fp32.onnx
+  engine/models/twin-s-clock.onnx \
+  engine/models/twin-s-clock-fp32.onnx
 ```
 
 Python inference defaults to the standard downloaded ONNX file:

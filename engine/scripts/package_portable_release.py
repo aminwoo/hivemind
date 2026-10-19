@@ -88,13 +88,21 @@ def main() -> int:
     parser.add_argument("--name", help="archive/root directory name")
     parser.add_argument("--build-dir", type=Path,
                         default=ENGINE_DIR / "build-portable-release")
+    parser.add_argument("--macos-sign-identity",
+                        help="Developer ID Application identity already installed in the keychain")
+    parser.add_argument("--macos-notary-profile",
+                        help="notarytool keychain profile; requires --macos-sign-identity")
     args = parser.parse_args()
+    if args.macos_notary_profile and not args.macos_sign_identity:
+        parser.error("--macos-notary-profile requires --macos-sign-identity")
+    if (args.macos_sign_identity or args.macos_notary_profile) and sys.platform != "darwin":
+        parser.error("macOS signing and notarization require macOS")
 
     model = args.model.resolve()
     runtime_root = args.onnxruntime_root.resolve()
     output_dir = args.output.resolve()
     build_dir = args.build_dir.resolve()
-    bundle_name = args.name or f"hivemind-v3.0.0-{host_slug()}-onnxruntime"
+    bundle_name = args.name or f"hivemind-v3.0.1-{host_slug()}-onnxruntime"
 
     if not model.is_file() or model.suffix.lower() != ".onnx":
         raise SystemExit(f"A readable ONNX model is required: {model}")
@@ -146,6 +154,7 @@ def main() -> int:
         ])
         shutil.copy2(WORKSPACE_DIR / "LICENSE", bundle / "LICENSE.txt")
         shutil.copy2(ENGINE_DIR / "LICENSE", bundle / "FAIRY-STOCKFISH-LICENSE.txt")
+        shutil.copy2(WORKSPACE_DIR / "docs" / "distribution.md", bundle / "DISTRIBUTION.md")
         for source_name, target_name in (
             ("LICENSE", "ONNXRUNTIME-LICENSE.txt"),
             ("ThirdPartyNotices.txt", "ONNXRUNTIME-THIRD-PARTY-NOTICES.txt"),
@@ -187,16 +196,22 @@ def main() -> int:
             requirements = ("- 64-bit Windows 10 or newer\n"
                             "  - Microsoft Visual C++ 2019 or newer Redistributable\n")
         elif sys.platform == "darwin":
-            requirements = "- A Mac with Apple silicon (M1 or newer), macOS 13 or newer\n"
+            requirements = "- A Mac with Apple silicon (M1 or newer), macOS 14 or newer\n"
         else:
-            requirements = "- A recent 64-bit Linux distribution\n"
+            requirements = "- Ubuntu 24.04 x86-64 or newer (release CI baseline)\n"
         if sys.platform == "darwin":
             hardware = ("Release powered by ONNX Runtime. The network runs on the Neural "
                         "Engine through Core ML (set HIVEMIND_COREML=gpu, all or off to "
                         "change that); nothing else needs installing.\n\n")
-            model_note = ("macOS quarantines downloaded programs. If it refuses to open "
+            model_note = ("This bundle is not Developer ID signed or notarized. "
+                          "Verify the ZIP checksum before allowing it to run. "
+                          "macOS quarantines downloaded programs. If it refuses to open "
                           "hivemind, run once in this folder:\n"
                           "  xattr -dr com.apple.quarantine .\n")
+            if args.macos_sign_identity:
+                model_note = "Developer ID signed. " + (
+                    "Submitted to Apple notarization before release.\n"
+                    if args.macos_notary_profile else "Not notarized.\n")
         else:
             hardware = ("Portable FP32 release powered by ONNX Runtime. No CUDA, TensorRT, "
                         "or NVIDIA GPU is required.\n\n")
@@ -218,11 +233,21 @@ def main() -> int:
             encoding="utf-8",
         )
 
+        if args.macos_sign_identity:
+            for binary in [*sorted((bundle / "lib").glob("*.dylib")), bin_dir / engine.name]:
+                run(["codesign", "--force", "--timestamp", "--options", "runtime",
+                     "--sign", args.macos_sign_identity, str(binary)])
+                run(["codesign", "--verify", "--strict", "--verbose=2", str(binary)])
+
         zip_path = output_dir / f"{bundle_name}.zip"
         zip_path.unlink(missing_ok=True)
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for path in sorted(bundle.rglob("*")):
                 archive.write(path, path.relative_to(bundle.parent))
+
+    if args.macos_notary_profile:
+        run(["xcrun", "notarytool", "submit", str(zip_path), "--keychain-profile",
+             args.macos_notary_profile, "--wait"])
 
     checksum_path = zip_path.with_suffix(zip_path.suffix + ".sha256")
     checksum_path.write_text(f"{sha256(zip_path)}  {zip_path.name}\n", encoding="ascii")
