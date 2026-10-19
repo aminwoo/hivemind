@@ -41,6 +41,9 @@ struct SearchOptions {
     bool verbose = false;        // Output UCI info strings (info, bestmove)
     int multiPV = 1;             // Number of principal variations to output
     bool isPonder = false;       // Ponder mode: think continuously until ponderhit or stop
+    // While searching, print the whole MultiPV block this often
+    // (0 = only the rank-1 line at each new depth).
+    int reportIntervalMs = 0;
     bool enablePonder = true;    // Output ponder move with bestmove
     // Permanent-brain search: prints nothing, skips the root scans, runs until
     // stopped or until its own node/time cap, and retains its entire root

@@ -24,7 +24,7 @@ def executable(path, text):
 def pilot(tmp_path):
     script = tmp_path / 'pilot.sh'
     script.write_text((ROOT / 'data/distill/rl_pilot.sh').read_text().replace(
-        'cd /home/ben/hivemind', f'cd {shlex.quote(str(tmp_path))}'))
+        'cd "$(dirname "${BASH_SOURCE[0]}")/../.."', f'cd {shlex.quote(str(tmp_path))}'))
     for name in ('artifacts/distill/twin-s-noattn/best.pt',
                  'engine/models/twin-s-noattn-sp1.onnx', 'engine/models/twin-s-noattn.onnx',
                  'openings.tsv'):

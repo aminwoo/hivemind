@@ -4,14 +4,14 @@
 #   B: A plus game-result WDL and moves-left from self-play
 #   C: self-play only (no teacher data): policy from visits, WDL and moves-left from results
 set -uo pipefail
-cd /home/ben/hivemind || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 GAMES=2550
 VAL_GAMES=250
 OUT=
 ARMS=both
 PASSES=3
 PARALLEL=6
-OPENINGS=/tmp/claude-1000/-home-ben-hivemind/dcfc0c59-e54c-4798-abc0-738a4b25289c/scratchpad/openings.tsv
+OPENINGS=$PWD/data/distill/openings.tsv
 while (($#)); do
     case "$1" in
         --games|--val-games|--out|--arm|--openings|--passes|--parallel-games)
