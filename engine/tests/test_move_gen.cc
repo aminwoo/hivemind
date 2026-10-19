@@ -3,6 +3,7 @@
 #include "tools/selfplay_policy.h"
 #include "tools/distill_data.h"
 #include <chrono>
+#include <cmath>
 #include <map>
 #include <random>
 #include <mutex>
@@ -118,8 +119,10 @@ public:
     static std::string format_root_aware_uci_score(
         const std::shared_ptr<Node>& root,
         const std::shared_ptr<Node>& pvChild,
-        float childQ) {
-        return Agent::format_root_aware_uci_score(root, pvChild, childQ);
+        float childQ,
+        int childVisits) {
+        return Agent::format_root_aware_uci_score(
+            root, pvChild, childQ, childVisits);
     }
 };
 
@@ -199,7 +202,7 @@ TEST(NodeTest, ProvenRootDrawOverridesUnvisitedPvChildScore) {
 
     EXPECT_EQ(
         AgentTreeReuseTestPeer::format_root_aware_uci_score(
-            root, child, SearchParams::Q_INIT),
+            root, child, SearchParams::Q_INIT, 0),
         "score cp 0");
 }
 
@@ -210,8 +213,40 @@ TEST(NodeTest, ProvenPvChildDrawOverridesItsProvisionalQ) {
 
     EXPECT_EQ(
         AgentTreeReuseTestPeer::format_root_aware_uci_score(
-            root, child, SearchParams::Q_INIT),
+            root, child, SearchParams::Q_INIT, 0),
         "score cp 0");
+}
+
+TEST(NodeTest, UnvisitedPvChildReportsTheRootValue) {
+    // A search that ends before visiting its PV move must not report the
+    // edge's Q_INIT=-1 as a lost position.
+    auto root = std::make_shared<Node>(Stockfish::BLACK);
+    auto child = std::make_shared<Node>(Stockfish::WHITE);
+    root->set_value(0.25f);
+    const std::string rootScore =
+        "score cp " + std::to_string(static_cast<int>(
+            180.0f * std::tan(1.56f * 0.25f)));
+
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, child, SearchParams::Q_INIT, 0),
+        rootScore);
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, nullptr, SearchParams::Q_INIT, 0),
+        rootScore);
+}
+
+TEST(NodeTest, VisitedPvChildReportsItsOwnQ) {
+    auto root = std::make_shared<Node>(Stockfish::BLACK);
+    auto child = std::make_shared<Node>(Stockfish::WHITE);
+    root->set_value(0.25f);
+
+    EXPECT_EQ(
+        AgentTreeReuseTestPeer::format_root_aware_uci_score(
+            root, child, -0.5f, 3),
+        "score cp " + std::to_string(static_cast<int>(
+            180.0f * std::tan(1.56f * -0.5f))));
 }
 
 TEST_F(EngineTest, HalfInputRepresentationMatchesFloatConversion) {
