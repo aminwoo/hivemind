@@ -387,7 +387,7 @@ clock and both of its games use it, so the contender plays each team's side of
 the lead once. The positions file's time-advantage flags are then unused, and
 the breakdown splits games by the contender's starting lead: up, down or level.
 
-cmake --preset ninja-release -DTensorRT_DIR=/home/ben/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+cmake --preset ninja-release -DTensorRT_DIR=$HOME/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-release -j "$(nproc)"
 
 ## Alpha-beta NNUE engine
@@ -469,7 +469,7 @@ the local TensorRT and CUDA runtime libraries:
 ```bash
 ./scripts/package_ubuntu_release.sh \
     --model /path/to/model.onnx \
-    --name hivemind-v2.2.2-linux-x86_64-tensorrt
+    --name hivemind-v3.0.0-linux-x86_64-tensorrt
 ```
 
 Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
@@ -483,7 +483,7 @@ python engine/scripts/package_windows_tensorrt_release.py `
   --model C:\path\to\model.onnx `
   --tensorrt-root C:\path\to\TensorRT-11.1.0.106 `
   --cuda-root C:\path\to\cuda-runtime `
-  --name hivemind-v2.2.2-windows-x86_64-tensorrt
+  --name hivemind-v3.0.0-windows-x86_64-tensorrt
 ```
 
 ## Portable Windows and Linux release bundles
@@ -494,11 +494,11 @@ Build the ONNX Runtime CPU bundle natively on either operating system:
 python tools/fetch_onnxruntime.py
 python -m pip install numpy onnx
 python engine/scripts/package_portable_release.py \
-    --model model-fp16.onnx --name hivemind-v2.2.2-linux-x86_64-onnxruntime
+    --model model-fp16.onnx --name hivemind-v3.0.0-linux-x86_64-onnxruntime
 ```
 
 On Windows, use the same Python command and a
-`hivemind-v2.2.2-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
+`hivemind-v3.0.0-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
 an automatically converted FP32 model, ONNX Runtime, licenses, and checksums.
 It does not require a GPU.
 Tagged builds create ONNX Runtime and TensorRT archives for both Linux and

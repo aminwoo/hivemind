@@ -14,7 +14,7 @@
 # game is running on the GPU, and a match restarts if one starts mid-way.
 #   Stop between stages: touch data/distill/runs/rl-loop.stop
 set -uo pipefail
-cd /home/ben/hivemind || exit 1
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 ROOT=$PWD
 FIRST=
 LAST=8

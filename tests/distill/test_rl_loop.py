@@ -21,7 +21,7 @@ def loop(tmp_path):
     """The loop script in tmp_path, with fake engine and trainer binaries."""
     script = tmp_path / 'loop.sh'
     script.write_text((ROOT / 'data/distill/rl_loop.sh').read_text().replace(
-        'cd /home/ben/hivemind', f'cd {shlex.quote(str(tmp_path))}'))
+        'cd "$(dirname "${BASH_SOURCE[0]}")/../.."', f'cd {shlex.quote(str(tmp_path))}'))
     for name, text in (('artifacts/distill/twin-s-noattn/best.pt', 'it1-pt'),
                        ('engine/models/twin-s-noattn-sp1.onnx', 'it1'),
                        ('engine/models/twin-s-noattn.onnx', 'it1'),

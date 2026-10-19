@@ -1,4 +1,4 @@
 {
-  "cmake.sourceDirectory": "/home/ben/hivemind/engine",
+  "cmake.sourceDirectory": "${workspaceFolder}/engine",
   "C_Cpp.default.compilerPath": "/usr/bin/g++"
 }
