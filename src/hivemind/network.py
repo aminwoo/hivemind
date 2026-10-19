@@ -1,8 +1,12 @@
 """Pinned public network artifacts and project-relative defaults."""
 
+import subprocess
+import sys
 from typing import NamedTuple
 
 from hivemind.paths import MODEL_DIRECTORY, PROJECT_ROOT
+
+COREML_CONVERTER = PROJECT_ROOT / "engine" / "scripts" / "convert_onnx_coreml.py"
 
 
 class Artifact(NamedTuple):
@@ -56,3 +60,14 @@ DEFAULT_CHECKPOINT_PATH = MODEL_DIRECTORY / ARTIFACTS["crossboard-checkpoint"].f
 TWIN_CHECKPOINT_PATH = PROJECT_ROOT / "artifacts" / "distill" / "twin-s-noattn" / "best.pt"
 # Variants installed somewhere other than MODEL_DIRECTORY by default.
 DESTINATIONS = {"checkpoint": TWIN_CHECKPOINT_PATH}
+
+
+def for_this_machine(model):
+    """On macOS, the network rewritten so Core ML runs all of it on the GPU
+    (the outputs are identical), converted next to it on first use."""
+    if sys.platform != "darwin":
+        return model
+    converted = model.with_name(f"{model.stem}-coreml{model.suffix}")
+    if not converted.is_file():
+        subprocess.run([sys.executable, str(COREML_CONVERTER), str(model), str(converted)], check=True)
+    return converted

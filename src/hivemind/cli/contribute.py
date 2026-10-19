@@ -33,12 +33,11 @@ import time
 
 from hivemind.cli import selfplay, train
 from hivemind.distill.exchange import PROTOCOL, HubExchange, now, open_exchange
-from hivemind.network import SELFPLAY_EXCHANGE, TWIN_REPOSITORY
+from hivemind.network import SELFPLAY_EXCHANGE, TWIN_REPOSITORY, for_this_machine
 from hivemind.paths import PROJECT_ROOT
 
 ENGINE_DIR = PROJECT_ROOT / "engine"
 WORK_DIR = PROJECT_ROOT / "data" / "distill" / "contribute"
-COREML_CONVERTER = ENGINE_DIR / "scripts" / "convert_onnx_coreml.py"
 MAC_ENGINE = ENGINE_DIR / "build-ort-sp1" / "hivemind"
 POLL_SECONDS = 60
 
@@ -57,17 +56,6 @@ def search_workers(engine):
     cache = Path(engine).parent / "CMakeCache.txt"
     match = cache.is_file() and re.search(r"^HIVEMIND_SEARCH_WORKERS:\w+=(\d+)$", cache.read_text(), re.M)
     return int(match.group(1)) if match else None
-
-
-def for_this_machine(model):
-    """On macOS, the network rewritten so Core ML runs all of it on the GPU
-    (the outputs are identical)."""
-    if sys.platform != "darwin":
-        return model
-    converted = model.with_name(f"{model.stem}-coreml{model.suffix}")
-    if not converted.is_file():
-        subprocess.run([sys.executable, str(COREML_CONVERTER), str(model), str(converted)], check=True)
-    return converted
 
 
 def contributor_name(exchange):

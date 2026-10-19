@@ -4,9 +4,10 @@
 import argparse
 import os
 from pathlib import Path
+import subprocess
 import sys
 
-from hivemind.network import DEFAULT_ONNX_PATH
+from hivemind.network import DEFAULT_ONNX_PATH, for_this_machine
 from hivemind.paths import PROJECT_ROOT
 
 # In order of preference: the TensorRT build runs on the GPU, while the ONNX
@@ -23,12 +24,14 @@ def default_engine():
 
 
 def default_model():
-    """The default network, preferring its Core ML conversion on macOS."""
-    if sys.platform == "darwin":
-        coreml = DEFAULT_ONNX_PATH.with_name(f"{DEFAULT_ONNX_PATH.stem}-coreml.onnx")
-        if coreml.is_file():
-            return coreml
-    return DEFAULT_ONNX_PATH if DEFAULT_ONNX_PATH.is_file() else None
+    """The default network, converted for Core ML on macOS."""
+    if not DEFAULT_ONNX_PATH.is_file():
+        return None
+    try:
+        return for_this_machine(DEFAULT_ONNX_PATH)
+    except subprocess.CalledProcessError:
+        print("Core ML conversion failed; loading the unconverted network.", file=sys.stderr)
+        return DEFAULT_ONNX_PATH
 
 
 def main():

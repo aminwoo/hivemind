@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 import os
+from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -70,17 +72,44 @@ def test_no_command_starts_the_engine(monkeypatch):
     assert captured["module"] == "hivemind.cli.engine"
 
 
-def test_engine_command_prefers_the_coreml_network_on_macos(tmp_path, monkeypatch):
+def test_engine_command_converts_the_network_for_coreml_on_macos(tmp_path, monkeypatch):
+    from hivemind import network as networks
+    from hivemind.cli import engine
+
+    network = tmp_path / "net.onnx"
+    converted = tmp_path / "net-coreml.onnx"
+    monkeypatch.setattr(engine, "DEFAULT_ONNX_PATH", network)
+    monkeypatch.setattr(networks.sys, "platform", "darwin")
+    conversions = []
+
+    def convert(command, check):
+        conversions.append(command)
+        Path(command[-1]).touch()
+
+    monkeypatch.setattr(networks.subprocess, "run", convert)
+    assert engine.default_model() is None
+    network.touch()
+    assert engine.default_model() == converted
+    assert conversions == [[networks.sys.executable, str(networks.COREML_CONVERTER), str(network), str(converted)]]
+    assert engine.default_model() == converted
+    assert len(conversions) == 1
+    monkeypatch.setattr(networks.sys, "platform", "linux")
+    assert engine.default_model() == network
+
+
+def test_engine_command_falls_back_when_coreml_conversion_fails(tmp_path, monkeypatch):
+    from hivemind import network as networks
     from hivemind.cli import engine
 
     network = tmp_path / "net.onnx"
     network.touch()
     monkeypatch.setattr(engine, "DEFAULT_ONNX_PATH", network)
-    monkeypatch.setattr(engine.sys, "platform", "darwin")
-    assert engine.default_model() == network
-    (tmp_path / "net-coreml.onnx").touch()
-    assert engine.default_model() == tmp_path / "net-coreml.onnx"
-    monkeypatch.setattr(engine.sys, "platform", "linux")
+    monkeypatch.setattr(networks.sys, "platform", "darwin")
+
+    def fail(command, check):
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(networks.subprocess, "run", fail)
     assert engine.default_model() == network
 
 
