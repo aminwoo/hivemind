@@ -310,6 +310,7 @@ private:
         const std::shared_ptr<Node>& root,
         const std::shared_ptr<Node>& pvChild,
         float childQ,
+        int childVisits,
         float centipawnScale = 180.0f,
         float tangentScale = 1.56f);
 

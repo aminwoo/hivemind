@@ -335,12 +335,22 @@ string Agent::format_root_aware_uci_score(
     const shared_ptr<Node>& root,
     const shared_ptr<Node>& pvChild,
     float childQ,
+    int childVisits,
     float centipawnScale,
     float tangentScale) {
     if (root && root->get_node_type() != NodeType::UNSOLVED) {
         // A solver proof is authoritative for the position being reported.
         // In particular, a proven DRAW must score 0 rather than leaking an
         // unvisited PV child's Q_INIT=-1 through the tangent conversion.
+        return format_uci_score(
+            root.get(), root->Q(), false, centipawnScale, tangentScale);
+    }
+    const bool childSolved = pvChild
+        && pvChild->get_node_type() != NodeType::UNSOLVED;
+    if (root && !childSolved && childVisits <= 0) {
+        // The search ended before visiting the move it reports, as when a
+        // deadline passes during the first evaluations. The edge still holds
+        // Q_INIT=-1, a certain loss; the root's own value is what is known.
         return format_uci_score(
             root.get(), root->Q(), false, centipawnScale, tangentScale);
     }
@@ -7468,7 +7478,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         }
         const float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
         const string scoreStr = format_root_aware_uci_score(
-            rootNode, children[childIdx], childQ, C, k);
+            rootNode, children[childIdx], childQ,
+            rootNode->get_child_visits()[childIdx], C, k);
         cout << "info depth " << depth
              << " " << scoreStr
              << " nodes " << nodes
@@ -8065,7 +8076,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 }
                 float childQ = rootNode->get_child_q(static_cast<int>(childIdx));
                 string scoreStr = format_root_aware_uci_score(
-                    rootNode, children[childIdx], childQ, C, k);
+                    rootNode, children[childIdx], childQ,
+                    childVisits[childIdx], C, k);
                 
                 cout << "info depth " << depth;
                 if (options.multiPV > 1) {
