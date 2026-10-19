@@ -43,6 +43,23 @@ std::shared_ptr<Node> make_expanded_node(
 
 }  // namespace
 
+TEST(NodeConcurrencyTest, ConcurrentTerminalBackupsPreserveValueSum) {
+    Node node(Stockfish::WHITE);
+    std::vector<std::thread> workers;
+    for (int t = 0; t < 8; ++t) {
+        workers.emplace_back([&] {
+            for (int i = 0; i < 5000; ++i) {
+                node.update_terminal(0.25f);
+            }
+        });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    EXPECT_EQ(node.get_visits(), 40000);
+    EXPECT_FLOAT_EQ(node.Q(), 0.25f);
+}
+
 // Selection and backup run under a shared lock with atomic edge records, so a
 // lost update or a torn edge would show up as visits that do not add up. Every
 // iteration applies exactly one virtual loss and retires it with one visit, so

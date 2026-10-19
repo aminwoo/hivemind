@@ -105,6 +105,21 @@ private:
     static_assert(sizeof(EdgeStats) == 20);
     std::vector<EdgeStats> edges;
 
+    template <typename Atomic>
+    static float add_value(Atomic& sum, float value) {
+        if constexpr (requires { sum.fetch_add(value, std::memory_order_relaxed); }) {
+            return sum.fetch_add(value, std::memory_order_relaxed);
+        } else {
+            // Older Apple libc++ lacks floating-point fetch_add. Preserve the
+            // same atomic update and relaxed ordering with compare/exchange.
+            float previous = sum.load(std::memory_order_relaxed);
+            while (!sum.compare_exchange_weak(previous, previous + value,
+                                             std::memory_order_relaxed,
+                                             std::memory_order_relaxed)) {}
+            return previous;
+        }
+    }
+
     // Visits and the value sum each advance atomically and Q is republished
     // from them, so two concurrent backups on one edge can publish a Q built
     // from slightly mismatched (sum, visits) pairs - including a first visit's
@@ -120,7 +135,7 @@ private:
             edge.valueSum.store(value, std::memory_order_relaxed);
             sum = value;
         } else {
-            sum = edge.valueSum.fetch_add(value, std::memory_order_relaxed)
+            sum = add_value(edge.valueSum, value)
                 + value;
         }
         edge.q.store(sum / static_cast<float>(visits),
@@ -362,7 +377,7 @@ public:
             if (edge.visits.load(std::memory_order_relaxed)
                     + edge.virtualLoss.load(std::memory_order_relaxed) != 0) {
                 accumulate_edge_value(edge, value);
-                valueSum.fetch_add(value, std::memory_order_relaxed);
+                add_value(valueSum, value);
                 m_visits.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
@@ -377,7 +392,7 @@ public:
             mark_edge_visited_locked(childIdx);
         }
         accumulate_edge_value(edge, value);
-        valueSum.fetch_add(value, std::memory_order_relaxed);
+        add_value(valueSum, value);
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -389,12 +404,12 @@ public:
         edge.virtualLoss.fetch_sub(1, std::memory_order_relaxed);
         virtualVisitSum.fetch_sub(1, std::memory_order_relaxed);
         accumulate_edge_value(edge, value);
-        valueSum.fetch_add(value, std::memory_order_relaxed);
+        add_value(valueSum, value);
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
     void update_terminal(float value) {
-        valueSum.fetch_add(value, std::memory_order_relaxed);
+        add_value(valueSum, value);
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
