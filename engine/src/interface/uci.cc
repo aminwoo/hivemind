@@ -338,6 +338,7 @@ void UCI::go(std::istringstream& is) {
         opts = SearchOptions::uci(1000, multiPV, isPonder);
     }
     opts.enablePonder = ponderEnabled;
+    opts.reportIntervalMs = reportIntervalMs;
     opts.search = current_search_config();
     opts.clock = current_clock();
 
@@ -581,6 +582,10 @@ void UCI::setoption(std::istringstream& is) {
             multiPV = mpv;
             std::cout << "info string MultiPV set to " << multiPV << std::endl;
         }
+    } else if (name == "ReportIntervalMs") {
+        reportIntervalMs = std::clamp(std::stoi(value), 0, 60000);
+        std::cout << "info string ReportIntervalMs set to " << reportIntervalMs
+                  << std::endl;
     } else if (name == "Ponder") {
         if (value == "true" || value == "false") {
             ponderEnabled = (value == "true");
@@ -831,6 +836,8 @@ void UCI::send_uci_response() {
          << " min 1 max 1024" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;
     cout << "option name Ponder type check default true" << endl;
+    cout << "option name ReportIntervalMs type spin default " << reportIntervalMs
+         << " min 0 max 60000" << endl;
     cout << "option name BackgroundSearch type check default true" << endl;
     cout << "option name OpeningNoise type check default false" << endl;
     cout << "option name OpeningNoisePlies type spin default 16 min 0 max 200" << endl;
