@@ -51,7 +51,7 @@ from hivemind.cli import selfplay, train
 from hivemind.data import archive
 from hivemind.distill.data import chunk_problem
 from hivemind.distill.exchange import PROTOCOL, HubExchange, install, open_exchange, sha256
-from hivemind.network import DEFAULT_ONNX_PATH, SELFPLAY_ARCHIVE, SELFPLAY_EXCHANGE, TWIN_REPOSITORY
+from hivemind.network import SELFPLAY_ARCHIVE, SELFPLAY_EXCHANGE, TWIN_ONNX_PATH, TWIN_REPOSITORY
 from hivemind.paths import PROJECT_ROOT
 
 RUNS = PROJECT_ROOT / "data" / "distill" / "runs"
@@ -194,7 +194,7 @@ def finished_selfplay(it):
 
 
 class Loop:
-    def __init__(self, args, generator=DEFAULT_ONNX_PATH, checkpoint=train.GENERATOR_CHECKPOINT,
+    def __init__(self, args, generator=TWIN_ONNX_PATH, checkpoint=train.GENERATOR_CHECKPOINT,
                  teacher_val=train.TEACHER_VAL):
         self.args = args
         self.runs = args.runs
@@ -621,7 +621,7 @@ def main():
     parser.add_argument("--fixed-time-model", choices=("flag", "clock"),
                         help="What the fixed it0 baseline searches on in clock matches; flag for an it0 "
                              "from before the clock planes, which misreads them (default: --time-model)")
-    parser.add_argument("--generator", type=Path, default=DEFAULT_ONNX_PATH,
+    parser.add_argument("--generator", type=Path, default=TWIN_ONNX_PATH,
                         help="The generator network, replaced on promotion; another lineage needs "
                              "its own (default: %(default)s)")
     parser.add_argument("--generator-checkpoint", type=Path, default=train.GENERATOR_CHECKPOINT,
@@ -671,7 +671,7 @@ def main():
     args.generator = args.generator.resolve()
     args.generator_checkpoint = args.generator_checkpoint.resolve()
     if not args.generator.is_file():
-        sys.exit(f"Generator not found at {args.generator}; run `hivemind fetch-network` "
+        sys.exit(f"Generator not found at {args.generator}; run `hivemind fetch-network --variant onnx` "
                  f"or pass --generator.")
     if not args.archive_only:
         if not args.selfplay_engine.is_file():

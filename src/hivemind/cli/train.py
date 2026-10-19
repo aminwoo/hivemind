@@ -15,7 +15,7 @@ import sys
 
 from hivemind.cli.fetch_network import fetch_network, file_digest
 from hivemind.data import archive
-from hivemind.network import ARTIFACTS, DEFAULT_ONNX_PATH, TWIN_CHECKPOINT_PATH
+from hivemind.network import ARTIFACTS, TWIN_CHECKPOINT_PATH, TWIN_ONNX_PATH
 from hivemind.paths import PROJECT_ROOT
 
 GENERATOR_CHECKPOINT = TWIN_CHECKPOINT_PATH
@@ -23,7 +23,7 @@ TEACHER_VAL = PROJECT_ROOT / "data" / "distill" / "val"
 OUTPUT_DIR = PROJECT_ROOT / "artifacts" / "distill" / "rl"
 
 
-def generator_checkpoint(generator=DEFAULT_ONNX_PATH, checkpoint=GENERATOR_CHECKPOINT):
+def generator_checkpoint(generator=TWIN_ONNX_PATH, checkpoint=GENERATOR_CHECKPOINT):
     """The generator's training checkpoint, downloading the published one when
     it is missing and the generator is the published network."""
     if checkpoint.is_file():

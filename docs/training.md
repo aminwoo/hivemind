@@ -21,6 +21,8 @@ a matching training checkpoint. After building the one-worker self-play engine
 and the match engine, one command runs the default loop until stopped:
 
 ```bash
+uv run hivemind fetch-network --variant onnx
+uv run hivemind fetch-network --variant checkpoint
 uv run hivemind rl-loop
 ```
 
@@ -39,8 +41,10 @@ otherwise they stay local. Progress goes to
 `data/distill/runs/rl-itN/stages`, so rerunning the command resumes where it
 stopped; `touch data/distill/runs/rl-loop.stop` stops it between stages.
 Matches open from the 100 positions in `engine/openings.tsv`.
-`hivemind fetch-network` keeps installing the network and checkpoint pinned
-in `src/hivemind/network.py`; update that pin to publish a promotion.
+`hivemind fetch-network` defaults to the released clock network. Explicit
+`--variant onnx` and `--variant checkpoint` select the paired legacy training
+artifacts pinned in `src/hivemind/network.py`; update those pins to publish
+a promotion.
 
 ### Training on the clock
 

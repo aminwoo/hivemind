@@ -2,23 +2,29 @@
 
 The `lichess-bot` command accepts Chess (`standard`), Crazyhouse, Antichess,
 Chess960, Atomic, and Three-check challenges and plays all of them with
-`engine/models/twin-s-noattn.onnx`, with draw contempt set to zero. It accepts one incoming
+`engine/models/twin-s-clock.onnx`, with draw contempt set to zero. It accepts one incoming
 game at a time, declines other variants and UltraBullet, reconnects interrupted
 streams, and reserves clock time for network latency. Bughouse remains
 available through the engine's UCI interface; Lichess does not offer Bughouse.
 
-Build the engine first using [the build guide](../engine/README.md). For CPU:
+Build the engine first using [the build guide](../engine/README.md), then
+download the default network with `uv run hivemind fetch-network`. For CPU,
+convert it to FP32 and pass the converted model explicitly:
 
 ```sh
-uv run hivemind lichess-bot --token-file /path/to/private/lichess.token --check
-uv run hivemind lichess-bot --token-file /path/to/private/lichess.token
+uv run python engine/scripts/convert_onnx_fp32.py \
+    engine/models/twin-s-clock.onnx engine/models/twin-s-clock-fp32.onnx
+uv run hivemind lichess-bot --model engine/models/twin-s-clock-fp32.onnx \
+    --token-file /path/to/private/lichess.token --check
+uv run hivemind lichess-bot --model engine/models/twin-s-clock-fp32.onnx \
+    --token-file /path/to/private/lichess.token
 ```
 
 The default executable is `engine/build-ort/hivemind.bin`. To use NVIDIA:
 
 ```sh
 uv run hivemind lichess-bot --engine engine/build-ninja/hivemind \
-    --model engine/models/twin-s-noattn.onnx \
+    --model engine/models/twin-s-clock.onnx \
     --token-file /path/to/private/lichess.token
 ```
 

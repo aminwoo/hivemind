@@ -12,7 +12,7 @@ class Artifact(NamedTuple):
     sha256: str
 
 
-# twin-s-noattn after RL iteration 4, the strongest network measured: it beat
+# Legacy twin-s-noattn after RL iteration 4: it beat
 # the distilled iteration 0 99-57-4 at 100 ms per move (+93 Elo) and searches
 # about 3x as many nodes per second as the crossboard teacher. Its training
 # checkpoint, which `hivemind train` and `hivemind rl-loop` continue, is pinned
@@ -47,7 +47,10 @@ ARTIFACTS = {
     "crossboard-checkpoint": Artifact(CROSSBOARD_REPOSITORY, CROSSBOARD_REVISION, f"{CROSSBOARD_NAME}.tar",
                                       "6dd470599ee8e0d168911336126eec6c6f9bed51915cc2ff9e3935ecdd8160e2"),
 }
-DEFAULT_ONNX_PATH = MODEL_DIRECTORY / ARTIFACTS["onnx"].filename
+DEFAULT_NETWORK_VARIANT = "clock"
+DEFAULT_ONNX_PATH = MODEL_DIRECTORY / ARTIFACTS[DEFAULT_NETWORK_VARIANT].filename
+# The legacy training generator must stay paired with its published checkpoint.
+TWIN_ONNX_PATH = MODEL_DIRECTORY / ARTIFACTS["onnx"].filename
 DEFAULT_CHECKPOINT_PATH = MODEL_DIRECTORY / ARTIFACTS["crossboard-checkpoint"].filename
 # The generator's training checkpoint, where the RL loop promotes each new one.
 TWIN_CHECKPOINT_PATH = PROJECT_ROOT / "artifacts" / "distill" / "twin-s-noattn" / "best.pt"

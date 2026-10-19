@@ -92,7 +92,7 @@ git clone https://github.com/aminwoo/hivemind.git
 cd hivemind
 uv sync
 uv run hivemind --help
-uv run hivemind fetch-network --variant clock
+uv run hivemind fetch-network
 ```
 
 The download is pinned and SHA-256 verified. It installs
@@ -185,7 +185,7 @@ Release ZIPs already contain their model. Source users can choose a verified
 artifact with `hivemind fetch-network` or the bootstrap script:
 
 ```bash
-uv run hivemind fetch-network --variant clock                  # released twin-s-clock
+uv run hivemind fetch-network                                  # default: released twin-s-clock
 uv run hivemind fetch-network --variant onnx                   # older twin-s-noattn
 uv run hivemind fetch-network --variant checkpoint             # older twin-s training checkpoint
 uv run hivemind fetch-network --variant crossboard             # RISE teacher ONNX
@@ -198,11 +198,15 @@ without installing the Python package. Models go to `engine/models`; the
 `checkpoint` variant goes to `artifacts/distill/twin-s-noattn/best.pt`.
 Pins and hashes live in [network.py](src/hivemind/network.py).
 
-**Release and Python defaults differ:** release ZIPs use twin-s-clock, while
-Python `engine`, `infer`, `selfplay`, and `rl-loop` retain the older twin-s
-model defaults. Pass `--model` for inference/self-play or `--generator` and
-`--generator-checkpoint` for an RL lineage. An ONNX file cannot substitute
-for a PyTorch training checkpoint.
+The downloader and Python inference/self-play commands default to
+**twin-s-clock**, matching release ZIPs. `--variant clock` selects it explicitly;
+`--variant onnx` selects the older twin-s-noattn network.
+
+The RL loop retains the older twin-s generator and its matching published
+checkpoint. Download them with `--variant onnx` and `--variant checkpoint`;
+use `--generator` and `--generator-checkpoint` for another RL lineage.
+An ONNX file cannot substitute for a PyTorch training checkpoint. Self-play
+still defaults to flag rules; add `--time-model clock` for clock-aware games.
 
 ## Engine usage
 

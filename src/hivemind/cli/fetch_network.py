@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 from urllib.request import urlopen
 
-from hivemind.network import ARTIFACTS, DESTINATIONS, MODEL_DIRECTORY
+from hivemind.network import ARTIFACTS, DEFAULT_NETWORK_VARIANT, DESTINATIONS, MODEL_DIRECTORY
 
 
 def file_digest(path):
@@ -15,7 +15,7 @@ def file_digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def fetch_network(variant="onnx", output_dir=None):
+def fetch_network(variant=DEFAULT_NETWORK_VARIANT, output_dir=None):
     repository, revision, filename, expected_digest = ARTIFACTS[variant]
     destination = (Path(output_dir) / filename if output_dir is not None
                    else DESTINATIONS.get(variant, MODEL_DIRECTORY / filename))
@@ -41,7 +41,8 @@ def fetch_network(variant="onnx", output_dir=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variant", choices=ARTIFACTS, default="onnx")
+    parser.add_argument("--variant", choices=ARTIFACTS, default=DEFAULT_NETWORK_VARIANT,
+                        help="Network artifact to download (default: %(default)s)")
     parser.add_argument("--output-dir", type=Path,
                         help="Default: engine/models, and for the twin-s training checkpoint "
                              "artifacts/distill/twin-s-noattn/best.pt, where training continues it")

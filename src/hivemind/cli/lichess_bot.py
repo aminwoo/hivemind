@@ -18,7 +18,8 @@ import chess
 import chess.engine
 import chess.variant
 
-from hivemind.paths import MODEL_DIRECTORY, PROJECT_ROOT
+from hivemind.network import DEFAULT_ONNX_PATH
+from hivemind.paths import PROJECT_ROOT
 
 LOG = logging.getLogger(__name__)
 VARIANTS = {
@@ -225,7 +226,7 @@ class Bot:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", type=Path, default=PROJECT_ROOT / "engine/build-ort/hivemind.bin")
-    parser.add_argument("--model", type=Path, default=MODEL_DIRECTORY / "twin-s-noattn.onnx")
+    parser.add_argument("--model", type=Path, default=DEFAULT_ONNX_PATH)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--move-time-ms", type=int, default=500)
     parser.add_argument("--token-file", type=Path, help="Read a token from a private file; otherwise use LICHESS_TOKEN")
