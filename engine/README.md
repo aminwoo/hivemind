@@ -116,7 +116,7 @@ cmake --build engine/build-ort -j "$(sysctl -n hw.ncpu)"
 ./engine/build-ort/hivemind --model engine/models/twin-s-clock-coreml.onnx
 ```
 
-The engine then reports `info string backend ONNX Runtime (Core ML GPU)`.
+The engine then reports `info string backend ONNX Runtime (Core ML Neural Engine)`.
 `-DBUILD_TESTING=OFF` skips the C++ tests, which have not been built on
 macOS.
 
@@ -131,16 +131,18 @@ when it is given a network that has not been converted.
 The engine also pins the batch dimension, since Core ML compiles for fixed
 shapes, and gives each search worker its own Core ML session: ONNX Runtime
 runs one prediction at a time per Core ML model, so separate sessions let the
-workers' batches overlap on the GPU, as TensorRT's per-worker contexts do.
+workers' batches overlap on the accelerator, as TensorRT's per-worker contexts do.
 
-`HIVEMIND_COREML` selects the compute units: `gpu` (the default), `all` (lets
-Core ML also use the Neural Engine), `ane`, or `off` for the CPU provider.
+`HIVEMIND_COREML` selects the compute units: `ane` (the default), `gpu`, `all`
+(lets Core ML choose between them), or `off` for the CPU provider. On an M5
+at the default batch of 8, the Neural Engine searches about 37k nps against
+the GPU's 23k.
 `hivemind bench` runs one worker at a time, so compare settings by the
 search's nps instead:
 
 ```bash
 (printf 'uci\nisready\nposition startpos\ngo movetime 10000\n'; sleep 12; echo quit) |
-    HIVEMIND_COREML=all ./engine/build-ort/hivemind \
+    HIVEMIND_COREML=gpu ./engine/build-ort/hivemind \
     --model engine/models/twin-s-clock-coreml.onnx | grep ' nps ' | tail -1
 ```
 

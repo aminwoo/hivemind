@@ -140,15 +140,14 @@ uv run python tools/fetch_onnxruntime.py
 uv run hivemind build-engine --backend onnxruntime --preset ninja-release
 uv run python engine/scripts/convert_onnx_coreml.py \
   engine/models/twin-s-clock.onnx engine/models/twin-s-clock-coreml.onnx
-HIVEMIND_COREML=ane uv run hivemind engine \
-  --model engine/models/twin-s-clock-coreml.onnx
+uv run hivemind engine
 ```
 
-The conversion rewrites the graph for Core ML. `HIVEMIND_COREML=ane` requests
-Neural Engine, `gpu` selects GPU, `all` allows both, and `off` forces CPU.
-The engine prints the selected provider and warns if Core ML initialization
-falls back to CPU. Source-built launchers default to GPU; release launchers
-request Neural Engine.
+The conversion rewrites the graph for Core ML; `hivemind engine` also runs it
+on first launch if you skip it. The engine runs on the Neural Engine by
+default; `HIVEMIND_COREML=gpu` selects GPU, `all` allows both, and `off`
+forces CPU. The engine prints the selected provider and warns if Core ML
+initialization falls back to CPU.
 
 ### NVIDIA build on Linux
 

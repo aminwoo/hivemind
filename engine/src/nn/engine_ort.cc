@@ -10,9 +10,9 @@
 //     search thread, which is what keeps batch N's inference running while the
 //     search walks the tree for batch N+1.
 //
-// On macOS the network runs on the GPU through ORT's Core ML provider when
-// the runtime has it; HIVEMIND_COREML selects the compute units (gpu, all,
-// ane) or turns it off. Networks should first go through
+// On macOS the network runs on the Neural Engine through ORT's Core ML
+// provider when the runtime has it; HIVEMIND_COREML selects the compute units
+// (ane, gpu, all) or turns it off. Networks should first go through
 // engine/scripts/convert_onnx_coreml.py, or Core ML runs them in pieces.
 
 #include "nn/engine.h"
@@ -60,15 +60,17 @@ CoreMLUnits coreml_units() {
         return {};
     }
     const char* env = std::getenv("HIVEMIND_COREML");
-    const std::string choice = lowered(env && *env ? env : "gpu");
+    // The Neural Engine runs these networks well ahead of the GPU at the
+    // search's batch size: 37k nps against 23k on an M5 at batch 8.
+    const std::string choice = lowered(env && *env ? env : "ane");
     if (choice == "off" || choice == "cpu" || choice == "0") return {};
     if (choice == "all") return {"ALL", "GPU and Neural Engine"};
-    if (choice == "ane") return {"CPUAndNeuralEngine", "Neural Engine"};
-    if (choice != "gpu") {
+    if (choice == "gpu") return {"CPUAndGPU", "GPU"};
+    if (choice != "ane") {
         std::cout << "info string warning unknown HIVEMIND_COREML value '"
-                  << choice << "'; using gpu" << std::endl;
+                  << choice << "'; using ane" << std::endl;
     }
-    return {"CPUAndGPU", "GPU"};
+    return {"CPUAndNeuralEngine", "Neural Engine"};
 }
 
 // Core ML compiles for fixed shapes, and the graph derives reshape targets
