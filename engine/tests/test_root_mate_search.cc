@@ -215,6 +215,51 @@ TEST_F(RootMateSearchTest, MateInOneIsReportedBehindOnTime) {
     }
 }
 
+std::string mate_telemetry_line(const std::string& output) {
+    const std::string prefix = "info string mate telemetry ";
+    const size_t start = output.find(prefix);
+    if (start == std::string::npos
+        || output.find(prefix, start + 1) != std::string::npos) {
+        return {};
+    }
+    return output.substr(start, output.find('\n', start) - start) + " ";
+}
+
+// Each verbose search reports once where its proofs came from and why the
+// finders that found none stopped. Behind on time the root probe does not
+// run; the conditional one is tried, and a certificate it cannot get says why.
+TEST_F(RootMateSearchTest, MateTelemetryReportsTheConditionalCertificate) {
+    for (const char* partner : {kInertPartner, kLeakyPartner}) {
+        const bool inert = partner == kInertPartner;
+        Board board;
+        board.set(std::string(kQuietMate) + "|" + partner);
+        Agent agent(2);
+        options.search.enableMateProbe = true;
+        options.search.conditionalMateProbe = true;
+        options.verbose = true;
+        options.moveTimeMs = inert ? 3000 : 1500;
+        options.clock = TimeState::clocked(Stockfish::WHITE, -300, 100, 100);
+        testing::internal::CaptureStdout();
+        agent.run_search(board, {engine.get()}, Stockfish::WHITE, false, options);
+        const std::string line =
+            mate_telemetry_line(testing::internal::GetCapturedStdout());
+        ASSERT_FALSE(line.empty()) << "expected exactly one telemetry line";
+        EXPECT_NE(line.find(" lead=-300 "), std::string::npos) << line;
+        EXPECT_NE(line.find(" probe=0 "), std::string::npos) << line;
+        EXPECT_NE(line.find(" cond_tried=1 "), std::string::npos) << line;
+        EXPECT_NE(line.find(" cond_found=1 "), std::string::npos) << line;
+        // The inert line is certified when its share of the move suffices,
+        // which a loaded machine can deny it; either way the line agrees
+        // with itself. The leaky one never is, and says why.
+        const bool certified = line.find(" cond_cert=1 ") != std::string::npos;
+        EXPECT_TRUE(inert || !certified) << line;
+        EXPECT_EQ(line.find(" cond_fail=none ") != std::string::npos,
+                  certified) << line;
+        EXPECT_EQ(line.find(" probe_win_ms=-1 ") == std::string::npos,
+                  certified) << line;
+    }
+}
+
 TEST_F(RootMateSearchTest, StopJoinsTheScanAndTheNextSearchCanRun) {
     Board board;
     set_busy_position(board);

@@ -148,6 +148,20 @@ enum class MateCertificateTier : uint8_t {
     FULL_JOINT,
 };
 
+/**
+ * Why a mate candidate was not certified, from the most final reason to the
+ * one where more search could still succeed. Of several attempts, the
+ * latest in this order is kept.
+ */
+enum class MateCertificateFailure : uint8_t {
+    NONE,
+    ILLEGAL,   // No legal joint action carries the candidate.
+    RACE,      // The candidate loses the mate race.
+    REFUTED,   // A defence answered every forcing line searched.
+    DEPTH,     // Refuted only once the attacker moves ran out.
+    BUDGET,    // Nodes or time ran out first.
+};
+
 /** One joint ply retained from an exact mate proof. */
 struct MateProofPly {
     Stockfish::Move moveA = Stockfish::MOVE_NONE;
@@ -782,7 +796,8 @@ public:
         int& outPlyToMate,
         MateCertificateTier& outTier,
         const Node* treeNode = nullptr,
-        JointActionCandidate* outAction = nullptr);
+        JointActionCandidate* outAction = nullptr,
+        MateCertificateFailure* outFailure = nullptr);
 
     /**
      * @brief Proves that every legal root action permits a forced opponent mate.
@@ -1031,6 +1046,9 @@ private:
         bool stopAtFirstProof = false, // Background search publishes immediately.
         // Set when the scan settled every line it searched within its
         // budget, so a larger one would only repeat the same answer.
-        bool* outComplete = nullptr);
+        bool* outComplete = nullptr,
+        // Set when its deepest joint search was refuted only for want of
+        // attacker moves, so a longer horizon could still find a mate.
+        bool* outDepthLimited = nullptr);
     
 };
