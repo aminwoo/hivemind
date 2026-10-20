@@ -247,6 +247,24 @@ std::vector<InternalMateProbeTarget> collect_internal_probe_targets(
 }  // namespace
 
 /**
+ * Moves the root's team plays in the mate a solved node holds: its own mating
+ * move, or every move it makes before it is mated.
+ *
+ * The solver counts the mated position as one ply, so a mate in N from the
+ * root is 2N plies and a loss in N is 2N+1. The root scans and probes mark
+ * their proofs counting it as zero, one ply less. Both give the same moves.
+ *
+ * @param isChildNode True if the node follows one of the root team's actions,
+ *        which is one more ply of the line.
+ */
+static int mate_moves(const Node& node, bool isChildNode) {
+    const int plies = node.get_end_in_ply() + (isChildNode ? 1 : 0);
+    const bool rootTeamWins = (node.get_node_type() == NodeType::WIN)
+        != isChildNode;
+    return max(1, rootTeamWins ? (plies + 1) / 2 : plies / 2);
+}
+
+/**
  * @brief Format UCI score string based on node type.
  * 
  * Returns "score mate N" for proven wins/losses, "score cp X" otherwise.
@@ -277,10 +295,9 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
     if (!node) return "score cp 0";
     
     NodeType nodeType = node->get_node_type();
-    int endInPly = node->get_end_in_ply();
     
     if (nodeType == NodeType::WIN) {
-        int mateInMoves = (endInPly + 1) / 2;
+        int mateInMoves = mate_moves(*node, isChildNode);
         if (isChildNode) {
             // Child is a WIN for the child (opponent) = LOSS for us (we're mated)
             return "score mate -" + to_string(max(1, mateInMoves));
@@ -289,7 +306,7 @@ static string format_uci_score(const Node* node, float qFromParent, bool isChild
             return "score mate " + to_string(max(1, mateInMoves));
         }
     } else if (nodeType == NodeType::LOSS) {
-        int mateInMoves = (endInPly + 1) / 2;
+        int mateInMoves = mate_moves(*node, isChildNode);
         if (isChildNode) {
             // Child is a LOSS for the child (opponent) = WIN for us (we mate them)
             return "score mate " + to_string(max(1, mateInMoves));
@@ -398,8 +415,7 @@ static bool should_exit_early_winning(const std::shared_ptr<Node>& rootNode, int
         Node* bestChild = bestChildOwner.get();
         if (bestChild && bestChild->get_node_type() == NodeType::LOSS) {
             if (verbose) {
-                int mateInPly = bestChild->get_end_in_ply();
-                int mateInMoves = (mateInPly + 1) / 2;
+                int mateInMoves = mate_moves(*bestChild, true);
                 cout << "info string Early exit: forced mate in " << mateInMoves << " found" << endl;
             }
             return true;

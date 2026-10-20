@@ -173,6 +173,48 @@ TEST_F(RootMateSearchTest, UncertifiedConditionalMateIsNoClaim) {
     EXPECT_EQ(output.find("score mate"), std::string::npos) << output;
 }
 
+// Qb7# is a contact mate: no drop can meet it, so the clock has no say.
+// The partner board is quiet, with our partner on turn there or not.
+constexpr const char* kContactMate = "k7/2K5/8/8/8/8/8/1Q6[] w - - 0 1";
+constexpr const char* kQuietPartnerOpponentsOnTurn =
+    "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR[] w KQkq - 0 2";
+constexpr const char* kQuietPartnerOnTurn =
+    "rnbqkbnr/pppp1ppp/8/4p3/3P4/5N2/PPP1PPPP/RNBQKB1R[] b KQkq - 1 2";
+
+// A team far behind on the clock still plays and reports its mate in 1, on
+// either board and whether or not it is on turn on both.
+TEST_F(RootMateSearchTest, MateInOneIsReportedBehindOnTime) {
+    for (bool swapped : {false, true}) {
+        for (bool onTurnOnBoth : {false, true}) {
+            const char* partner = onTurnOnBoth
+                ? kQuietPartnerOnTurn : kQuietPartnerOpponentsOnTurn;
+            Board board;
+            board.set(swapped
+                ? std::string(partner) + "|" + kContactMate
+                : std::string(kContactMate) + "|" + partner);
+            const Stockfish::Color team = swapped
+                ? Stockfish::BLACK : Stockfish::WHITE;
+            const int mateBoard = swapped ? BOARD_B : BOARD_A;
+            Agent agent(2);
+            options.verbose = true;
+            options.moveTimeMs = 1000;
+            options.clock = TimeState::clocked(team, -30000, 100, 100);
+            testing::internal::CaptureStdout();
+            const auto action = agent.run_search(
+                board, {engine.get()}, team, false, options);
+            const std::string output = testing::internal::GetCapturedStdout();
+            EXPECT_EQ(agent.root_type(), NodeType::WIN)
+                << "swapped " << swapped << " both " << onTurnOnBoth;
+            EXPECT_NE(output.find("score mate 1 "), std::string::npos) << output;
+            EXPECT_EQ(output.find("score mate -"), std::string::npos) << output;
+            EXPECT_EQ(output.find("score cp"), std::string::npos) << output;
+            const std::string mate = board.uci_move(
+                mateBoard, swapped ? action.moveB : action.moveA);
+            EXPECT_TRUE(mate == "b1b7" || mate == "b1b8") << mate;
+        }
+    }
+}
+
 TEST_F(RootMateSearchTest, StopJoinsTheScanAndTheNextSearchCanRun) {
     Board board;
     set_busy_position(board);

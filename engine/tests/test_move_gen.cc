@@ -249,6 +249,40 @@ TEST(NodeTest, VisitedPvChildReportsItsOwnQ) {
             180.0f * std::tan(1.56f * -0.5f))));
 }
 
+// The solver counts the mated position as one ply, the root scans as zero.
+// Either way a mate is reported in the root team's moves: its mating move, or
+// each move it makes before it is mated.
+TEST(NodeTest, MateScoresCountTheTeamsMovesUnderEitherPlyCount) {
+    for (int moves : {1, 2, 5}) {
+        for (int scanOffset : {0, 1}) {
+            auto rootWin = std::make_shared<Node>(Stockfish::WHITE);
+            rootWin->mark_as_win(2 * moves - scanOffset);
+            EXPECT_EQ(AgentTreeReuseTestPeer::format_root_aware_uci_score(
+                          rootWin, nullptr, 0.0f, 0),
+                      "score mate " + std::to_string(moves));
+
+            auto rootLoss = std::make_shared<Node>(Stockfish::WHITE);
+            rootLoss->mark_as_loss(2 * moves + 1 - scanOffset);
+            EXPECT_EQ(AgentTreeReuseTestPeer::format_root_aware_uci_score(
+                          rootLoss, nullptr, 0.0f, 0),
+                      "score mate -" + std::to_string(moves));
+
+            auto root = std::make_shared<Node>(Stockfish::WHITE);
+            auto matedChild = std::make_shared<Node>(Stockfish::BLACK);
+            matedChild->mark_as_loss(2 * moves - 1 - scanOffset);
+            EXPECT_EQ(AgentTreeReuseTestPeer::format_root_aware_uci_score(
+                          root, matedChild, 1.0f, 1),
+                      "score mate " + std::to_string(moves));
+
+            auto matingChild = std::make_shared<Node>(Stockfish::BLACK);
+            matingChild->mark_as_win(2 * moves - scanOffset);
+            EXPECT_EQ(AgentTreeReuseTestPeer::format_root_aware_uci_score(
+                          root, matingChild, -1.0f, 1),
+                      "score mate -" + std::to_string(moves));
+        }
+    }
+}
+
 TEST_F(EngineTest, HalfInputRepresentationMatchesFloatConversion) {
     Board board;
     for (const char* uci : {"g1f3", "g8f6", "f3g1"}) {
