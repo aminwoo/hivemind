@@ -9040,3 +9040,406 @@ void Agent::retain_reuse_level(const std::shared_ptr<Node>& node,
         }
     }
 }
+
+Agent::ExhaustiveMateResult Agent::prove_joint_mate_exhaustive(
+    Board& board, Stockfish::Color teamSide, const TimeState& time,
+    int maxAttackerMoves, uint64_t maxNodes) {
+    using Status = ExhaustiveMateResult::Status;
+    static constexpr uint32_t INFINITE =
+        std::numeric_limits<uint32_t>::max() / 4;
+    static constexpr uint32_t NO_NODE = std::numeric_limits<uint32_t>::max();
+    const auto add = [](uint32_t lhs, uint32_t rhs) {
+        return std::min(INFINITE, lhs + rhs);
+    };
+    // The search is a graph: positions reached by different move orders - the
+    // king shuffles a sat board forces are the usual case - share one node,
+    // found by position, clock and remaining attacker actions. A node's moves
+    // live on its edges, and the board follows the search down from the root
+    // and back.
+    struct PnEdge {
+        uint32_t child = 0;
+        Stockfish::Move moveA = Stockfish::MOVE_NONE;
+        Stockfish::Move moveB = Stockfish::MOVE_NONE;
+    };
+    struct PnNode {
+        std::vector<PnEdge> edges;
+        // An attacker node first gets its checks and captures, the rest of
+        // its actions only once those look no easier than this many proofs.
+        uint32_t pendingQuiet = 0;
+        uint32_t proof = 1;
+        uint32_t disproof = 1;
+        TimeState time;
+        int movesLeft = 0;  // Attacker actions still allowed.
+        bool attackerToPlay = true;
+        bool expanded = false;
+    };
+    static constexpr uint32_t QUIET_PROOF = 16;
+    std::vector<PnNode> nodes;
+    std::unordered_map<uint64_t, uint32_t> table;
+    const size_t reserve = static_cast<size_t>(
+        std::min<uint64_t>(maxNodes, uint64_t{1} << 22));
+    nodes.reserve(reserve + 1);
+    table.reserve(reserve);
+
+    // Moves made on each board inside the search, for the per-board
+    // repetition rule.
+    std::array<int, 2> plies{0, 0};
+    const auto make = [&](const PnEdge& edge) {
+        board.make_moves(edge.moveA, edge.moveB);
+        plies[BOARD_A] += edge.moveA != Stockfish::MOVE_NONE;
+        plies[BOARD_B] += edge.moveB != Stockfish::MOVE_NONE;
+    };
+    const auto unmake = [&](const PnEdge& edge) {
+        board.unmake_moves(edge.moveA, edge.moveB);
+        plies[BOARD_A] -= edge.moveA != Stockfish::MOVE_NONE;
+        plies[BOARD_B] -= edge.moveB != Stockfish::MOVE_NONE;
+    };
+    const auto terminal = [&](const TimeState& clock) {
+        Board::LegalMoveCache legalMoveCache;
+        if (board.is_checkmate(
+                ~teamSide, clock.can_sit(~teamSide), &legalMoveCache)) {
+            return JointMateStatus::PROVEN;
+        }
+        if (board.is_checkmate(
+                teamSide, clock.can_sit(teamSide), &legalMoveCache)
+            || board.is_draw(plies)) {
+            return JointMateStatus::REFUTED;
+        }
+        return JointMateStatus::UNKNOWN;
+    };
+    const auto settle = [&](PnNode& node, JointMateStatus status) {
+        if (status == JointMateStatus::PROVEN) {
+            node.proof = 0;
+            node.disproof = INFINITE;
+        } else if (status == JointMateStatus::REFUTED) {
+            node.proof = INFINITE;
+            node.disproof = 0;
+        }
+    };
+    const auto team_of = [&](const PnNode& node) {
+        return node.attackerToPlay ? teamSide : ~teamSide;
+    };
+    // An open node starts from roughly its team's number of actions: one is
+    // enough for the attackers, every one is needed against the defenders.
+    // The product of the boards' move counts is only a guide, so it is not
+    // worth the joint action list each node builds when it is expanded.
+    const auto initialise = [&](PnNode& node) {
+        const Stockfish::Color team = team_of(node);
+        const auto choices = [&](int boardNum, Stockfish::Color side) {
+            return board.side_to_move(boardNum) == side
+                ? static_cast<uint32_t>(board.legal_moves(boardNum).size()) + 1
+                : 1u;
+        };
+        const uint32_t actions = std::max(
+            1u, choices(BOARD_A, team) * choices(BOARD_B, ~team) - 1);
+        node.proof = node.attackerToPlay ? 1 : actions;
+        node.disproof = node.attackerToPlay ? actions : 1;
+    };
+    const auto key_of = [&](const PnNode& node) {
+        return board.search_hash_key(team_of(node), node.time)
+            ^ (static_cast<uint64_t>(node.movesLeft + 1)
+               * 0x9e3779b97f4a7c15ULL);
+    };
+
+    ExhaustiveMateResult result;
+    PnNode root;
+    root.time = time;
+    root.movesLeft = maxAttackerMoves;
+    nodes.push_back(root);
+    const JointMateStatus rootStatus = terminal(time);
+    if (rootStatus != JointMateStatus::UNKNOWN || maxAttackerMoves <= 0) {
+        settle(nodes[0], rootStatus == JointMateStatus::PROVEN
+            ? rootStatus : JointMateStatus::REFUTED);
+    } else {
+        initialise(nodes[0]);
+    }
+
+    std::vector<uint32_t> path;  // Nodes from the root.
+    std::vector<PnEdge> pathEdges;  // The edge into each node but the root.
+    // Checks on either board and captures, which are what attackers most
+    // often mate with; the root takes every action at once.
+    const auto forcing = [&](const JointActionCandidate& action) {
+        const auto forces = [&](int boardNum, Stockfish::Move move) {
+            return move != Stockfish::MOVE_NONE
+                && (board.gives_check(boardNum, move)
+                    || board.is_capture(boardNum, move));
+        };
+        return forces(BOARD_A, action.moveA) || forces(BOARD_B, action.moveB);
+    };
+    // The board stands at the node. Adds the node's actions - an attacker
+    // node's forcing ones on expansion and its quiet ones when widened -
+    // as edges to new or shared children.
+    const auto add_children = [&](uint32_t index, bool widen) {
+        const PnNode parent = PnNode{
+            {}, 0, 0, 0, nodes[index].time, nodes[index].movesLeft,
+            nodes[index].attackerToPlay, false};
+        const Stockfish::Color toPlay = team_of(parent);
+        const vector<JointActionCandidate> actions =
+            legal_joint_actions(board, toPlay, parent.time);
+        const TimeState childTime = parent.time.after(
+            toPlay, board.on_turn_on_both_boards(toPlay));
+        const bool split = parent.attackerToPlay && index != 0;
+        std::vector<PnEdge> added;
+        uint32_t quiet = 0;
+        for (const JointActionCandidate& action : actions) {
+            if (split) {
+                const bool isForcing = forcing(action);
+                if (isForcing == widen) {
+                    quiet += isForcing ? 0 : 1;
+                    continue;
+                }
+            }
+            PnEdge edge{NO_NODE, action.moveA, action.moveB};
+            PnNode child;
+            child.time = childTime;
+            child.attackerToPlay = !parent.attackerToPlay;
+            child.movesLeft = parent.movesLeft
+                - (parent.attackerToPlay ? 1 : 0);
+            JointMateStatus status = JointMateStatus::UNKNOWN;
+            // At the root, a first action the opponents answer with a mate
+            // they already hold never gets its follow-up.
+            if (index == 0
+                && action_loses_mate_race(
+                    board, action, teamSide, parent.time)) {
+                status = JointMateStatus::REFUTED;
+            }
+            const bool defenderFeeds = !parent.attackerToPlay
+                && ((action.moveA != Stockfish::MOVE_NONE
+                     && board.is_capture(BOARD_A, action.moveA))
+                    || (action.moveB != Stockfish::MOVE_NONE
+                        && board.is_capture(BOARD_B, action.moveB)));
+            make(edge);
+            if (status == JointMateStatus::UNKNOWN) {
+                // A defender's capture is in their partner's hand at once: a
+                // drop it makes a mate ends the line before we move again.
+                JointActionCandidate raceMate;
+                status = defenderFeeds && find_immediate_root_mate(
+                        board, ~teamSide, childTime, raceMate)
+                    ? JointMateStatus::REFUTED : terminal(childTime);
+            }
+            if (status == JointMateStatus::UNKNOWN && child.attackerToPlay
+                && child.movesLeft <= 0) {
+                status = JointMateStatus::REFUTED;
+            }
+            if (status != JointMateStatus::UNKNOWN) {
+                settle(child, status);
+                edge.child = static_cast<uint32_t>(nodes.size());
+                nodes.push_back(child);
+            } else {
+                const uint64_t key = key_of(child);
+                const auto found = table.find(key);
+                // A node on the current line would close a cycle; the
+                // repetition rule ends most of those, and the rest get a
+                // node of their own.
+                if (found != table.end()
+                    && std::find(path.begin(), path.end(), found->second)
+                        == path.end()) {
+                    edge.child = found->second;
+                } else {
+                    initialise(child);
+                    edge.child = static_cast<uint32_t>(nodes.size());
+                    nodes.push_back(child);
+                    if (found == table.end()) {
+                        table.emplace(key, edge.child);
+                    }
+                }
+            }
+            unmake(edge);
+            added.push_back(edge);
+        }
+        PnNode& expanded = nodes[index];
+        expanded.expanded = true;
+        expanded.pendingQuiet = widen ? 0 : quiet;
+        expanded.edges.insert(expanded.edges.end(), added.begin(), added.end());
+    };
+    // Attacker nodes need one proven child, defender nodes all of them.
+    const auto update = [&](uint32_t index) {
+        PnNode& node = nodes[index];
+        if (!node.expanded) {
+            return;
+        }
+        if (node.edges.empty() && node.pendingQuiet == 0) {
+            settle(node, JointMateStatus::REFUTED);
+            return;
+        }
+        uint32_t minimum = INFINITE;
+        uint32_t sum = 0;
+        for (const PnEdge& edge : node.edges) {
+            const PnNode& next = nodes[edge.child];
+            minimum = std::min(
+                minimum, node.attackerToPlay ? next.proof : next.disproof);
+            sum = add(sum, node.attackerToPlay ? next.disproof : next.proof);
+        }
+        if (node.pendingQuiet > 0) {
+            // The quiet actions not yet added: each one more child to refute.
+            minimum = std::min(minimum, QUIET_PROOF);
+            sum = add(sum, node.pendingQuiet);
+        }
+        node.proof = node.attackerToPlay ? minimum : sum;
+        node.disproof = node.attackerToPlay ? sum : minimum;
+    };
+
+    while (nodes[0].proof != 0 && nodes[0].disproof != 0
+           && nodes.size() < maxNodes) {
+        path.assign(1, 0);
+        pathEdges.clear();
+        uint32_t current = 0;
+        bool widen = false;
+        while (nodes[current].expanded) {
+            const PnNode& node = nodes[current];
+            uint32_t best = 0;
+            uint32_t bestValue = INFINITE + 1;
+            for (uint32_t edge = 0; edge < node.edges.size(); ++edge) {
+                const PnNode& next = nodes[node.edges[edge].child];
+                const uint32_t value = node.attackerToPlay
+                    ? next.proof : next.disproof;
+                if (value < bestValue) {
+                    best = edge;
+                    bestValue = value;
+                }
+            }
+            if (node.attackerToPlay && node.pendingQuiet > 0
+                && QUIET_PROOF <= bestValue) {
+                widen = true;
+                break;
+            }
+            const PnEdge edge = node.edges[best];
+            make(edge);
+            current = edge.child;
+            path.push_back(current);
+            pathEdges.push_back(edge);
+        }
+        add_children(current, widen);
+        for (size_t depth = path.size(); depth-- > 0;) {
+            update(path[depth]);
+            if (depth > 0) {
+                unmake(pathEdges[depth - 1]);
+            }
+        }
+    }
+    result.nodes = nodes.size();
+    result.status = nodes[0].proof == 0 ? Status::PROVEN
+        : nodes[0].disproof == 0 ? Status::NO_WIN : Status::UNKNOWN;
+    if (result.status != Status::PROVEN) {
+        return result;
+    }
+
+    // Attacker actions to mate from a proven node: the attackers take their
+    // quickest proven action, the defenders their longest defence.
+    constexpr int IN_PROGRESS = -2;
+    std::vector<int> length(nodes.size(), -1);
+    std::function<int(uint32_t)> measure = [&](uint32_t index) {
+        if (length[index] == IN_PROGRESS) {
+            return std::numeric_limits<int>::max() / 2;
+        }
+        if (length[index] >= 0) {
+            return length[index];
+        }
+        length[index] = IN_PROGRESS;
+        const PnNode& node = nodes[index];
+        int moves = 0;
+        if (node.expanded && !node.edges.empty()) {
+            moves = node.attackerToPlay ? std::numeric_limits<int>::max() / 2 : 0;
+            for (const PnEdge& edge : node.edges) {
+                const uint32_t child = edge.child;
+                if (nodes[child].proof != 0) {
+                    continue;
+                }
+                const int childMoves = measure(child)
+                    + (node.attackerToPlay ? 1 : 0);
+                moves = node.attackerToPlay ? std::min(moves, childMoves)
+                                            : std::max(moves, childMoves);
+            }
+        }
+        return length[index] = moves;
+    };
+    result.attackerMoves = measure(0);
+
+    // Walk the proof again down the attackers' quickest actions: every node
+    // on it must be open under this line's own history, each chosen attacker
+    // action legal, every legal defence an edge of its defender node and
+    // proven, and every leaf mate.
+    bool verified = result.attackerMoves <= maxAttackerMoves;
+    const auto quickest = [&](const PnNode& node) {
+        const PnEdge* chosen = nullptr;
+        for (const PnEdge& edge : node.edges) {
+            if (nodes[edge.child].proof != 0) {
+                continue;
+            }
+            if (!chosen || (node.attackerToPlay
+                    ? measure(edge.child) < measure(chosen->child)
+                    : measure(edge.child) > measure(chosen->child))) {
+                chosen = &edge;
+            }
+        }
+        return chosen;
+    };
+    std::function<void(uint32_t, int)> verify = [&](uint32_t index, int depth) {
+        if (!verified) {
+            return;
+        }
+        const PnNode& node = nodes[index];
+        const JointMateStatus status = terminal(node.time);
+        if (!node.expanded) {
+            verified = status == JointMateStatus::PROVEN;
+            return;
+        }
+        if (status != JointMateStatus::UNKNOWN || depth > 2 * maxAttackerMoves) {
+            verified = false;
+            return;
+        }
+        const vector<JointActionCandidate> actions =
+            legal_joint_actions(board, team_of(node), node.time);
+        const auto listed = [&](const PnEdge& edge) {
+            return std::any_of(
+                actions.begin(), actions.end(),
+                [&](const JointActionCandidate& action) {
+                    return action.moveA == edge.moveA
+                        && action.moveB == edge.moveB;
+                });
+        };
+        if (node.attackerToPlay) {
+            const PnEdge* chosen = quickest(node);
+            if (!chosen || !listed(*chosen)) {
+                verified = false;
+                return;
+            }
+            const PnEdge edge = *chosen;
+            make(edge);
+            verify(edge.child, depth + 1);
+            unmake(edge);
+            return;
+        }
+        if (actions.size() != node.edges.size() || node.pendingQuiet != 0) {
+            verified = false;
+            return;
+        }
+        for (const PnEdge& edge : std::vector<PnEdge>(node.edges)) {
+            if (!listed(edge) || nodes[edge.child].proof != 0) {
+                verified = false;
+                return;
+            }
+            make(edge);
+            verify(edge.child, depth + 1);
+            unmake(edge);
+            if (!verified) {
+                return;
+            }
+        }
+    };
+    verify(0, 0);
+    result.verified = verified;
+
+    uint32_t index = 0;
+    for (int steps = 0; nodes[index].expanded
+             && steps <= 2 * std::max(1, maxAttackerMoves); ++steps) {
+        const PnEdge* next = quickest(nodes[index]);
+        if (!next) {
+            break;
+        }
+        result.line.push_back(MateProofPly{next->moveA, next->moveB});
+        index = next->child;
+    }
+    result.pv = format_mate_proof_pv(board, result.line, teamSide, time);
+    return result;
+}

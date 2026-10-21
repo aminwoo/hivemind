@@ -125,5 +125,11 @@ public:
     void new_game();
     void position(std::istringstream& is);
     void policy();
+    /**
+     * "mateoracle [maxAttackerMoves] [maxNodes]": the offline exhaustive mate
+     * oracle on the current position, team and clock; prints one info line
+     * and then "oracleok".
+     */
+    void mate_oracle(std::istringstream& is);
     void loop();
 };

@@ -142,7 +142,9 @@ TEST_F(RootMateSearchTest, CertifiedConditionalMateWinsBehindOnTime) {
     EXPECT_NE(output.find("conditional root mate: 1 found, 1 certified"),
               std::string::npos) << output;
     EXPECT_EQ(agent.root_type(), NodeType::WIN);
-    // 1.Kf7 Kh7 2.Rh1# and 1.Kg6 Kg8 2.Ra8# are both mates in two.
+    // 1.Kf7 Kh7 2.Rh1# and 1.Kg6 Kg8 2.Ra8# mate in two on board A, but
+    // 300 ms behind the defenders can also sit there, so the whole mate
+    // takes six attacker actions (see ExhaustiveOracleCountsTheSitsTheLeadBuys).
     const std::string kingStep = board.uci_move(BOARD_A, action.moveA);
     EXPECT_TRUE(kingStep == "f6f7" || kingStep == "f6g6") << kingStep;
     EXPECT_TRUE(board.is_legal_move(BOARD_B, action.moveB));
