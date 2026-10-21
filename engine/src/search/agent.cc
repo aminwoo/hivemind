@@ -1541,6 +1541,10 @@ struct JointMateProof {
     int pliesToMate = 0;
     MateJointAction action;
     std::shared_ptr<const JointMateProofLine> principalVariation;
+    // A refutation that somewhere ran out of attacker moves: a deeper
+    // horizon could still prove it. Otherwise every line it refuted was
+    // answered by the defence within the forcing moves searched.
+    bool depthLimited = false;
 };
 
 struct JointMateCacheKey {
@@ -1959,7 +1963,9 @@ JointMateProof search_joint_forced_mate(
 
     const bool attackerToPlay = teamToPlay == attackingTeam;
     if (attackerToPlay && attackerMovesRemaining <= 0) {
-        return {JointMateStatus::REFUTED, 0, {}};
+        JointMateProof outOfMoves{JointMateStatus::REFUTED, 0, {}};
+        outOfMoves.depthLimited = true;
+        return outOfMoves;
     }
     if (budget.exhausted || budget.out_of_time()) {
         budget.exhausted = true;
@@ -2237,6 +2243,8 @@ JointMateProof search_joint_forced_mate(
                 }
                 if (child.status == JointMateStatus::REFUTED) {
                     open[index] = 0;
+                    result.depthLimited =
+                        result.depthLimited || child.depthLimited;
                     continue;
                 }
                 anyUnknown = true;
@@ -2340,6 +2348,7 @@ JointMateProof search_joint_forced_mate(
 
         if (child.status == JointMateStatus::REFUTED) {
             result = {JointMateStatus::REFUTED, 0, {}};
+            result.depthLimited = child.depthLimited;
             return true;
         }
         if (child.status == JointMateStatus::UNKNOWN) {
@@ -3563,9 +3572,26 @@ bool Agent::certify_mate_candidate(
     int& outPlyToMate,
     MateCertificateTier& outTier,
     const Node* treeNode,
-    JointActionCandidate* outAction) {
+    JointActionCandidate* outAction,
+    MateCertificateFailure* outFailure) {
     outPlyToMate = 0;
     outTier = MateCertificateTier::NONE;
+    MateCertificateFailure failure = MateCertificateFailure::ILLEGAL;
+    const auto note_failure = [&](MateCertificateFailure reason) {
+        failure = std::max(failure, reason);
+    };
+    // Reports the most hopeful reason on every way out that certifies nothing.
+    struct FailureReport {
+        MateCertificateFailure* out;
+        const MateCertificateFailure& failure;
+        const MateCertificateTier& tier;
+        ~FailureReport() {
+            if (out) {
+                *out = tier == MateCertificateTier::NONE
+                    ? failure : MateCertificateFailure::NONE;
+            }
+        }
+    } failureReport{outFailure, failure, outTier};
     // No lead check here: a team that may not sit has no sat-board tier
     // (sitsThroughLine below), but the joint tier plays the real clock -
     // every sit, wait and capture of the defenders - so it may certify a
@@ -3573,6 +3599,7 @@ bool Agent::certify_mate_candidate(
     if (candidatePlyToMate <= 0
         || budget.exhausted || budget.remainingNodes == 0
         || budget.out_of_time()) {
+        note_failure(MateCertificateFailure::BUDGET);
         return false;
     }
     const bool proposedMovesA = proposed.moveA != Stockfish::MOVE_NONE;
@@ -3590,6 +3617,8 @@ bool Agent::certify_mate_candidate(
     const bool losesRace = action_loses_mate_race(
         board, candidate, teamSide, time, &budget);
     if (losesRace || budget.exhausted || budget.out_of_time()) {
+        note_failure(losesRace ? MateCertificateFailure::RACE
+                               : MateCertificateFailure::BUDGET);
         return false;
     }
 
@@ -3621,6 +3650,8 @@ bool Agent::certify_mate_candidate(
         return true;
     }
     if (terminal == JointMateStatus::REFUTED || budget.exhausted) {
+        note_failure(budget.exhausted ? MateCertificateFailure::BUDGET
+                                      : MateCertificateFailure::REFUTED);
         restore();
         return false;
     }
@@ -3679,6 +3710,7 @@ bool Agent::certify_mate_candidate(
                 return true;
             }
             if (budget.exhausted) {
+                note_failure(MateCertificateFailure::BUDGET);
                 restore();
                 return false;
             }
@@ -3697,6 +3729,7 @@ bool Agent::certify_mate_candidate(
                 return true;
             }
             if (budget.exhausted) {
+                note_failure(MateCertificateFailure::BUDGET);
                 restore();
                 return false;
             }
@@ -3733,6 +3766,11 @@ bool Agent::certify_mate_candidate(
         budget, cache, false, candidateNode.get(), waitingBoard);
     restore();
     if (proof.status != JointMateStatus::PROVEN) {
+        note_failure(proof.status == JointMateStatus::UNKNOWN
+                || budget.exhausted
+            ? MateCertificateFailure::BUDGET
+            : proof.depthLimited ? MateCertificateFailure::DEPTH
+            : MateCertificateFailure::REFUTED);
         return false;
     }
     outPlyToMate = proof.pliesToMate + 1;
@@ -4067,12 +4105,16 @@ bool Agent::find_root_mate_impl(
     SingleBoardMateCache* singleBoardMateCache,
     const Node* stopOnSolvedRoot,
     bool stopAtFirstProof,
-    bool* outComplete) {
+    bool* outComplete,
+    bool* outDepthLimited) {
     if (outPrincipalVariation) {
         outPrincipalVariation->clear();
     }
     if (outComplete) {
         *outComplete = false;
+    }
+    if (outDepthLimited) {
+        *outDepthLimited = false;
     }
     // Every budget this scan creates shares one wall-clock stop, so the whole
     // pre-pass honours the caller's deadline no matter which branch it takes.
@@ -5078,6 +5120,9 @@ bool Agent::find_root_mate_impl(
                 stopOnSolvedRoot);
             if (proof.status == JointMateStatus::PROVEN) {
                 return publish_proof(proof);
+            }
+            if (outDepthLimited && proof.status == JointMateStatus::REFUTED) {
+                *outDepthLimited = proof.depthLimited;
             }
             if (proof.status != JointMateStatus::REFUTED || budget.exhausted) {
                 jointComplete = false;
@@ -6214,6 +6259,70 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         int promoted = 0;
     } conditionalRootMates;
     FrozenRaceStats frozenRaceStats;
+    // Where this search's proofs came from, and how each mate finder that
+    // found none ended: one line per verbose search, to tell the finders a
+    // team behind on time lacks from the mates it genuinely does not have.
+    // The scan and probe threads write it; the line is printed once every
+    // one of them has been joined.
+    struct MateTelemetry {
+        atomic<int> scanRounds{0};
+        atomic<uint64_t> scanNodes{0};
+        atomic<const char*> scanEnd{"none"};
+        atomic<bool> scanDepthLimited{false};
+        atomic<int64_t> scanWinMs{-1};
+        atomic<int64_t> lossScanMs{-1};
+        atomic<int64_t> probeWinMs{-1};
+        atomic<int64_t> verifierStartMs{-1};
+        int conditionalTried = 0;
+        MateCertificateFailure conditionalFailure =
+            MateCertificateFailure::NONE;
+        int64_t treeWinMs = -1;
+        int64_t treeLossMs = -1;
+    } mateTelemetry;
+    const auto search_ms = [&] {
+        return static_cast<int64_t>(
+            chrono::duration_cast<chrono::milliseconds>(
+                chrono::steady_clock::now() - searchStart).count());
+    };
+    const auto failure_name = [](MateCertificateFailure failure) {
+        switch (failure) {
+        case MateCertificateFailure::NONE: return "none";
+        case MateCertificateFailure::ILLEGAL: return "illegal";
+        case MateCertificateFailure::RACE: return "race";
+        case MateCertificateFailure::REFUTED: return "refuted";
+        case MateCertificateFailure::DEPTH: return "depth";
+        case MateCertificateFailure::BUDGET: return "budget";
+        }
+        return "none";
+    };
+    struct MateTelemetryReport {
+        std::function<void()> report;
+        ~MateTelemetryReport() { report(); }
+    } mateTelemetryReport{[&] {
+        if (!options.verbose) {
+            return;
+        }
+        const MateTelemetry& t = mateTelemetry;
+        cout << "info string mate telemetry lead="
+             << (searchTime_.is_clocked()
+                     ? std::to_string(searchTime_.lead_ms(teamSide))
+                     : searchTime_.can_sit(teamSide) ? "flag+" : "flag-")
+             << " scan_rounds=" << t.scanRounds.load()
+             << " scan_nodes=" << t.scanNodes.load()
+             << " scan_end=" << t.scanEnd.load()
+             << " scan_depth=" << (t.scanDepthLimited.load() ? 1 : 0)
+             << " scan_win_ms=" << t.scanWinMs.load()
+             << " probe=" << (searchTime_.can_sit(teamSide) ? 1 : 0)
+             << " probe_win_ms=" << t.probeWinMs.load()
+             << " cond_tried=" << t.conditionalTried
+             << " cond_found=" << conditionalRootMates.found
+             << " cond_cert=" << conditionalRootMates.certified
+             << " cond_fail=" << failure_name(t.conditionalFailure)
+             << " tree_win_ms=" << t.treeWinMs
+             << " tree_loss_ms=" << t.treeLossMs
+             << " loss_scan_ms=" << t.lossScanMs.load()
+             << " verifier_start_ms=" << t.verifierStartMs.load() << endl;
+    }};
     thread rootProbeThread;
 
     // The concurrent verifier's verdict on each root action, by action. A
@@ -6308,6 +6417,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 };
                 const auto publish = [&] {
                     lock_guard<std::mutex> guard(rootProbeMutex);
+                    int64_t unset = -1;
+                    mateTelemetry.probeWinMs.compare_exchange_strong(
+                        unset, search_ms());
                     rootProbeFoundMate = true;
                     rootProbeAction = action;
                     rootProbePly = plyToMate;
@@ -6370,6 +6482,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     // proven one. Unproven, it only orders the tree.
                     if (!rootFound && conditionalNodes > 0
                         && !rootSettled()) {
+                        ++mateTelemetry.conditionalTried;
                         const auto conditionalStart =
                             MateSearchBudget::Clock::now();
                         JointActionCandidate conditional;
@@ -6407,7 +6520,8 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                                     conditional, conditionalPly,
                                     certificateBudget, certifiedPly,
                                     certificateTier, probeRoot.get(),
-                                    &certified)) {
+                                    &certified,
+                                    &mateTelemetry.conditionalFailure)) {
                                 ++conditionalRootMates.certified;
                                 action = certified;
                                 plyToMate = certifiedPly;
@@ -6670,6 +6784,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     if (!runConcurrentVerifier || rootFound) {
                         return;
                     }
+                    mateTelemetry.verifierStartMs.store(search_ms());
                     // The verifier: the leading root actions, each played
                     // on the private board and asked whether the opponents
                     // then have a proven mate. Fairy first for the
@@ -6934,14 +7049,22 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         rootWinScanStop_, mateRoot.get(),
                         SearchParams::ROOT_SCAN_FIRST_ROUND_NODES,
                         [&](uint64_t roundNodes, bool& complete) {
+                            bool depthLimited = false;
                             const bool found = find_root_mate_impl(
                                 *mateBoard, teamSide, searchTime_,
                                 backgroundMateAction, backgroundMatePly,
                                 roundNodes, &mateContinuations_, nullptr,
                                 true, {}, includeImmediateMate && firstRound,
                                 false, &backgroundMatePv, &rootWinScanStop_,
-                                nullptr, mateRoot.get(), true, &complete);
+                                nullptr, mateRoot.get(), true, &complete,
+                                &depthLimited);
                             firstRound = false;
+                            ++mateTelemetry.scanRounds;
+                            mateTelemetry.scanNodes += roundNodes;
+                            mateTelemetry.scanDepthLimited.store(depthLimited);
+                            mateTelemetry.scanEnd.store(
+                                found ? "proof" : complete ? "complete"
+                                                           : "cut");
                             // A larger round would find the same first proof,
                             // so one that loses the race ends the scan too.
                             accepted = found
@@ -6953,6 +7076,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         chrono::duration_cast<chrono::nanoseconds>(
                             chrono::steady_clock::now() - searchStart).count());
                     if (accepted) {
+                        mateTelemetry.scanWinMs.store(search_ms());
                         // Publish the complete proof before stopping the tree.
                         // Interrupt a reverse scan too: the mate answers it.
                         rootMateFound.store(true, memory_order_release);
@@ -7124,6 +7248,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         chrono::duration_cast<chrono::nanoseconds>(
                             chrono::steady_clock::now() - searchStart).count());
                     if (lost) {
+                        mateTelemetry.lossScanMs.store(search_ms());
                         // Every action loses: nothing the tree or the other
                         // scans can find changes the move.
                         rootLossProven.store(true, memory_order_release);
@@ -7617,6 +7742,21 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
 
     // Periodic info output during search (UCI verbose mode only)
     // Also handles early stopping and time extension
+    // When the tree, with the proofs attached to it, first holds the root
+    // solved; the scans' own proofs end the search before it would.
+    const auto note_tree_proof = [&] {
+        if (!rootNode) {
+            return;
+        }
+        const NodeType rootType = rootNode->get_node_type();
+        int64_t& seen = rootType == NodeType::WIN ? mateTelemetry.treeWinMs
+            : rootType == NodeType::LOSS ? mateTelemetry.treeLossMs
+            : mateTelemetry.treeWinMs;
+        if (rootType != NodeType::UNSOLVED && rootType != NodeType::DRAW
+            && seen < 0) {
+            seen = search_ms();
+        }
+    };
     constexpr int POLL_INTERVAL_MS = 5;
     bool nodeSearchStalled = false;
     int stalledCompletedNodes = 0;
@@ -7629,6 +7769,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         while (running && (isPondering_.load(std::memory_order_relaxed)
                            || searchInfo.elapsed() < searchInfo.get_effective_move_time())) {
             apply_root_loss_proofs();
+            note_tree_proof();
             // A mate the probe landed mid-move ends the search the way MCTS
             // proving one does; the collapse below the loop reports it.
             if (probe_mate_ends_search()) {
@@ -7762,6 +7903,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         while (running && (isPondering_.load(std::memory_order_relaxed)
                            || searchInfo.elapsed() < searchInfo.get_effective_move_time())) {
             apply_root_loss_proofs();
+            note_tree_proof();
             if (probe_mate_ends_search()) {
                 running = false;
                 break;
@@ -7875,6 +8017,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         auto lastNodeProgress = std::chrono::steady_clock::now();
         while (running) {
             apply_root_loss_proofs();
+            note_tree_proof();
             if (probe_mate_ends_search()) {
                 running = false;
                 break;
@@ -7928,6 +8071,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
     }
     
     // Signal workers and the root mate scan to stop.
+    note_tree_proof();
     running = false;
     rootWinScanStop_.store(true, memory_order_release);
     isPondering_.store(false, std::memory_order_release);
