@@ -185,6 +185,14 @@ struct LossScanShare {
     std::atomic<uint64_t> remainingNodes{0};
 };
 
+/** What one loss scan did with the opponents' direct-threat certificates. */
+struct LossScanStats {
+    /** Certificate searches run, at most one per distinct untouched board. */
+    uint64_t certificateSearches = 0;
+    /** Defenses proven lost by a certificate instead of their own search. */
+    uint64_t certificateProofs = 0;
+};
+
 /**
  * @brief Manages multi-threaded MCGS (Monte Carlo Graph Search) for Bughouse.
  *
@@ -887,7 +895,9 @@ public:
         // defenses). Each call returns the known proofs and those it found;
         // whether every defense loses is for the caller to tell from their
         // union.
-        LossScanShare* share = nullptr);
+        LossScanShare* share = nullptr,
+        // Counts this call's certificate searches and the proofs they gave.
+        LossScanStats* stats = nullptr);
     
     /**
      * @brief Extracts PV line starting from a specific child index.

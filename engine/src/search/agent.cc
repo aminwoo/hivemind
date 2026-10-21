@@ -5173,7 +5173,8 @@ bool Agent::find_root_loss_proofs(
     bool* outComplete,
     const std::function<void(const RootLossProof&)>& onProof,
     const vector<RootLossProof>* knownProofs,
-    LossScanShare* share) {
+    LossScanShare* share,
+    LossScanStats* stats) {
     outProofs.clear();
     if (outComplete) {
         *outComplete = false;
@@ -5528,6 +5529,105 @@ bool Agent::find_root_loss_proofs(
         return false;
     };
 
+    // A defense that leaves the opponents on turn on both boards and does not
+    // touch one of them leaves that board exactly as every other such defense
+    // does. While their lead pays for every action of a mating line there,
+    // they can sit the other board for the whole line, and this team, on turn
+    // on neither board, only ever answers the checks. A partner-board-agnostic
+    // proof assumes nothing about the other board, so one proof, made once per
+    // untouched board position, answers every such defense. Without this each
+    // defense re-proved the same mate inside its own small share of the round.
+    struct DirectThreatCertificate {
+        int plyToMate = 0;
+        vector<MateProofPly> line;
+    };
+    // Keyed by the untouched board and its FEN, which carries its hands: a
+    // capture on the moved board feeds the partner there and so gets its own
+    // entry. Empty when the search found no mate or ran out; either way it is
+    // not repeated within this call, and the defense keeps its own search.
+    std::unordered_map<string, std::optional<DirectThreatCertificate>>
+        directThreats;
+    int certificateAttackerMoves = 0;
+    for (int moves = SearchParams::ROOT_LOSS_DIRECT_SCOUT_MAX_ATTACKER_MOVES;
+         moves >= 1; --moves) {
+        if (defenseTime.can_sit_through(opponentTeam, moves)) {
+            certificateAttackerMoves = moves;
+            break;
+        }
+    }
+    const auto try_direct_threat_certificate = [&](
+        const JointActionCandidate& defense,
+        uint64_t& defenseAllowance,
+        int& opponentMatePly,
+        vector<MateProofPly>& opponentPv) {
+        if (certificateAttackerMoves == 0
+            || board.side_to_move(BOARD_A) != opponentTeam
+            || board.side_to_move(BOARD_B) != teamSide) {
+            return false;
+        }
+        const bool movedA = defense.moveA != Stockfish::MOVE_NONE;
+        const bool movedB = defense.moveB != Stockfish::MOVE_NONE;
+        if (movedA == movedB) {
+            return false;
+        }
+        const int threatBoard = movedA ? BOARD_B : BOARD_A;
+        const int movedBoard = 1 - threatBoard;
+        // The opponents must be able to sit the moved board: not in check
+        // there and with a move to sit on. A check is not necessarily a
+        // refutation, but its defense keeps its own search.
+        if (board.is_in_check(movedBoard)
+            || !board.has_any_legal_move(movedBoard)) {
+            return false;
+        }
+
+        const string key = std::to_string(threatBoard) + ":"
+            + board.fen(threatBoard);
+        auto entry = directThreats.find(key);
+        if (entry == directThreats.end()) {
+            MateSearchBudget certificateBudget;
+            certificateBudget.remainingNodes = std::min(
+                defenseAllowance, totalBudget.remainingNodes);
+            certificateBudget.deadline = deadline;
+            certificateBudget.cancelled = cancelled;
+            certificateBudget.stopOnSolvedRoot = liveRoot;
+            const uint64_t allowance = certificateBudget.remainingNodes;
+            std::optional<DirectThreatCertificate> found;
+            // Shortest first, so the certificate's distance is the shortest
+            // agnostic mate rather than any mate within the horizon.
+            const Stockfish::Color attacker = board.side_to_move(threatBoard);
+            for (int moves = 1; moves <= certificateAttackerMoves
+                     && !certificateBudget.exhausted; ++moves) {
+                Stockfish::Move mateMove = Stockfish::MOVE_NONE;
+                DirectThreatCertificate certificate;
+                if (search_single_board_forced_mate_impl(
+                        board, threatBoard, attacker, 1, moves, mateMove,
+                        certificate.plyToMate, &certificateBudget, nullptr,
+                        true, &certificate.line)
+                    && !certificate.line.empty()) {
+                    found = std::move(certificate);
+                    break;
+                }
+            }
+            const uint64_t used = allowance - certificateBudget.remainingNodes;
+            defenseAllowance -= std::min(defenseAllowance, used);
+            totalBudget.remainingNodes -= std::min(
+                totalBudget.remainingNodes, used);
+            if (stats) {
+                ++stats->certificateSearches;
+            }
+            entry = directThreats.emplace(key, std::move(found)).first;
+        }
+        if (!entry->second) {
+            return false;
+        }
+        opponentMatePly = entry->second->plyToMate;
+        opponentPv = entry->second->line;
+        if (stats) {
+            ++stats->certificateProofs;
+        }
+        return true;
+    };
+
     if (share) {
         totalBudget.remainingNodes = 0;
     }
@@ -5619,10 +5719,21 @@ bool Agent::find_root_loss_proofs(
                     ? std::max(fairAllocation, focusedAllocation)
                     : fairAllocation);
 
+            std::vector<MateProofPly> certificatePv;
+            int certificateMatePly = 0;
+            if (try_direct_threat_certificate(
+                    defense, defenseAllocation,
+                    certificateMatePly, certificatePv)) {
+                defenseIsMated = true;
+                totalLossPly = certificateMatePly + 1;
+                principalVariation.insert(
+                    principalVariation.end(),
+                    certificatePv.begin(), certificatePv.end());
+            }
             std::vector<MateProofPly> waitingCheckPv;
             int waitingCheckMatePly = 0;
             waitingChecksSearched = false;
-            if (defenseIndex < focusedDefenseCount
+            if (!defenseIsMated && defenseIndex < focusedDefenseCount
                 && try_time_ahead_waiting_check(
                     defenseAllocation,
                     waitingCheckMatePly, waitingCheckPv)) {

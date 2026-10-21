@@ -163,3 +163,91 @@ TEST_F(RootScanStopTest, LossScanKeepsKnownProofs) {
         nullptr, true, nullptr, {}, &half));
     EXPECT_EQ(proven_actions(rest), proven_actions(all));
 }
+
+namespace {
+
+// Black on board A is on turn with a queen in hand and mates in three,
+// Q@h2+ Nxh2 N@g3+ fxg3 N@f2#, whatever our team (White on A, Black on B)
+// plays on board B: every check is a contact or knight check, and our
+// partner on A cannot move until the opponents do.
+constexpr const char* kSharedThreatBoardA =
+    "r4r1k/ppp3pp/6p1/3pP1N1/5bN1/2P4P/P1P2PB1/6RK[PBBBnnq] b - - 0 1";
+constexpr const char* kSharedThreatBoardB =
+    "4k1n1/p1ppbpbp/4pb2/6pN/3P2P1/6PK/PPP1PP2/R2Q1R2[PNRQppnrrq] b - - 0 1";
+
+}  // namespace
+
+// Every quiet board-B defense leaves board A as it was, so one proof of the
+// board-A mate answers all of them. A budget far too small to prove the mate
+// once per defense still proves the whole root lost.
+TEST_F(RootScanStopTest, LossScanSharesOneDirectThreatProof) {
+    Board board;
+    board.set_fen(BOARD_A, kSharedThreatBoardA);
+    board.set_fen(BOARD_B, kSharedThreatBoardB);
+    const TimeState time = TimeState::clocked(Stockfish::WHITE, -600);
+
+    std::vector<RootLossProof> proofs;
+    LossScanStats stats;
+    EXPECT_TRUE(Agent::find_root_loss_proofs(
+        board, Stockfish::WHITE, time, proofs, 100000, {}, nullptr, nullptr,
+        nullptr, true, nullptr, {}, nullptr, nullptr, &stats));
+    bool provedCapture = false;
+    for (const RootLossProof& proof : proofs) {
+        ASSERT_FALSE(proof.principalVariation.empty());
+        EXPECT_EQ(proof.principalVariation.front().moveA,
+                  proof.action.moveA);
+        EXPECT_EQ(proof.principalVariation.front().moveB,
+                  proof.action.moveB);
+        // Our defense, then Q@h2+ Nxh2 N@g3+ fxg3 N@f2#.
+        EXPECT_EQ(proof.plyToMate, 6);
+        EXPECT_EQ(proof.principalVariation.size(), 6u);
+        provedCapture = provedCapture
+            || (proof.action.moveB != Stockfish::MOVE_NONE
+                && board.is_capture(BOARD_B, proof.action.moveB));
+    }
+    // Quiet defenses share one certificate; each capture feeds our partner
+    // on A a piece, changes board A's hand and gets one of its own.
+    EXPECT_TRUE(provedCapture);
+    EXPECT_GE(stats.certificateSearches, 2u);
+    EXPECT_LT(stats.certificateSearches, 10u);
+    EXPECT_GT(stats.certificateProofs, 40u);
+}
+
+// The certificate sits board B for every opponent action of the line, so their
+// lead must pay for all three: at 100 ms a move that is exactly 300 ms.
+TEST_F(RootScanStopTest, DirectThreatCertificateNeedsTheLeadForTheWholeLine) {
+    Board board;
+    board.set_fen(BOARD_A, kSharedThreatBoardA);
+    board.set_fen(BOARD_B, kSharedThreatBoardB);
+
+    const auto certificate_proofs = [&](int64_t ourLeadMs) {
+        std::vector<RootLossProof> proofs;
+        LossScanStats stats;
+        Agent::find_root_loss_proofs(
+            board, Stockfish::WHITE,
+            TimeState::clocked(Stockfish::WHITE, ourLeadMs), proofs, 100000,
+            {}, nullptr, nullptr, nullptr, true, nullptr, {}, nullptr,
+            nullptr, &stats);
+        return stats.certificateProofs;
+    };
+    EXPECT_GT(certificate_proofs(-300), 0u);
+    EXPECT_EQ(certificate_proofs(-299), 0u);
+}
+
+// With our team on turn on board A as well, a defense can change board A, so
+// no defense leaves it untouched and none is answered by a certificate.
+TEST_F(RootScanStopTest, NoDirectThreatCertificateWhileWeAreOnTurnThere) {
+    Board board;
+    board.set_fen(BOARD_A,
+        "r4r1k/ppp3pp/6p1/3pP1N1/5bN1/2P4P/P1P2PB1/6RK[PBBBnnq] w - - 0 1");
+    board.set_fen(BOARD_B, kSharedThreatBoardB);
+
+    std::vector<RootLossProof> proofs;
+    LossScanStats stats;
+    Agent::find_root_loss_proofs(
+        board, Stockfish::WHITE, TimeState::clocked(Stockfish::WHITE, -600),
+        proofs, 100000, {}, nullptr, nullptr, nullptr, true, nullptr, {},
+        nullptr, nullptr, &stats);
+    EXPECT_EQ(stats.certificateSearches, 0u);
+    EXPECT_EQ(stats.certificateProofs, 0u);
+}
