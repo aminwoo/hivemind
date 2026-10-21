@@ -763,6 +763,37 @@ public:
         const std::function<void()>& onMate = {},
         bool avoidRepetition = false);
 
+    /** The verdict of prove_joint_mate_exhaustive(). */
+    struct ExhaustiveMateResult {
+        enum class Status : uint8_t { PROVEN, NO_WIN, UNKNOWN };
+        Status status = Status::UNKNOWN;
+        /// Attacker actions against the longest defence, when proven.
+        int attackerMoves = 0;
+        /// Search nodes created.
+        uint64_t nodes = 0;
+        /// The first action, then the longest defence's line, when proven.
+        std::vector<MateProofPly> line;
+        std::string pv;
+        /// The proof was walked again: every legal defence is in it and
+        /// every leaf is mate.
+        bool verified = false;
+    };
+    /**
+     * @brief Offline mate oracle for labelling positions: a proof-number
+     * search over every legal joint action of both teams under the clock.
+     *
+     * The in-search provers restrict the attackers to forcing actions; this
+     * restricts neither team, so it also plays the attackers' quiet moves and
+     * sits. Its rules are theirs - the clock, the joint-action rules, a
+     * defender capture that feeds an immediate mate, the root's mate race -
+     * except that repetitions are counted per board. PROVEN is a mate within
+     * @p maxAttackerMoves attacker actions whatever the defenders do, NO_WIN
+     * that there is none within them, UNKNOWN that @p maxNodes ran out first.
+     */
+    static ExhaustiveMateResult prove_joint_mate_exhaustive(
+        Board& board, Stockfish::Color teamSide, const TimeState& time,
+        int maxAttackerMoves, uint64_t maxNodes);
+
     /**
      * Proves that a specific Fairy candidate forces mate before publication.
      * @p treeNode, the tree's node for @p board when it has one, lets the

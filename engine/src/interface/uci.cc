@@ -919,6 +919,32 @@ void UCI::send_uci_response() {
     cout << "uciok" << endl;
 }
 
+void UCI::mate_oracle(std::istringstream& is) {
+    stop();
+    int maxAttackerMoves = 8;
+    uint64_t maxNodes = 5000000;
+    is >> maxAttackerMoves >> maxNodes;
+    const std::optional<TimeState> clock = current_clock();
+    const TimeState time = clock
+        ? *clock : TimeState::legacy(teamSide, teamHasTimeAdvantage);
+    const auto start = std::chrono::steady_clock::now();
+    const Agent::ExhaustiveMateResult result =
+        Agent::prove_joint_mate_exhaustive(
+            board, teamSide, time, maxAttackerMoves, maxNodes);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    using Status = Agent::ExhaustiveMateResult::Status;
+    std::cout << "info string mate oracle status="
+              << (result.status == Status::PROVEN ? "proven"
+                  : result.status == Status::NO_WIN ? "no_win" : "unknown")
+              << " max_moves=" << maxAttackerMoves
+              << " attacker_moves=" << result.attackerMoves
+              << " verified=" << (result.verified ? 1 : 0)
+              << " nodes=" << result.nodes << " ms=" << elapsed
+              << " pv " << result.pv << std::endl;
+    std::cout << "oracleok" << std::endl;
+}
+
 void UCI::policy() {
     stop();
     if (engines.empty()) {
@@ -1036,6 +1062,7 @@ void UCI::loop() {
             else if (token == "ucinewgame") new_game();
             else if (token == "stop")       stop();
             else if (token == "policy")     policy();
+            else if (token == "mateoracle") mate_oracle(is);
         } catch (const std::exception& error) {
             stop();
             cerr << "UCI command '" << token << "' failed: " << error.what() << endl;

@@ -6,6 +6,7 @@
 #include <chrono>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/globals.h"
@@ -1435,4 +1436,58 @@ TEST_F(MateRaceTest, MeasureFrozenRaceOnTheGame) {
             }
         }
     }
+}
+
+// The offline oracle searches every joint action of both teams under the
+// clock. A rook mate on a board whose partner board is bare kings: each
+// 100 ms the attackers are behind buys the defenders one more sit on the
+// mating board, so the same mate takes one more attacker action - the king
+// shuffles on the other board among them.
+TEST_F(MateRaceTest, ExhaustiveOracleCountsTheSitsTheLeadBuys) {
+    constexpr const char* kQuietMate = "7k/8/5K2/8/8/8/8/R7[] w - - 0 1";
+    constexpr const char* kBareKings = "7k/8/8/8/8/8/8/K7[] b - - 0 1";
+    using Status = Agent::ExhaustiveMateResult::Status;
+    for (const auto& [leadMs, moves] : {std::pair{0, 3}, std::pair{-100, 4}}) {
+        Board board;
+        board.set(std::string(kQuietMate) + "|" + kBareKings);
+        const std::string before = Agent::board_signature(board);
+        const TimeState time =
+            TimeState::clocked(Stockfish::WHITE, leadMs, 100, 100);
+
+        const auto exact = Agent::prove_joint_mate_exhaustive(
+            board, Stockfish::WHITE, time, moves, 2000000);
+        EXPECT_EQ(exact.status, Status::PROVEN) << leadMs;
+        EXPECT_EQ(exact.attackerMoves, moves) << leadMs;
+        EXPECT_TRUE(exact.verified) << leadMs;
+        EXPECT_FALSE(exact.line.empty()) << leadMs;
+
+        const auto shorter = Agent::prove_joint_mate_exhaustive(
+            board, Stockfish::WHITE, time, moves - 1, 2000000);
+        EXPECT_EQ(shorter.status, Status::NO_WIN) << leadMs;
+        EXPECT_EQ(Agent::board_signature(board), before);
+    }
+}
+
+// With a knight the opponents can win on the other board, waiting there
+// feeds the defence its blocker, and no mate is claimed. A mate on contact
+// needs no clock at all.
+TEST_F(MateRaceTest, ExhaustiveOracleClaimsNoConditionalMate) {
+    using Status = Agent::ExhaustiveMateResult::Status;
+    Board leaky;
+    leaky.set("7k/8/5K2/8/8/8/8/R7[] w - - 0 1|"
+              "2R5/8/8/7k/8/8/P7/n6K[] b - - 1 1");
+    const auto noMate = Agent::prove_joint_mate_exhaustive(
+        leaky, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, -300, 100, 100), 2, 5000000);
+    EXPECT_EQ(noMate.status, Status::NO_WIN);
+
+    Board contact;
+    contact.set("k7/2K5/8/8/8/8/8/1Q6[] w - - 0 1|"
+                "rnbqkbnr/pppp1ppp/8/4p3/3P4/8/PPP1PPPP/RNBQKBNR[] w KQkq - 0 2");
+    const auto mate = Agent::prove_joint_mate_exhaustive(
+        contact, Stockfish::WHITE,
+        TimeState::clocked(Stockfish::WHITE, -30000, 100, 100), 3, 100000);
+    EXPECT_EQ(mate.status, Status::PROVEN);
+    EXPECT_EQ(mate.attackerMoves, 1);
+    EXPECT_TRUE(mate.verified);
 }
