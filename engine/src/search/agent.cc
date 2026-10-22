@@ -9009,47 +9009,57 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
     return reused;
 }
 
-int Agent::retain_played_action(const Board& board,
-                                const JointActionCandidate& action) {
+int Agent::retain_played_line(const Board& board,
+                              const std::vector<JointActionCandidate>& line) {
     std::unique_lock searchLock(searchMutex_);
     nextRootCandidates_.clear();
-    if (!SearchParams::ENABLE_TREE_REUSE || !rootNode || !rootNode->is_expanded()) {
+    if (!SearchParams::ENABLE_TREE_REUSE || !rootNode || line.empty()) {
         return 0;
     }
-    const auto children = rootNode->get_children();
-    for (size_t index = 0; index < children.size(); ++index) {
-        const JointActionCandidate edge =
-            rootNode->get_joint_action(static_cast<int>(index));
-        if (!children[index] || edge.moveA != action.moveA
-            || edge.moveB != action.moveB) {
-            continue;
+    std::shared_ptr<Node> node = rootNode;
+    Board lineBoard(board);
+    TimeState lineTime = searchTime_;
+    for (const JointActionCandidate& action : line) {
+        if (!node->is_expanded()) {
+            return 0;
         }
-        // A child never expanded holds nothing to reuse, and one the solver
-        // settled without expanding would end the next search before it
-        // generated a single root edge. A solved child is searched afresh
-        // too: a proof found below the old root (an internal mate probe's
-        // certificate, say) can leave it solved without the child edges that
-        // show how, which is what a solved root's policy target is made of.
-        if (!children[index]->is_expanded()
-            || children[index]->get_node_type() != NodeType::UNSOLVED) {
+        std::shared_ptr<Node> next;
+        const auto children = node->get_children();
+        for (size_t index = 0; index < children.size(); ++index) {
+            const JointActionCandidate edge =
+                node->get_joint_action(static_cast<int>(index));
+            if (edge.moveA == action.moveA && edge.moveB == action.moveB) {
+                next = children[index];
+                break;
+            }
+        }
+        if (!next) {
             return 0;
         }
         // Charged as the search charged it, so the hash is the one the next
         // search computes for this position.
-        const Stockfish::Color rootTeam = rootNode->get_team_to_play();
-        TimeState nextTime = searchTime_;
-        nextTime.advance(rootTeam, board.on_turn_on_both_boards(rootTeam));
-        Board nextBoard(board);
-        nextBoard.make_moves(action.moveA, action.moveB);
-        const uint64_t positionHash = nextBoard.search_hash_key(
-            children[index]->get_team_to_play(), nextTime);
-        nextRootCandidates_.emplace(
-            positionHash,
-            RetainedRootCandidate{
-                children[index], positionHash, board_signature(nextBoard)});
-        return children[index]->get_visits();
+        const Stockfish::Color actingTeam = node->get_team_to_play();
+        lineTime.advance(actingTeam, lineBoard.on_turn_on_both_boards(actingTeam));
+        lineBoard.make_moves(action.moveA, action.moveB);
+        node = std::move(next);
     }
-    return 0;
+    // A node never expanded holds nothing to reuse, and one the solver settled
+    // without expanding would end the next search before it generated a
+    // single root edge. A solved node is searched afresh too: a proof found
+    // below the old root (a mate scan's certificate, say) can leave it solved
+    // without the child edges that show how, which is what a solved root's
+    // policy target is made of.
+    if (!node->is_expanded() || node->get_node_type() != NodeType::UNSOLVED) {
+        return 0;
+    }
+    const uint64_t positionHash = lineBoard.search_hash_key(
+        node->get_team_to_play(), lineTime);
+    const int visits = node->get_visits();
+    nextRootCandidates_.emplace(
+        positionHash,
+        RetainedRootCandidate{
+            std::move(node), positionHash, board_signature(lineBoard)});
+    return visits;
 }
 
 /**
