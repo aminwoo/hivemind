@@ -26,11 +26,14 @@
  *
  * A record whose WDL is all zero has no WDL or moves-left target. Search
  * records store root Q as the value and, when the game finished, its result as
- * a one-hot WDL (zero for games cut off at the macro-ply limit).
+ * a one-hot WDL (zero for games cut off at the macro-ply limit). A resigned
+ * game has a result but no real length: its moves-left is MOVES_LEFT_UNKNOWN.
  */
 namespace distill {
 
 constexpr int8_t OUTCOME_UNKNOWN = 2;
+/// Moves-left of -1 (IEEE half bits): the record has no moves-left target.
+constexpr uint16_t MOVES_LEFT_UNKNOWN = 0xBC00;
 
 struct PolicyEntry {
     uint16_t index;
@@ -65,11 +68,22 @@ std::vector<Stockfish::Move> policy_actions(Board& board, int boardNumber);
 /// Writes `records` to `path` atomically (through a temporary file).
 void write_chunk(const std::filesystem::path& path, const std::vector<Record>& records);
 
+/// Reads back a chunk write_chunk wrote with this build's plane count.
+std::vector<Record> read_chunk(const std::filesystem::path& path);
+
 /// Buffers records and writes `<prefix>_<index>.dst` chunks.
 class ChunkWriter {
 public:
-    ChunkWriter(std::filesystem::path directory, std::string prefix, size_t chunkPositions);
+    /// @param resume Continue after the chunks already under this prefix,
+    ///        numbered from 0 without gaps, instead of refusing to start.
+    ChunkWriter(std::filesystem::path directory, std::string prefix, size_t chunkPositions,
+                bool resume = false);
     void append(Record&& record);
+    /// Buffers without flushing, so a caller can keep a game in one chunk and
+    /// flush at its end once full() says so.
+    void append_unflushed(Record&& record) { records_.push_back(std::move(record)); }
+    bool full() const { return records_.size() >= chunkPositions_; }
+    size_t chunks_written() const { return chunkIndex_; }
     void flush();
 
 private:

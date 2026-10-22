@@ -6250,6 +6250,16 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         rootNode = reusedRoot;
         rootNode->set_hash(positionHash);
         rootNode->set_depth(0);
+        if (!options.background) {
+            rootNode->refresh_root_noise(options.search);
+        }
+        if (targetNodes > 0 && options.reusedVisitsCount) {
+            const size_t held = static_cast<size_t>(
+                std::max(0, rootNode->get_visits()));
+            targetNodes = std::max(
+                {options.minNewNodes, targetNodes > held ? targetNodes - held : 0,
+                 size_t{1}});
+        }
 
         if (options.verbose) {
             cout << "info string Tree reuse: " << rootNode->get_visits()
@@ -8133,7 +8143,16 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                 running = false;
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+            {
+                // Workers stop themselves at the target, so wake as soon as
+                // the last one finishes instead of sleeping out the interval:
+                // a short self-play search would otherwise idle its GPU
+                // stream for half an interval on average.
+                std::unique_lock lock(workerMutex_);
+                workersDoneCv_.wait_for(
+                    lock, std::chrono::milliseconds(POLL_INTERVAL_MS),
+                    [this] { return completedWorkerCount_ == activeWorkerCount_; });
+            }
             // A verbose node search (go nodes, go infinite) reports as it
             // deepens, like a timed one: an analysis front end shows nothing
             // until bestmove otherwise.
@@ -8425,8 +8444,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             // next asked about lies below it - so retain the root itself.
             nextRootCandidates_.clear();
             retain_reuse_candidates(rootNode, board, searchTime_);
-        } else {
+        } else if (options.retainForReuse) {
             store_next_root_candidates(board, searchTime_);
+        } else {
+            nextRootCandidates_.clear();
         }
         lastSearchHash_ = board.search_hash_key(teamSide, searchTime_);
     }
@@ -8986,6 +9007,49 @@ std::shared_ptr<Node> Agent::try_reuse_tree(uint64_t positionHash,
     nextRootCandidates_.clear();
 
     return reused;
+}
+
+int Agent::retain_played_action(const Board& board,
+                                const JointActionCandidate& action) {
+    std::unique_lock searchLock(searchMutex_);
+    nextRootCandidates_.clear();
+    if (!SearchParams::ENABLE_TREE_REUSE || !rootNode || !rootNode->is_expanded()) {
+        return 0;
+    }
+    const auto children = rootNode->get_children();
+    for (size_t index = 0; index < children.size(); ++index) {
+        const JointActionCandidate edge =
+            rootNode->get_joint_action(static_cast<int>(index));
+        if (!children[index] || edge.moveA != action.moveA
+            || edge.moveB != action.moveB) {
+            continue;
+        }
+        // A child never expanded holds nothing to reuse, and one the solver
+        // settled without expanding would end the next search before it
+        // generated a single root edge. A solved child is searched afresh
+        // too: a proof found below the old root (an internal mate probe's
+        // certificate, say) can leave it solved without the child edges that
+        // show how, which is what a solved root's policy target is made of.
+        if (!children[index]->is_expanded()
+            || children[index]->get_node_type() != NodeType::UNSOLVED) {
+            return 0;
+        }
+        // Charged as the search charged it, so the hash is the one the next
+        // search computes for this position.
+        const Stockfish::Color rootTeam = rootNode->get_team_to_play();
+        TimeState nextTime = searchTime_;
+        nextTime.advance(rootTeam, board.on_turn_on_both_boards(rootTeam));
+        Board nextBoard(board);
+        nextBoard.make_moves(action.moveA, action.moveB);
+        const uint64_t positionHash = nextBoard.search_hash_key(
+            children[index]->get_team_to_play(), nextTime);
+        nextRootCandidates_.emplace(
+            positionHash,
+            RetainedRootCandidate{
+                children[index], positionHash, board_signature(nextBoard)});
+        return children[index]->get_visits();
+    }
+    return 0;
 }
 
 /**

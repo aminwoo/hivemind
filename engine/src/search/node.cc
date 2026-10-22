@@ -227,6 +227,22 @@ void Node::initialize_root_gumbel_locked(
         1, config.rootGumbelInitialCandidates);
 }
 
+void Node::refresh_root_noise(const SearchParams::RuntimeConfig& config) {
+    std::unique_lock<std::shared_mutex> guard(nodeMutex);
+    // Same conditions as the noise a root gets when it is first expanded.
+    if (!m_is_expanded.load(std::memory_order_relaxed)
+        || config.enableGumbelRootSearch
+        || config.rootDirichletAlpha <= 0.0f
+        || config.rootDirichletEpsilon <= 0.0f) {
+        return;
+    }
+    const uint64_t hash = positionHash.load(std::memory_order_relaxed);
+    candidateGenerator.applyRootNoise(
+        config.rootDirichletAlpha, config.rootDirichletEpsilon,
+        config.rootNoiseSeed ^ hash ^ ROOT_NOISE_SALT_A,
+        config.rootNoiseSeed ^ hash ^ ROOT_NOISE_SALT_B);
+}
+
 void Node::configure_root_search(
     const SearchParams::RuntimeConfig& config,
     bool allowProvenLoss) {
@@ -249,6 +265,7 @@ void Node::configure_root_search(
         for (size_t index = 0; index < edges.size(); ++index) {
             edges[index].prior = promotedPriors[index];
         }
+        reindex_edge_priors_locked();
     }
 
     rootGumbelEnabled = config.enableGumbelRootSearch;

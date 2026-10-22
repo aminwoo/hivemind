@@ -44,6 +44,17 @@ struct SelfPlayConfig {
     bool writeTrainingChunks = true;
     // Root mate scan and selected-move certification before each search.
     bool rootScans = true;
+    // Keep the subtree below each played move for the next search, which tops
+    // the reused root up to the node budget, adding at least this fraction of
+    // it as new nodes. Off, every search starts from an empty tree.
+    bool treeReuse = false;
+    double treeReuseMinNewFraction = 0.25;
+    // Every this many games, save the finished games so an interrupted run can
+    // pick up from there with `resume` (0: no checkpoints). Needs
+    // writeTrainingChunks off: only the distillation output and the PGN are
+    // checkpointed.
+    size_t checkpointGames = 0;
+    bool resume = false;
     // Clock model: each game draws a starting lead and per-team move times
     // from `clock`, and every search and adjudication follows that lead.
     // Off, one team may sit for the whole game (the TimeAdvantage flag).

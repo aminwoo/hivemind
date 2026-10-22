@@ -5347,3 +5347,116 @@ TEST(SelfplayTest, DistillationWriterRejectsAnExistingRunPrefix) {
     EXPECT_NO_THROW(distill::ChunkWriter(path, "search_32", 1));
     std::filesystem::remove_all(path);
 }
+
+TEST(SelfplayTest, DistillationChunksReadBackAsWritten) {
+    const auto path = std::filesystem::temp_directory_path()
+        / ("hivemind-distill-read-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(path);
+    std::vector<distill::Record> records(3);
+    for (size_t index = 0; index < records.size(); ++index) {
+        distill::Record& record = records[index];
+        record.planeBits[index] = 0x8000000000000001ULL << index;
+        record.planeValues[NB_INPUT_CHANNELS - 1] = static_cast<uint16_t>(0x3C00 + index);
+        record.value = -0.25f * static_cast<float>(index);
+        record.wdl = {0.0f, 0.0f, 0.0f};
+        record.wdl[index] = 1.0f;
+        record.movesLeft = index == 2 ? distill::MOVES_LEFT_UNKNOWN : static_cast<uint16_t>(0x2000 + index);
+        record.ply = static_cast<uint16_t>(7 + index);
+        record.outcome = static_cast<int8_t>(static_cast<int>(index) - 1);
+        record.policy[0] = {{static_cast<uint16_t>(index), 0x3800}, {99, 0x3400}};
+        if (index != 1) {
+            record.policy[1] = {{static_cast<uint16_t>(500 + index), 0x3C00}};
+        }
+    }
+    distill::write_chunk(path / "games.dst", records);
+    const std::vector<distill::Record> read = distill::read_chunk(path / "games.dst");
+    ASSERT_EQ(read.size(), records.size());
+    for (size_t index = 0; index < records.size(); ++index) {
+        EXPECT_EQ(read[index].planeBits, records[index].planeBits);
+        EXPECT_EQ(read[index].planeValues, records[index].planeValues);
+        EXPECT_EQ(read[index].value, records[index].value);
+        EXPECT_EQ(read[index].wdl, records[index].wdl);
+        EXPECT_EQ(read[index].movesLeft, records[index].movesLeft);
+        EXPECT_EQ(read[index].ply, records[index].ply);
+        EXPECT_EQ(read[index].outcome, records[index].outcome);
+        for (int board = 0; board < 2; ++board) {
+            ASSERT_EQ(read[index].policy[board].size(), records[index].policy[board].size());
+            for (size_t entry = 0; entry < records[index].policy[board].size(); ++entry) {
+                EXPECT_EQ(read[index].policy[board][entry].index,
+                          records[index].policy[board][entry].index);
+                EXPECT_EQ(read[index].policy[board][entry].probability,
+                          records[index].policy[board][entry].probability);
+            }
+        }
+    }
+    std::filesystem::remove_all(path);
+}
+
+TEST(SelfplayTest, DistillationWriterResumesAfterItsChunks) {
+    const auto path = std::filesystem::temp_directory_path()
+        / ("hivemind-distill-resume-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(path);
+    {
+        distill::ChunkWriter writer(path, "search_31", 1);
+        writer.append(distill::Record{});
+        writer.append(distill::Record{});
+    }
+    distill::ChunkWriter resumed(path, "search_31", 2, true);
+    EXPECT_EQ(resumed.chunks_written(), 2u);
+    resumed.append_unflushed(distill::Record{});
+    resumed.append_unflushed(distill::Record{});
+    resumed.append_unflushed(distill::Record{});
+    EXPECT_TRUE(resumed.full());
+    resumed.flush();
+    EXPECT_EQ(distill::read_chunk(path / "search_31_00002.dst").size(), 3u);
+    std::filesystem::remove_all(path);
+}
+
+TEST(JointCandidateGeneratorTest, RootNoiseKeepsExpandedActionsAndReordersTheRest) {
+    // Moves are opaque here: legality only tells sits from moves and captures.
+    std::vector<Stockfish::Move> actionsA, actionsB;
+    std::vector<float> priorsA = {0.40f, 0.25f, 0.15f, 0.10f, 0.06f, 0.04f};
+    std::vector<float> priorsB = {0.50f, 0.30f, 0.15f, 0.05f};
+    for (size_t index = 0; index < priorsA.size(); ++index) {
+        actionsA.push_back(static_cast<Stockfish::Move>(100 + index));
+    }
+    for (size_t index = 0; index < priorsB.size(); ++index) {
+        actionsB.push_back(static_cast<Stockfish::Move>(200 + index));
+    }
+    JointCandidateGenerator generator;
+    generator.initialize(actionsA, actionsB, priorsA, priorsB, true, true, true);
+    std::set<std::pair<int, int>> expanded;
+    for (int count = 0; count < 5; ++count) {
+        ASSERT_TRUE(generator.hasNext());
+        const JointActionCandidate candidate = generator.getNext();
+        expanded.insert({static_cast<int>(candidate.moveA), static_cast<int>(candidate.moveB)});
+    }
+
+    generator.applyRootNoise(0.3f, 0.5f, 11, 22);
+    const std::vector<float> expandedPriors = generator.reprepareJointPolicyPool(0, 1.0f);
+    ASSERT_EQ(expandedPriors.size(), expanded.size());
+    float expandedMass = 0.0f;
+    for (float prior : expandedPriors) {
+        EXPECT_GT(prior, 0.0f);
+        expandedMass += prior;
+    }
+
+    // The rest come out once each, none of them expanded already, best first.
+    std::set<std::pair<int, int>> seen = expanded;
+    float previous = std::numeric_limits<float>::infinity();
+    float remainingMass = 0.0f;
+    while (generator.hasNext()) {
+        const JointActionCandidate candidate = generator.getNext();
+        EXPECT_TRUE(seen.insert({static_cast<int>(candidate.moveA),
+                                 static_cast<int>(candidate.moveB)}).second);
+        EXPECT_LE(candidate.jointPrior, previous + 1e-6f);
+        EXPECT_FLOAT_EQ(candidate.jointPrior, candidate.priorA * candidate.priorB);
+        previous = candidate.jointPrior;
+        remainingMass += candidate.jointPrior;
+    }
+    EXPECT_EQ(seen.size(), priorsA.size() * priorsB.size());
+    // The noisy priors still sum to one on each board, so the joint ones do.
+    EXPECT_NEAR(expandedMass + remainingMass, 1.0f, 1e-4f);
+}

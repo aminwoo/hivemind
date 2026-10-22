@@ -85,6 +85,12 @@ struct TournamentConfig {
     double sprtBeta = 0.05;
     uint64_t seed = 1;
     std::filesystem::path outputDirectory = "tournament_results";
+    // Pick up after the last whole pair a run with the same command line and
+    // models left in outputDirectory (games.tsv), instead of starting over.
+    bool resume = false;
+    // The arguments the run was started with, less --resume: what a resumed
+    // run must match.
+    std::string commandLine;
     // Clock model: each opening pair draws a starting lead and per-team move
     // times from `clock`; the positions file's time-advantage flags are then
     // unused. Both games of a pair share the clock, so the contender plays

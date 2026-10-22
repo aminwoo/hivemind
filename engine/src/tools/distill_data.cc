@@ -118,13 +118,77 @@ void write_chunk(const std::filesystem::path& path, const std::vector<Record>& r
     std::filesystem::rename(temporaryPath, path);
 }
 
-ChunkWriter::ChunkWriter(std::filesystem::path directory, std::string prefix, size_t chunkPositions)
+std::vector<Record> read_chunk(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("Unable to open " + path.string());
+    }
+    auto read = [&stream, &path](void* data, size_t bytes) {
+        stream.read(static_cast<char*>(data), static_cast<std::streamsize>(bytes));
+        if (!stream) {
+            throw std::runtime_error("Truncated chunk " + path.string());
+        }
+    };
+    std::array<char, 4> magic{};
+    uint32_t version = 0;
+    uint32_t planes = 0;
+    uint64_t count = 0;
+    uint64_t entries = 0;
+    read(magic.data(), magic.size());
+    read(&version, sizeof(version));
+    read(&planes, sizeof(planes));
+    read(&count, sizeof(count));
+    read(&entries, sizeof(entries));
+    if (magic != MAGIC || version != VERSION || planes != NB_INPUT_CHANNELS) {
+        throw std::runtime_error("Not a readable HDST chunk: " + path.string());
+    }
+    std::vector<Record> records(count);
+    for (Record& r : records) read(r.planeBits.data(), sizeof(r.planeBits));
+    for (Record& r : records) read(r.planeValues.data(), sizeof(r.planeValues));
+    for (Record& r : records) read(&r.value, sizeof(float));
+    for (Record& r : records) read(r.wdl.data(), 3 * sizeof(float));
+    for (Record& r : records) read(&r.movesLeft, sizeof(uint16_t));
+    for (Record& r : records) read(&r.ply, sizeof(uint16_t));
+    for (Record& r : records) read(&r.outcome, sizeof(int8_t));
+    uint64_t total = 0;
+    for (Record& r : records) {
+        for (int board = 0; board < 2; ++board) {
+            uint16_t size = 0;
+            read(&size, sizeof(size));
+            r.policy[board].resize(size);
+            total += size;
+        }
+    }
+    if (total != entries) {
+        throw std::runtime_error("Inconsistent policy entries in " + path.string());
+    }
+    for (Record& r : records) {
+        for (int board = 0; board < 2; ++board) {
+            for (PolicyEntry& e : r.policy[board]) read(&e.index, sizeof(uint16_t));
+        }
+    }
+    for (Record& r : records) {
+        for (int board = 0; board < 2; ++board) {
+            for (PolicyEntry& e : r.policy[board]) read(&e.probability, sizeof(uint16_t));
+        }
+    }
+    if (stream.peek() != std::ifstream::traits_type::eof()) {
+        throw std::runtime_error("Trailing bytes in " + path.string());
+    }
+    return records;
+}
+
+ChunkWriter::ChunkWriter(std::filesystem::path directory, std::string prefix, size_t chunkPositions,
+                         bool resume)
     : directory_(std::move(directory)), prefix_(std::move(prefix)),
       chunkPositions_(std::max<size_t>(1, chunkPositions)) {
     std::filesystem::create_directories(directory_);
     for (const auto& entry : std::filesystem::directory_iterator(directory_)) {
         if (entry.path().filename().string().find(prefix_ + "_") == 0) {
-            throw std::runtime_error("Distillation chunk prefix already exists: " + prefix_);
+            if (!resume) {
+                throw std::runtime_error("Distillation chunk prefix already exists: " + prefix_);
+            }
+            ++chunkIndex_;
         }
     }
 }

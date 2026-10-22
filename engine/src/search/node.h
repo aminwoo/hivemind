@@ -214,6 +214,26 @@ private:
         visitedEdges.push_back(static_cast<int>(childIdx));
         visitedPolicySum += edges[childIdx].prior;
     }
+    // Root noise seeds, one per board, mixed with the search's noise seed and
+    // the position hash.
+    static constexpr uint64_t ROOT_NOISE_SALT_A = 0x9e3779b97f4a7c15ULL;
+    static constexpr uint64_t ROOT_NOISE_SALT_B = 0xbf58476d1ce4e5b9ULL;
+    // After edge priors are rewritten in place: rebuild what is keyed or summed
+    // by them, so the unvisited set can still find each edge it erases.
+    void reindex_edge_priors_locked() {
+        unvisitedEdges.clear();
+        visitedPolicySum = 0.0f;
+        expandedPriorSum = 0.0f;
+        for (size_t index = 0; index < edges.size(); ++index) {
+            expandedPriorSum += edges[index].prior;
+            if (visitedEdgePositions[index] >= 0) {
+                visitedPolicySum += edges[index].prior;
+            } else {
+                unvisitedEdges.insert({edges[index].prior,
+                                       static_cast<int>(index)});
+            }
+        }
+    }
     void mark_edge_unvisited_locked(size_t childIdx) {
         visitedPolicySum -= edges[childIdx].prior;
         const int position = visitedEdgePositions[childIdx];
@@ -685,30 +705,13 @@ public:
             && !config.enableGumbelRootSearch
             && config.rootDirichletAlpha > 0.0f
             && config.rootDirichletEpsilon > 0.0f) {
-            auto applyNoise = [&](std::vector<float>& priors, uint64_t salt) {
-                if (priors.size() <= 1) {
-                    return;
-                }
-                std::mt19937_64 randomEngine(
-                    config.rootNoiseSeed ^ positionHash.load(std::memory_order_relaxed) ^ salt);
-                std::gamma_distribution<float> gamma(config.rootDirichletAlpha, 1.0f);
-                std::vector<float> noise(priors.size());
-                float total = 0.0f;
-                for (float& sample : noise) {
-                    sample = gamma(randomEngine);
-                    total += sample;
-                }
-                if (total <= 0.0f) {
-                    return;
-                }
-                const float epsilon = std::clamp(config.rootDirichletEpsilon, 0.0f, 1.0f);
-                for (size_t index = 0; index < priors.size(); ++index) {
-                    priors[index] = (1.0f - epsilon) * priors[index]
-                        + epsilon * noise[index] / total;
-                }
-            };
-            applyNoise(rootPriorsA, 0x9e3779b97f4a7c15ULL);
-            applyNoise(rootPriorsB, 0xbf58476d1ce4e5b9ULL);
+            const uint64_t hash = positionHash.load(std::memory_order_relaxed);
+            mix_dirichlet_noise(rootPriorsA, config.rootDirichletAlpha,
+                                config.rootDirichletEpsilon,
+                                config.rootNoiseSeed ^ hash ^ ROOT_NOISE_SALT_A);
+            mix_dirichlet_noise(rootPriorsB, config.rootDirichletAlpha,
+                                config.rootDirichletEpsilon,
+                                config.rootNoiseSeed ^ hash ^ ROOT_NOISE_SALT_B);
         }
 
         candidateGenerator.initialize(actionsA, actionsB, rootPriorsA, rootPriorsB,
@@ -960,7 +963,17 @@ public:
     void configure_root_search(
         const SearchParams::RuntimeConfig& config,
         bool allowProvenLoss = true);
-    
+
+    /**
+     * @brief Give a retained node the Dirichlet noise a fresh root gets.
+     *
+     * A node expanded below the root carries clean priors. Call this before
+     * configure_root_search when such a node becomes the root of a search with
+     * root noise: that call then rescores the expanded edges and rebuilds the
+     * frontier from the noisy priors.
+     */
+    void refresh_root_noise(const SearchParams::RuntimeConfig& config);
+
     // =========================================================================
     // MCTS Solver Methods
     // =========================================================================
