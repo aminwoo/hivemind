@@ -998,9 +998,13 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         Engine& rawPolicyEngine = *threadEngines.front();
         RawPolicyEvaluator rawPolicyEvaluator(
             static_cast<size_t>(rawPolicyEngine.getBatchSize()));
-        // One agent per game thread: its search workers and GC threads outlive
-        // the game, and each game starts it from an empty tree.
-        Agent agent;
+        // One agent per team in each game thread: their search workers and GC
+        // threads outlive the game, and each game starts them from empty
+        // trees. With tree reuse a team's next search continues its own tree,
+        // through its move and the reply: the tree's terminal verdicts (mate
+        // races, waiting-board mates) are judged for its root team, so a tree
+        // is never handed to the other team.
+        Agent agents[2];
 
         for (;;) {
             const size_t gameIndex = nextGame.fetch_add(1);
@@ -1009,7 +1013,13 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             }
             std::mt19937_64 randomEngine(selfplay_seed(runId, gameIndex));
             Board board;
-            agent.reset_search_state();
+            // Per team: the position its last search was rooted at and the
+            // moves played since (its own, then the reply).
+            std::array<std::optional<Board>, 2> lineRoots;
+            std::array<std::vector<JointActionCandidate>, 2> lines;
+            for (Agent& teamAgent : agents) {
+                teamAgent.reset_search_state();
+            }
             const int startingTeam = static_cast<int>(randomEngine() & 1ULL);
             Stockfish::Color team = startingTeam == 0 ? Stockfish::WHITE : Stockfish::BLACK;
             // The flag model lets the team that does not start sit all game.
@@ -1082,13 +1092,20 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     sample.planes = encode_planes(board, team, time);
                 }
 
+                const size_t teamIndex = team == Stockfish::WHITE ? 0 : 1;
+                Agent& agent = agents[teamIndex];
                 if (!config.treeReuse) {
                     agent.reset_search_state();
+                } else if (lineRoots[teamIndex]) {
+                    retainedVisits.fetch_add(
+                        static_cast<uint64_t>(std::max(
+                            0, agent.retain_played_line(*lineRoots[teamIndex], lines[teamIndex]))),
+                        std::memory_order_relaxed);
                 }
                 SearchOptions searchOptions;
                 searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
-                // The move played is sampled below, so the subtree worth keeping
-                // is that move's, retained once it is chosen.
+                // The moves played are sampled, so the subtree worth keeping is
+                // the one they lead to, retained before this team's next search.
                 searchOptions.retainForReuse = false;
                 if (config.treeReuse) {
                     searchOptions.reusedVisitsCount = true;
@@ -1158,33 +1175,34 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                 }
                 samples.push_back(std::move(sample));
 
-                const size_t teamIdx = team == Stockfish::WHITE ? 0 : 1;
                 if (checksResign && wouldResignTeam < 0) {
-                    consecutiveResignPlies[teamIdx] = rootQ <= config.resignThreshold
-                        ? consecutiveResignPlies[teamIdx] + 1 : 0;
-                    if (consecutiveResignPlies[teamIdx] >= config.resignConsecutivePlies) {
+                    consecutiveResignPlies[teamIndex] = rootQ <= config.resignThreshold
+                        ? consecutiveResignPlies[teamIndex] + 1 : 0;
+                    if (consecutiveResignPlies[teamIndex] >= config.resignConsecutivePlies) {
                         wouldResignTeam = team == Stockfish::WHITE ? 0 : 1;
                     }
                 }
                 if (canResign) {
                     if (rootQ <= config.resignThreshold) {
-                        consecutiveResignPlies[teamIdx]++;
-                        if (consecutiveResignPlies[teamIdx] >= config.resignConsecutivePlies) {
+                        consecutiveResignPlies[teamIndex]++;
+                        if (consecutiveResignPlies[teamIndex] >= config.resignConsecutivePlies) {
                             winner = team == Stockfish::WHITE ? 1 : 0;
                             termination = "resignation";
                             break;
                         }
                     } else {
-                        consecutiveResignPlies[teamIdx] = 0;
+                        consecutiveResignPlies[teamIndex] = 0;
                     }
                 }
 
                 const JointActionCandidate action = select_action(
                     edges, mcts_temperature(config, macroPly), randomEngine);
                 if (config.treeReuse) {
-                    retainedVisits.fetch_add(
-                        static_cast<uint64_t>(std::max(0, agent.retain_played_action(board, action))),
-                        std::memory_order_relaxed);
+                    lineRoots[teamIndex].emplace(board);
+                    lines[teamIndex] = {action};
+                    if (lineRoots[1 - teamIndex]) {
+                        lines[1 - teamIndex].push_back(action);
+                    }
                 }
                 time.advance(team, board.on_turn_on_both_boards(team));
                 if (action.moveA == Stockfish::MOVE_NONE && action.moveB == Stockfish::MOVE_NONE) {

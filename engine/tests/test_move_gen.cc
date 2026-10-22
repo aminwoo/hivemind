@@ -2866,6 +2866,62 @@ TEST_F(EngineTest, TreeReuseRetainsNonPrincipalOpponentReplies) {
     EXPECT_EQ(reused->get_end_in_ply(), 3);
 }
 
+// Self-play keeps one tree per team: a team's next search continues its own
+// tree through its move and the reply, never the other team's.
+TEST_F(EngineTest, PlayedLineIsRetainedForTheSameTeamsNextSearch) {
+    enum class Grandchild { OPEN, UNEXPANDED, SOLVED, OFF_TREE };
+    for (const Grandchild grandchild :
+         {Grandchild::OPEN, Grandchild::UNEXPANDED, Grandchild::SOLVED, Grandchild::OFF_TREE}) {
+        Board board;
+        auto root = std::make_shared<Node>(
+            Stockfish::WHITE, board.search_hash_key(Stockfish::WHITE, false));
+        const Stockfish::Move ownMove = find_move(board, BOARD_A, "e2e4");
+        ASSERT_TRUE(root->try_init_and_expand(
+            {ownMove}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+            false, true, false, SearchParams::RuntimeConfig{}));
+        const std::shared_ptr<Node> opponentNode = root->get_children().front();
+
+        Board afterOwnMove(board);
+        afterOwnMove.make_moves(ownMove, Stockfish::MOVE_NONE);
+        const Stockfish::Move reply = find_move(afterOwnMove, BOARD_A, "e7e5");
+        const Stockfish::Move otherReply = find_move(afterOwnMove, BOARD_A, "c7c5");
+        ASSERT_TRUE(opponentNode->try_init_and_expand(
+            {reply, otherReply}, {Stockfish::MOVE_NONE}, {0.75f, 0.25f}, {1.0f},
+            true, true, true, SearchParams::RuntimeConfig{}));
+        const std::shared_ptr<Node> ownNextNode = opponentNode->get_children().front();
+
+        Board afterReply(afterOwnMove);
+        afterReply.make_moves(reply, Stockfish::MOVE_NONE);
+        if (grandchild != Grandchild::UNEXPANDED) {
+            ASSERT_TRUE(ownNextNode->try_init_and_expand(
+                {find_move(afterReply, BOARD_A, "g1f3")}, {Stockfish::MOVE_NONE},
+                {1.0f}, {1.0f}, false, true, false, SearchParams::RuntimeConfig{}));
+        }
+        if (grandchild == Grandchild::SOLVED) {
+            ownNextNode->mark_as_win(3);
+        }
+
+        Agent agent;
+        AgentTreeReuseTestPeer::set_root(agent, root);
+        const JointActionCandidate replyAction = opponentNode->get_joint_action(0);
+        const JointActionCandidate line[] = {
+            root->get_joint_action(0),
+            grandchild == Grandchild::OFF_TREE
+                ? JointActionCandidate(otherReply, 0.25f, 1, Stockfish::MOVE_NONE, 1.0f, 0)
+                : replyAction};
+        agent.retain_played_line(board, {line[0], line[1]});
+        const bool kept = grandchild == Grandchild::OPEN;
+        ASSERT_EQ(AgentTreeReuseTestPeer::retained_candidate_count(agent), kept ? 1U : 0U)
+            << "case " << static_cast<int>(grandchild);
+        if (kept) {
+            EXPECT_EQ(agent.try_reuse_tree(
+                          afterReply.search_hash_key(Stockfish::WHITE, TimeState{}),
+                          Stockfish::WHITE, Agent::board_signature(afterReply), false),
+                      ownNextNode);
+        }
+    }
+}
+
 TEST_F(EngineTest, TreeReuseNeedsTheClockTheTreeWasSearchedUnder) {
     Board board;
     // White to move on board A alone: its own move is free. Black then has
