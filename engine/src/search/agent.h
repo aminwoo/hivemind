@@ -64,6 +64,12 @@ struct SearchOptions {
     // Off, targetNodes is all new nodes, as for a root searched from scratch.
     bool reusedVisitsCount = false;
     size_t minNewNodes = 1;
+    // The team the tree's terminal verdicts are judged for (the waiting-board
+    // mate's race, draw contempt). Unset, the team to move at the root. A tree
+    // is only reusable by searches that judge for the same team: the
+    // permanent brain searches the opponents' position to prepare our next
+    // search, so it judges for us.
+    std::optional<Stockfish::Color> verdictTeam;
 
     SearchParams::RuntimeConfig search;
     
@@ -1078,6 +1084,10 @@ public:
                                Stockfish::Color teamSide,
                                bool teamHasTimeAdvantage,
                                const SearchOptions& options);
+
+    /** The options run_background_search searches the opponents' position with. */
+    static SearchOptions background_search_options(const SearchOptions& options,
+                                                   Stockfish::Color teamSide);
 
 private:
     struct SingleBoardMateCacheEntry {
