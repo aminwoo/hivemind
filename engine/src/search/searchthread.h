@@ -207,6 +207,11 @@ private:
     TranspositionTable* transpositionTable;  // Shared across all search threads (MCGS)
     MateCandidateTable* mateCandidateTable;
     SearchParams::RuntimeConfig runtimeConfig;
+    // The team this search's terminal verdicts are judged for: the
+    // waiting-board mate is held to its race only against its opponents, and
+    // a draw is scored with contempt for it. set_root_node makes it the
+    // root's team; see SearchOptions::verdictTeam.
+    Stockfish::Color verdictTeam = Stockfish::WHITE;
     
     // Trajectory stores entries for backup and move undoing
     vector<TrajectoryEntry> trajectoryBuffer;
@@ -258,6 +263,7 @@ public:
     void set_transposition_table(TranspositionTable* table);
     void set_mate_candidate_table(MateCandidateTable* table);
     void set_runtime_config(const SearchParams::RuntimeConfig& config);
+    void set_verdict_team(Stockfish::Color team);
     void set_inference_worker_index(size_t workerIndex);
     
     // MCGS (Monte Carlo Graph Search) with prior-ordered joint action expansion.

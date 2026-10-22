@@ -479,6 +479,10 @@ void SearchThread::release_tree_references() {
 void SearchThread::set_root_node(const std::shared_ptr<Node>& node) {
     root = node.get();
     rootOwner = node;
+    // Verdicts are the root team's unless the search says otherwise.
+    if (node) {
+        verdictTeam = node->get_team_to_play();
+    }
 }
 
 void SearchThread::set_inference_worker_index(size_t workerIndex) {
@@ -497,6 +501,10 @@ void SearchThread::set_runtime_config(const SearchParams::RuntimeConfig& config)
     runtimeConfig = config;
 }
 
+void SearchThread::set_verdict_team(Stockfish::Color team) {
+    verdictTeam = team;
+}
+
 void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
                           float valueToBackup) {
     // Process nodes in reverse order (from leaf to root)
@@ -509,8 +517,7 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
         valueToBackup = -1.0f;
     } else if (childType == NodeType::DRAW) {
         const Stockfish::Color leafTeam = trajectory.back().node->get_team_to_play();
-        const Stockfish::Color rootTeam = trajectory.front().node->get_team_to_play();
-        valueToBackup = leafTeam == rootTeam
+        valueToBackup = leafTeam == verdictTeam
             ? -runtimeConfig.drawContempt
             : runtimeConfig.drawContempt;
     }
@@ -724,7 +731,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             } else if (solvedType == NodeType::LOSS) {
                 ctx.terminalValue = -1.0f;
             } else {
-                ctx.terminalValue = ctx.teamToPlay == root->get_team_to_play()
+                ctx.terminalValue = ctx.teamToPlay == verdictTeam
                     ? -runtimeConfig.drawContempt
                     : runtimeConfig.drawContempt;
             }
@@ -741,7 +748,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
 
         int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
-            board, ctx.teamToPlay, root->get_team_to_play(),
+            board, ctx.teamToPlay, verdictTeam,
             ctx.time, boardSearchPlies, &terminalEndInPly,
             false, searchPly == 0 && !ctx.time.can_sit(ctx.teamToPlay));
         // Only the tree adopts the frozen-board loss. The mate provers share
@@ -767,7 +774,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                     ctx.leaf->mark_as_loss(terminalEndInPly);
                 }
             } else {
-                ctx.terminalValue = ctx.teamToPlay == root->get_team_to_play()
+                ctx.terminalValue = ctx.teamToPlay == verdictTeam
                     ? -runtimeConfig.drawContempt
                     : runtimeConfig.drawContempt;
                 // The node key contains the complete clamped repetition map,

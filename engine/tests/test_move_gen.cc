@@ -2922,6 +2922,21 @@ TEST_F(EngineTest, PlayedLineIsRetainedForTheSameTeamsNextSearch) {
     }
 }
 
+// The permanent brain searches the opponents' position for our next search to
+// adopt, starting from the subtree our last search left: its verdicts are
+// judged for us, as both of those searches judge them.
+TEST(PermanentBrainTest, JudgesVerdictsForTheTeamWhoseTreeItIs) {
+    for (const Stockfish::Color us : {Stockfish::WHITE, Stockfish::BLACK}) {
+        SearchOptions options = SearchOptions::uci(500);
+        options.clock = TimeState::clocked(us, 2000, 300, 200, 150);
+        const SearchOptions background = Agent::background_search_options(options, us);
+        ASSERT_TRUE(background.verdictTeam.has_value());
+        EXPECT_EQ(*background.verdictTeam, us);
+        EXPECT_TRUE(background.background);
+        EXPECT_FALSE(SearchOptions::uci(500).verdictTeam.has_value());
+    }
+}
+
 TEST_F(EngineTest, TreeReuseNeedsTheClockTheTreeWasSearchedUnder) {
     Board board;
     // White to move on board A alone: its own move is free. Black then has

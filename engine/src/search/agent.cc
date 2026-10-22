@@ -6324,6 +6324,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         st->set_root_node(rootNode);
         st->set_search_info(&searchInfo);
         st->set_runtime_config(options.search);
+        st->set_verdict_team(options.verdictTeam.value_or(teamSide));
         st->set_inference_worker_index(i / engines.size());
         st->set_transposition_table(
             options.search.enableMCGS && options.search.enableTranspositions
@@ -8505,6 +8506,24 @@ void Agent::run_background_search(Board& board,
         return;
     }
 
+    const SearchOptions backgroundOptions = background_search_options(options, teamSide);
+
+    // The opponents are to move at that position, so the search runs from their
+    // side of the table. Every node values itself from the perspective of its
+    // own team to play, which is exactly how the subtree reads once our next
+    // root adopts it.
+    try {
+        run_search(board, engines, ~teamSide, !teamHasTimeAdvantage,
+                   backgroundOptions);
+    } catch (const std::exception& error) {
+        cout << "info string permanent brain stopped: " << error.what() << endl;
+    } catch (...) {
+        cout << "info string permanent brain stopped" << endl;
+    }
+}
+
+SearchOptions Agent::background_search_options(const SearchOptions& options,
+                                               Stockfish::Color teamSide) {
     SearchOptions backgroundOptions;
     backgroundOptions.search = options.search;
     // A next-move time budgets the move a front end is about to search. This
@@ -8523,19 +8542,11 @@ void Agent::run_background_search(Board& board,
     backgroundOptions.isPonder = true;
     backgroundOptions.moveTimeMs = 0;
     backgroundOptions.targetNodes = 0;
-
-    // The opponents are to move at that position, so the search runs from their
-    // side of the table. Every node values itself from the perspective of its
-    // own team to play, which is exactly how the subtree reads once our next
-    // root adopts it.
-    try {
-        run_search(board, engines, ~teamSide, !teamHasTimeAdvantage,
-                   backgroundOptions);
-    } catch (const std::exception& error) {
-        cout << "info string permanent brain stopped: " << error.what() << endl;
-    } catch (...) {
-        cout << "info string permanent brain stopped" << endl;
-    }
+    // The opponents are to move at the root, but the tree is built for our
+    // next search to adopt, and it adopts the subtree of our last one: its
+    // verdicts are judged for us, as both of those searches judge them.
+    backgroundOptions.verdictTeam = teamSide;
+    return backgroundOptions;
 }
 
 vector<RootEdgeStats> Agent::root_edge_stats() const {
