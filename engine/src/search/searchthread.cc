@@ -517,7 +517,8 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
         valueToBackup = -1.0f;
     } else if (childType == NodeType::DRAW) {
         const Stockfish::Color leafTeam = trajectory.back().node->get_team_to_play();
-        valueToBackup = leafTeam == verdictTeam
+        valueToBackup = leafTeam == verdictTeam.value_or(
+                trajectory.front().node->get_team_to_play())
             ? -runtimeConfig.drawContempt
             : runtimeConfig.drawContempt;
     }
@@ -731,7 +732,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
             } else if (solvedType == NodeType::LOSS) {
                 ctx.terminalValue = -1.0f;
             } else {
-                ctx.terminalValue = ctx.teamToPlay == verdictTeam
+                ctx.terminalValue = ctx.teamToPlay == verdictTeam.value_or(root->get_team_to_play())
                     ? -runtimeConfig.drawContempt
                     : runtimeConfig.drawContempt;
             }
@@ -748,7 +749,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
 
         int terminalEndInPly = 0;
         const TerminalOutcome terminalOutcome = classify_terminal_position(
-            board, ctx.teamToPlay, verdictTeam,
+            board, ctx.teamToPlay, verdictTeam.value_or(root->get_team_to_play()),
             ctx.time, boardSearchPlies, &terminalEndInPly,
             false, searchPly == 0 && !ctx.time.can_sit(ctx.teamToPlay));
         // Only the tree adopts the frozen-board loss. The mate provers share
@@ -774,7 +775,7 @@ void SearchThread::collect_batch(SearchBatch& batch, Board& board,
                     ctx.leaf->mark_as_loss(terminalEndInPly);
                 }
             } else {
-                ctx.terminalValue = ctx.teamToPlay == verdictTeam
+                ctx.terminalValue = ctx.teamToPlay == verdictTeam.value_or(root->get_team_to_play())
                     ? -runtimeConfig.drawContempt
                     : runtimeConfig.drawContempt;
                 // The node key contains the complete clamped repetition map,

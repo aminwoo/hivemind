@@ -6226,6 +6226,14 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         // partner board before it can compare the available moves.
         reusedRoot.reset();
     }
+    if (reusedRoot && !reusedRoot->is_expanded()
+        && reusedRoot->get_node_type() == NodeType::LOSS) {
+        // A loss the tree proved at a leaf - a waiting-board or frozen-board
+        // mate a few plies out - was never expanded. Adopted as the root it
+        // would end the search before a single move was generated, leaving
+        // nothing to play; searched afresh, the root still has its moves.
+        reusedRoot.reset();
+    }
     if (reusedRoot && !options.background) {
         // A win solved under an earlier root is adopted whole, so a race the
         // solver could not express travels with it and no scan below this

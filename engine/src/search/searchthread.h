@@ -210,8 +210,9 @@ private:
     // The team this search's terminal verdicts are judged for: the
     // waiting-board mate is held to its race only against its opponents, and
     // a draw is scored with contempt for it. set_root_node makes it the
-    // root's team; see SearchOptions::verdictTeam.
-    Stockfish::Color verdictTeam = Stockfish::WHITE;
+    // root's team; see SearchOptions::verdictTeam. Unset, a path is judged
+    // for the team at its first node.
+    std::optional<Stockfish::Color> verdictTeam;
     
     // Trajectory stores entries for backup and move undoing
     vector<TrajectoryEntry> trajectoryBuffer;

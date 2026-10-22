@@ -882,6 +882,46 @@ TEST_F(EngineTest, DoubleSitBackupChangesValuePerspective) {
     EXPECT_FLOAT_EQ(parent.get_child_q(0), -0.5f);
 }
 
+// A drawn leaf is scored with contempt for the verdict team: the root's by
+// default, the first node's on a path backed up without a root, and whichever
+// team the search names otherwise.
+TEST_F(EngineTest, DrawContemptFollowsTheVerdictTeam) {
+    const auto backed_up_draw = [](std::optional<Stockfish::Color> verdictTeam, bool rooted) {
+        auto parent = std::make_shared<Node>(Stockfish::BLACK);
+        std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
+        std::vector<float> priors = {1.0f};
+        EXPECT_TRUE(parent->try_init_and_expand(
+            actions, actions, priors, priors, true, true, false,
+            SearchParams::RuntimeConfig{}));
+        auto child = parent->get_children().front();
+        child->mark_as_draw(1);
+        parent->apply_virtual_loss(0);
+        std::vector<TrajectoryEntry> trajectory = {
+            TrajectoryEntry(parent.get(), JointActionCandidate(), 0),
+            TrajectoryEntry(child.get(), JointActionCandidate(), -1),
+        };
+        SearchParams::RuntimeConfig config;
+        config.drawContempt = 0.2f;
+        SearchThread searchThread;
+        searchThread.set_runtime_config(config);
+        if (rooted) {
+            searchThread.set_root_node(parent);
+        }
+        if (verdictTeam) {
+            searchThread.set_verdict_team(*verdictTeam);
+        }
+        searchThread.backup(trajectory, 0.0f);
+        const float q = parent->get_child_q(0);
+        searchThread.release_tree_references();
+        return q;
+    };
+    const float rootTeam = backed_up_draw(std::nullopt, true);
+    EXPECT_NE(rootTeam, 0.0f);
+    EXPECT_FLOAT_EQ(backed_up_draw(std::nullopt, false), rootTeam);
+    EXPECT_FLOAT_EQ(backed_up_draw(Stockfish::BLACK, true), rootTeam);
+    EXPECT_FLOAT_EQ(backed_up_draw(Stockfish::WHITE, true), -rootTeam);
+}
+
 TEST_F(EngineTest, CommonBackupPropagatesProvenLeafState) {
     Node parent(Stockfish::WHITE);
     std::vector<Stockfish::Move> actions = {Stockfish::MOVE_NONE};
