@@ -16,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <set>
@@ -657,6 +658,84 @@ void append_pgn(
            << '{' << winnerName << (winner < 0 ? " game" : " won") << " by " << termination << "} *\n\n";
 }
 
+// How far a checkpointed run got; see run_selfplay.
+struct SelfPlayProgress {
+    uint64_t seed = 0;
+    size_t games = 0;         // the run's game count
+    size_t done = 0;          // games saved, in game order
+    size_t flushedGames = 0;  // of those, the games in finished chunks
+    size_t chunks = 0;        // distillation chunks written
+    uintmax_t pgnBytes = 0;   // PGN size after the saved games
+};
+
+void write_progress(const std::filesystem::path& path, const SelfPlayProgress& progress) {
+    const std::filesystem::path temporaryPath = path.string() + ".tmp";
+    {
+        std::ofstream stream(temporaryPath, std::ios::trunc);
+        stream << "seed " << progress.seed << '\n'
+               << "games " << progress.games << '\n'
+               << "done " << progress.done << '\n'
+               << "flushed_games " << progress.flushedGames << '\n'
+               << "chunks " << progress.chunks << '\n'
+               << "pgn_bytes " << progress.pgnBytes << '\n';
+        if (!stream) {
+            throw std::runtime_error("Failed to write " + temporaryPath.string());
+        }
+    }
+    std::filesystem::rename(temporaryPath, path);
+}
+
+SelfPlayProgress read_progress(const std::filesystem::path& path) {
+    std::ifstream stream(path);
+    SelfPlayProgress progress;
+    std::string key;
+    std::map<std::string, uintmax_t> values;
+    uintmax_t value = 0;
+    while (stream >> key >> value) {
+        values[key] = value;
+    }
+    for (const char* required : {"seed", "games", "done", "flushed_games", "chunks", "pgn_bytes"}) {
+        if (!values.contains(required)) {
+            throw std::runtime_error("Self-play checkpoint " + path.string() + " lacks " + required);
+        }
+    }
+    progress.seed = values["seed"];
+    progress.games = values["games"];
+    progress.done = values["done"];
+    progress.flushedGames = values["flushed_games"];
+    progress.chunks = values["chunks"];
+    progress.pgnBytes = values["pgn_bytes"];
+    return progress;
+}
+
+// distill::ChunkWriter's name for chunk `index`.
+std::string distill_chunk_name(const std::string& prefix, size_t index) {
+    std::ostringstream name;
+    name << prefix << '_' << std::setw(5) << std::setfill('0') << index << ".dst";
+    return name.str();
+}
+
+std::string checkpoint_file_name(size_t firstGame) {
+    std::ostringstream name;
+    name << "games_" << std::setw(8) << std::setfill('0') << firstGame << ".dst";
+    return name.str();
+}
+
+// Checkpoint files by the first game each holds, in game order.
+std::map<size_t, std::filesystem::path> checkpoint_files(const std::filesystem::path& directory) {
+    std::map<size_t, std::filesystem::path> files;
+    if (!std::filesystem::is_directory(directory)) {
+        return files;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        const std::string name = entry.path().filename().string();
+        if (name.size() == 18 && name.starts_with("games_") && name.ends_with(".dst")) {
+            files.emplace(std::stoull(name.substr(6, 8)), entry.path());
+        }
+    }
+    return files;
+}
+
 void append_pgn_move(
     Board& board,
     int boardNumber,
@@ -699,8 +778,16 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         || config.mctsTemperatureDecay <= 0.0
         || config.mctsTemperatureDecay > 1.0
         || config.nodeRandomFactor < 0.0
-        || config.nodeRandomFactor >= 1.0) {
+        || config.nodeRandomFactor >= 1.0
+        || !(config.treeReuseMinNewFraction >= 0.0 && config.treeReuseMinNewFraction <= 1.0)) {
         throw std::invalid_argument("Invalid self-play exploration configuration");
+    }
+    const bool checkpointing = config.checkpointGames > 0;
+    if ((checkpointing || config.resume) && config.writeTrainingChunks) {
+        throw std::invalid_argument("Self-play checkpoints need --training-chunks false");
+    }
+    if (config.resume && (config.seed == 0 || !checkpointing)) {
+        throw std::invalid_argument("Resuming self-play needs a fixed --seed and --checkpoint-games");
     }
     const size_t gameThreads = std::max<size_t>(1, config.parallelGames);
     std::set<Engine*> uniqueEngines(engines.begin(), engines.end());
@@ -708,31 +795,96 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         || engines.size() < gameThreads) {
         throw std::invalid_argument("Self-play requires a distinct engine per game thread");
     }
-    if (std::filesystem::exists(config.outputDirectory)
-        && !std::filesystem::is_empty(config.outputDirectory)) {
-        throw std::invalid_argument("Self-play output directory must be fresh");
-    }
-    if (!config.distillOutputDirectory.empty()
-        && std::filesystem::exists(config.distillOutputDirectory)
-        && !std::filesystem::is_empty(config.distillOutputDirectory)) {
-        throw std::invalid_argument("Self-play distillation directory must be fresh");
-    }
     const uint64_t runId = config.seed != 0
         ? config.seed
         : static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count());
+    // Checkpoints: every checkpointGames finished games, in game order, the
+    // games not yet in a chunk go to checkpoint/games_<first game>.dst, and
+    // checkpoint/progress records how far the chunks, those files and the PGN
+    // reach. A resumed run cuts the PGN back to there, reloads the games not
+    // yet in a chunk and plays on from the first game missing, each game on
+    // the seed it always had.
+    const std::filesystem::path checkpointDirectory = config.outputDirectory / "checkpoint";
+    const std::filesystem::path progressPath = checkpointDirectory / "progress";
+    const std::filesystem::path pgnPath = config.outputDirectory / "games.pgn";
+    const std::string distillPrefix = "search_" + std::to_string(runId);
+    std::optional<SelfPlayProgress> resumed;
+    if (config.resume && std::filesystem::exists(progressPath)) {
+        resumed = read_progress(progressPath);
+        if (resumed->seed != runId || resumed->games != config.games) {
+            throw std::invalid_argument(
+                "Self-play checkpoint is for another seed or game count");
+        }
+    }
+    if (!resumed) {
+        if (std::filesystem::exists(config.outputDirectory)
+            && !std::filesystem::is_empty(config.outputDirectory)) {
+            throw std::invalid_argument("Self-play output directory must be fresh");
+        }
+        if (!config.distillOutputDirectory.empty()
+            && std::filesystem::exists(config.distillOutputDirectory)
+            && !std::filesystem::is_empty(config.distillOutputDirectory)) {
+            throw std::invalid_argument("Self-play distillation directory must be fresh");
+        }
+    }
     const std::filesystem::path trainingDirectory = config.outputDirectory / "training_data";
     std::filesystem::create_directories(config.outputDirectory);
     ChunkWriter chunkWriter(trainingDirectory, config.chunkSamples, runId);
-    const std::filesystem::path pgnPath = config.outputDirectory / "games.pgn";
     std::unique_ptr<distill::ChunkWriter> distillWriter;
+    if (resumed) {
+        std::filesystem::resize_file(pgnPath, resumed->pgnBytes);
+        if (!config.distillOutputDirectory.empty()) {
+            // A chunk written after the last progress record holds games the
+            // checkpoint files hold too.
+            for (size_t index = resumed->chunks;
+                 std::filesystem::remove(config.distillOutputDirectory
+                     / distill_chunk_name(distillPrefix, index));
+                 ++index) {}
+        }
+    }
     if (!config.distillOutputDirectory.empty()) {
         distillWriter = std::make_unique<distill::ChunkWriter>(
-            config.distillOutputDirectory, "search_" + std::to_string(runId),
-            config.distillChunkPositions);
+            config.distillOutputDirectory, distillPrefix,
+            config.distillChunkPositions, resumed.has_value());
     }
+    std::vector<distill::Record> unchunked;  // since the last chunk or checkpoint file
+    size_t unchunkedFirst = 0;
+    size_t flushedGames = 0;
+    if (resumed) {
+        flushedGames = resumed->flushedGames;
+        unchunkedFirst = resumed->done;
+        for (const auto& [first, path] : checkpoint_files(checkpointDirectory)) {
+            if (first < resumed->flushedGames || first >= resumed->done) {
+                std::filesystem::remove(path);
+                continue;
+            }
+            for (distill::Record& record : distill::read_chunk(path)) {
+                if (distillWriter) {
+                    distillWriter->append_unflushed(std::move(record));
+                }
+            }
+        }
+        std::cout << "selfplay resumed after " << resumed->done << '/' << config.games
+                  << " games" << std::endl;
+    }
+    if (checkpointing) {
+        std::filesystem::create_directories(checkpointDirectory);
+    }
+    const auto save_progress = [&](size_t done) {
+        SelfPlayProgress progress;
+        progress.seed = runId;
+        progress.games = config.games;
+        progress.done = done;
+        progress.flushedGames = flushedGames;
+        progress.chunks = distillWriter ? distillWriter->chunks_written() : 0;
+        progress.pgnBytes = std::filesystem::exists(pgnPath)
+            ? std::filesystem::file_size(pgnPath) : 0;
+        write_progress(progressPath, progress);
+    };
     // Games run in `parallelGames` threads, each with its own engine, so the
     // GPU overlaps many small searches; outputs are serialised.
-    std::atomic<size_t> nextGame{0};
+    const size_t firstGame = resumed ? resumed->done : 0;
+    std::atomic<size_t> nextGame{firstGame};
     std::mutex outputMutex;
     std::exception_ptr failure;
     // Finished games waiting for every earlier game to be written (guarded by
@@ -748,16 +900,29 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         std::string termination;
         TimeState initialTime;
         TimeState finalTime;
+        // In a game exempt from resigning, the team the rule would have
+        // resigned for (-1: none): what the resignation threshold is checked by.
+        int wouldResignTeam;
     };
     std::map<size_t, FinishedGame> finishedGames;
-    size_t nextOutput = 0;
+    size_t nextOutput = firstGame;
+    // Guarded by outputMutex.
+    size_t resignChecks = 0;
+    size_t wrongResignations = 0;
+    std::atomic<uint64_t> searches{0};
+    std::atomic<uint64_t> retainedVisits{0};
+    std::atomic<uint64_t> searchedVisits{0};
     const auto writeGame = [&](size_t gameNumber, FinishedGame& game) {
         if (distillWriter) {
             // Finished games give WDL (loss, draw, win) and moves-left targets
             // (remaining team decisions, capped at 100, over 100, the scale
             // the search assumes). A game cut off at the macro-ply limit has
             // no real result: its WDL stays zero, which the trainer masks.
+            // A resignation ends the game early, so the decisions left in it
+            // say nothing about how long the position had to go: its records
+            // keep the result and drop the moves-left target.
             const bool finished = game.termination != "macro-ply limit";
+            const bool resigned = game.termination == "resignation";
             for (size_t index = 0; index < game.distillRecords.size(); ++index) {
                 distill::Record& record = game.distillRecords[index];
                 record.outcome = game.samples[index].outcome;
@@ -765,10 +930,18 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     record.wdl = {0.0f, 0.0f, 0.0f};
                     record.wdl[static_cast<size_t>(game.samples[index].outcome + 1)] = 1.0f;
                     const size_t remaining = std::min<size_t>(game.samples.size() - index, 100);
-                    record.movesLeft = distill::half_bits(
-                        __float2half_rn(static_cast<float>(remaining) / 100.0f));
+                    record.movesLeft = resigned
+                        ? distill::MOVES_LEFT_UNKNOWN
+                        : distill::half_bits(
+                            __float2half_rn(static_cast<float>(remaining) / 100.0f));
                 }
-                distillWriter->append(std::move(record));
+                if (checkpointing) {
+                    // A game stays in one chunk, so a checkpoint never splits it.
+                    unchunked.push_back(record);
+                    distillWriter->append_unflushed(std::move(record));
+                } else {
+                    distillWriter->append(std::move(record));
+                }
             }
         }
         const size_t sampleCount = game.samples.size();
@@ -780,6 +953,27 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             game.rawPolicyMacroPlies, game.rawPolicyEvents,
             config.initialClockSeconds, game.termination,
             game.initialTime, game.finalTime);
+        if (checkpointing) {
+            const size_t done = gameNumber + 1;
+            if (distillWriter && distillWriter->full()) {
+                distillWriter->flush();
+                flushedGames = done;
+                unchunked.clear();
+                unchunkedFirst = done;
+                save_progress(done);
+                for (const auto& [first, path] : checkpoint_files(checkpointDirectory)) {
+                    std::filesystem::remove(path);
+                }
+            } else if (done % config.checkpointGames == 0) {
+                if (!unchunked.empty()) {
+                    distill::write_chunk(
+                        checkpointDirectory / checkpoint_file_name(unchunkedFirst), unchunked);
+                }
+                unchunked.clear();
+                unchunkedFirst = done;
+                save_progress(done);
+            }
+        }
         std::cout << "selfplay game " << (gameNumber + 1) << '/' << config.games
                   << " raw " << game.rawPolicyMacroPlies
                   << " samples " << sampleCount
@@ -789,6 +983,13 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             std::cout << " lead " << game.initialTime.lead_ms(Stockfish::WHITE)
                       << "->" << game.finalTime.lead_ms(Stockfish::WHITE) << " ms";
         }
+        if (game.wouldResignTeam >= 0) {
+            // Right when the team the rule picked went on to lose.
+            const bool right = game.winner >= 0 && game.winner != game.wouldResignTeam;
+            ++resignChecks;
+            wrongResignations += right ? 0 : 1;
+            std::cout << " resign-check " << (right ? "right" : "wrong");
+        }
         // Piped to `hivemind contribute`, which counts these lines.
         std::cout << '\n' << std::flush;
     };
@@ -797,6 +998,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
         Engine& rawPolicyEngine = *threadEngines.front();
         RawPolicyEvaluator rawPolicyEvaluator(
             static_cast<size_t>(rawPolicyEngine.getBatchSize()));
+        // One agent per game thread: its search workers and GC threads outlive
+        // the game, and each game starts it from an empty tree.
+        Agent agent;
 
         for (;;) {
             const size_t gameIndex = nextGame.fetch_add(1);
@@ -805,7 +1009,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             }
             std::mt19937_64 randomEngine(selfplay_seed(runId, gameIndex));
             Board board;
-            Agent agent;
+            agent.reset_search_state();
             const int startingTeam = static_cast<int>(randomEngine() & 1ULL);
             Stockfish::Color team = startingTeam == 0 ? Stockfish::WHITE : Stockfish::BLACK;
             // The flag model lets the team that does not start sit all game.
@@ -829,6 +1033,9 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                 && (config.resignDisableFraction <= 0.0
                     || std::uniform_real_distribution<double>(0.0, 1.0)(randomEngine) >= config.resignDisableFraction);
             std::array<size_t, 2> consecutiveResignPlies = {0, 0};
+            // A game exempt from resigning still runs the rule, to check it.
+            const bool checksResign = !canResign && config.resignThreshold < 0.0f;
+            int wouldResignTeam = -1;
 
             for (size_t macroPly = 0; macroPly < config.maxMacroPlies; ++macroPly) {
                 const bool hasTimeAdvantage = time.can_sit(team);
@@ -871,11 +1078,24 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     macroPly, std::numeric_limits<uint16_t>::max()));
                 sample.team = team == Stockfish::WHITE ? 0 : 1;
                 sample.hasTimeAdvantage = hasTimeAdvantage ? 1 : 0;
-                sample.planes = encode_planes(board, team, time);
+                if (config.writeTrainingChunks) {
+                    sample.planes = encode_planes(board, team, time);
+                }
 
-                agent.reset_search_state();
+                if (!config.treeReuse) {
+                    agent.reset_search_state();
+                }
                 SearchOptions searchOptions;
                 searchOptions.targetNodes = randomized_node_budget(config, randomEngine);
+                // The move played is sampled below, so the subtree worth keeping
+                // is that move's, retained once it is chosen.
+                searchOptions.retainForReuse = false;
+                if (config.treeReuse) {
+                    searchOptions.reusedVisitsCount = true;
+                    searchOptions.minNewNodes = std::max<size_t>(1, static_cast<size_t>(std::ceil(
+                        config.treeReuseMinNewFraction
+                        * static_cast<double>(searchOptions.targetNodes))));
+                }
                 searchOptions.search.enableMateProbe = config.fairyStockfishMateNodes > 0;
                 searchOptions.mateProbeNodes = config.fairyStockfishMateNodes;
                 searchOptions.completeMateProbe = config.fairyStockfishMateNodes > 0;
@@ -911,13 +1131,17 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                     });
                 sample.nodes = static_cast<uint32_t>(std::min<uint64_t>(
                     actualVisits, std::numeric_limits<uint32_t>::max()));
+                searches.fetch_add(1, std::memory_order_relaxed);
+                searchedVisits.fetch_add(actualVisits, std::memory_order_relaxed);
 
                 edges = selfplay_policy_edges(edges, agent.root_type(), choice, agent.certified_choice());
                 const float rootQ = agent.root_q();
                 sample.rootQ = rootQ;
-                sample.policyA = marginal_policy(board, BOARD_A, edges);
-                sample.policyB = marginal_policy(board, BOARD_B, edges);
-                sample.jointPolicy = joint_policy(board, edges);
+                if (config.writeTrainingChunks) {
+                    sample.policyA = marginal_policy(board, BOARD_A, edges);
+                    sample.policyB = marginal_policy(board, BOARD_B, edges);
+                    sample.jointPolicy = joint_policy(board, edges);
+                }
                 if (distillWriter) {
                     // WDL stays zero: search has a value but no WDL distribution,
                     // so these records carry no WDL or moves-left target.
@@ -935,6 +1159,13 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
                 samples.push_back(std::move(sample));
 
                 const size_t teamIdx = team == Stockfish::WHITE ? 0 : 1;
+                if (checksResign && wouldResignTeam < 0) {
+                    consecutiveResignPlies[teamIdx] = rootQ <= config.resignThreshold
+                        ? consecutiveResignPlies[teamIdx] + 1 : 0;
+                    if (consecutiveResignPlies[teamIdx] >= config.resignConsecutivePlies) {
+                        wouldResignTeam = team == Stockfish::WHITE ? 0 : 1;
+                    }
+                }
                 if (canResign) {
                     if (rootQ <= config.resignThreshold) {
                         consecutiveResignPlies[teamIdx]++;
@@ -950,6 +1181,11 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
 
                 const JointActionCandidate action = select_action(
                     edges, mcts_temperature(config, macroPly), randomEngine);
+                if (config.treeReuse) {
+                    retainedVisits.fetch_add(
+                        static_cast<uint64_t>(std::max(0, agent.retain_played_action(board, action))),
+                        std::memory_order_relaxed);
+                }
                 time.advance(team, board.on_turn_on_both_boards(team));
                 if (action.moveA == Stockfish::MOVE_NONE && action.moveB == Stockfish::MOVE_NONE) {
                     team = ~team;
@@ -995,7 +1231,7 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
             finishedGames.emplace(gameIndex, FinishedGame{
                 std::move(samples), std::move(distillRecords), std::move(pgnMoves), winner,
                 startingTeam, rawPolicyMacroPlies, rawPolicyEvents, std::move(termination),
-                initialTime, time});
+                initialTime, time, wouldResignTeam});
             for (auto next = finishedGames.find(nextOutput); next != finishedGames.end();
                  next = finishedGames.find(nextOutput)) {
                 writeGame(next->first, next->second);
@@ -1034,5 +1270,22 @@ int run_selfplay(const std::vector<Engine*>& engines, const SelfPlayConfig& conf
     if (distillWriter) {
         distillWriter->flush();
     }
+    if (checkpointing) {
+        std::filesystem::remove_all(checkpointDirectory);
+    }
+    if (config.treeReuse && searchedVisits > 0) {
+        std::cout << "selfplay tree reuse: " << std::fixed << std::setprecision(1)
+                  << 100.0 * static_cast<double>(retainedVisits)
+                         / static_cast<double>(searchedVisits)
+                  << "% of root visits carried over, " << searches << " searches" << '\n';
+    }
+    if (resignChecks > 0) {
+        std::cout << "selfplay resign check: " << resignChecks
+                  << " games exempt from resigning would have resigned, "
+                  << wrongResignations << " of them wrongly" << '\n';
+    }
+    // `hivemind rl-loop` checks this line rather than counting game lines,
+    // which a resumed run prints only for the games it played.
+    std::cout << "selfplay complete " << config.games << " games" << std::endl;
     return 0;
 }

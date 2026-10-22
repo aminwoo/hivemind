@@ -136,6 +136,10 @@ void printUsage(const char* progName) {
     cout << "    --distill-output <dir> (also write HDST chunks of the search targets)" << endl;
     cout << "    --distill-chunk-positions <n> --parallel-games <n> --root-scans <bool>" << endl;
     cout << "    --training-chunks <bool> (write HVM6 chunks; default true)" << endl;
+    cout << "    --resign-threshold <q> --resign-consecutive-plies <n> --resign-disable-fraction <x>" << endl;
+    cout << "      (q < 0 resigns; resigned games keep their result but no moves-left target)" << endl;
+    cout << "    --tree-reuse <bool> --tree-reuse-min-new-fraction <x> (keep the played move's subtree)" << endl;
+    cout << "    --checkpoint-games <n> --resume <bool> (save every n games; pick up an interrupted run)" << endl;
     cout << "    --time-model flag|clock (clock: each game draws a lead and team move times)" << endl;
     cout << "    --level-start-fraction <x> --start-lead-min-ms <ms> --start-lead-max-ms <ms>" << endl;
     cout << "    --move-time-min-ms <ms> --move-time-max-ms <ms> (log-uniform; defaults 0.5, 100-10000, 100-3000)" << endl;
@@ -167,6 +171,7 @@ void printUsage(const char* progName) {
     cout << "    --baseline-{mcgs,transpositions,root-mate-search,wdl-eval} <bool>" << endl;
     cout << "    --{contender,baseline}-{root-pw-coefficient,wdl-weight,moves-left-discount,q-value-weight,q-veto-delta} <x>" << endl;
     cout << "    --sprt-elo0 <x> --sprt-elo1 <x> [--sprt-alpha <x> --sprt-beta <x>]" << endl;
+    cout << "    --resume <bool> (continue the same run's games.tsv in --output from its last whole pair)" << endl;
     cout << "    --time-model flag|clock and the selfplay clock options (drawn per opening pair)" << endl;
     cout << "    --{contender,baseline}-time-model flag|clock (flag: in a clocked game, search" << endl;
     cout << "      as if sitting whenever ahead were permanent, as a pre-clock engine does)" << endl;
@@ -324,6 +329,10 @@ int main(int argc, char* argv[]) {
                 else if (option == "--chunk-samples") config.chunkSamples = stoull(value);
                 else if (option == "--distill-output") config.distillOutputDirectory = value;
                 else if (option == "--root-scans") config.rootScans = parse_bool_argument(value);
+                else if (option == "--tree-reuse") config.treeReuse = parse_bool_argument(value);
+                else if (option == "--tree-reuse-min-new-fraction") config.treeReuseMinNewFraction = stod(value);
+                else if (option == "--checkpoint-games") config.checkpointGames = stoull(value);
+                else if (option == "--resume") config.resume = parse_bool_argument(value);
                 else if (option == "--parallel-games") config.parallelGames = stoull(value);
                 else if (option == "--training-chunks") config.writeTrainingChunks = parse_bool_argument(value);
                 else if (option == "--distill-chunk-positions") config.distillChunkPositions = stoull(value);
@@ -692,6 +701,7 @@ int main(int argc, char* argv[]) {
                 else if (option == "--sprt-elo1") config.sprtElo1 = stod(value);
                 else if (option == "--sprt-alpha") config.sprtAlpha = stod(value);
                 else if (option == "--sprt-beta") config.sprtBeta = stod(value);
+                else if (option == "--resume") config.resume = parse_bool_argument(value);
                 else if (option == "--contender-nnue") contenderNnuePath = value;
                 else if (option == "--contender-ab-movetime") config.contenderAbMoveTimeMs = stoi(value);
                 else if (option == "--contender-ab-depth") config.contenderAbDepth = stoi(value);
@@ -725,6 +735,11 @@ int main(int argc, char* argv[]) {
             }
             config.contenderFlagSearch = contenderTimeModel == "flag";
             config.baselineFlagSearch = baselineTimeModel == "flag";
+            for (int i = 2; i + 1 < argc; i += 2) {
+                if (string(argv[i]) != "--resume") {
+                    config.commandLine += string(argv[i]) + ' ' + argv[i + 1] + ' ';
+                }
+            }
         } catch (const exception& error) {
             cerr << "Invalid tournament arguments: " << error.what() << endl;
             return EXIT_FAILURE;

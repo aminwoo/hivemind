@@ -9,7 +9,8 @@
   5. uploads every iteration's network and training checkpoint, and the
      generator with its checkpoint, to Hugging Face
      (skipped when not logged in to an account that can write to --repo)
-  6. matches the result against the fixed pre-RL network (twin-s-noattn-it0)
+  6. matches the result against a fixed baseline: the pre-RL network (it0), or with
+     --anchor-after N the generator as it stood after iteration N
 
 Self-play and training use the settings of `hivemind selfplay` and `hivemind
 train`. With --time-model clock, self-play and matches run on a simulated clock
@@ -91,6 +92,26 @@ def train_dirs(runs, n):
 
 def replay_iterations(n, window):
     return list(range(n - 1, max(1, n - window) - 1, -1))
+
+
+def engine_supports(engine, text):
+    """Whether the engine's --help mentions `text`: older builds lack options
+    the loop now passes when it can."""
+    try:
+        result = subprocess.run([str(engine), "--help"], cwd=ENGINE_DIR, capture_output=True,
+                                text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return text in result.stdout + result.stderr
+
+
+def checkpoint_games(progress):
+    """The game count an interrupted self-play run was started with."""
+    for line in progress.read_text().splitlines():
+        key, _, value = line.partition(" ")
+        if key == "games":
+            return int(value)
+    raise StageFailed(f"{progress} has no game count")
 
 
 def match_summary(path, games):
@@ -201,8 +222,19 @@ class Loop:
         self.generator = generator
         self.generator_sp1 = selfplay.one_worker_copy(generator)
         self.checkpoint = checkpoint
-        self.fixed = generator.with_name(f"{generator.stem}-it0{generator.suffix}")
+        # The fixed baseline: it0, or with --anchor-after N the best network
+        # after iteration N, matched against from iteration N + 1 on.
+        anchor = args.anchor_after
+        self.fixed_name = "it0" if anchor is None else f"it{anchor}"
+        self.fixed = generator.with_name(f"{generator.stem}-{'it0' if anchor is None else f'anchor-it{anchor}'}"
+                                         f"{generator.suffix}")
+        self.fixed_time_model = args.fixed_time_model if anchor is None else args.time_model
         self.teacher_val = [teacher_val] if teacher_val.is_dir() else []
+        # Interrupted self-play segments and matches pick up where they
+        # stopped, on engines that can.
+        self.checkpoint_selfplay = (args.checkpoint_games > 0
+                                    and engine_supports(args.selfplay_engine, "--checkpoint-games"))
+        self.resume_matches = engine_supports(args.match_engine, "games.tsv")
         self.api = None
         self.exchange = None  # set for --distributed
 
@@ -269,18 +301,37 @@ class Loop:
         if sha256(self.generator_sp1) != generator:
             raise StageFailed(f"the generator changed during it{self.n}")
         log = self.it / "search" / "logs" / f"{name}.log"
-        self.aside(data, records, log)
+        progress = records / "checkpoint" / "progress"
+        resuming = self.checkpoint_selfplay and progress.is_file()
+        if resuming:
+            # The count it started with, whatever contributors sent since.
+            games = checkpoint_games(progress)
+        else:
+            self.aside(data, records, log)
         log.parent.mkdir(parents=True, exist_ok=True)
-        self.log(f"it{self.n} self-play {name}: {games} games, seed {seed}")
+        self.log(f"it{self.n} self-play {name}: {'resuming ' if resuming else ''}{games} games, "
+                 f"seed {seed}")
+        extra = list(selfplay.time_model_options(self.args.time_model))
+        # Validation keeps the settings every earlier iteration's was played
+        # with, so its losses stay comparable across iterations.
+        if name != "val":
+            if self.args.resign_threshold < 0:
+                extra += ["--resign-threshold", str(self.args.resign_threshold)]
+            if self.args.tree_reuse:
+                extra += ["--tree-reuse", "true"]
+        if self.checkpoint_selfplay:
+            extra += ["--checkpoint-games", str(self.args.checkpoint_games), "--resume", "true"]
         command = selfplay.engine_command(self.args.selfplay_engine, self.generator_sp1, games, seed,
-                                          data, records, self.args.parallel_games,
-                                          selfplay.time_model_options(self.args.time_model))
-        with log.open("w") as stream:
+                                          data, records, self.args.parallel_games, extra)
+        with log.open("a" if resuming else "w") as stream:
             if subprocess.run(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT).returncode:
                 raise StageFailed(f"self-play {name} failed (see {log})")
-        with log.open() as stream:
-            count = sum(line.startswith("selfplay game ") for line in stream)
-        if count != games:
+        lines = log.read_text(errors="replace").splitlines()
+        if self.checkpoint_selfplay:
+            # A resumed run prints game lines only for the games it played.
+            if f"selfplay complete {games} games" not in lines:
+                raise StageFailed(f"{name}: no completion line in {log}")
+        elif (count := sum(line.startswith("selfplay game ") for line in lines)) != games:
             raise StageFailed(f"{name}: expected {games} games, got {count}")
         positions = train.positions([data])
         if not positions:
@@ -436,7 +487,10 @@ class Loop:
         games, movetime, clock = self.args.match_games, self.args.match_movetime, self.args.time_model
         flag_baseline = clock == "clock" and baseline_time_model == "flag"
         while True:
-            self.aside(out, log)
+            # A resumable match keeps its finished pairs; the engine starts over
+            # by itself when they came from another match.
+            if not self.resume_matches:
+                self.aside(out, log)
             self.wait_for_quiet()
             self.log(f"it{self.n} match vs {name} ({baseline}, {games} games at {movetime} ms"
                      + (", on a simulated clock" if clock == "clock" else "") + ")")
@@ -445,8 +499,9 @@ class Loop:
                        "--movetime", str(movetime), "--games", str(games), "--seed", str(self.n),
                        "--positions", str(self.args.openings), "--output", str(out),
                        *(("--time-model", "clock") if clock == "clock" else ()),
-                       *(("--baseline-time-model", "flag") if flag_baseline else ())]
-            with log.open("w") as stream:
+                       *(("--baseline-time-model", "flag") if flag_baseline else ()),
+                       *(("--resume", "true") if self.resume_matches else ())]
+            with log.open("a" if self.resume_matches else "w") as stream:
                 process = subprocess.Popen(command, cwd=ENGINE_DIR, stdout=stream, stderr=subprocess.STDOUT)
                 status = None
                 while status is None:
@@ -556,12 +611,19 @@ class Loop:
         self.attempt(self.match, "generator", self.generator)
         self.promote()
         self.upload()
-        if self.fixed.is_file():
-            self.attempt(self.match, "it0", self.fixed, self.args.fixed_time_model)
+        anchor = self.args.anchor_after
+        if anchor is not None and n <= anchor:
+            if n == anchor:
+                install(self.generator, self.fixed)
+                self.log(f"it{n}: the generator is now the fixed baseline {self.fixed.name}")
+            else:
+                self.log(f"it{n}: no fixed-baseline match before it{anchor + 1}")
+        elif self.fixed.is_file():
+            self.attempt(self.match, self.fixed_name, self.fixed, self.fixed_time_model)
         else:
             self.log(f"it{n}: no {self.fixed.name}, skipping the match against it")
         self.mark("iteration", {})
-        results = {name: (self.it / "stages" / f"match_{name}.done") for name in ("generator", "it0")}
+        results = {name: (self.it / "stages" / f"match_{name}.done") for name in ("generator", self.fixed_name)}
         self.log(f"it{n} finished: " + ", ".join(
             f"vs {name} {path.read_text().strip()}" for name, path in results.items() if path.is_file()))
 
@@ -609,6 +671,15 @@ def main():
     parser.add_argument("--new-passes", type=float, default=1.5)
     parser.add_argument("--replay-passes", type=float, default=0.5)
     parser.add_argument("--parallel-games", type=positive_int, default=6)
+    parser.add_argument("--resign-threshold", type=float, default=0.0,
+                        help="Local self-play resigns after 3 searches in a row at or below this root "
+                             "value, except in 10%% of games; 0 never resigns (default: %(default)s)")
+    parser.add_argument("--tree-reuse", action="store_true",
+                        help="Local self-play keeps the played move's subtree for the next search")
+    parser.add_argument("--checkpoint-games", type=int, default=50,
+                        help="Local self-play saves its finished games this often, so an interrupted "
+                             "segment resumes rather than starting over; 0 turns it off "
+                             "(default: %(default)s)")
     parser.add_argument("--match-games", type=even_int, default=1000,
                         help="Games per match (vs the generator and vs it0), in colour-swapped "
                              "pairs (default: %(default)s)")
@@ -621,6 +692,10 @@ def main():
     parser.add_argument("--fixed-time-model", choices=("flag", "clock"),
                         help="What the fixed it0 baseline searches on in clock matches; flag for an it0 "
                              "from before the clock planes, which misreads them (default: --time-model)")
+    parser.add_argument("--anchor-after", type=positive_int, metavar="N",
+                        help="Skip the fixed-baseline match up to iteration N, then match later "
+                             "iterations against the generator as it stands after iteration N "
+                             "rather than it0")
     parser.add_argument("--generator", type=Path, default=TWIN_ONNX_PATH,
                         help="The generator network, replaced on promotion; another lineage needs "
                              "its own (default: %(default)s)")
@@ -654,6 +729,8 @@ def main():
     parser.add_argument("--selfplay-engine", type=Path, default=selfplay.DEFAULT_ENGINE)
     parser.add_argument("--match-engine", type=Path, default=MATCH_ENGINE)
     args = parser.parse_args()
+    if not -1 < args.resign_threshold <= 0:
+        parser.error("--resign-threshold must be in (-1, 0]")
     if args.new_passes <= 0 or args.replay_passes < 0:
         parser.error("--new-passes must be positive and --replay-passes non-negative")
     if args.last is not None and args.first is not None and args.last < args.first:

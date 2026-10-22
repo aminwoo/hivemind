@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -136,6 +137,111 @@ void append_game_pgn(
         stream << (index + 1) << ". " << actions[index] << ' ';
     }
     stream << result << "\n\n";
+}
+
+// One finished game: what resuming needs to rebuild the tallies.
+struct TournamentGameRecord {
+    size_t gameIndex = 0;
+    int contenderOutcome = 0;  // 1 win, 0 draw, -1 loss
+    bool contenderWhite = true;
+    int32_t contenderStartLead = 0;
+    std::string termination;
+    TournamentPerformance contender;  // this game's searches
+    TournamentPerformance baseline;
+    uintmax_t pgnBytes = 0;           // PGN size once this game is in it
+};
+
+// games.tsv: a "config" line with the run's fingerprint, then a line per game.
+std::string game_record_line(const TournamentGameRecord& game) {
+    std::ostringstream line;
+    line << game.gameIndex << '\t' << game.contenderOutcome << '\t'
+         << (game.contenderWhite ? 1 : 0) << '\t' << game.contenderStartLead << '\t'
+         << game.termination << '\t'
+         << game.contender.searches << '\t' << game.contender.nodes << '\t'
+         << game.contender.nanoseconds << '\t'
+         << game.baseline.searches << '\t' << game.baseline.nodes << '\t'
+         << game.baseline.nanoseconds << '\t' << game.pgnBytes;
+    return line.str();
+}
+
+std::optional<TournamentGameRecord> parse_game_record(const std::string& line) {
+    std::vector<std::string> fields;
+    std::stringstream stream(line);
+    for (std::string field; std::getline(stream, field, '\t');) {
+        fields.push_back(field);
+    }
+    if (fields.size() != 12) {
+        return std::nullopt;
+    }
+    try {
+        TournamentGameRecord game;
+        game.gameIndex = std::stoull(fields[0]);
+        game.contenderOutcome = std::stoi(fields[1]);
+        game.contenderWhite = fields[2] == "1";
+        game.contenderStartLead = std::stoi(fields[3]);
+        game.termination = fields[4];
+        game.contender = {std::stoull(fields[5]), std::stoull(fields[6]), std::stoull(fields[7])};
+        game.baseline = {std::stoull(fields[8]), std::stoull(fields[9]), std::stoull(fields[10])};
+        game.pgnBytes = std::stoull(fields[11]);
+        return game;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+std::string tournament_fingerprint(const TournamentConfig& config) {
+    return config.commandLine + "| " + config.contenderModelSignature
+        + " | " + config.baselineModelSignature;
+}
+
+void add_performance(TournamentPerformance& total, const TournamentPerformance& game) {
+    total.searches += game.searches;
+    total.nodes += game.nodes;
+    total.nanoseconds += game.nanoseconds;
+}
+
+TournamentPerformance performance_since(const TournamentPerformance& now,
+                                        const TournamentPerformance& before) {
+    return {now.searches - before.searches, now.nodes - before.nodes,
+            now.nanoseconds - before.nanoseconds};
+}
+
+// Counts a finished game into the result, played or replayed from games.tsv.
+void tally_game(TournamentResult& result, double& currentPairPoints,
+                const TournamentConfig& config, const TournamentGameRecord& game) {
+    if (game.contenderOutcome == 0) {
+        result.draws++;
+    } else if (game.contenderOutcome > 0) {
+        result.contenderWins++;
+    } else {
+        result.baselineWins++;
+    }
+    record_outcome(game.contenderWhite ? result.asWhite : result.asBlack,
+                   game.contenderOutcome);
+    record_outcome(
+        game.contenderStartLead > 0 ? result.upTime
+            : game.contenderStartLead < 0 ? result.downTime : result.levelTime,
+        game.contenderOutcome);
+    currentPairPoints += game.contenderOutcome > 0 ? 1.0
+        : game.contenderOutcome == 0 ? 0.5 : 0.0;
+    if (game.gameIndex % 2 == 1) {
+        result.pairScores.push_back(currentPairPoints / 2.0);
+        currentPairPoints = 0.0;
+        if (config.sprtEnabled()) {
+            result.sprt = evaluate_paired_sprt(
+                result.pairScores, config.sprtElo0, config.sprtElo1,
+                config.sprtAlpha, config.sprtBeta);
+        }
+    }
+    if (game.termination == "checkmate") {
+        result.checkmates++;
+    } else if (game.termination == "no legal action") {
+        result.noLegalActions++;
+    } else if (game.termination == "draw") {
+        result.drawnTerminations++;
+    } else {
+        result.macroPlyLimits++;
+    }
 }
 
 void write_summary(
@@ -640,15 +746,65 @@ int run_tournament(
     std::filesystem::create_directories(config.outputDirectory);
     const std::filesystem::path pgnPath = config.outputDirectory / "games.pgn";
     const std::filesystem::path summaryPath = config.outputDirectory / "summary.json";
-    std::filesystem::remove(pgnPath);
+    const std::filesystem::path recordsPath = config.outputDirectory / "games.tsv";
     TournamentResult result;
     double currentPairPoints = 0.0;
+    const std::string fingerprint = tournament_fingerprint(config);
+
+    // Every game is recorded as it finishes. A resumed run keeps the whole
+    // pairs a run with the same fingerprint recorded, cuts the PGN back to
+    // them and plays on from the next pair; anything else starts over.
+    std::vector<TournamentGameRecord> kept;
+    if (config.resume && std::filesystem::exists(recordsPath)) {
+        std::ifstream stream(recordsPath);
+        std::string line;
+        if (std::getline(stream, line) && line == "config\t" + fingerprint) {
+            while (std::getline(stream, line)) {
+                const std::optional<TournamentGameRecord> game = parse_game_record(line);
+                if (!game || game->gameIndex != kept.size() || game->gameIndex >= config.games) {
+                    break;
+                }
+                kept.push_back(*game);
+            }
+            kept.resize(kept.size() - kept.size() % 2);
+        }
+    }
+    {
+        std::ofstream stream(recordsPath.string() + ".tmp", std::ios::trunc);
+        stream << "config\t" << fingerprint << '\n';
+        for (const TournamentGameRecord& game : kept) {
+            stream << game_record_line(game) << '\n';
+        }
+        if (!stream) {
+            throw std::runtime_error("Unable to write " + recordsPath.string());
+        }
+    }
+    std::filesystem::rename(recordsPath.string() + ".tmp", recordsPath);
+    if (kept.empty()) {
+        std::filesystem::remove(pgnPath);
+    } else {
+        std::filesystem::resize_file(pgnPath, kept.back().pgnBytes);
+        for (const TournamentGameRecord& game : kept) {
+            tally_game(result, currentPairPoints, config, game);
+            add_performance(result.contenderPerformance, game.contender);
+            add_performance(result.baselinePerformance, game.baseline);
+        }
+        write_summary(summaryPath, contenderName, baselineName, config, result);
+        std::cout << "tournament resumed after " << kept.size() << '/' << config.games
+                  << " games: contender " << result.contenderWins
+                  << " baseline " << result.baselineWins
+                  << " draws " << result.draws << std::endl;
+    }
+    std::ofstream recordsStream(recordsPath, std::ios::app);
     const std::vector<TournamentStartPosition> startPositions =
         load_tournament_positions(config.positionsFile);
     Agent contenderAgent(alphaBetaContender ? 1 : config.contenderThreads);
     Agent baselineAgent(alphaBetaBaseline ? 1 : config.baselineThreads);
 
-    for (size_t gameIndex = 0; gameIndex < config.games; ++gameIndex) {
+    const bool sprtStopped = result.sprt.decision != SprtState::Decision::CONTINUE;
+    for (size_t gameIndex = kept.size(); gameIndex < config.games && !sprtStopped; ++gameIndex) {
+        const TournamentPerformance contenderBefore = result.contenderPerformance;
+        const TournamentPerformance baselineBefore = result.baselinePerformance;
         Board board;
         const size_t pairIndex = gameIndex / 2;
         if (!startPositions.empty()) {
@@ -773,42 +929,16 @@ int run_tournament(
             termination = adjudicated_termination(finalStatus);
         }
 
-        int contenderOutcome = 0;
-        if (winner < 0) {
-            result.draws++;
-        } else if (winner == static_cast<int>(contenderTeam)) {
-            result.contenderWins++;
-            contenderOutcome = 1;
-        } else {
-            result.baselineWins++;
-            contenderOutcome = -1;
-        }
-        record_outcome(
-            contenderTeam == Stockfish::WHITE ? result.asWhite : result.asBlack,
-            contenderOutcome);
-        record_outcome(
-            contenderStartLead > 0 ? result.upTime
-                : contenderStartLead < 0 ? result.downTime : result.levelTime,
-            contenderOutcome);
-        currentPairPoints += contenderOutcome > 0 ? 1.0 : contenderOutcome == 0 ? 0.5 : 0.0;
-        if (gameIndex % 2 == 1) {
-            result.pairScores.push_back(currentPairPoints / 2.0);
-            currentPairPoints = 0.0;
-            if (config.sprtEnabled()) {
-                result.sprt = evaluate_paired_sprt(
-                    result.pairScores, config.sprtElo0, config.sprtElo1,
-                    config.sprtAlpha, config.sprtBeta);
-            }
-        }
-        if (termination == "checkmate") {
-            result.checkmates++;
-        } else if (termination == "no legal action") {
-            result.noLegalActions++;
-        } else if (termination == "draw") {
-            result.drawnTerminations++;
-        } else {
-            result.macroPlyLimits++;
-        }
+        TournamentGameRecord record;
+        record.gameIndex = gameIndex;
+        record.contenderOutcome = winner < 0 ? 0
+            : winner == static_cast<int>(contenderTeam) ? 1 : -1;
+        record.contenderWhite = contenderTeam == Stockfish::WHITE;
+        record.contenderStartLead = contenderStartLead;
+        record.termination = termination;
+        record.contender = performance_since(result.contenderPerformance, contenderBefore);
+        record.baseline = performance_since(result.baselinePerformance, baselineBefore);
+        tally_game(result, currentPairPoints, config, record);
 
         const std::string whiteTeam = contenderTeam == Stockfish::WHITE
             ? contenderName
@@ -820,6 +950,8 @@ int run_tournament(
             pgnPath, gameIndex + 1, whiteTeam, blackTeam,
             winner, termination, initialDualFen, initialTeam,
             initialTime, time, actions);
+        record.pgnBytes = std::filesystem::file_size(pgnPath);
+        recordsStream << game_record_line(record) << std::endl;
         write_summary(
             summaryPath, contenderName, baselineName, config, result);
         std::cout << "tournament game " << (gameIndex + 1) << '/' << config.games

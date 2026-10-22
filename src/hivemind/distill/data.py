@@ -90,6 +90,11 @@ def read_chunk(path):
     return chunk
 
 
+# Moves-left of a record with a result but no real game length (a resigned
+# game): the trainer masks it, as it masks every target of an unfinished game.
+MOVES_LEFT_UNKNOWN = -1.0
+
+
 def chunk_problem(path):
     """Why a chunk is unfit to train on, or None. Catches contributors whose
     engine wrote broken values: non-finite or out-of-range targets and inputs,
@@ -104,8 +109,9 @@ def chunk_problem(path):
     if np.abs(chunk["plane_values"].astype(np.float32)).max(initial=0) > 16:
         return f"{Path(path).name}: input planes out of range"
     moves_left = chunk["moves_left"].astype(np.float32)  # remaining plies / 100, capped at 1
+    unknown = moves_left == MOVES_LEFT_UNKNOWN
     if (np.abs(chunk["value"]).max(initial=0) > 1 or (chunk["wdl"] < 0).any() or (chunk["wdl"] > 1).any()
-            or (moves_left < 0).any() or (moves_left > 1).any()):
+            or ((moves_left < 0) & ~unknown).any() or (moves_left > 1).any()):
         return f"{Path(path).name}: value targets out of range"
     probabilities = chunk["policy_probability"].astype(np.float64)
     if (chunk["policy_index"] >= POLICY_SIZE).any() or (probabilities < 0).any():

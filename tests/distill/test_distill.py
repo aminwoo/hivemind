@@ -133,6 +133,15 @@ def test_chunk_problem_flags_values_a_broken_engine_wrote(tmp_path):
     path.write_bytes(raw[:-1])
     assert "unreadable" in chunk_problem(path)
 
+    # Moves-left sits after planes, values and WDL. -1 marks a resigned game's
+    # record, which has a result but no length; any other negative is broken.
+    moves_left = 28 + n * PLANES * 10 + n * 4 + n * 12
+    for marker, problem in ((-1.0, None), (-0.5, "value targets out of range")):
+        marked = bytearray(raw)
+        marked[moves_left:moves_left + 2] = np.array([marker], np.float16).tobytes()
+        path.write_bytes(marked)
+        assert chunk_problem(path) == (problem and f"c.dst: {problem}")
+
 def test_policy_loss_ignores_illegal_logits(tmp_path):
     """The engine never sees illegal moves' logits, so the loss must not either."""
     rng = np.random.default_rng(2)
@@ -193,6 +202,24 @@ def test_search_records_have_no_wdl_or_moves_left_loss(tmp_path):
     torch.testing.assert_close(mixed_terms["moves_left"], raw_terms["moves_left"])
     merged = concat_batches(raw, search)
     assert merged["planes"].shape[0] == 16 and len(merged["policy"][0]) == 3
+
+
+def test_resigned_games_have_no_moves_left_loss(tmp_path):
+    """A resigned game's records (moves-left -1) train WDL but not moves-left."""
+    rng = np.random.default_rng(5)
+    _write_chunk(tmp_path / "c.dst", rng)
+    dataset = DistillDataset([read_chunk(tmp_path / "c.dst")], torch.device("cpu"))
+    finished = dataset.batch(torch.arange(8))
+    resigned = dataset.batch(torch.arange(8, 16))
+    resigned["moves_left"] = torch.full_like(resigned["moves_left"], -1.0)
+    model = get_twin_board_model("twin-s").eval()
+    weights = {k: 1.0 for k in ("policy_a", "policy_b", "wdl", "value", "moves_left")}
+    with torch.no_grad():
+        _, finished_terms, _ = losses(model, finished, weights)
+        _, mixed_terms, _ = losses(model, concat_batches(finished, resigned), weights)
+        _, resigned_terms, _ = losses(model, resigned, weights)
+    torch.testing.assert_close(mixed_terms["moves_left"], finished_terms["moves_left"])
+    assert float(resigned_terms["wdl"]) > 0
 
 
 def test_head_chunk_keeps_policies_aligned(tmp_path):

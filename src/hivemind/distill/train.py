@@ -51,7 +51,9 @@ def _loss_rows(model, batch):
     has_wdl = (batch["wdl"].sum(1) > 0).float()
     per_row["wdl"] = (-(batch["wdl"] * F.log_softmax(wdl_logits.float(), dim=1)).sum(1), has_wdl)
     per_row["value"] = ((value.float().squeeze(1) - batch["value"]) ** 2, torch.ones_like(has_wdl))
-    per_row["moves_left"] = ((plys.float().squeeze(1) - batch["moves_left"]) ** 2, has_wdl)
+    # A resigned game has a result but no length: MOVES_LEFT_UNKNOWN (< 0).
+    has_moves_left = has_wdl * (batch["moves_left"] >= 0).float()
+    per_row["moves_left"] = ((plys.float().squeeze(1) - batch["moves_left"]) ** 2, has_moves_left)
     return per_row, (value, policy_a, policy_b)
 
 

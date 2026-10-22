@@ -61,9 +61,10 @@ def test_iteration_generates_remaining_games_before_validation(
     for k, games in completed.items():
         (stages / f"seg{k:02d}.done").write_text(json.dumps({"games": games}))
     loop.args = SimpleNamespace(games=target, segment_games=segment_games, val_games=1000,
-                                keep_selfplay=True)
+                                keep_selfplay=True, anchor_after=None)
     loop.generator = tmp_path / "generator.onnx"
     loop.fixed = tmp_path / "missing-it0.onnx"
+    loop.fixed_name = "it0"
     loop.log = lambda message: None
     calls = []
 
@@ -101,7 +102,9 @@ def test_the_clock_model_reaches_self_play_and_matches(tmp_path, monkeypatch):
     loop.args = SimpleNamespace(selfplay_engine=tmp_path / "sp1", match_engine=tmp_path / "engine",
                                 parallel_games=6, time_model="clock", match_games=2,
                                 match_movetime=1000, openings=tmp_path / "openings.tsv",
-                                pause_for="", keep_selfplay=True)
+                                pause_for="", keep_selfplay=True, resign_threshold=0.0,
+                                tree_reuse=False, checkpoint_games=0)
+    loop.checkpoint_selfplay = loop.resume_matches = False
     loop.log = lambda message: None
     commands = []
 
@@ -146,6 +149,148 @@ def test_the_clock_model_reaches_self_play_and_matches(tmp_path, monkeypatch):
     assert it0_command[it0_command.index("--baseline-time-model") + 1] == "flag"
     marker = json.loads((loop.it / "stages" / "match_it0.done").read_text())
     assert marker["baseline_time_model"] == "flag"
+
+
+def resumable_loop(tmp_path, **args):
+    """A loop at it3 whose engines checkpoint self-play and resume matches."""
+    loop = rl_loop.Loop.__new__(rl_loop.Loop)
+    loop.runs = tmp_path
+    loop.n, loop.it = 3, tmp_path / "rl-it3"
+    loop.arms = loop.it / "arms"
+    for directory in ("stages", "arms", "models", "search"):
+        (loop.it / directory).mkdir(parents=True)
+    loop.generator = tmp_path / "net.onnx"
+    loop.generator.write_bytes(b"net")
+    loop.generator_sp1 = tmp_path / "net-sp1.onnx"
+    (loop.it / "stages" / "generator").write_text(rl_loop.sha256(loop.generator) + "\n")
+    loop.args = SimpleNamespace(**{
+        "selfplay_engine": tmp_path / "sp1", "match_engine": tmp_path / "engine", "parallel_games": 6,
+        "time_model": "clock", "match_games": 2, "match_movetime": 100,
+        "openings": tmp_path / "openings.tsv", "pause_for": "", "keep_selfplay": True,
+        "resign_threshold": -0.95, "tree_reuse": True, "checkpoint_games": 50, **args})
+    loop.checkpoint_selfplay = loop.resume_matches = True
+    loop.log = lambda message: None
+    return loop
+
+
+def test_selfplay_resumes_an_interrupted_segment_with_its_game_count(tmp_path, monkeypatch):
+    loop = resumable_loop(tmp_path)
+    data = loop.it / "search" / "train" / "seg04"
+    records = loop.it / "search" / "train_run" / "seg04"
+    (records / "checkpoint").mkdir(parents=True)
+    (records / "checkpoint" / "progress").write_text("seed 3004\ngames 700\ndone 350\n")
+    data.mkdir(parents=True)
+    (data / "kept.dst").write_bytes(b"chunk")
+    log = loop.it / "search" / "logs" / "seg04.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("selfplay game 350/700\n")
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        kwargs["stdout"].write("selfplay resumed after 350/700 games\nselfplay complete 700 games\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(rl_loop.subprocess, "run", run)
+    monkeypatch.setattr(rl_loop.train, "positions", lambda dirs: 10)
+    loop.selfplay("seg04", 1000, 3004, data, records)
+
+    command, = commands
+    assert command[command.index("--games") + 1] == "700"
+    assert command[command.index("--checkpoint-games") + 1] == "50"
+    assert command[command.index("--resume") + 1] == "true"
+    assert command[command.index("--tree-reuse") + 1] == "true"
+    # The engine takes the last of a repeated option.
+    assert command[len(command) - command[::-1].index("--resign-threshold")] == "-0.95"
+    assert (data / "kept.dst").is_file()
+    assert log.read_text().startswith("selfplay game 350/700\n")
+    assert json.loads((loop.it / "stages" / "seg04.done").read_text())["games"] == 700
+
+
+def test_validation_keeps_the_settings_earlier_iterations_used(tmp_path, monkeypatch):
+    loop = resumable_loop(tmp_path)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        kwargs["stdout"].write("selfplay complete 1000 games\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(rl_loop.subprocess, "run", run)
+    monkeypatch.setattr(rl_loop.train, "positions", lambda dirs: 10)
+    loop.selfplay("val", 1000, 3999, loop.it / "search" / "val", loop.it / "search" / "val_run")
+    command, = commands
+    assert "--tree-reuse" not in command
+    assert command[len(command) - command[::-1].index("--resign-threshold")] == "0"
+
+
+def test_selfplay_without_a_completion_line_failed(tmp_path, monkeypatch):
+    loop = resumable_loop(tmp_path)
+
+    def run(command, **kwargs):
+        kwargs["stdout"].write("selfplay game 1000/1000\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(rl_loop.subprocess, "run", run)
+    with pytest.raises(rl_loop.StageFailed):
+        loop.selfplay("seg00", 1000, 3000, loop.it / "search" / "train" / "seg00",
+                      loop.it / "search" / "train_run" / "seg00")
+
+
+def test_a_resumable_match_keeps_its_output(tmp_path, monkeypatch):
+    loop = resumable_loop(tmp_path)
+    out = loop.arms / "match_generator"
+    out.mkdir()
+    (out / "games.tsv").write_text("config\tsame\n")
+    commands = []
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            assert (out / "games.tsv").is_file()
+            write_summary(out / "summary.json", 1, 1, 0)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(rl_loop.subprocess, "Popen", Process)
+    loop.match("generator", loop.generator)
+    command, = commands
+    assert command[command.index("--resume") + 1] == "true"
+    assert not (loop.it / "aborted").exists()
+
+
+@pytest.mark.parametrize("n, matched", [(9, False), (10, False), (11, True)])
+def test_the_anchor_replaces_it0_after_its_iteration(tmp_path, n, matched):
+    generator = tmp_path / "twin.onnx"
+    generator.write_bytes(b"best after it10")
+    args = SimpleNamespace(anchor_after=10, fixed_time_model="flag", time_model="clock", runs=tmp_path,
+                           checkpoint_games=0, selfplay_engine=tmp_path / "none",
+                           match_engine=tmp_path / "none")
+    loop = rl_loop.Loop(args, generator=generator, checkpoint=tmp_path / "twin.pt",
+                        teacher_val=tmp_path / "none")
+    assert loop.fixed == tmp_path / "twin-anchor-it10.onnx"
+    assert loop.fixed_name == "it10" and loop.fixed_time_model == "clock"
+    if n > 10:
+        loop.fixed.write_bytes(b"best after it10")
+    loop.runs, loop.exchange = tmp_path, None
+    loop.it = tmp_path / f"rl-it{n}"
+    (loop.it / "stages").mkdir(parents=True)
+    (loop.it / "stages" / "generator").write_text("generator\n")
+    loop.args.games, loop.args.segment_games, loop.args.val_games = 0, 1000, 0
+    loop.args.keep_selfplay = True
+    loop.log = lambda message: None
+    matches = []
+    loop.selfplay = lambda *a: None
+    loop.train = lambda: None
+    loop.match = lambda name, baseline, time_model=None: matches.append((name, baseline, time_model))
+    loop.promote = loop.upload = lambda: None
+    loop.iteration(n)
+    expected = [("generator", generator, None)]
+    if matched:
+        expected.append(("it10", loop.fixed, "clock"))
+    assert matches == expected
+    assert loop.fixed.read_bytes() == b"best after it10" if n >= 10 else not loop.fixed.exists()
 
 
 def write_summary(path, wins, losses, draws):

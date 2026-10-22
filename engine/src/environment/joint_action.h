@@ -135,6 +135,35 @@ private:
     std::vector<uint32_t> keys_;
 };
 
+/**
+ * @brief Mix Dirichlet root noise into one board's move priors, in place.
+ *
+ * epsilon of the mass comes from a Dirichlet(alpha) draw seeded by `seed`, the
+ * rest from the priors, so priors summing to one still do.
+ */
+inline void mix_dirichlet_noise(std::vector<float>& priors, float alpha,
+                                float epsilon, uint64_t seed) {
+    if (priors.size() <= 1) {
+        return;
+    }
+    std::mt19937_64 randomEngine(seed);
+    std::gamma_distribution<float> gamma(alpha, 1.0f);
+    std::vector<float> noise(priors.size());
+    float total = 0.0f;
+    for (float& sample : noise) {
+        sample = gamma(randomEngine);
+        total += sample;
+    }
+    if (total <= 0.0f) {
+        return;
+    }
+    const float mix = std::clamp(epsilon, 0.0f, 1.0f);
+    for (size_t index = 0; index < priors.size(); ++index) {
+        priors[index] = (1.0f - mix) * priors[index]
+            + mix * noise[index] / total;
+    }
+}
+
 // Hash function for pair<size_t, size_t>, still used by the transient
 // generated-index map that rebuildCandidateFrontier builds and discards.
 struct PairHash {
@@ -294,6 +323,81 @@ private:
             return jointPolicyCandidates[nextJointPolicyCandidate++];
         }
         return popFactorizedCandidate();
+    }
+
+    /**
+     * Prior mass of the legal joint actions. Legality depends only on
+     * sit/quiet/capture categories, so this sums nine category products
+     * instead of enumerating every move pair.
+     */
+    float legal_prior_mass(const std::vector<Stockfish::Move>& actionsA,
+                           const std::vector<float>& priorsA,
+                           const std::vector<uint8_t>& capturesA,
+                           const std::vector<Stockfish::Move>& actionsB,
+                           const std::vector<float>& priorsB,
+                           const std::vector<uint8_t>& capturesB) const {
+        auto categoryMass = [](const auto& actions, const auto& priors, const auto& captures) {
+            std::array<double, 3> mass{};
+            for (size_t i = 0; i < actions.size(); ++i) {
+                const int category = actions[i] == Stockfish::MOVE_NONE ? 0
+                    : i < captures.size() && captures[i] ? 2 : 1;
+                mass[category] += priors[i];
+            }
+            return mass;
+        };
+        const auto massA = categoryMass(actionsA, priorsA, capturesA);
+        const auto massB = categoryMass(actionsB, priorsB, capturesB);
+        double legalMass = 0.0;
+        for (int a = 0; a < 3; ++a) {
+            for (int b = 0; b < 3; ++b) {
+                if (is_joint_action_legal(rules,
+                        a ? Stockfish::Move(1) : Stockfish::MOVE_NONE,
+                        b ? Stockfish::Move(1) : Stockfish::MOVE_NONE, a == 2, b == 2)) {
+                    legalMass += massA[a] * massB[b];
+                }
+            }
+        }
+        return static_cast<float>(legalMass);
+    }
+
+    /**
+     * Re-sort one board's lists by its (re-noised) priors. Expanded candidates
+     * keep their moves and follow them to their new indices.
+     */
+    void resortBoard(std::vector<Stockfish::Move>& actions,
+                     std::vector<float>& priors,
+                     std::vector<uint8_t>& captures,
+                     std::vector<float>& jointFactors,
+                     bool boardA) {
+        std::vector<size_t> order(actions.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::stable_sort(order.begin(), order.end(),
+                         [&priors](size_t i, size_t j) { return priors[i] > priors[j]; });
+        std::vector<size_t> position(order.size());
+        for (size_t rank = 0; rank < order.size(); ++rank) {
+            position[order[rank]] = rank;
+        }
+        const auto permute = [&order](auto& values, size_t width) {
+            if (width == 0 || values.size() != order.size() * width) {
+                return;
+            }
+            std::remove_reference_t<decltype(values)> sorted;
+            sorted.reserve(values.size());
+            for (size_t index : order) {
+                sorted.insert(sorted.end(), values.begin() + index * width,
+                              values.begin() + (index + 1) * width);
+            }
+            values = std::move(sorted);
+        };
+        permute(actions, 1);
+        permute(priors, 1);
+        permute(captures, 1);
+        permute(jointFactors, jointFactorRank);
+        for (JointActionCandidate& candidate : generatedCandidates) {
+            size_t& index = boardA ? candidate.idxA : candidate.idxB;
+            index = position[index];
+            (boardA ? candidate.priorA : candidate.priorB) = priors[index];
+        }
     }
 
     void rebuildCandidateFrontier(size_t topK, float residualScale) {
@@ -570,32 +674,9 @@ public:
         };
         rules.boardACanMove = isAOnTurn && hasRealMove(actionsA);
         rules.boardBCanMove = isBOnTurn && hasRealMove(actionsB);
+        legalPriorMass = legal_prior_mass(
+            actionsA, priorsA, capturesA, actionsB, priorsB, capturesB);
 
-        // Legality depends only on sit/quiet/capture categories. Sum nine
-        // category products instead of enumerating every move pair.
-        auto categoryMass = [](const auto& actions, const auto& priors, const auto& captures) {
-            std::array<double, 3> mass{};
-            for (size_t i = 0; i < actions.size(); ++i) {
-                const int category = actions[i] == Stockfish::MOVE_NONE ? 0
-                    : i < captures.size() && captures[i] ? 2 : 1;
-                mass[category] += priors[i];
-            }
-            return mass;
-        };
-        const auto massA = categoryMass(actionsA, priorsA, capturesA);
-        const auto massB = categoryMass(actionsB, priorsB, capturesB);
-        double legalMass = 0.0;
-        for (int a = 0; a < 3; ++a) {
-            for (int b = 0; b < 3; ++b) {
-                if (is_joint_action_legal(rules,
-                        a ? Stockfish::Move(1) : Stockfish::MOVE_NONE,
-                        b ? Stockfish::Move(1) : Stockfish::MOVE_NONE, a == 2, b == 2)) {
-                    legalMass += massA[a] * massB[b];
-                }
-            }
-        }
-        legalPriorMass = static_cast<float>(legalMass);
-        
         if (actionsA.empty() || actionsB.empty()) {
             return;
         }
@@ -667,6 +748,25 @@ public:
             generatedPriors.push_back(candidate.jointPrior);
         }
         return generatedPriors;
+    }
+
+    /**
+     * Mix Dirichlet noise into both boards' priors and re-sort the lists by
+     * the result, as a root expanded fresh gets it. Only the order and priors
+     * change here; reprepareJointPolicyPool then rescores the expanded
+     * candidates and rebuilds the frontier from them.
+     */
+    void applyRootNoise(float alpha, float epsilon,
+                        uint64_t seedA, uint64_t seedB) {
+        mix_dirichlet_noise(sortedPriorsA, alpha, epsilon, seedA);
+        mix_dirichlet_noise(sortedPriorsB, alpha, epsilon, seedB);
+        resortBoard(sortedActionsA, sortedPriorsA, sortedCapturesA,
+                    sortedJointFactorsA, true);
+        resortBoard(sortedActionsB, sortedPriorsB, sortedCapturesB,
+                    sortedJointFactorsB, false);
+        legalPriorMass = legal_prior_mass(
+            sortedActionsA, sortedPriorsA, sortedCapturesA,
+            sortedActionsB, sortedPriorsB, sortedCapturesB);
     }
 
     /**

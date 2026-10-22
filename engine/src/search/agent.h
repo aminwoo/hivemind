@@ -54,7 +54,17 @@ struct SearchOptions {
     // has. Set, it decides who may sit at every node, and the flag passed to
     // run_search is ignored in favour of what it implies.
     std::optional<TimeState> clock;
-    
+    // Index the subtree below the move this search chooses for the next
+    // search to reuse. A caller that plays some other move (self-play samples
+    // one) turns this off and keeps that move's subtree with
+    // Agent::retain_played_action instead.
+    bool retainForReuse = true;
+    // A node target counts the visits a reused root already holds: the search
+    // tops the root up to targetNodes, adding at least minNewNodes of its own.
+    // Off, targetNodes is all new nodes, as for a root searched from scratch.
+    bool reusedVisitsCount = false;
+    size_t minNewNodes = 1;
+
     SearchParams::RuntimeConfig search;
     
     // Convenience constructors
@@ -366,6 +376,19 @@ public:
 
     /** Returns an immutable snapshot of the expanded root edges after search. */
     std::vector<RootEdgeStats> root_edge_stats() const;
+
+    /**
+     * @brief Keep the subtree below a move played from the last search's root.
+     *
+     * Makes the child reached by `action` the only reuse candidate for the next
+     * search, which is rooted where that move leads with the clock charged as
+     * the search charged it. For a caller that chooses its own move and ran
+     * the search with SearchOptions::retainForReuse off.
+     * @param board The position the last search was rooted at.
+     * @return Visits the retained child holds; 0 when there is none to keep.
+     */
+    int retain_played_action(const Board& board,
+                             const JointActionCandidate& action);
 
     /** Returns the evaluated Q-value of the root node after search. */
     float root_q() const;
