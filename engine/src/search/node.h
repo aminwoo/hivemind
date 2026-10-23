@@ -137,8 +137,7 @@ private:
             // difference removes the seed without overwriting a concurrent
             // second backup's add.
             const float delta = value - SearchParams::Q_INIT;
-            sum = edge.valueSum.fetch_add(delta, std::memory_order_relaxed)
-                + delta;
+            sum = add_value(edge.valueSum, delta) + delta;
         } else if (visits == 1) {
             // The first real visit replaces the FPU seed instead of adding to it.
             edge.valueSum.store(value, std::memory_order_relaxed);
