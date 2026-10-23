@@ -14,7 +14,7 @@ Hivemind searches both bughouse boards together, including partner captures,
 piece drops, waiting, and clock-dependent decisions. Release bundles include
 **twin-s-clock**, a small two-board network improved through self-play RL.
 Inference runs on CPU, NVIDIA GPUs through TensorRT, or Apple silicon through
-Core ML. An optional NNUE alpha-beta mode is also available.
+Core ML.
 
 ## Choose how to use Hivemind
 
@@ -187,9 +187,6 @@ artifact with `hivemind fetch-network` or the bootstrap script:
 uv run hivemind fetch-network                                  # default: released twin-s-clock
 uv run hivemind fetch-network --variant onnx                   # older twin-s-noattn
 uv run hivemind fetch-network --variant checkpoint             # older twin-s training checkpoint
-uv run hivemind fetch-network --variant crossboard             # RISE teacher ONNX
-uv run hivemind fetch-network --variant crossboard-fp16        # teacher with FP16 I/O
-uv run hivemind fetch-network --variant crossboard-checkpoint  # teacher training checkpoint
 ```
 
 `python tools/fetch_network.py --variant clock` downloads the same artifact
@@ -259,8 +256,7 @@ batch size needs its own cached plan.
 The same engine/network also supports Chess, Crazyhouse, Antichess,
 Chess960, Atomic, and Three-check through `UCI_Variant`. It was trained for
 bughouse; strength in the other variants has not been established by a
-rating test. See the [variant and engine reference](engine/README.md),
-[NNUE mode](engine/README.md#alpha-beta-nnue-engine), and
+rating test. See the [variant and engine reference](engine/README.md) and
 [Lichess bot guide](docs/lichess-bot.md).
 
 ## Contribute self-play games
@@ -323,19 +319,18 @@ uv run hivemind selfplay --help
 uv run hivemind train --help
 uv run hivemind rl-loop --help
 uv run hivemind distill-train --help
-uv run hivemind rise-train --help
 ```
 
 `selfplay` writes HDST search-target chunks; `train` continues a twin-s
 checkpoint. `rl-loop` coordinates self-play, replay, training, matches,
 promotion, and optional Hugging Face uploads. It runs indefinitely unless
 bounded with `--last`. The loop uses POSIX locking and process control;
-run it on Linux/macOS. `rise-train` and `rise-selfplay` are the older RISE
-workflows, with different data formats and defaults.
+run it on Linux/macOS. `distill-train` trains a twin-board network from
+search targets or from a teacher network's outputs.
 
 See the [training guide](docs/training.md) for checkpoint setup, clock-aware
-lineages, distributed runs, archives, manual training stages, and legacy
-RISE examples.
+lineages, distributed runs, archives, manual training stages, and teacher
+distillation.
 
 ## Neural network architecture
 
@@ -343,10 +338,7 @@ The released twin-s-clock model processes each board through a shared
 convolutional trunk with symmetric board exchanges. It takes 78 input planes
 (39 per board), including the team's time lead and relative move speed,
 and returns policies for both boards plus value, WDL, and moves-left heads.
-Older flag networks use 74 planes and remain loadable.
-
-RISEv3, crossboard RISE, and dual-stream models remain available as teacher
-and experimental training architectures. See the
+Older flag networks use 74 planes and remain loadable. See the
 [architecture reference](docs/training.md#neural-network-architecture).
 
 ### Input representation
@@ -358,8 +350,8 @@ representation code.
 
 ## Development and tests
 
-The [development guide](docs/development.md) covers the package layout and
-migration from older commands. Python tests run with:
+The [development guide](docs/development.md) covers the package layout.
+Python tests run with:
 
 ```bash
 uv run python -m pytest

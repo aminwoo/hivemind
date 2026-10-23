@@ -11,7 +11,6 @@ import onnx
 import pytest
 from onnx import TensorProto, helper
 
-from hivemind.config.train_config import TrainObjects
 from hivemind.inference.onnx import run_onnx
 from hivemind.inference.onnx_graph import topologically_sort_graph
 from hivemind.cli import fetch_network as downloader
@@ -56,12 +55,6 @@ def test_graph_sort_rejects_missing_dependency():
     ))
     with pytest.raises(RuntimeError, match="unsortable"):
         topologically_sort_graph(model)
-
-
-def test_training_objects_do_not_share_mutable_settings():
-    first, second = TrainObjects(), TrainObjects()
-    first.phase_weights[0] = 0
-    assert second.phase_weights[0] == 1
 
 
 def test_download_verifies_and_reuses_existing_artifact(tmp_path, monkeypatch):

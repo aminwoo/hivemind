@@ -26,7 +26,6 @@ add_executable(
   test_root_scan_stop.cc
   test_root_mate_search.cc
   test_search_reports.cc
-  test_nnue.cc
   test_time_state.cc
   test_clock_sampling.cc
 )

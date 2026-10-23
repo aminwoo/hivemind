@@ -33,10 +33,6 @@ public:
         return uci.reportIntervalMs;
     }
 
-    static void use_alphabeta(UCI& uci) {
-        uci.alphaBetaMode = true;
-    }
-
     static bool has_search(const UCI& uci) {
         return uci.mainSearchThread != nullptr || uci.ongoingSearch.load();
     }
@@ -308,21 +304,6 @@ TEST_F(UCIOpeningNoiseTest, BackgroundOptionIsIndependentOfPonder) {
 TEST_F(UCIOpeningNoiseTest, DisabledBackgroundCommandDoesNotSearchOrNeedEngines) {
     UCI uci;
     set_option(uci, "BackgroundSearch", "false");
-    testing::internal::CaptureStdout();
-    testing::internal::CaptureStderr();
-    std::istringstream input("background");
-    uci.go(input);
-    const std::string output = testing::internal::GetCapturedStdout();
-    const std::string errors = testing::internal::GetCapturedStderr();
-
-    EXPECT_TRUE(output.empty());
-    EXPECT_TRUE(errors.empty());
-    EXPECT_FALSE(UCIOpeningNoiseTestPeer::has_search(uci));
-}
-
-TEST_F(UCIOpeningNoiseTest, BackgroundCommandDoesNotFallThroughToAlphaBeta) {
-    UCI uci;
-    UCIOpeningNoiseTestPeer::use_alphabeta(uci);
     testing::internal::CaptureStdout();
     testing::internal::CaptureStderr();
     std::istringstream input("background");

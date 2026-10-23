@@ -8,7 +8,7 @@ class Engine;
 
 /**
  * @brief Search-coverage diagnostic: for positions from a FEN file (the
- * `gennnue --fens true` format), runs an independent MCTS search at each node
+ * `gendistill --fens true` format), runs an independent MCTS search at each node
  * budget and writes every root child (both boards' moves, joint prior,
  * visits, Q, and whether each move is a capture, drop, sit or forced wait)
  * as one JSON line per position. Used to tell whether a deeper search's

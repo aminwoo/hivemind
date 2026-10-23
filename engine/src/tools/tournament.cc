@@ -1,5 +1,4 @@
 #include "tools/tournament.h"
-#include "search/alphabeta.h"
 
 #include <algorithm>
 #include <chrono>
@@ -644,27 +643,14 @@ int run_tournament(
     Engine* baseline,
     const std::string& contenderName,
     const std::string& baselineName,
-    const TournamentConfig& config,
-    ab::Searcher* alphaBetaContender,
-    ab::Searcher* alphaBetaBaseline) {
-    if ((!contender && !alphaBetaContender) || (!baseline && !alphaBetaBaseline)) {
-        throw std::invalid_argument("Tournament needs an engine or searcher on each side");
-    }
-    if ((alphaBetaContender && config.contenderAbMoveTimeMs <= 0 && config.contenderAbDepth <= 0)
-        || (alphaBetaBaseline && config.baselineAbMoveTimeMs <= 0 && config.baselineAbDepth <= 0)) {
-        throw std::invalid_argument("An alpha-beta side needs a movetime or depth");
+    const TournamentConfig& config) {
+    if (!contender || !baseline) {
+        throw std::invalid_argument("Tournament needs an engine on each side");
     }
     if (config.games == 0 || config.games % 2 != 0) {
         throw std::invalid_argument("Tournament games must be a positive even number");
     }
-    if (config.clockModel && (alphaBetaContender || alphaBetaBaseline)) {
-        // Alpha-beta knows only the flag, so it would search other rules than
-        // the ones the game is played and adjudicated under.
-        throw std::invalid_argument(
-            "--time-model clock is not supported for alpha-beta players yet");
-    }
-    const bool anyMcts = !alphaBetaContender || !alphaBetaBaseline;
-    if ((anyMcts && (config.nodes == 0) == (config.moveTimeMs <= 0)) ||
+    if ((config.nodes == 0) == (config.moveTimeMs <= 0) ||
         config.maxMacroPlies == 0) {
         throw std::invalid_argument(
             "Tournament requires exactly one positive nodes or movetime limit");
@@ -800,8 +786,8 @@ int run_tournament(
     std::ofstream recordsStream(recordsPath, std::ios::app);
     const std::vector<TournamentStartPosition> startPositions =
         load_tournament_positions(config.positionsFile);
-    Agent contenderAgent(alphaBetaContender ? 1 : config.contenderThreads);
-    Agent baselineAgent(alphaBetaBaseline ? 1 : config.baselineThreads);
+    Agent contenderAgent(config.contenderThreads);
+    Agent baselineAgent(config.baselineThreads);
 
     const bool sprtStopped = result.sprt.decision != SprtState::Decision::CONTINUE;
     for (size_t gameIndex = kept.size(); gameIndex < config.games && !sprtStopped; ++gameIndex) {
@@ -845,38 +831,6 @@ int run_tournament(
             }
 
             const bool contenderActing = team == contenderTeam;
-            ab::Searcher* alphaBeta = contenderActing ? alphaBetaContender : alphaBetaBaseline;
-            if (alphaBeta) {
-                ab::Limits limits;
-                limits.moveTimeMs = contenderActing
-                    ? config.contenderAbMoveTimeMs : config.baselineAbMoveTimeMs;
-                const int depth = contenderActing ? config.contenderAbDepth : config.baselineAbDepth;
-                if (depth > 0) {
-                    limits.depth = depth;
-                }
-                const auto searchStart = std::chrono::steady_clock::now();
-                // Alpha-beta only knows the flag: whether the team may sit now.
-                const ab::Result searched = alphaBeta->search(
-                    board, team, time.can_sit(team), limits);
-                TournamentPerformance& performance = contenderActing
-                    ? result.contenderPerformance : result.baselinePerformance;
-                ++performance.searches;
-                performance.nanoseconds += static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now() - searchStart).count());
-                performance.nodes += searched.nodes;
-                if (!searched.hasMove) {
-                    throw std::runtime_error("Ongoing alpha-beta search returned no action");
-                }
-                JointActionCandidate action;
-                action.moveA = searched.best.a;
-                action.moveB = searched.best.b;
-                actions.push_back(action_uci(board, action));
-                time.advance(team, board.on_turn_on_both_boards(team));
-                board.make_moves(action.moveA, action.moveB);
-                team = ~team;
-                continue;
-            }
             Engine& actingEngine = contenderActing ? *contender : *baseline;
             Agent& agent = contenderActing ? contenderAgent : baselineAgent;
             std::vector<Engine*> engines = {&actingEngine};

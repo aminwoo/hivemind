@@ -5,7 +5,7 @@ them, uploads it and checks the Hub's copy, and only then deletes the files.
 The directory keeps an archive.json listing every tarball and the files in it,
 so restore() can bring them back; files added later go in the next tarball.
 In the dataset each tarball sits at the directory's path under data/:
-data/nnue/train becomes nnue/train-000.tar.zst.
+data/distill/train becomes distill/train-000.tar.zst.
 """
 
 import json
