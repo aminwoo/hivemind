@@ -20,5 +20,4 @@ def workspace_root() -> Path:
 
 PROJECT_ROOT = workspace_root()
 DATA_DIRECTORY = PROJECT_ROOT / "data"
-TRAINING_OUTPUT_DIR = PROJECT_ROOT / "artifacts" / "training"
 MODEL_DIRECTORY = PROJECT_ROOT / "engine" / "models"

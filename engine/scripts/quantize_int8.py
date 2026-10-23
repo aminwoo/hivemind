@@ -15,7 +15,7 @@ Calibrate on positions encoded by the engine itself, so the activations match
 what the search feeds the network (a few thousand are enough). A network from
 before the clock planes reads 74 planes; add `--legacy-planes true` for it:
 
-    ./build-ninja/hivemind dumpplanes --fens ../data/nnue/val/nnue_99_0_00000.fen \\
+    ./build-ninja/hivemind dumpplanes --fens ../data/distill/val/distill_99_0_00000.fen \\
         --output calib.f32 --every 122
     ~/.cache/hivemind-quantize/bin/python scripts/quantize_int8.py \\
         models/network.onnx calib.f32 models/network-int8.onnx

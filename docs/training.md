@@ -95,8 +95,8 @@ or no `hf auth login`) the loop keeps everything on disk anyway.
 `archive` and `restore` do the same for any data directory:
 
 ```bash
-uv run hivemind archive data/nnue/train   # leaves data/nnue/train/archive.json
-uv run hivemind restore data/nnue/train   # brings the files back
+uv run hivemind archive data/distill/train   # leaves data/distill/train/archive.json
+uv run hivemind restore data/distill/train   # brings the files back
 ```
 
 `hivemind train` restores the directories it is given by itself; other
@@ -166,127 +166,38 @@ results, with no teacher data, at lr 1e-4 over 1.5 passes of the new games
 and 0.5 of each replayed one, and exports the last weights as `last.pt` and
 `distill-twin-s-v3.0.onnx`.
 
-The RISE architectures, including the crossboard teacher twin-s was distilled
-from, train with `rise-train`:
+### Distilling from a teacher
+
+`distill-train` can also train a twin-board student from a teacher network's
+raw outputs. The engine's `gendistill` command plays games by sampling the
+teacher's policy and writes every position with the teacher's value, WDL,
+moves-left and policies, averaged over both board orders:
 
 ```bash
-# Supervised learning on human games
-uv run hivemind rise-train --mode sl
-
-# Train the explicit cross-board coordination architecture from scratch
-uv run hivemind rise-train --mode sl \
-  --architecture crossboard-risev33
-
-# Train the staged dual-stream architecture with persistent latent memory
-uv run hivemind rise-train --mode sl \
-  --architecture dualstream-memory-risev33
-
-# Generate an isolated >=2250 corpus and train cross-board RISEv3 on it
-uv run hivemind prepare \
-  --games data/games.parquet \
-  --min-rating 2250 \
-  --train-planes-dir data/planes/sl_2250/train \
-  --val-shard data/planes/sl_2250/val/evaluation_shard.parquet \
-  --train-eval-shard data/planes/sl_2250/train_eval/evaluation_shard.parquet \
-  --architecture crossboard-risev33 \
-  --batch-size 256
-
-# RL training directly from native HVM5 self-play data (from before the clock
-# planes: self-play now writes HVM6 chunks with 78 planes, which these RISE
-# commands do not read)
-uv run hivemind rise-train --mode rl --checkpoint artifacts/training/weights/rl/model-rl-final.tar --selfplay-dir engine/selfplay_games/iteration-2/training_data --architecture crossboard-risev33
+cd engine
+./build-ninja/hivemind gendistill --model teacher.onnx --positions 60000000 \
+    --threads 4 --batch-size 256 --seed 1001 --output ../data/distill/train
+./build-ninja/hivemind gendistill --model teacher.onnx --positions 500000 \
+    --seed 99 --output ../data/distill/val
+cd ..
+uv run hivemind distill-train --data data/distill/train --val data/distill/val \
+    --size twin-s --out artifacts/distill/twin-s
 ```
 
-RL training reads `engine/selfplay_games/training_data` by default, creates a
-deterministic game-level 98/2 train/validation split under
-`engine/selfplay_games/rl_data`, and then starts training. Original HVM chunks
-are preserved. Use `--selfplay-dir` for a different self-play directory, or
-provide both `--rl-data-dir` and `--val-data-dir` to train from existing Parquet
-data. Supervised artifacts are written under `artifacts/training/weights/supervised`;
-RL artifacts, including resumable `model-rl-final.tar` and deployable
-`model-rl-final-v3.0.onnx`, are written under `artifacts/training/weights/rl`.
-For later RL iterations, pass
-`--checkpoint artifacts/training/weights/rl/model-rl-final.tar`.
-Cross-board and dual-stream checkpoints must be continued with their original
-`--architecture`; legacy RISEv3 checkpoints are not shape compatible with the
-new attention and policy heads.
-
-```bash
-# Train on iteration 3 with CrazyAra-style replay from iteration 2
-uv run hivemind rise-train --mode rl \
-  --checkpoint artifacts/training/weights/rl/model-rl-final.tar \
-  --selfplay-dir engine/selfplay_games/iteration-3 \
-  --replay-dir engine/selfplay_games/iteration-2 \
-  --architecture crossboard-risev33
-```
-
-HVM5 stores the sparse joint root-visit distribution in addition to both
-marginal policies. The joint compatibility residual is optional; the default RL
-configuration disables it and trains only the two marginal policy heads. Older
-HVM3/HVM4 chunks therefore remain valid training inputs.
-
-With `--replay-dir`, RL preparation adds five archived HVM chunks selected
-deterministically from the newest 5% of that directory, matching CrazyAra's
-replay-memory defaults. Replay games are training-only; validation is made only
-from the current iteration. Adjust this with `--replay-files`,
-`--replay-selection-fraction`, and `--split-seed`.
-
-RL sample shuffling is bounded to one decoded Parquet shard at a time so dense
-policy tensors from completed shards can be released. Generated RL Parquet
-shards contain 4,096 samples by default. On hosts with limited RAM, use
-`--shuffle-buffer-size 1000` to reduce the default 10,000-sample within-shard
-buffer. RL training saves resumable `.tar` checkpoints when validation loss
-improves but defers ONNX conversion until training completes. Resume an
-interrupted run with its latest intermediate checkpoint and `--resume-training`.
-
-The end-to-end supervised script filters all four players, performs a
-deterministic whole-game 98/2 train/validation split, doubles samples by board
-swap, builds a fixed training-metrics shard, and then launches training. Using
-the `sl_2250` paths above preserves the existing default corpus.
+`--search-data` mixes in self-play search targets as well; see
+`hivemind distill-train --help`.
 
 ## Neural network architecture
 
-The released **twin-s-clock** model uses a shared convolutional trunk for
-each board, symmetric board exchanges, and clock inputs. The older
-**RISEv3** teacher architectures remain available for training experiments.
-RISEv3 (Residual Inverted Squeeze-Excitation) combines:
-
-- Mixed depthwise convolutions
-- Squeeze-and-excitation blocks
-- Pre-activation residual connections
-
-The optional `crossboard-risev33` architecture retains the RISEv3 convolutional
-tower and adds explicit post-tower coordination:
-
-- 64 spatial tokens for board A and 64 for board B
-- Four pocket tokens covering both teams on both boards
-- Two board-local side-to-move tokens and one shared time-advantage token
-- Two bidirectional cross-attention layers
-- Independent spatial policy heads for boards A and B
-
-The coordinated board maps are fused only for the value, WDL, and moves-left
-heads. The deployable ONNX interface remains `value`, `pi_a`, `pi_b`, `wdl_out`,
-and `moves_left`.
-
-The optional `dualstream-memory-risev33` architecture instead runs each board
-through the same stem and three shared-weight five-block stages. Two
-intermediate communication stages update a persistent eight-token latent
-workspace, apply one latent self-attention block, and symmetrically feed the
-result back to both boards. A final direct square-to-square attention layer
-preserves exact tactical communication. State-dependent residual gates control
-the latent and direct pathways independently, and only the value-side heads
-fuse the final board maps.
-
-Cross-board and dual-stream training both default to batch size 256. The
-dual-stream model still processes two sets of trunk activations, so reduce this
-value explicitly if GPU memory is insufficient.
-Use `--batch-size` to tune this for another GPU; the legacy RISEv3 default
-remains unchanged. Dual-stream training uses BF16 model execution by default on
-CUDA while retaining FP32 parameters, losses, optimizer state, and checkpoints.
-Use `--precision fp32` for an exact full-precision fallback. During supervised training,
-intermediate checks process at most 64 batches from each metrics loader and run
-every 2,048,000 training samples. Complete train/validation evaluation runs at
-each epoch boundary and at the end of training.
+The **twin-board** network (`twin-s`, `twin-m`, `twin-l` in
+[`twin_board.py`](../src/hivemind/architectures/twin_board.py)) runs each
+board's planes through the same convolutional trunk as their own 8x8 image,
+and the boards exchange information through explicit, symmetric exchange
+steps. Each board's planes are written from the team's point of view, so
+swapping the two boards is a symmetry of the game: swapping the input blocks
+swaps the two policies and leaves value, WDL and moves-left unchanged, and
+every training position teaches both boards. The released twin-s-clock
+network is `twin-s` with the clock planes below.
 
 ### Input Representation
 
@@ -309,8 +220,8 @@ Clock-aware twin-s networks use a **78-channel input** (78×8×8), with
 
 Both boards carry the team's same two clock values. Under `TimeModel flag` the
 lead plane is +1 or -1 by the sit right and the speed plane 0. Networks from
-before the clock planes (RISE, and twin-s up to iteration 10) read channels
-0-36 of each board, 74 in all.
+before the clock planes (the twin-s-noattn flag lineage) read channels 0-36
+of each board, 74 in all.
 
 ### Output
 

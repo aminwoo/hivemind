@@ -12,26 +12,22 @@ uv run hivemind --help
 uv run hivemind fetch-network
 uv run hivemind infer --starting
 uv run hivemind train --help
-uv run hivemind prepare --help
-uv run hivemind nnue-train --help   # distil an NNUE for the alpha-beta engine
+uv run hivemind rl-loop --help
 uv run python -m pytest
 ```
 
 Commands live in `hivemind.cli` and load dependencies only when selected.
 `python -m hivemind` is equivalent to the installed `hivemind` command.
-Library code belongs in the domain, data, architectures, inference, or training
-packages. Configuration defaults live in `hivemind.config`; workspace paths
-are centralized in `hivemind.paths`.
+Library code belongs in the domain, data, architectures, inference, or distill
+packages. Workspace paths are centralized in `hivemind.paths`, and pinned
+networks in `hivemind.network`.
 
-Python tests mirror those subsystems under `tests/`. Visual inspection commands
-such as `hivemind inspect-loader` and `hivemind verify-augmentation` live with
-the CLI, separate from automated tests.
+Python tests mirror those subsystems under `tests/`.
 
 ## Files produced at runtime
 
-- `data/`: source games and prepared training datasets.
-- `artifacts/training/weights/{supervised,rl}/`: training checkpoints and exports.
-- `artifacts/training/logs/`: training logs.
+- `data/distill/`: self-play and distillation data, and RL loop runs.
+- `artifacts/distill/`: training checkpoints and ONNX exports.
 - `engine/models/`: downloaded networks and the engine's cached plans.
 
 An editable install resolves these paths from the repository root, regardless

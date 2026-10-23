@@ -1,4 +1,4 @@
-#include "tools/nnue_data.h"
+#include "tools/teacher_data.h"
 
 #include <algorithm>
 #include <array>
@@ -25,27 +25,22 @@
 #include "environment/planes.h"
 #include "nn/backend_compat.h"
 #include "nn/engine.h"
-#include "nnue/features.h"
 #include "search/search_params.h"
 #include "tools/distill_data.h"
 
-namespace nnue_datagen {
+namespace teacher_data {
 
-constexpr std::array<char, 4> NNUE_DATA_MAGIC = {'H', 'N', 'U', 'E'};
-constexpr uint32_t NNUE_DATA_VERSION = 1;
 constexpr int8_t OUTCOME_UNKNOWN = 2;
 using distill::half_bits;
 
 struct PositionRecord {
-    std::array<uint16_t, nnue::MAX_ACTIVE_FEATURES> features{};
-    uint8_t featureCount = 0;
     uint8_t team = 0;
     uint16_t ply = 0;
     float value = 0.0f;
     std::array<float, 3> wdl{};
     std::string fen;
-    // Distillation only: planes, moves left and policy (value, WDL, ply and
-    // outcome are filled in from the fields above when the chunk is written).
+    // Planes, moves left and policy (value, WDL, ply and outcome are filled
+    // in from the fields above when the chunk is written).
     distill::Record distill;
 };
 
@@ -98,21 +93,15 @@ std::vector<distill::PolicyEntry> teacher_policy(Board& board, int boardNumber, 
     return entries;
 }
 
-/**
- * @brief Column-major chunk writer.
- *
- * Layout: magic, version, feature count, positions N, total active features F,
- * then value f32[N], wdl f32[N*3] (loss, draw, win), outcome i8[N],
- * ply u16[N], count u8[N], features u16[F]. Outcome is from the side to move:
- * -1 loss, 0 draw, 1 win, 2 unfinished.
- */
-class NnueChunkWriter {
+/// Writes HDST distillation chunks (see tools/distill_data.h), with an
+/// optional FEN file of the same positions beside each.
+class ChunkWriter {
 public:
-    NnueChunkWriter(std::filesystem::path directory, std::string prefix,
-                    size_t chunkPositions, bool writeFens, bool distill = false)
+    ChunkWriter(std::filesystem::path directory, std::string prefix,
+                size_t chunkPositions, bool writeFens)
         : directory_(std::move(directory)), prefix_(std::move(prefix)),
           chunkPositions_(std::max<size_t>(1, chunkPositions)),
-          writeFens_(writeFens), distill_(distill) {}
+          writeFens_(writeFens) {}
 
     void append(PositionRecord&& record, int8_t outcome) {
         records_.push_back(std::move(record));
@@ -126,61 +115,14 @@ public:
         if (records_.empty()) {
             return;
         }
-        if (distill_) {
-            flush_distill();
-            return;
-        }
         std::ostringstream name;
         name << prefix_ << '_' << std::setw(5) << std::setfill('0') << chunkIndex_++;
-        const std::filesystem::path finalPath = directory_ / (name.str() + ".bin");
-        const std::filesystem::path temporaryPath = finalPath.string() + ".tmp";
-        std::ofstream stream(temporaryPath, std::ios::binary | std::ios::trunc);
-        if (!stream) {
-            throw std::runtime_error("Unable to create " + temporaryPath.string());
-        }
-        const uint64_t count = records_.size();
-        uint64_t totalFeatures = 0;
-        for (const PositionRecord& record : records_) {
-            totalFeatures += record.featureCount;
-        }
-        auto write = [&stream](const void* data, size_t bytes) {
-            stream.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
-        };
-        const uint32_t featureSpace = nnue::NUM_FEATURES;
-        write(NNUE_DATA_MAGIC.data(), NNUE_DATA_MAGIC.size());
-        write(&NNUE_DATA_VERSION, sizeof(NNUE_DATA_VERSION));
-        write(&featureSpace, sizeof(featureSpace));
-        write(&count, sizeof(count));
-        write(&totalFeatures, sizeof(totalFeatures));
-        for (const PositionRecord& record : records_) write(&record.value, sizeof(float));
-        for (const PositionRecord& record : records_) write(record.wdl.data(), 3 * sizeof(float));
-        write(outcomes_.data(), outcomes_.size());
-        for (const PositionRecord& record : records_) write(&record.ply, sizeof(uint16_t));
-        for (const PositionRecord& record : records_) write(&record.featureCount, 1);
-        for (const PositionRecord& record : records_) {
-            write(record.features.data(), record.featureCount * sizeof(uint16_t));
-        }
-        stream.close();
-        if (!stream) {
-            throw std::runtime_error("Failed to write " + temporaryPath.string());
-        }
-        std::filesystem::rename(temporaryPath, finalPath);
-
         if (writeFens_) {
             std::ofstream fens(directory_ / (name.str() + ".fen"), std::ios::trunc);
             for (const PositionRecord& record : records_) {
                 fens << record.fen << '\n';
             }
         }
-        records_.clear();
-        outcomes_.clear();
-    }
-
-private:
-    /// Distillation chunk (HDST, see tools/distill_data.h).
-    void flush_distill() {
-        std::ostringstream name;
-        name << prefix_ << '_' << std::setw(5) << std::setfill('0') << chunkIndex_++ << ".dst";
         std::vector<distill::Record> records;
         records.reserve(records_.size());
         for (size_t index = 0; index < records_.size(); ++index) {
@@ -191,16 +133,16 @@ private:
             record.ply = source.ply;
             record.outcome = outcomes_[index];
         }
-        distill::write_chunk(directory_ / name.str(), records);
+        distill::write_chunk(directory_ / (name.str() + ".dst"), records);
         records_.clear();
         outcomes_.clear();
     }
 
+private:
     std::filesystem::path directory_;
     std::string prefix_;
     size_t chunkPositions_;
     bool writeFens_;
-    bool distill_ = false;
     size_t chunkIndex_ = 0;
     std::vector<PositionRecord> records_;
     std::vector<int8_t> outcomes_;
@@ -337,7 +279,7 @@ void reset_slot(GameSlot& slot, std::mt19937_64& rng, double baseRandomMoveProba
 
 /// Flushes a finished game. `winner` is the winning team, or -1 for a draw
 /// and -2 for an unfinished game.
-void finish_game(GameSlot& slot, int winner, NnueChunkWriter& writer,
+void finish_game(GameSlot& slot, int winner, ChunkWriter& writer,
                  std::atomic<uint64_t>& written) {
     for (PositionRecord& record : slot.records) {
         int8_t outcome = OUTCOME_UNKNOWN;
@@ -356,7 +298,7 @@ int team_index(Stockfish::Color team) {
     return team == Stockfish::WHITE ? 0 : 1;
 }
 
-void generation_worker(Engine& engine, const NnueDataConfig& config,
+void generation_worker(Engine& engine, const TeacherDataConfig& config,
                        size_t workerIndex, uint64_t runSeed,
                        std::atomic<uint64_t>& written,
                        std::atomic<uint64_t>& games,
@@ -364,9 +306,9 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
     const size_t batchSize = static_cast<size_t>(engine.getBatchSize());
     std::mt19937_64 rng(runSeed ^ (0x9e3779b97f4a7c15ULL * (workerIndex + 1)));
     std::ostringstream prefix;
-    prefix << (config.distill ? "distill_" : "nnue_") << runSeed << '_' << workerIndex;
-    NnueChunkWriter writer(config.outputDirectory, prefix.str(),
-                           config.chunkPositions, config.writeFens, config.distill);
+    prefix << "distill_" << runSeed << '_' << workerIndex;
+    ChunkWriter writer(config.outputDirectory, prefix.str(),
+                       config.chunkPositions, config.writeFens);
 
     __half* observations = nullptr;
     if (!hm::alloc_pinned(reinterpret_cast<void**>(&observations),
@@ -376,13 +318,13 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
     std::unique_ptr<__half, void (*)(__half*)> observationGuard(
         observations, [](__half* ptr) { hm::free_pinned(ptr); });
 
-    // Distillation targets average the teacher over both board orders. Swapping
+    // Targets average the teacher over both board orders. Swapping
     // the boards is a symmetry of the game (each board's planes are from the
     // team's point of view), but the teacher is not exactly symmetric, and a
     // symmetric student can only learn the symmetric part.
     __half* mirrorObservations = nullptr;
-    if (config.distill && !hm::alloc_pinned(reinterpret_cast<void**>(&mirrorObservations),
-                                            batchSize * NB_INPUT_VALUES() * sizeof(__half))) {
+    if (!hm::alloc_pinned(reinterpret_cast<void**>(&mirrorObservations),
+                          batchSize * NB_INPUT_VALUES() * sizeof(__half))) {
         throw std::runtime_error("Unable to allocate pinned observations");
     }
     std::unique_ptr<__half, void (*)(__half*)> mirrorGuard(
@@ -428,33 +370,31 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
                             slot.team, slot.hasTimeAdvantage);
         }
         Engine::HalfInferenceOutputs outputs;
-        if (config.distill) {
-            constexpr size_t block = NB_INPUT_CHANNELS_PER_BOARD * 64;
-            for (size_t index = 0; index < batchSize; ++index) {
-                const __half* source = observations + index * NB_INPUT_VALUES();
-                __half* target = mirrorObservations + index * NB_INPUT_VALUES();
-                std::copy(source + block, source + 2 * block, target);
-                std::copy(source, source + block, target + block);
-            }
-            if (!engine.runInferenceHalf(mirrorObservations, outputs, workerIndex)) {
-                throw std::runtime_error("NNUE data inference failed");
-            }
-            // The next inference reuses the engine's output buffers.
-            auto keep = [batchSize](const __half* data, size_t width, std::vector<__half>& into) {
-                if (data) {
-                    into.assign(data, data + batchSize * width);
-                } else {
-                    into.clear();
-                }
-            };
-            keep(outputs.value, 1, mirrorValue);
-            keep(outputs.policyA, NB_POLICY_VALUES(), mirrorPolicyA);
-            keep(outputs.policyB, NB_POLICY_VALUES(), mirrorPolicyB);
-            keep(outputs.wdl, 3, mirrorWdl);
-            keep(outputs.movesLeft, 1, mirrorMovesLeft);
+        constexpr size_t block = NB_INPUT_CHANNELS_PER_BOARD * 64;
+        for (size_t index = 0; index < batchSize; ++index) {
+            const __half* source = observations + index * NB_INPUT_VALUES();
+            __half* target = mirrorObservations + index * NB_INPUT_VALUES();
+            std::copy(source + block, source + 2 * block, target);
+            std::copy(source, source + block, target + block);
         }
+        if (!engine.runInferenceHalf(mirrorObservations, outputs, workerIndex)) {
+            throw std::runtime_error("Teacher inference failed");
+        }
+        // The next inference reuses the engine's output buffers.
+        auto keep = [batchSize](const __half* data, size_t width, std::vector<__half>& into) {
+            if (data) {
+                into.assign(data, data + batchSize * width);
+            } else {
+                into.clear();
+            }
+        };
+        keep(outputs.value, 1, mirrorValue);
+        keep(outputs.policyA, NB_POLICY_VALUES(), mirrorPolicyA);
+        keep(outputs.policyB, NB_POLICY_VALUES(), mirrorPolicyB);
+        keep(outputs.wdl, 3, mirrorWdl);
+        keep(outputs.movesLeft, 1, mirrorMovesLeft);
         if (!engine.runInferenceHalf(observations, outputs, workerIndex)) {
-            throw std::runtime_error("NNUE data inference failed");
+            throw std::runtime_error("Teacher inference failed");
         }
 
         for (size_t index = 0; index < batchSize; ++index) {
@@ -462,38 +402,31 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
             Board& board = *slot.board;
 
             PositionRecord record;
-            if (config.distill) {
-                distill::pack_planes(observations + index * NB_INPUT_VALUES(), record.distill);
-                record.distill.movesLeft = outputs.movesLeft
-                    ? half_bits(__float2half_rn(0.5f * (__half2float(outputs.movesLeft[index])
-                                                        + __half2float(mirrorMovesLeft[index]))))
-                    : 0;
-                // Board A of the mirrored input is this position's board B.
-                record.distill.policy[0] = teacher_policy(
-                    board, BOARD_A, board.side_to_move(BOARD_A) == slot.team,
-                    outputs.policyA + index * NB_POLICY_VALUES(),
-                    mirrorPolicyB.data() + index * NB_POLICY_VALUES());
-                record.distill.policy[1] = teacher_policy(
-                    board, BOARD_B, board.side_to_move(BOARD_B) == ~slot.team,
-                    outputs.policyB + index * NB_POLICY_VALUES(),
-                    mirrorPolicyA.data() + index * NB_POLICY_VALUES());
-            } else {
-                record.featureCount = static_cast<uint8_t>(nnue::extract_features(
-                    board, slot.team, slot.hasTimeAdvantage, record.features.data()));
-            }
+            distill::pack_planes(observations + index * NB_INPUT_VALUES(), record.distill);
+            record.distill.movesLeft = outputs.movesLeft
+                ? half_bits(__float2half_rn(0.5f * (__half2float(outputs.movesLeft[index])
+                                                    + __half2float(mirrorMovesLeft[index]))))
+                : 0;
+            // Board A of the mirrored input is this position's board B.
+            record.distill.policy[0] = teacher_policy(
+                board, BOARD_A, board.side_to_move(BOARD_A) == slot.team,
+                outputs.policyA + index * NB_POLICY_VALUES(),
+                mirrorPolicyB.data() + index * NB_POLICY_VALUES());
+            record.distill.policy[1] = teacher_policy(
+                board, BOARD_B, board.side_to_move(BOARD_B) == ~slot.team,
+                outputs.policyB + index * NB_POLICY_VALUES(),
+                mirrorPolicyA.data() + index * NB_POLICY_VALUES());
             record.team = static_cast<uint8_t>(team_index(slot.team));
             record.ply = static_cast<uint16_t>(std::min<size_t>(slot.macroPly, 65535));
             record.value = __half2float(outputs.value[index]);
             if (outputs.wdl) {
                 record.wdl = wdl_probabilities(outputs.wdl + index * 3);
             }
-            if (config.distill) {
-                record.value = 0.5f * (record.value + __half2float(mirrorValue[index]));
-                if (outputs.wdl) {
-                    const std::array<float, 3> mirror = wdl_probabilities(mirrorWdl.data() + index * 3);
-                    for (int k = 0; k < 3; ++k) {
-                        record.wdl[k] = 0.5f * (record.wdl[k] + mirror[k]);
-                    }
+            record.value = 0.5f * (record.value + __half2float(mirrorValue[index]));
+            if (outputs.wdl) {
+                const std::array<float, 3> mirror = wdl_probabilities(mirrorWdl.data() + index * 3);
+                for (int k = 0; k < 3; ++k) {
+                    record.wdl[k] = 0.5f * (record.wdl[k] + mirror[k]);
                 }
             }
             if (config.writeFens) {
@@ -538,10 +471,10 @@ void generation_worker(Engine& engine, const NnueDataConfig& config,
     writer.flush();
 }
 
-}  // namespace nnue_datagen
+}  // namespace teacher_data
 
-int run_nnue_data(Engine& engine, const NnueDataConfig& config) {
-    using namespace nnue_datagen;
+int run_teacher_data(Engine& engine, const TeacherDataConfig& config) {
+    using namespace teacher_data;
     if (config.threads == 0
         || config.threads > static_cast<size_t>(SearchParams::NUM_SEARCH_THREADS)) {
         throw std::invalid_argument(

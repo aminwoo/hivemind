@@ -94,15 +94,13 @@ set(LIB_SOURCES
     src/nn/onnx_utils.cc
     src/search/agent.cc
     src/search/single_board.cc
-    src/search/alphabeta.cc
-    src/nnue/network.cc
     src/search/mate_probe.cc
     src/search/node.cc
     src/search/searchthread.cc
     src/interface/uci.cc
     src/tools/benchmark.cc
     src/tools/selfplay.cc
-    src/tools/nnue_data.cc
+    src/tools/teacher_data.cc
     src/tools/distill_data.cc
     src/tools/search_diag.cc
     src/tools/tournament.cc

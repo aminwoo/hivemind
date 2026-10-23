@@ -14,7 +14,7 @@ blocks swaps pi_a and pi_b and leaves value, WDL and moves-left unchanged, so
 the network cannot spend capacity on the two boards separately and every
 training position teaches both boards.
 
-Inputs and outputs match the RISEv3 models, so the engine and the ONNX export
+Inputs and outputs match the earlier RISEv3 networks, so the engine and the ONNX export
 treat it as a drop-in replacement.
 """
 import torch

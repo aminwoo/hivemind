@@ -12,8 +12,8 @@
 #include "nn/backend_compat.h"
 
 /**
- * @brief Network-distillation chunks (HDST), shared by `gennnue --format
- * distill` (raw teacher outputs) and `selfplay --distill-output` (search
+ * @brief Network-distillation chunks (HDST), shared by `gendistill`
+ * (raw teacher outputs) and `selfplay --distill-output` (search
  * results). The Python side reads them with hivemind.distill.data.
  *
  * Layout (v2): magic, version, planes per position C (78, or 74 from before

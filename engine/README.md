@@ -123,9 +123,8 @@ The engine then reports `info string backend ONNX Runtime (Core ML Neural Engine
 macOS.
 
 As exported, a network splits into several Core ML partitions, because Core
-ML has no kernel for a few of its ops: the Neg and Abs in twin-s's value head,
-and the crossboard network's Neg and the Expand in each of its
-squeeze-excitation blocks. Every split adds a GPU-to-CPU round trip per
+ML has no kernel for a few of its ops, such as the Neg and Abs in twin-s's
+value head. Every split adds a GPU-to-CPU round trip per
 batch. The conversion replaces these ops with exact equivalents (the outputs
 are bit-identical), so the whole graph is one partition. The engine warns
 when it is given a network that has not been converted.
@@ -221,7 +220,7 @@ side internally. The command emits no `bestmove` and ends on the next
 Check for `option name BackgroundSearch type check default true` in the UCI
 handshake before using the command. Setting `BackgroundSearch` to `false`
 disables explicit `go background` commands; automatic background work after
-normal MCTS searches continues. In alpha-beta mode, `go background` is ignored.
+normal MCTS searches continues.
 
 ### INT8 networks
 
@@ -239,7 +238,7 @@ positions encoded by the engine itself:
 ```bash
 python3 -m venv ~/.cache/hivemind-quantize
 ~/.cache/hivemind-quantize/bin/pip install "nvidia-modelopt[onnx]"
-./build-ninja/hivemind dumpplanes --fens ../data/nnue/val/nnue_99_0_00000.fen \
+./build-ninja/hivemind dumpplanes --fens ../data/distill/val/distill_99_0_00000.fen \
     --output calib.f32 --every 122
 ~/.cache/hivemind-quantize/bin/python scripts/quantize_int8.py \
     models/network.onnx calib.f32 models/network-int8.onnx
@@ -266,7 +265,7 @@ finished MCTS search cancel it. Threads are joined before returning a move or
 replacing the tree.
 
 `MateThreads` (default `4`, max `256`) sets how many Fairy-Stockfish workers
-each mate probe searches with, in both MCTS and alpha-beta. The workers share
+each mate probe searches with. The workers share
 one transposition table, and the probe's node budget is their combined total,
 so extra workers search more within the same move time and use up a node
 budget sooner. Each worker adds about 20 MB of resident memory. On a
@@ -398,76 +397,21 @@ clock and both of its games use it, so the contender plays each team's side of
 the lead once. The positions file's time-advantage flags are then unused, and
 the breakdown splits games by the contender's starting lead: up, down or level.
 
-## Alpha-beta NNUE engine
+## Teacher distillation data
 
-A second search mode replaces MCTS with alpha-beta over an NNUE value network
-distilled from an ONNX teacher. It runs on the CPU, so a build with either
-backend can use it without a GPU or a model file:
+`gendistill` plays games by sampling a teacher network's raw policy, with a
+per-game temperature and occasional random moves, and writes every position
+as HDST distillation chunks (packed planes, the teacher's value, WDL,
+moves-left and legal-move policies, averaged over both board orders) for
+`hivemind distill-train`. `--fens true` also writes each chunk's positions
+as `fenA;fenB;team;advantage` lines, which `dumpplanes` and `searchdiag` read:
 
 ```bash
-./build-ninja/hivemind --nnue ../artifacts/nnue/h512v2/best.nnue
+./build-ninja/hivemind gendistill --model teacher.onnx --positions 500000 \
+    --seed 99 --fens true --output ../data/distill/val
 ```
 
-The UCI options `NNUEFile` (loads a network and switches mode) and
-`SearchMode` (`mcts` or `alphabeta`) select it at runtime; `go` accepts
-`movetime`, `nodes`, `depth`, and `infinite`, and `bestmove` uses the same
-`(moveA,moveB)` joint notation as MCTS. `Threads` runs Lazy SMP helpers that
-share the transposition table, and `ABParams` takes comma-separated
-`name=value` search parameters (`lmp_base`, `lmp_scale`, `pv_lmp_scale`,
-`root_lmp_scale`, `lmr_divisor`, `qsearch_plies`, `rfp_margin`,
-`futility_margin`, `qsearch_checks`, `check_extension`, `pair_ordering`,
-`mate_probe`, `threads`).
-
-When the team holds the time advantage, the Fairy-Stockfish root mate probe
-that MCTS uses runs on its own thread beside the search. A mate that survives
-the probe's two-board replay and the mate-race veto stops the search and is
-played; `mate_probe=false` disables it.
-
-Each team turn is searched as two nested choices by the same player, first on
-board A and then on board B, with board B's options taken from the position
-before board A's move. Terminal positions use the engine's own bughouse mate,
-blockable-mate, and repetition rules. Pairs are pruned on the product of the
-two boards' move-order ranks, and quiescence covers single-board captures plus
-checks on its first turn.
-
-### Distilling a network
-
-1. Generate teacher-labelled positions. Games sample the teacher's raw policy
-   with per-game temperature and occasional random moves; every position is
-   stored with its sparse features and the teacher's value and WDL:
-
-   ```bash
-   ./build-ninja/hivemind gennnue --model teacher.onnx --positions 60000000 \
-       --threads 4 --batch-size 256 --seed 1001 --output ../data/nnue/train
-   ./build-ninja/hivemind gennnue --model teacher.onnx --positions 500000 \
-       --seed 99 --fens true --output ../data/nnue/val
-   ```
-
-2. Train and export (`best.nnue` is written whenever validation improves).
-   Pools larger than device memory rotate a random window of chunks per epoch;
-   half of the positions have boards A and B swapped, an exact symmetry:
-
-   ```bash
-   uv run hivemind nnue-train --data data/nnue/train --val data/nnue/val \
-       --out artifacts/nnue/run --hidden 512 --epochs 40
-   ```
-
-3. Check that the engine reproduces the trainer's outputs, then measure
-   strength. `absearchbench` reports depth and nodes on FEN lines, and the
-   tournament accepts an alpha-beta side through `--contender-nnue` or
-   `--baseline-nnue` (search parameters via `--{contender,baseline}-ab-set`):
-
-   ```bash
-   ./build-ninja/hivemind nnueeval --nnue best.nnue --fens ../data/nnue/val/<chunk>.fen
-   ./build-ninja/hivemind tournament --contender-nnue best.nnue \
-       --contender-ab-movetime 500 --baseline teacher.onnx --nodes 128 \
-       --games 40 --positions openings.tsv --output tournament_results/nnue
-   ```
-
-The feature layout is defined once in `src/nnue/features.h` and mirrored in
-`src/hivemind/nnue/features.py`; `tests/test_nnue.cc` checks the team mirror
-and board-swap permutations and that incremental accumulator updates match a
-full refresh.
+See the [training guide](../docs/training.md#distilling-from-a-teacher).
 
 ## TensorRT release bundles
 

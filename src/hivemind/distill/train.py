@@ -3,7 +3,7 @@
     hivemind distill-train --data data/distill/train --val data/distill/val \\
         --size twin-m --out artifacts/distill/twin-m
 
-Data comes from `hivemind gennnue --format distill` (raw teacher outputs)
+Data comes from the engine's `gendistill` command (raw teacher outputs)
 and, optionally, `hivemind selfplay --distill-output` (--search-data: MCTS
 visit distributions, root Q, and finished-game WDL and moves-left targets). Every
 batch mixes the two in a fixed proportion (--search-fraction, by default
@@ -353,16 +353,37 @@ def main():
     export(args.out, size, checkpoint_name=f"{args.export}.pt")
 
 
+OUTPUT_NAMES = ("value", "pi_a", "pi_b", "auxiliary_out", "wdl_out", "moves_left")
+
+
 def export(out, size, checkpoint_name="best.pt"):
     """ONNX export with the teacher's inputs and outputs (value, pi_a, pi_b, wdl_out, moves_left)."""
-    from hivemind.training.trainer_agent import export_to_onnx
+    import onnx
+    from onnxruntime.transformers.float16 import convert_float_to_float16
+    from onnxsim import simplify
+
+    from hivemind.inference.onnx_graph import topologically_sort_graph
 
     model, size, _ = load_twin_board_checkpoint(out / checkpoint_name)
     model.eval()
-    export_to_onnx(model, 1, torch.ones(1, 2 * model.planes_per_board, 8, 8), out, f"distill-{size}",
-                   has_auxiliary_output=True, dynamic_batch_size=True)
+    path = out / f"distill-{size}-v3.0.onnx"
+    torch.onnx.export(model, (torch.ones(1, 2 * model.planes_per_board, 8, 8),), str(path),
+                      input_names=["data"], output_names=list(OUTPUT_NAMES),
+                      dynamic_axes={name: {0: "batch"} for name in ("data", *OUTPUT_NAMES)},
+                      dynamo=False, export_params=True, opset_version=18,
+                      do_constant_folding=True, keep_initializers_as_inputs=False)
+    simplified, check = simplify(onnx.load(str(path)))
+    if not check:
+        raise RuntimeError("Simplified ONNX model could not be validated")
+    fp16 = convert_float_to_float16(simplified, keep_io_types=True)
+    topologically_sort_graph(fp16)
+    onnx.checker.check_model(fp16)
+    # The engine reads value, both policies, WDL and moves-left; drop the unused auxiliary head.
+    outputs = [output for output in fp16.graph.output if output.name != "auxiliary_out"]
+    del fp16.graph.output[:]
+    fp16.graph.output.extend(outputs)
+    onnx.save(fp16, str(path))
     print(f"exported {out}")
-
 
 if __name__ == "__main__":
     main()
