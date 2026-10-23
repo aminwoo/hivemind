@@ -12,12 +12,21 @@ import torch
 from torch import nn
 from torch.nn import Sequential, Conv1d, Conv2d, BatchNorm2d, ReLU, LeakyReLU, Sigmoid, Tanh, Linear, Hardsigmoid, Hardswish,\
     Module, AdaptiveAvgPool2d, BatchNorm1d
-from timm.layers import DropPath
 
 
-def round_to_next_multiple_of_32(number):
-    """Rounds a given number to the next multiple of 32."""
-    return int((number / 32) + 0.5) * 32
+class DropPath(nn.Module):
+    """Stochastic depth: drops the whole residual branch of a sample with probability p while training."""
+
+    def __init__(self, p=0.0):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x):
+        if self.p == 0.0 or not self.training:
+            return x
+        keep = 1.0 - self.p
+        mask = x.new_empty((x.shape[0],) + (1,) * (x.ndim - 1)).bernoulli_(keep)
+        return x * mask / keep
 
 
 def get_act(act_type):
@@ -114,43 +123,6 @@ class _ChannelAttentionModule(torch.nn.Module):
         return x * y.expand_as(x)
 
 
-class MixConv(Module):
-    def __init__(self, in_channels, out_channels, kernels):
-        """
-        Mix depth-wise convolution layers, Mingxing Tan, Quoc V. Le, https://arxiv.org/abs/1907.09595
-        :param in_channels: Number of input channels
-        :param out_channels: Number of convolutional channels
-        :param kernels: List of kernel sizes to use
-        :return: symbol
-        """
-        super(MixConv, self).__init__()
-
-        self.branches = []
-        self.num_splits = len(kernels)
-
-        for kernel in kernels:
-            self.branch = Sequential(Conv2d(in_channels=in_channels // self.num_splits,
-                                 out_channels=out_channels // self.num_splits, kernel_size=(kernel, kernel),
-                                 padding=(kernel//2, kernel//2), bias=False,
-                                 groups=out_channels // self.num_splits))
-            self.branches.append(self.branch)
-
-    def forward(self, x):
-        """
-        Compute forward pass
-        :param x: Input data to the block
-        :return: Activation maps of the block
-        """
-        if self.num_splits == 1:
-            return self.branch(x)
-        else:
-            conv_layers = []
-            for xi, branch in zip(torch.split(x, dim=1, split_size_or_sections=self.num_splits), self.branches):
-                conv_layers.append(branch(xi))
-
-        return torch.cat(conv_layers, 0)
-
-
 class _Stem(torch.nn.Module):
     def __init__(self, channels,  act_type="relu", nb_input_channels=34):
         """
@@ -167,31 +139,6 @@ class _Stem(torch.nn.Module):
                    bias=False),
             BatchNorm2d(num_features=channels),
             get_act(act_type))
-
-    def forward(self, x):
-        """
-        Compute forward pass
-        :param F: Handle
-        :param x: Input data to the block
-        :return: Activation maps of the block
-        """
-        return self.body(x)
-
-
-class _DepthWiseStem(Module):
-    def __init__(self, channels, act_type="relu", nb_input_channels=34):
-        """
-        Sames as _Stem() but with group depthwise convolutions
-        """
-        super(_DepthWiseStem, self).__init__()
-        self.body = Sequential(Conv2d(in_channels=nb_input_channels, out_channels=channels, kernel_size=(3, 3), padding=(1, 1), bias=False),
-                               BatchNorm2d(num_features=channels),
-                               get_act(act_type),
-                               Conv2d(in_channels=channels, out_channels=channels, kernel_size=(3, 3), padding=(1, 1), bias=False, groups=channels),
-                               BatchNorm2d(num_features=channels),
-                               get_act(act_type),
-                               Conv2d(in_channels=channels, out_channels=channels, kernel_size=(1, 1), padding=(0, 0), bias=True),
-                               )
 
     def forward(self, x):
         """
@@ -324,130 +271,6 @@ class _ValueHead(Module):
                 return -loss_out + win_out, wdl_out, plys_out
 
         return self.body_final(x)
-
-
-class _ValueHeadFlat(Module):
-    def __init__(self, in_features=512, fc0=256, act_type="relu"):
-        """
-        Value head which uses flattened features as input
-        :param in_features: Number of input features
-        :param fc0: Number of units in Dense/Fully-Connected layer
-        :param act_type: Activation type to use
-        """
-
-        super(_ValueHeadFlat, self).__init__()
-
-        self.body = Sequential(Linear(in_features=in_features, out_features=fc0),
-                               BatchNorm1d(num_features=fc0),
-                               get_act(act_type),
-                               Linear(in_features=fc0, out_features=1),
-                               get_act("tanh")
-                               )
-
-    def forward(self, x):
-        """
-        Compute forward pass
-        :param x: Input data to the block
-        :return: Activation maps of the block
-        """
-        return self.body(x)
-
-
-class _PolicyHeadFlat(Module):
-    def __init__(self, in_features=512, fc0=256, act_type="relu", n_labels=4992):
-        """
-        Definition of the value head proposed by the alpha zero authors
-        :param policy_channels: Number of channels for 1st conv operation in branch 0
-        :param act_type: Activation type to use
-        channelwise squeeze excitation, channel-spatial-squeeze-excitation, respectively
-        """
-
-        super(_PolicyHeadFlat, self).__init__()
-
-        self.body = Sequential()
-        # self.select_policy_from_plane = select_policy_from_plane
-
-        self.body = Sequential(Linear(in_features=in_features, out_features=fc0),
-                               BatchNorm1d(num_features=fc0),
-                               get_act(act_type),
-                               Linear(in_features=fc0, out_features=n_labels),
-                               )
-
-    def forward(self, x):
-        """
-        Compute forward pass
-        :param x: Input data to the block
-        :return: Activation maps of the block
-        """
-        return self.body(x)
-
-
-def process_value_policy_head(x, value_head: _ValueHead, policy_heads: nn.ModuleList,
-                              use_plys_to_end: bool, use_wdl: bool,
-                              policy_inputs=None, joint_policy_heads=None):
-    """
-    Use the output to create value/policy predictions
-    """
-    value_head_out = value_head(x)
-
-    if policy_inputs is None:
-        policy_inputs = (x, x)
-    policy_out_1 = policy_heads[0](policy_inputs[0])
-    policy_out_2 = policy_heads[1](policy_inputs[1])
-
-    policy_out = (policy_out_1, policy_out_2)
-
-    if use_plys_to_end and use_wdl:
-        value_out, wdl_out, plys_to_end_out = value_head_out
-        auxiliary_out = torch.cat((wdl_out, plys_to_end_out), dim=1)
-        outputs = (value_out, policy_out, auxiliary_out, wdl_out, plys_to_end_out)
-    else:
-        value_out = value_head_out
-        outputs = (value_out, policy_out)
-
-    if joint_policy_heads is None:
-        return outputs
-    joint_factors = (
-        joint_policy_heads[0](policy_inputs[0]),
-        joint_policy_heads[1](policy_inputs[1]),
-    )
-    return outputs + joint_factors
-
-
-class ClassicalResidualBlock(torch.nn.Module):
-    """
-    Definition of a classical residual block without any pooling operation
-    """
-
-    def __init__(self, channels, act_type, se_type=None, path_dropout=0):
-        """
-        :param channels: Number of channels used in the conv-operations
-        :param bn_mom: Batch normalization momentum
-        :param act_type: Activation function to use
-        """
-        super(ClassicalResidualBlock, self).__init__()
-        self.act_type = act_type
-        self.se_type = se_type
-        if se_type:
-            self.se = get_se(se_type=se_type, channels=channels, use_hard_sigmoid=True)
-        self.body = nn.Sequential(nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=(3, 3), padding=(1, 1), bias=False),
-                                  nn.BatchNorm2d(num_features=channels),
-                                  get_act(act_type),
-                                  nn.Conv2d(in_channels=channels, out_channels=channels, kernel_size=(3, 3), padding=(1, 1), bias=False),
-                                  nn.BatchNorm2d(num_features=channels),
-                                  get_act(act_type))
-        self.path_dropout = DropPath(path_dropout)
-
-    def forward(self, x):
-        """
-        Implementation of the forward pass of the residual block.
-        Uses a broadcast add operation for the shortcut and the output of the residual block
-        :param x: Input to the ResidualBlock
-        :return: Sum of the shortcut and the computed residual block computation
-        """
-        if self.se_type:
-            x = self.se(x)
-        return x + self.path_dropout(self.body(x))
 
 
 class _BottlekneckResidualBlock(Module):

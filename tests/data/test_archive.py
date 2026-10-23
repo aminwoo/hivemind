@@ -28,7 +28,7 @@ def quiet(message):
 
 
 def test_tarballs_go_where_the_directory_sits_under_data():
-    assert archive.hub_path(DATA_DIRECTORY / "nnue" / "train") == "nnue/train"
+    assert archive.hub_path(DATA_DIRECTORY / "distill" / "train") == "distill/train"
     assert archive.hub_path("/elsewhere/rl-it7/search") == "elsewhere/rl-it7/search"
 
 

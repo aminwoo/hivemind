@@ -1,4 +1,4 @@
-"""Reader for the engine's `gennnue --format distill` chunks (HDST v2).
+"""Reader for the engine's `gendistill` chunks (HDST v2).
 
 Chunks carry 78 planes, the clock planes closing each board's block, or 74
 from before them. Those are widened as they are read, so every position comes

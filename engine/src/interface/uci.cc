@@ -85,84 +85,7 @@ bool UCI::reload_engines() {
 }
 
 
-bool UCI::load_nnue(const std::string& path) {
-    stop();
-    auto network = std::make_unique<nnue::Network>();
-    std::string error;
-    if (!network->load(path, &error)) {
-        std::cerr << "Error: " << error << std::endl;
-        return false;
-    }
-    abSearcher.reset();
-    nnueNetwork = std::move(network);
-    abSearcher = std::make_unique<ab::Searcher>(*nnueNetwork, hashMb);
-    abSearcher->options = abOptions;
-    alphaBetaMode = true;
-    return true;
-}
-
-void UCI::go_alphabeta(int moveTime, size_t nodes, int depth, bool infinite) {
-    if (!abSearcher) {
-        std::cerr << "Error: SearchMode alphabeta needs an NNUEFile" << std::endl;
-        std::cout << "bestmove (none)" << std::endl;
-        return;
-    }
-    if (clock_model_active()) {
-        // Alpha-beta has no clock: it searches the lead's current sign as a
-        // permanent TimeAdvantage flag, never charging the actions it plays.
-        std::cout << "info string TimeModel clock is not supported by alphabeta "
-                     "search; it searches the current lead as a permanent "
-                     "TimeAdvantage" << std::endl;
-    }
-    ab::Limits limits;
-    limits.nodes = nodes;
-    limits.moveTimeMs = moveTime;
-    if (depth > 0) {
-        limits.depth = depth;
-    } else if (nodes == 0 && moveTime == 0 && !infinite) {
-        limits.moveTimeMs = 1000;
-    }
-    abStop.store(false);
-    ongoingSearch.store(true, std::memory_order_release);
-    mainSearchThread = new std::thread([this, limits]() {
-        Board& position = board;
-        auto report = [&position](const ab::IterationInfo& info) {
-            std::ostringstream line;
-            line << "info depth " << info.depth << " seldepth " << info.selDepth;
-            if (std::abs(info.score) >= ab::SCORE_MATE_BOUND) {
-                // Team moves until mate, as the MCTS search reports it.
-                const int plies = ab::SCORE_MATE - std::abs(info.score);
-                line << " score mate " << (info.score > 0 ? (plies + 1) / 2 : -(plies / 2));
-            } else {
-                line << " score cp " << info.score;
-            }
-            const int64_t elapsed = std::max<int64_t>(1, info.elapsedMs);
-            line << " nodes " << info.nodes << " nps " << info.nodes * 1000 / elapsed
-                 << " time " << info.elapsedMs << " pv";
-            std::vector<ab::JointMove> played;
-            for (const ab::JointMove& move : info.pv) {
-                line << ' ' << ab::format_joint_move(position, move);
-                position.make_moves(move.a, move.b);
-                played.push_back(move);
-            }
-            for (auto it = played.rbegin(); it != played.rend(); ++it) {
-                position.unmake_moves(it->a, it->b);
-            }
-            std::cout << line.str() << std::endl;
-        };
-        const ab::Result result = abSearcher->search(
-            board, teamSide, team_may_sit(), limits, &abStop, report);
-        if (result.hasMove) {
-            std::cout << "bestmove " << ab::format_joint_move(board, result.best) << std::endl;
-        } else {
-            std::cout << "bestmove (none)" << std::endl;
-        }
-        ongoingSearch.store(false, std::memory_order_release);
-    });
-}
-
 void UCI::stop() {
-    abStop.store(true);
     singleStop.store(true);
     singlePonder.store(false);
     if (agent) {
@@ -182,9 +105,6 @@ void UCI::new_game() {
     stop();
     if (agent) {
         agent->reset_search_state();
-    }
-    if (abSearcher) {
-        abSearcher->clear();
     }
 }
 
@@ -280,9 +200,8 @@ void UCI::go(std::istringstream& is) {
     }
     
     stop();
-    // Background work belongs to the MCTS tree. Never let this command fall
-    // through to an alpha-beta search and emit an unsolicited bestmove.
-    if (isBackground && (!backgroundSearchEnabled || alphaBetaMode || board.is_single_board())) {
+    // Background work belongs to the bughouse MCTS tree.
+    if (isBackground && (!backgroundSearchEnabled || board.is_single_board())) {
         return;
     }
     if (board.is_single_board()) {
@@ -296,10 +215,6 @@ void UCI::go(std::istringstream& is) {
             }
         }
         go_single_board(moveTime, nodes, depth, infinite, isPonder);
-        return;
-    }
-    if (alphaBetaMode) {
-        go_alphabeta(moveTime, nodes, depth, infinite);
         return;
     }
 
@@ -504,7 +419,6 @@ void UCI::setoption(std::istringstream& is) {
         }
         board.set_variant(variant);
         if (agent) agent->reset_search_state();
-        if (abSearcher) abSearcher->clear();
     } else if (name == "UCI_Chess960") {
         if (board.variant == Board::Variant::CHESS || board.variant == Board::Variant::CHESS960) {
             board.set_variant(value == "true" ? Board::Variant::CHESS960 : Board::Variant::CHESS);
@@ -512,46 +426,11 @@ void UCI::setoption(std::istringstream& is) {
     } else if (name == "Hash") {
         // Parse hash size in MB (1 - 33554432 MB)
         size_t sizeMB = std::stoull(value);
-        
-        hashMb = std::max<size_t>(1, sizeMB);
-        if (abSearcher) {
-            abSearcher->resize(hashMb);
-        }
+
         // Set hash size via Agent (which owns the transposition table)
         if (agent) {
             agent->setHashSize(sizeMB);
             std::cout << "info string Hash table set to " << sizeMB << " MB" << std::endl;
-        }
-    } else if (name == "SearchMode") {
-        if (value == "alphabeta" && !abSearcher) {
-            std::cout << "info string SearchMode alphabeta needs NNUEFile first" << std::endl;
-        } else if (value == "mcts" && engines.empty()) {
-            std::cout << "info string SearchMode mcts needs an ONNX model (--model)" << std::endl;
-        } else if (value == "alphabeta" || value == "mcts") {
-            alphaBetaMode = value == "alphabeta";
-        }
-    } else if (name == "Threads") {
-        abOptions.threads = std::clamp(std::stoi(value), 1, 256);
-        if (abSearcher) {
-            abSearcher->options = abOptions;
-        }
-    } else if (name == "ABParams") {
-        std::stringstream assignments(value);
-        for (std::string assignment; std::getline(assignments, assignment, ',');) {
-            if (!abOptions.set(assignment)) {
-                std::cout << "info string unknown alpha-beta parameter " << assignment << std::endl;
-            }
-        }
-        if (abSearcher) {
-            abSearcher->options = abOptions;
-        }
-    } else if (name == "NNUEFile") {
-        std::string rest;
-        std::getline(is, rest);
-        const std::string path = value + rest;
-        if (load_nnue(path)) {
-            std::cout << "info string loaded NNUE " << path << " (hidden "
-                      << nnueNetwork->hidden() << "), SearchMode alphabeta" << std::endl;
         }
     } else if (name == "BatchSize") {
         // The batch size is compiled into the TensorRT engine, so this reloads
@@ -827,11 +706,6 @@ void UCI::send_uci_response() {
     cout << "option name Hash type spin default 16 min 1 max 33554432" << endl;
     cout << "option name UCI_Variant type combo default bughouse var bughouse var chess var crazyhouse var antichess var chess960 var atomic var 3check" << endl;
     cout << "option name UCI_Chess960 type check default false" << endl;
-    cout << "option name SearchMode type combo default "
-         << (alphaBetaMode ? "alphabeta" : "mcts") << " var mcts var alphabeta" << endl;
-    cout << "option name NNUEFile type string default <empty>" << endl;
-    cout << "option name Threads type spin default 1 min 1 max 256" << endl;
-    cout << "option name ABParams type string default <empty>" << endl;
     cout << "option name BatchSize type spin default " << batchSize
          << " min 1 max 1024" << endl;
     cout << "option name MultiPV type spin default 1 min 1 max 500" << endl;

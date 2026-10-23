@@ -56,10 +56,6 @@ def test_editable_workspace_does_not_follow_working_directory(tmp_path, monkeypa
     assert (expected / "pyproject.toml").is_file()
 
 
-def test_training_outputs_are_outside_source_tree():
-    assert paths.TRAINING_OUTPUT_DIR == paths.PROJECT_ROOT / "artifacts/training"
-
-
 def test_no_command_starts_the_engine(monkeypatch):
     captured = {}
 
