@@ -90,21 +90,28 @@ def main():
         # newer compilers than it was tested with trip on.
         "--compile-no-warning-as-error",
         "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        # Some dependencies (psimd on macOS) still declare CMake < 3.5, which
+        # CMake 4 refuses unless told the minimum policy version to assume.
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
         f"-DPython_EXECUTABLE={sys.executable}",
     ]
+    # Ninja on every platform: Visual Studio solutions cannot build the
+    # fetched dependencies' targets (re2) by name. On Windows this needs a
+    # developer environment, which also provides lib.exe.
+    configure += ["-G", "Ninja"]
     if system == "Windows":
         # Match the engine's static C++ runtime.
         configure += ["-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"]
-    else:
-        configure += ["-G", "Ninja"]
     if system == "Darwin":
         configure += ["-Donnxruntime_USE_COREML=ON", "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"]
     run(configure)
     run(["cmake", "--build", build, "--config", "Release", "--parallel", args.jobs])
     # The default target builds only what a static ONNX Runtime archive
-    # needs to compile; re2 is needed only to link, so build it explicitly.
-    run(["cmake", "--build", build, "--config", "Release", "--parallel", args.jobs,
-         "--target", "re2"])
+    # needs to compile; re2 is needed only to link, so build it explicitly
+    # where ONNX Runtime fetched it as a subproject.
+    if (build / "_deps" / "re2-build").is_dir():
+        run(["cmake", "--build", build, "--config", "Release", "--parallel", args.jobs,
+             "--target", "re2"])
 
     library_name = "onnxruntime.lib" if os.name == "nt" else "libonnxruntime.a"
     libraries = static_libraries(build)

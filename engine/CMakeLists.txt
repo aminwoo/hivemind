@@ -247,11 +247,13 @@ foreach(kind MODEL LICENSES)
         string(APPEND HIVEMIND_EMBEDDED_RC "hivemind_embedded_${name} RCDATA \"${path}\"\n")
     endif()
 endforeach()
+# Never in a unity batch: its assembler and Windows headers stay out of
+# other sources (windows.h defines macros such as INFINITE).
+set_source_files_properties(src/nn/embedded_files.cc PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 if(HIVEMIND_EMBEDDED_FILES)
     set_source_files_properties(src/nn/embedded_files.cc PROPERTIES
         COMPILE_DEFINITIONS "${HIVEMIND_EMBEDDED_DEFINITIONS}"
-        OBJECT_DEPENDS "${HIVEMIND_EMBEDDED_FILES}"
-        SKIP_UNITY_BUILD_INCLUSION ON)
+        OBJECT_DEPENDS "${HIVEMIND_EMBEDDED_FILES}")
 endif()
 
 find_package(Threads REQUIRED)
