@@ -97,7 +97,7 @@ std::vector<std::unique_ptr<Ort::Session>> coreml_sessions(
     Ort::SessionOptions options = cpuOptions.Clone();
     // The CPU only casts the input and outputs here. A one-thread pool keeps
     // idle spinning workers from taking thermal headroom from the GPU and
-    // the search threads, which matters on a fanless MacBook Air.
+    // the search threads, which matters on fanless laptops.
     options.SetIntraOpNumThreads(1);
     const std::string batchName = batch_dimension_name(model);
     if (!batchName.empty()) {

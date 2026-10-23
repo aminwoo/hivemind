@@ -9,7 +9,12 @@ import numpy as np
 import pytest
 
 from test_distill import _write_chunk
-from test_rl_pilot import executable
+
+
+def executable(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o755)
 
 
 ROOT = Path(__file__).resolve().parents[2]
