@@ -837,6 +837,16 @@ constexpr bool PUCT_WIDENING = true;
 constexpr float FACTORED_FPU_VISITS = 0.0f;
 
 // =============================================================================
+// Edge statistics
+// =============================================================================
+
+/// A new edge's value sum starts at Q_INIT. The first backup used to replace
+/// that seed with a plain store, which can land on top of a second worker's
+/// concurrent add and lose its value for good. With this on, the first backup
+/// adds the difference instead, so concurrent backups all count.
+constexpr bool EXACT_EDGE_BACKUP = true;
+
+// =============================================================================
 // Solver-aware Gumbel root search
 // =============================================================================
 
@@ -901,6 +911,7 @@ struct RuntimeConfig {
     bool pwMassNormalize = false; // Experimental coverage of legal joint prior mass.
     bool puctWidening = PUCT_WIDENING;
     float factoredFpuVisits = FACTORED_FPU_VISITS;
+    bool exactEdgeBackup = EXACT_EDGE_BACKUP;
     float qValueWeight = Q_VALUE_WEIGHT;
     float qVetoDelta = Q_VETO_DELTA;
     float rootDirichletAlpha = 0.0f;

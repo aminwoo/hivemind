@@ -293,6 +293,8 @@ void write_summary(
            << "  \"baseline_puct_widening\": " << (config.baselinePuctWidening ? "true" : "false") << ",\n"
            << "  \"contender_submit_before_backup\": " << (config.contenderSubmitBeforeBackup ? "true" : "false") << ",\n"
            << "  \"baseline_submit_before_backup\": " << (config.baselineSubmitBeforeBackup ? "true" : "false") << ",\n"
+           << "  \"contender_exact_edge_backup\": " << (config.contenderExactEdgeBackup ? "true" : "false") << ",\n"
+           << "  \"baseline_exact_edge_backup\": " << (config.baselineExactEdgeBackup ? "true" : "false") << ",\n"
            << "  \"contender_factored_fpu\": " << config.contenderFactoredFpuVisits << ",\n"
            << "  \"baseline_factored_fpu\": " << config.baselineFactoredFpuVisits << ",\n"
            << "  \"contender_fpu_reduction\": " << config.contenderFpuReduction << ",\n"

@@ -123,3 +123,33 @@ TEST(NodeConcurrencyTest, ConcurrentSelectAndBackupConserveVisits) {
     EXPECT_EQ(summed, done) << "edge visits lost or double counted";
     EXPECT_EQ(node->get_visits(), done) << "node visits lost or double counted";
 }
+
+// Two backups landing on a cold edge at once: the first visit used to store
+// its value over the Q_INIT seed, which could overwrite the second visit's
+// add. With exact backups both values stay in the sum, whatever the order.
+TEST(NodeConcurrencyTest, ExactFirstBackupKeepsConcurrentValues) {
+    SearchParams::RuntimeConfig config;
+    for (int trial = 0; trial < 2000; ++trial) {
+        Node node(Stockfish::WHITE);
+        node.set_depth(1);
+        ASSERT_TRUE(node.try_init_and_expand(
+            {Stockfish::Move(1)}, {Stockfish::MOVE_NONE}, {1.0f}, {1.0f},
+            false, true, false, config));
+        node.apply_virtual_loss(0, 2);
+        std::atomic<int> ready{0};
+        auto backup = [&](float value) {
+            ready.fetch_add(1);
+            while (ready.load() < 2) {
+            }
+            node.update_and_remove_virtual_loss(0, value, true);
+        };
+        std::thread first(backup, 0.25f);
+        std::thread second(backup, 0.75f);
+        first.join();
+        second.join();
+        // A third, uncontended visit republishes Q from the full sum.
+        node.update(0, 0.5f, true);
+        ASSERT_NEAR(node.get_child_q(0), 0.5f, 1e-5f) << "trial " << trial;
+        ASSERT_EQ(node.get_visits(), 3);
+    }
+}
