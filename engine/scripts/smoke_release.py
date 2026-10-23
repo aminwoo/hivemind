@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Verify a release checksum, then exercise its UCI engine from another directory."""
+"""Verify a release checksum, then exercise its UCI engine from another directory.
+
+The release is a ZIP bundle or a single-file executable; a single file is run
+alone in an empty directory and must use its built-in network.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ from pathlib import Path
 import platform
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -19,7 +24,9 @@ import zipfile
 
 
 def verify_archive(archive: Path) -> None:
-    checksum = archive.with_suffix(archive.suffix + ".sha256")
+    # Version numbers put dots in single-file names, so append rather than
+    # replace a suffix.
+    checksum = archive.with_name(archive.name + ".sha256")
     expected, filename = checksum.read_text().strip().split(maxsplit=1)
     if filename != archive.name:
         raise ValueError(f"Checksum names {filename}, expected {archive.name}")
@@ -29,7 +36,8 @@ def verify_archive(archive: Path) -> None:
         raise ValueError(f"SHA-256 mismatch: {archive.name}")
 
 
-def exercise(engine: Path, backend: str, timeout: float, cwd: Path) -> dict:
+def exercise(engine: Path, backend: str, timeout: float, cwd: Path,
+             embedded: bool = False) -> dict:
     env = os.environ.copy()
     env["HIVEMIND_COREML"] = "ane" if backend == "coreml" else "off"
     # Dependencies must come from the bundle, not the developer's library path.
@@ -99,6 +107,8 @@ def exercise(engine: Path, backend: str, timeout: float, cwd: Path) -> dict:
         }
         if markers[backend].lower() not in transcript.lower():
             raise RuntimeError(f"Expected {backend} backend was not confirmed")
+        if embedded and "model <embedded>" not in transcript:
+            raise RuntimeError("The single-file engine did not load its built-in network")
         send("quit")
         process.wait(timeout=max(1, deadline - time.monotonic()))
         if process.returncode != 0:
@@ -116,6 +126,26 @@ def exercise(engine: Path, backend: str, timeout: float, cwd: Path) -> dict:
             process.stdout.close()
 
 
+def exercise_single_file(executable: Path, backend: str, timeout: float, root: Path) -> dict:
+    """Runs a single-file engine as a user would: alone in a directory, with
+    no models or libraries beside it."""
+    alone = root / "alone"
+    alone.mkdir()
+    engine = alone / ("hivemind.exe" if os.name == "nt" else "hivemind")
+    shutil.copy2(executable, engine)
+    engine.chmod(0o755)
+    licenses = subprocess.run([str(engine), "--licenses"], capture_output=True, text=True,
+                              timeout=60, check=True).stdout
+    for required in ("Hivemind", "Fairy-Stockfish", "ONNX Runtime"):
+        if required not in licenses:
+            raise RuntimeError(f"--licenses does not include {required}")
+    working = root / "elsewhere"
+    working.mkdir()
+    report = exercise(engine, backend, timeout, working, embedded=True)
+    report["single_file_bytes"] = executable.stat().st_size
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
@@ -127,6 +157,13 @@ def main() -> None:
     verify_archive(archive)
     with tempfile.TemporaryDirectory(prefix="hivemind-smoke-") as temp:
         root = Path(temp)
+        if not zipfile.is_zipfile(archive):
+            report = exercise_single_file(archive, args.backend, args.timeout, root)
+            report["archive"] = archive.name
+            if args.report:
+                args.report.write_text(json.dumps(report, indent=2) + "\n")
+            print(json.dumps(report, indent=2))
+            return
         extracted = root / "bundle"
         extracted.mkdir()
         if os.name == "nt":

@@ -10,12 +10,18 @@
 #include <chrono>
 
 #include "Fairy-Stockfish/src/misc.h"
+#include "nn/embedded_files.h"
 
 namespace fs = std::filesystem;
 
 std::string resolveModelPath(const std::string& explicitPath) {
     if (!explicitPath.empty()) {
         return explicitPath;
+    }
+    // A single-file release carries its network; prefer it to whatever a
+    // models directory near the working directory happens to hold.
+    if (embedded::has_model()) {
+        return std::string(embedded::MODEL_NAME);
     }
     std::vector<fs::path> searchDirs;
     if (!Stockfish::CommandLine::binaryDirectory.empty()) {

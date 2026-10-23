@@ -83,7 +83,7 @@ jobs:
           path: ${{ runner.temp }}/hivemind.onnx
           retention-days: 1
 
-  build-portable:
+  build-single-file:
     needs: prepare-model
     strategy:
       fail-fast: false
@@ -98,6 +98,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+      ONNXRUNTIME_VERSION: 1.29.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -107,24 +108,41 @@ jobs:
         with:
           name: portable-model
           path: model
-      - name: Fetch ONNX Runtime
-        run: python tools/fetch_onnxruntime.py
       - name: Set macOS deployment target
         if: runner.os == 'macOS'
         run: echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
-      - name: Install model conversion dependencies
-        run: python -m pip install numpy onnx
-      - name: Build and package
+      - name: Set up the MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Install build tools and model conversion dependencies
+        run: python -m pip install ninja numpy onnx
+      # A static ONNX Runtime takes a while to build; reuse it until its
+      # version or build script changes.
+      - name: Restore static ONNX Runtime
+        id: onnxruntime-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/onnxruntime-static
+          key: onnxruntime-static-${{ matrix.slug }}-${{ env.ONNXRUNTIME_VERSION }}-${{ hashFiles('engine/scripts/build_static_onnxruntime.py') }}
+      - name: Build static ONNX Runtime
+        if: steps.onnxruntime-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          python engine/scripts/package_portable_release.py \
+          python engine/scripts/build_static_onnxruntime.py \
+            --version "$ONNXRUNTIME_VERSION" --work "$RUNNER_TEMP/onnxruntime-build"
+      - name: Build the single-file engine
+        shell: bash
+        run: |
+          python engine/scripts/package_single_file_release.py \
             --model model/hivemind.onnx \
-            --name "hivemind-${RELEASE_VERSION}-${{ matrix.slug }}-onnxruntime"
-      - name: Smoke test the bundle on CPU
+            --name "hivemind-${RELEASE_VERSION}-${{ matrix.slug }}"
+      - name: Smoke test the single file on CPU
         shell: bash
         run: |
+          suffix=""
+          if [ "$RUNNER_OS" = "Windows" ]; then suffix=".exe"; fi
           python engine/scripts/smoke_release.py \
-            "dist/hivemind-${RELEASE_VERSION}-${{ matrix.slug }}-onnxruntime.zip" \
+            "dist/hivemind-${RELEASE_VERSION}-${{ matrix.slug }}${suffix}" \
             --backend cpu --report "dist/validation-${{ matrix.slug }}-cpu.json"
       - name: Record acceleration coverage
         if: runner.os == 'macOS'
@@ -135,8 +153,7 @@ jobs:
         with:
           name: release-${{ matrix.slug }}
           path: |
-            dist/*.zip
-            dist/*.sha256
+            dist/hivemind-*
             dist/validation-*.json
           if-no-files-found: error
 
@@ -285,7 +302,7 @@ jobs:
   publish:
     if: github.event_name == 'push' || inputs.publish
     needs:
-      - build-portable
+      - build-single-file
       - build-tensorrt-linux
       - build-tensorrt-windows
     runs-on: ubuntu-24.04
@@ -301,9 +318,9 @@ jobs:
       - name: Verify complete release asset set
         shell: bash
         run: |
-          for target in linux-x86_64-onnxruntime windows-x86_64-onnxruntime macos-arm64-onnxruntime linux-x86_64-tensorrt windows-x86_64-tensorrt; do
-            test -f "release-assets/hivemind-${RELEASE_VERSION}-${target}.zip"
-            test -f "release-assets/hivemind-${RELEASE_VERSION}-${target}.zip.sha256"
+          for asset in linux-x86_64 windows-x86_64.exe macos-arm64 linux-x86_64-tensorrt.zip windows-x86_64-tensorrt.zip; do
+            test -f "release-assets/hivemind-${RELEASE_VERSION}-${asset}"
+            test -f "release-assets/hivemind-${RELEASE_VERSION}-${asset}.sha256"
           done
           for target in linux-x86_64 windows-x86_64 macos-arm64; do
             test -f "release-assets/validation-${target}-cpu.json"

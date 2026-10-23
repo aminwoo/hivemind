@@ -3,6 +3,7 @@
 #include "common/globals.h"
 #include "nn/engine.h"
 #include "nn/onnx_utils.h"
+#include "nn/embedded_files.h"
 #include "tools/benchmark.h"
 #include "tools/selfplay.h"
 #include "tools/teacher_data.h"
@@ -116,7 +117,9 @@ void printUsage(const char* progName) {
     cout << "Usage: " << progName << " [options]" << endl;
     cout << "Options:" << endl;
     cout << "  --log <level>      Set log level: none, info, debug (default: none)" << endl;
-    cout << "  --model <onnx>     Load this model in UCI mode (or --network, default: scans ./models)" << endl;
+    cout << "  --model <onnx>     Load this model in UCI mode (or --network; default: the built-in"
+            " network, else scans ./models)" << endl;
+    cout << "  --licenses         Print the licenses of Hivemind and the software it includes" << endl;
     cout << "  --batch-size <n>   Inference batch size in UCI mode (default: "
          << SearchParams::BATCH_SIZE << "; also settable with the BatchSize UCI option)" << endl;
     cout << "  bench [iters]      Run inference benchmark (accepts --model, --batch-size)" << endl;
@@ -183,6 +186,16 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "--help") == 0) || (strcmp(argv[i], "-h") == 0)) {
             printUsage(argv[0]);
+            return EXIT_SUCCESS;
+        }
+        if (strcmp(argv[i], "--licenses") == 0) {
+            const std::string_view licenses = embedded::licenses();
+            if (licenses.empty()) {
+                cout << "This build carries no license texts; see LICENSE files beside it "
+                        "or https://github.com/aminwoo/hivemind" << endl;
+            } else {
+                cout << licenses;
+            }
             return EXIT_SUCCESS;
         }
         if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {

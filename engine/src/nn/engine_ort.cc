@@ -30,6 +30,7 @@
 #include <unordered_map>
 
 #include "environment/constants.h"
+#include "nn/embedded_files.h"
 #include "search/search_params.h"
 
 namespace {
@@ -73,15 +74,26 @@ CoreMLUnits coreml_units() {
     return {"CPUAndNeuralEngine", "Neural Engine"};
 }
 
+/// A session on the model file, or on the network compiled into the
+/// executable when the path is embedded::MODEL_NAME.
+std::unique_ptr<Ort::Session> make_session(const std::filesystem::path& model,
+                                           const Ort::SessionOptions& options) {
+    if (embedded::is_model(model.string())) {
+        const auto bytes = embedded::model();
+        return std::make_unique<Ort::Session>(ort_env(), bytes.data(), bytes.size(), options);
+    }
+    return std::make_unique<Ort::Session>(ort_env(), model.c_str(), options);
+}
+
 // Core ML compiles for fixed shapes, and the graph derives reshape targets
 // from the batch dimension. Pinning that dimension lets ORT fold the shape
 // arithmetic away so the whole network stays in one Core ML partition.
 std::string batch_dimension_name(const std::filesystem::path& model) {
     Ort::SessionOptions options;
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
-    const Ort::Session probe(ort_env(), model.c_str(), options);
+    const std::unique_ptr<Ort::Session> probe = make_session(model, options);
     // The shape info is a view into the type info, which must outlive it.
-    const Ort::TypeInfo type = probe.GetInputTypeInfo(0);
+    const Ort::TypeInfo type = probe->GetInputTypeInfo(0);
     const auto info = type.GetTensorTypeAndShapeInfo();
     const auto shape = info.GetShape();
     const auto symbols = info.GetSymbolicDimensions();
@@ -117,8 +129,7 @@ std::vector<std::unique_ptr<Ort::Session>> coreml_sessions(
     std::vector<std::future<std::unique_ptr<Ort::Session>>> pending;
     for (int i = 0; i < count; ++i) {
         pending.push_back(std::async(std::launch::async, [&options, &model] {
-            return std::make_unique<Ort::Session>(ort_env(), model.c_str(),
-                                                  options);
+            return make_session(model, options);
         }));
     }
     std::vector<std::unique_ptr<Ort::Session>> sessions;
@@ -234,8 +245,7 @@ bool Engine::loadNetwork(const std::string& onnxFile,
             }
         }
         if (state.sessions.empty()) {
-            state.sessions.push_back(std::make_unique<Ort::Session>(
-                ort_env(), modelPath.c_str(), state.options));
+            state.sessions.push_back(make_session(modelPath, state.options));
             state.provider = "CPU";
         }
         const bool onCoreML = state.provider != "CPU";
