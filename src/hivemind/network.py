@@ -33,8 +33,8 @@ SELFPLAY_ARCHIVE = f"{TWIN_REPOSITORY}-selfplay-archive"
 # SHA-256 values from the Hugging Face LFS metadata at each revision.
 ARTIFACTS = {
     "clock": Artifact("aminwoo/bughouse-twin-s-clock",
-                      "749f54a59260330ea2771d69988c9255ba8a89ac", "twin-s-clock.onnx",
-                      "6b34125d0e1294b64fe82e63e1295323fcf2712155a62b65d64e04092eb2eb9a"),
+                      "30995e780f192d56393cce94acdae234f25f6331", "twin-s-clock.onnx",
+                      "40b1f9b6c6e875a068372a6510d060d14acc5c85a8c88527d39d0194e12b2ab4"),
     "onnx": Artifact(TWIN_REPOSITORY, TWIN_REVISION, "twin-s-noattn.onnx",
                      "efef8ca12634a26d55f8d34313459d36ae1469411208384d5c5f636bc43742c2"),
     "checkpoint": Artifact(TWIN_REPOSITORY, TWIN_REVISION, "twin-s-noattn.pt",

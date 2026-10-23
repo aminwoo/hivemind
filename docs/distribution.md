@@ -38,20 +38,20 @@ Download the ZIP and its matching `.zip.sha256` file into the same folder.
 On Linux:
 
 ```bash
-sha256sum -c hivemind-v3.0.1-linux-x86_64-onnxruntime.zip.sha256
+sha256sum -c hivemind-v3.0.2-linux-x86_64-onnxruntime.zip.sha256
 ```
 
 On macOS:
 
 ```bash
-shasum -a 256 -c hivemind-v3.0.1-macos-arm64-onnxruntime.zip.sha256
+shasum -a 256 -c hivemind-v3.0.2-macos-arm64-onnxruntime.zip.sha256
 ```
 
 On Windows PowerShell, compare the hash to the first value in the checksum file:
 
 ```powershell
-(Get-FileHash .\hivemind-v3.0.1-windows-x86_64-onnxruntime.zip -Algorithm SHA256).Hash
-Get-Content .\hivemind-v3.0.1-windows-x86_64-onnxruntime.zip.sha256
+(Get-FileHash .\hivemind-v3.0.2-windows-x86_64-onnxruntime.zip -Algorithm SHA256).Hash
+Get-Content .\hivemind-v3.0.2-windows-x86_64-onnxruntime.zip.sha256
 ```
 
 ## Start the engine
@@ -101,9 +101,9 @@ Engine coverage. Check the release's validation section for hardware results.
 4. Download the draft's ZIP and checksum on physical hardware and run:
 
    ```bash
-   python engine/scripts/smoke_release.py hivemind-v3.0.1-linux-x86_64-tensorrt.zip \
+   python engine/scripts/smoke_release.py hivemind-v3.0.2-linux-x86_64-tensorrt.zip \
      --backend tensorrt --timeout 1800 --report validation-linux-nvidia.json
-   python engine/scripts/smoke_release.py hivemind-v3.0.1-macos-arm64-onnxruntime.zip \
+   python engine/scripts/smoke_release.py hivemind-v3.0.2-macos-arm64-onnxruntime.zip \
      --backend coreml --timeout 300 --report validation-macos-coreml.json
    ```
 

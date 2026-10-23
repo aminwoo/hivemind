@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag (for example, v3.0.1)
+        description: Release tag (for example, v3.0.2)
         required: true
-        default: v3.0.1
+        default: v3.0.2
       model_url:
         description: Direct ONNX URL or a Hivemind release zip containing the model
         required: true
-        default: https://huggingface.co/aminwoo/bughouse-twin-s-clock/resolve/749f54a59260330ea2771d69988c9255ba8a89ac/twin-s-clock.onnx
+        default: https://huggingface.co/aminwoo/bughouse-twin-s-clock/resolve/30995e780f192d56393cce94acdae234f25f6331/twin-s-clock.onnx
       model_sha256:
         description: SHA-256 of the extracted ONNX model
         required: true
-        default: 6b34125d0e1294b64fe82e63e1295323fcf2712155a62b65d64e04092eb2eb9a
+        default: 40b1f9b6c6e875a068372a6510d060d14acc5c85a8c88527d39d0194e12b2ab4
       publish:
         description: Stage the built assets in a draft release for the requested tag
         required: true
@@ -37,9 +37,9 @@ jobs:
   prepare-model:
     runs-on: ubuntu-24.04
     env:
-      MODEL_SHA256: ${{ inputs.model_sha256 || '6b34125d0e1294b64fe82e63e1295323fcf2712155a62b65d64e04092eb2eb9a' }}
+      MODEL_SHA256: ${{ inputs.model_sha256 || '40b1f9b6c6e875a068372a6510d060d14acc5c85a8c88527d39d0194e12b2ab4' }}
       RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
-      MODEL_URL: ${{ inputs.model_url || 'https://huggingface.co/aminwoo/bughouse-twin-s-clock/resolve/749f54a59260330ea2771d69988c9255ba8a89ac/twin-s-clock.onnx' }}
+      MODEL_URL: ${{ inputs.model_url || 'https://huggingface.co/aminwoo/bughouse-twin-s-clock/resolve/30995e780f192d56393cce94acdae234f25f6331/twin-s-clock.onnx' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -370,7 +370,6 @@ cmake --build engine/build-test --target hivemind_tests --parallel
 ctest --test-dir engine/build-test --output-on-failure
 ```
 
-[RULES.md](RULES.md) summarizes how the engine scores mate races.
 Source code lives in `src/hivemind/` (Python) and `engine/` (C++). Downloaded
 models and cached plans live in `engine/models/`; generated data and training
 artifacts live under `data/` and `artifacts/`. Release packaging and hardware
