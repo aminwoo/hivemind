@@ -197,15 +197,9 @@ without installing the Python package. Models go to `engine/models`; the
 `checkpoint` variant goes to `artifacts/distill/twin-s-noattn/best.pt`.
 Pins and hashes live in [network.py](src/hivemind/network.py).
 
-The downloader and Python inference/self-play commands default to
-**twin-s-clock**, matching release ZIPs. `--variant clock` selects it explicitly;
-`--variant onnx` selects the older twin-s-noattn network.
-
-The RL loop retains the older twin-s generator and its matching published
-checkpoint. Download them with `--variant onnx` and `--variant checkpoint`;
-use `--generator` and `--generator-checkpoint` for another RL lineage.
-An ONNX file cannot substitute for a PyTorch training checkpoint. Self-play
-still defaults to flag rules; add `--time-model clock` for clock-aware games.
+The RL loop still defaults to the older twin-s-noattn generator, because
+training needs its PyTorch checkpoint and an ONNX file cannot substitute for
+one. See the [training guide](docs/training.md#reinforcement-learning).
 
 ## Engine usage
 
@@ -380,6 +374,7 @@ cmake --build engine/build-test --target hivemind_tests --parallel
 ctest --test-dir engine/build-test --output-on-failure
 ```
 
+[RULES.md](RULES.md) summarizes how the engine scores mate races.
 Source code lives in `src/hivemind/` (Python) and `engine/` (C++). Downloaded
 models and cached plans live in `engine/models/`; generated data and training
 artifacts live under `data/` and `artifacts/`. Release packaging and hardware
