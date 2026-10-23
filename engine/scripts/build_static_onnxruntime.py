@@ -100,8 +100,16 @@ def main():
     # developer environment, which also provides lib.exe.
     configure += ["-G", "Ninja"]
     if system == "Windows":
-        # Match the engine's static C++ runtime.
-        configure += ["-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"]
+        # Match the engine's static C++ runtime, in ONNX Runtime and in every
+        # fetched dependency (what ONNX Runtime's own build.py does for
+        # --enable_msvc_static_runtime); one object built against the DLL
+        # runtime leaves __imp_ symbols the static link cannot resolve.
+        configure += ["-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+                      "-DCMAKE_POLICY_DEFAULT_CMP0091=NEW",
+                      "-Donnxruntime_MSVC_STATIC_RUNTIME=ON",
+                      "-Dprotobuf_MSVC_STATIC_RUNTIME=ON",
+                      "-DABSL_MSVC_STATIC_RUNTIME=ON",
+                      "-Dgtest_force_shared_crt=OFF"]
     if system == "Darwin":
         configure += ["-Donnxruntime_USE_COREML=ON", "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"]
     run(configure)
