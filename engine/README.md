@@ -477,7 +477,7 @@ the local TensorRT and CUDA runtime libraries:
 ```bash
 ./scripts/package_ubuntu_release.sh \
     --model /path/to/model.onnx \
-    --name hivemind-v3.0.1-linux-x86_64-tensorrt
+    --name hivemind-v3.0.2-linux-x86_64-tensorrt
 ```
 
 Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
@@ -491,7 +491,7 @@ python engine/scripts/package_windows_tensorrt_release.py `
   --model C:\path\to\model.onnx `
   --tensorrt-root C:\path\to\TensorRT-11.1.0.106 `
   --cuda-root C:\path\to\cuda-runtime `
-  --name hivemind-v3.0.1-windows-x86_64-tensorrt
+  --name hivemind-v3.0.2-windows-x86_64-tensorrt
 ```
 
 ## Portable Windows, Linux, and macOS release bundles
@@ -502,11 +502,11 @@ Build the ONNX Runtime bundle natively on the target operating system:
 python tools/fetch_onnxruntime.py
 python -m pip install numpy onnx
 python engine/scripts/package_portable_release.py \
-    --model model-fp16.onnx --name hivemind-v3.0.1-linux-x86_64-onnxruntime
+    --model model-fp16.onnx --name hivemind-v3.0.2-linux-x86_64-onnxruntime
 ```
 
 On Windows, use the same Python command and a
-`hivemind-v3.0.1-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
+`hivemind-v3.0.2-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
 an automatically converted FP32 model, ONNX Runtime, licenses, and checksums.
 It does not require a GPU.
 Tagged builds create CPU bundles for Linux/Windows, a Core ML bundle for Apple
