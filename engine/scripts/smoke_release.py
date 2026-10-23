@@ -134,8 +134,10 @@ def exercise_single_file(executable: Path, backend: str, timeout: float, root: P
     engine = alone / ("hivemind.exe" if os.name == "nt" else "hivemind")
     shutil.copy2(executable, engine)
     engine.chmod(0o755)
-    licenses = subprocess.run([str(engine), "--licenses"], capture_output=True, text=True,
-                              timeout=60, check=True).stdout
+    # The notices are UTF-8 whatever the console's code page.
+    licenses = subprocess.run([str(engine), "--licenses"], capture_output=True,
+                              encoding="utf-8", errors="replace", timeout=60,
+                              check=True).stdout
     for required in ("Hivemind", "Fairy-Stockfish", "ONNX Runtime"):
         if required not in licenses:
             raise RuntimeError(f"--licenses does not include {required}")
