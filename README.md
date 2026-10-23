@@ -28,36 +28,40 @@ Core ML.
 ## Download and run
 
 [Download the latest release](https://github.com/aminwoo/hivemind/releases/latest).
-Each ZIP includes the compiled engine, network, inference runtime, and licenses.
-You do not need to clone this repository or download a separate model.
+The CPU and Mac downloads are a **single executable** with the network and
+inference runtime built in; nothing else needs downloading or installing.
 
-| Your computer | ZIP name contains | Approximate download |
+| Your computer | Download | Approximate size |
 |---|---|---|
-| Windows x86-64, CPU | `windows-x86_64-onnxruntime` | 9 MB |
-| Ubuntu 24.04+ x86-64, CPU | `linux-x86_64-onnxruntime` | 15 MB |
-| Apple silicon, macOS 14+ | `macos-arm64-onnxruntime` | 15 MB |
-| Windows x86-64, NVIDIA GPU | `windows-x86_64-tensorrt` | 2 GB |
-| Ubuntu 24.04+ x86-64, NVIDIA GPU | `linux-x86_64-tensorrt` | 2 GB |
+| Windows x86-64 | `hivemind-vX.Y.Z-windows-x86_64.exe` | 23 MB |
+| Linux x86-64 (Ubuntu 24.04+ or similar) | `hivemind-vX.Y.Z-linux-x86_64` | 33 MB |
+| Apple silicon, macOS 14+ | `hivemind-vX.Y.Z-macos-arm64` | 22 MB |
+| Windows x86-64, NVIDIA GPU | `hivemind-vX.Y.Z-windows-x86_64-tensorrt.zip` | 2 GB |
+| Linux x86-64, NVIDIA GPU | `hivemind-vX.Y.Z-linux-x86_64-tensorrt.zip` | 2 GB |
 
-1. Download the matching ZIP and `.zip.sha256` file, then [verify the checksum](docs/distribution.md#verify-your-download).
-2. Extract the entire ZIP into a writable folder, keeping its directories together.
-3. Select `bin\hivemind.exe` on Windows or the top-level `hivemind` launcher on Linux/macOS in a compatible GUI.
+1. Download the file for your computer and its `.sha256` file, then
+   [verify the checksum](docs/distribution.md#verify-your-download).
+2. On Linux and macOS, make it executable: `chmod +x hivemind-*`.
+   For an NVIDIA ZIP, extract the whole ZIP into a writable folder instead.
+3. Select the executable (for an NVIDIA ZIP, `bin\hivemind.exe` on Windows or
+   the top-level `hivemind` launcher on Linux) in a compatible GUI.
 
-From a terminal, run `.\bin\hivemind.exe` on Windows or `./hivemind` on
-Linux/macOS. The program speaks UCI and waits for commands; it does not open
-a graphical board. Bughouse requires a frontend that understands two-board
-positions and Hivemind's joint moves.
+From a terminal, run the file directly. The program speaks UCI and waits
+for commands; it does not open a graphical board. Bughouse requires a
+frontend that understands two-board positions and Hivemind's joint moves.
+`--licenses` prints the licenses of Hivemind and the software it includes.
 
-The CPU bundles are the easiest starting point on Windows/Linux. NVIDIA
-bundles include TensorRT 11.1 and CUDA Runtime 13.3; use a Turing or newer GPU
-(compute capability 7.5+, such as RTX 20 series+) and driver R580 or newer.
-R610+ is recommended for the CUDA 13.3 baseline. No separate CUDA or TensorRT
-installation is needed. First launch builds a GPU-specific cache and can take
-several minutes. Allow at least 6 GB free for the download, extracted files,
-and cache. Windows builds also require the Visual C++ x64 Redistributable.
+The single executables run the network on the CPU (on a Mac, on the Neural
+Engine through Core ML) and are the easiest start. NVIDIA bundles include
+TensorRT 11.1 and CUDA Runtime 13.3; use a Turing or newer GPU (compute
+capability 7.5+, such as RTX 20 series+) and driver R580 or newer. R610+ is
+recommended for the CUDA 13.3 baseline. No separate CUDA or TensorRT
+installation is needed. First launch builds a GPU-specific cache and can
+take several minutes. Allow at least 6 GB free for the download, extracted
+files, and cache. Windows NVIDIA bundles also require the Visual C++ x64
+Redistributable.
 
-The macOS release launcher requests the Neural Engine through Core ML.
-Current macOS downloads are unsigned and not notarized; see the
+macOS downloads are unsigned and not notarized; see the
 [macOS launch instructions](docs/distribution.md#macos-launch).
 Release notes record which hardware paths were validated.
 

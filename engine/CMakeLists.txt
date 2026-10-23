@@ -22,6 +22,17 @@ option(HIVEMIND_USE_PEXT "Use BMI2 PEXT for sliding attacks (benchmark first; sl
 option(HIVEMIND_ORT_FP16 "Use native FP16 tensors with the ONNX Runtime backend" OFF)
 set(HIVEMIND_SEARCH_WORKERS 4 CACHE STRING "Search workers per engine, each with its own TensorRT context")
 option(HIVEMIND_PORTABLE_BUNDLE "Use relocatable runtime search paths for release packaging" OFF)
+# Single-file releases: link ONNX Runtime statically (ONNXRuntime_ROOT holds a
+# merged static library, see scripts/build_static_onnxruntime.py) and compile
+# a network into the executable.
+option(HIVEMIND_ORT_STATIC "Link a static ONNX Runtime and the C++ runtime into the executable" OFF)
+set(HIVEMIND_EMBED_MODEL "" CACHE FILEPATH "ONNX network to compile into the executable (onnxruntime only)")
+set(HIVEMIND_EMBED_LICENSES "" CACHE FILEPATH "License texts to compile into the executable (printed by --licenses)")
+if(HIVEMIND_ORT_STATIC AND MSVC)
+    # The static ONNX Runtime is built against the static C++ runtime, which
+    # also spares users the Visual C++ Redistributable.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 # Set C++ version and optimization level. Keep compiler flags portable: GNU
 # switches passed unconditionally here used to make the ONNX Runtime backend
@@ -92,6 +103,7 @@ set(LIB_SOURCES
     src/environment/zobrist.cc
     # src/nn/engine.cc or engine_ort.cc is appended below per backend
     src/nn/onnx_utils.cc
+    src/nn/embedded_files.cc
     src/search/agent.cc
     src/search/single_board.cc
     src/search/mate_probe.cc
@@ -170,8 +182,14 @@ elseif(HIVEMIND_BACKEND STREQUAL "onnxruntime")
     find_path(ONNXRuntime_INCLUDE_DIR onnxruntime_cxx_api.h
         HINTS ${ONNXRuntime_ROOT}/include
         PATH_SUFFIXES onnxruntime onnxruntime/core/session)
-    find_library(ONNXRuntime_LIBRARY NAMES onnxruntime
-        HINTS ${ONNXRuntime_ROOT}/lib)
+    if(HIVEMIND_ORT_STATIC)
+        find_library(ONNXRuntime_LIBRARY
+            NAMES onnxruntime_static ${CMAKE_STATIC_LIBRARY_PREFIX}onnxruntime${CMAKE_STATIC_LIBRARY_SUFFIX}
+            HINTS ${ONNXRuntime_ROOT}/lib NO_DEFAULT_PATH)
+    else()
+        find_library(ONNXRuntime_LIBRARY NAMES onnxruntime
+            HINTS ${ONNXRuntime_ROOT}/lib)
+    endif()
 
     if(NOT ONNXRuntime_INCLUDE_DIR OR NOT ONNXRuntime_LIBRARY)
         message(FATAL_ERROR
@@ -181,7 +199,9 @@ elseif(HIVEMIND_BACKEND STREQUAL "onnxruntime")
     message(STATUS "ONNX Runtime: ${ONNXRuntime_LIBRARY}")
 
     get_filename_component(ONNXRuntime_LIBDIR "${ONNXRuntime_LIBRARY}" DIRECTORY)
-    if(UNIX)
+    if(HIVEMIND_ORT_STATIC)
+        # Nothing to find at run time.
+    elseif(UNIX)
         set(CMAKE_BUILD_RPATH "${ONNXRuntime_LIBDIR}")
         set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/lib;$ORIGIN/../lib;${ONNXRuntime_LIBDIR}")
         if(HIVEMIND_PORTABLE_BUNDLE)
@@ -202,6 +222,38 @@ elseif(HIVEMIND_BACKEND STREQUAL "onnxruntime")
     endif()
 else()
     message(FATAL_ERROR "Unknown HIVEMIND_BACKEND '${HIVEMIND_BACKEND}'")
+endif()
+
+# Files compiled into the executable for single-file releases. The .incbin
+# (or Windows resource) is outside the compiler's dependency tracking, so
+# list each file as a dependency of the object that carries it.
+set(HIVEMIND_EMBEDDED_DEFINITIONS "")
+set(HIVEMIND_EMBEDDED_FILES "")
+set(HIVEMIND_EMBEDDED_RC "")
+if(HIVEMIND_EMBED_MODEL AND NOT HIVEMIND_BACKEND STREQUAL "onnxruntime")
+    message(FATAL_ERROR "HIVEMIND_EMBED_MODEL needs the onnxruntime backend")
+endif()
+foreach(kind MODEL LICENSES)
+    if(HIVEMIND_EMBED_${kind})
+        get_filename_component(path "${HIVEMIND_EMBED_${kind}}" ABSOLUTE)
+        if(NOT EXISTS "${path}")
+            message(FATAL_ERROR "HIVEMIND_EMBED_${kind} not found: ${path}")
+        endif()
+        file(TO_CMAKE_PATH "${path}" path)
+        message(STATUS "Embedding ${kind}: ${path}")
+        string(TOLOWER "${kind}" name)
+        list(APPEND HIVEMIND_EMBEDDED_DEFINITIONS "HIVEMIND_EMBED_${kind}_PATH=\"${path}\"")
+        list(APPEND HIVEMIND_EMBEDDED_FILES "${path}")
+        string(APPEND HIVEMIND_EMBEDDED_RC "hivemind_embedded_${name} RCDATA \"${path}\"\n")
+    endif()
+endforeach()
+# Never in a unity batch: its assembler and Windows headers stay out of
+# other sources (windows.h defines macros such as INFINITE).
+set_source_files_properties(src/nn/embedded_files.cc PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+if(HIVEMIND_EMBEDDED_FILES)
+    set_source_files_properties(src/nn/embedded_files.cc PROPERTIES
+        COMPILE_DEFINITIONS "${HIVEMIND_EMBEDDED_DEFINITIONS}"
+        OBJECT_DEPENDS "${HIVEMIND_EMBEDDED_FILES}")
 endif()
 
 find_package(Threads REQUIRED)
@@ -238,6 +290,10 @@ if(HIVEMIND_BACKEND STREQUAL "tensorrt")
     target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CUDA_LIBRARIES} ${TensorRT_LIBRARIES})
 else()
     target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${ONNXRuntime_LIBRARY})
+    if(HIVEMIND_ORT_STATIC AND APPLE)
+        target_link_libraries(${PROJECT_NAME}_lib PUBLIC
+            "-framework Foundation" "-framework CoreML")
+    endif()
 endif()
 target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CMAKE_THREAD_LIBS_INIT} Fairy-Stockfish Threads::Threads)
 target_link_libraries(${PROJECT_NAME}_lib PUBLIC ${CMAKE_DL_LIBS})
@@ -254,8 +310,26 @@ endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     HIVEMIND_VERSION="${PROJECT_VERSION}")
+if(HIVEMIND_EMBEDDED_RC AND WIN32)
+    # MSVC has no .incbin: carry the files as RCDATA resources.
+    file(WRITE "${CMAKE_BINARY_DIR}/embedded_files.rc" "${HIVEMIND_EMBEDDED_RC}")
+    target_sources(${PROJECT_NAME} PRIVATE "${CMAKE_BINARY_DIR}/embedded_files.rc")
+    set_source_files_properties("${CMAKE_BINARY_DIR}/embedded_files.rc" PROPERTIES
+        OBJECT_DEPENDS "${HIVEMIND_EMBEDDED_FILES}")
+endif()
+if(HIVEMIND_ORT_STATIC)
+    # ONNX Runtime is built with one section per function; drop the ones
+    # nothing calls (most of its operator kernels).
+    if(MSVC)
+        target_link_options(${PROJECT_NAME} PRIVATE /OPT:REF /OPT:ICF)
+    elseif(APPLE)
+        target_link_options(${PROJECT_NAME} PRIVATE -Wl,-dead_strip)
+    else()
+        target_link_options(${PROJECT_NAME} PRIVATE -static-libstdc++ -static-libgcc -Wl,--gc-sections)
+    endif()
+endif()
 
-if(WIN32 AND HIVEMIND_BACKEND STREQUAL "onnxruntime")
+if(WIN32 AND HIVEMIND_BACKEND STREQUAL "onnxruntime" AND NOT HIVEMIND_ORT_STATIC)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${ONNXRuntime_DLL}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"

@@ -3,7 +3,9 @@
 #include <string>
 #include <string_view>
 
-// Resolves an ONNX model path from an explicit path or by scanning default model directories.
+// Resolves an ONNX model path from an explicit path, the embedded network
+// (embedded::MODEL_NAME) when the executable carries one, or by scanning
+// default model directories.
 std::string resolveModelPath(const std::string& explicitPath = "");
 
 // Returns the path to the latest ONNX file in the given directory, or an empty string if none found.

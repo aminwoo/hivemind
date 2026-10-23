@@ -438,22 +438,31 @@ python engine/scripts/package_windows_tensorrt_release.py `
   --name hivemind-v3.0.2-windows-x86_64-tensorrt
 ```
 
-## Portable Windows, Linux, and macOS release bundles
+## Single-file Windows, Linux, and macOS releases
 
-Build the ONNX Runtime bundle natively on the target operating system:
+The CPU and Mac releases are one executable each: ONNX Runtime and the C++
+runtime are linked statically, and the network and license texts are
+compiled in (`HIVEMIND_ORT_STATIC`, `HIVEMIND_EMBED_MODEL` and
+`HIVEMIND_EMBED_LICENSES`). With a network compiled in, the engine uses it
+unless `--model` names another; `--licenses` prints the licenses.
+
+Microsoft ships ONNX Runtime only as a shared library, so first build it
+from source as one static library (CPU only, plus Core ML on macOS; about 15
+minutes on four cores, once). Then build and package the executable, natively
+on each target operating system:
 
 ```bash
-python tools/fetch_onnxruntime.py
-python -m pip install numpy onnx
-python engine/scripts/package_portable_release.py \
-    --model model-fp16.onnx --name hivemind-v3.0.2-linux-x86_64-onnxruntime
+python -m pip install ninja numpy onnx
+python engine/scripts/build_static_onnxruntime.py
+python engine/scripts/package_single_file_release.py \
+    --model model-fp16.onnx --name hivemind-v3.0.2-linux-x86_64
 ```
 
-On Windows, use the same Python command and a
-`hivemind-v3.0.2-windows-x86_64-onnxruntime` name. The ZIP includes the engine,
-an automatically converted FP32 model, ONNX Runtime, licenses, and checksums.
-It does not require a GPU.
-Tagged builds create CPU bundles for Linux/Windows, a Core ML bundle for Apple
-silicon Macs, and TensorRT bundles for Linux/Windows through
-`.github/workflows/portable-release.yml`. Assets are staged in a draft release
-for hardware validation before publication; see the [release process](../docs/distribution.md#release-process).
+On Windows, run them from a Developer PowerShell (for `lib.exe`). The
+network is converted to FP32 for the CPU, or for Core ML on macOS, before it
+is embedded.
+
+Tagged builds create the single executables and TensorRT bundles for
+Linux/Windows through `.github/workflows/portable-release.yml`, which caches
+the static ONNX Runtime. Assets are staged in a draft release for hardware
+validation before publication; see the [release process](../docs/distribution.md#release-process).

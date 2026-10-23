@@ -1,4 +1,5 @@
 #include "interface/uci.h"
+#include "nn/embedded_files.h"
 
 #include <algorithm>
 #include <chrono>
@@ -57,7 +58,7 @@ bool UCI::reload_engines() {
         std::cerr << "Error: No ONNX model found; pass --model <onnx> or --network <onnx>." << std::endl;
         return false;
     }
-    if (!std::filesystem::is_regular_file(onnxFile)) {
+    if (!embedded::is_model(onnxFile) && !std::filesystem::is_regular_file(onnxFile)) {
         std::cerr << "Error: ONNX model not found: " << onnxFile << std::endl;
         return false;
     }
