@@ -37,8 +37,8 @@ def generator_checkpoint(generator=TWIN_ONNX_PATH, checkpoint=GENERATOR_CHECKPOI
 
 
 def plan(new_positions, replay_positions, new_passes, replay_passes, batch_size):
-    """Training steps and the replay share of each batch, as rl_loop.sh
-    computes them."""
+    """Training steps and the replay share of each batch: the new games for
+    new_passes passes plus replay_passes over the replayed ones."""
     samples_new = new_passes * new_positions
     samples_old = replay_passes * replay_positions
     steps = math.ceil((samples_new + samples_old) / batch_size)
