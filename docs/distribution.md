@@ -114,9 +114,9 @@ Engine coverage. Check the release's validation section for hardware results.
 4. Download the draft's ZIP and checksum on physical hardware and run:
 
    ```bash
-   python engine/scripts/smoke_release.py hivemind-v3.0.2-linux-x86_64-tensorrt.zip \
+   python engine/scripts/smoke_release.py hivemind-v3.0.3-linux-x86_64-tensorrt.zip \
      --backend tensorrt --timeout 1800 --report validation-linux-nvidia.json
-   python engine/scripts/smoke_release.py hivemind-v3.0.2-macos-arm64 \
+   python engine/scripts/smoke_release.py hivemind-v3.0.3-macos-arm64 \
      --backend coreml --timeout 300 --report validation-macos-coreml.json
    ```
 

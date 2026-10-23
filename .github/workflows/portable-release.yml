@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag (for example, v3.0.2)
+        description: Release tag (for example, v3.0.3)
         required: true
-        default: v3.0.2
+        default: v3.0.3
       model_url:
         description: Direct ONNX URL or a Hivemind release zip containing the model
         required: true

@@ -421,7 +421,7 @@ the local TensorRT and CUDA runtime libraries:
 ```bash
 ./scripts/package_ubuntu_release.sh \
     --model /path/to/model.onnx \
-    --name hivemind-v3.0.2-linux-x86_64-tensorrt
+    --name hivemind-v3.0.3-linux-x86_64-tensorrt
 ```
 
 Recipients need a supported NVIDIA GPU and proprietary NVIDIA driver, but do
@@ -435,7 +435,7 @@ python engine/scripts/package_windows_tensorrt_release.py `
   --model C:\path\to\model.onnx `
   --tensorrt-root C:\path\to\TensorRT-11.1.0.106 `
   --cuda-root C:\path\to\cuda-runtime `
-  --name hivemind-v3.0.2-windows-x86_64-tensorrt
+  --name hivemind-v3.0.3-windows-x86_64-tensorrt
 ```
 
 ## Single-file Windows, Linux, and macOS releases
@@ -455,7 +455,7 @@ on each target operating system:
 python -m pip install ninja numpy onnx
 python engine/scripts/build_static_onnxruntime.py
 python engine/scripts/package_single_file_release.py \
-    --model model-fp16.onnx --name hivemind-v3.0.2-linux-x86_64
+    --model model-fp16.onnx --name hivemind-v3.0.3-linux-x86_64
 ```
 
 On Windows, run them from a Developer PowerShell (for `lib.exe`). The
