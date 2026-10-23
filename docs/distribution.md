@@ -9,9 +9,9 @@ are unnecessary.
 
 | Download | Requirements | Size / first launch |
 |---|---|---|
-| Windows (`windows-x86_64.exe`) | Windows 10/11 x86-64 | About 35 MB; easiest starting point |
-| Linux (`linux-x86_64`) | Ubuntu 24.04 x86-64 or newer (glibc 2.39+) | About 35 MB; easiest starting point |
-| macOS (`macos-arm64`) | Apple silicon M1 or newer; macOS 14+ | About 35 MB; Core ML defaults to Neural Engine |
+| Windows (`windows-x86_64.exe`) | Windows 10/11 x86-64 | About 23 MB; easiest starting point |
+| Linux (`linux-x86_64`) | Ubuntu 24.04 x86-64 or newer (glibc 2.39+) | About 33 MB; easiest starting point |
+| macOS (`macos-arm64`) | Apple silicon M1 or newer; macOS 14+ | About 22 MB; Core ML defaults to Neural Engine |
 | Windows TensorRT (ZIP) | Windows 10/11 x86-64; Microsoft Visual C++ 2015–2022 x64 Redistributable; NVIDIA requirements below | About 2 GB; first launch builds a GPU-specific cache |
 | Linux TensorRT (ZIP) | Ubuntu 24.04 x86-64 or newer; NVIDIA requirements below | About 2 GB; first launch builds a GPU-specific cache |
 

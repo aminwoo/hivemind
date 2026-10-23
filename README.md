@@ -33,9 +33,9 @@ inference runtime built in; nothing else needs downloading or installing.
 
 | Your computer | Download | Approximate size |
 |---|---|---|
-| Windows x86-64 | `hivemind-vX.Y.Z-windows-x86_64.exe` | 35 MB |
-| Linux x86-64 (Ubuntu 24.04+ or similar) | `hivemind-vX.Y.Z-linux-x86_64` | 35 MB |
-| Apple silicon, macOS 14+ | `hivemind-vX.Y.Z-macos-arm64` | 35 MB |
+| Windows x86-64 | `hivemind-vX.Y.Z-windows-x86_64.exe` | 23 MB |
+| Linux x86-64 (Ubuntu 24.04+ or similar) | `hivemind-vX.Y.Z-linux-x86_64` | 33 MB |
+| Apple silicon, macOS 14+ | `hivemind-vX.Y.Z-macos-arm64` | 22 MB |
 | Windows x86-64, NVIDIA GPU | `hivemind-vX.Y.Z-windows-x86_64-tensorrt.zip` | 2 GB |
 | Linux x86-64, NVIDIA GPU | `hivemind-vX.Y.Z-linux-x86_64-tensorrt.zip` | 2 GB |
 
