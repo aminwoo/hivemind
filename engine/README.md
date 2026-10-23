@@ -1,3 +1,6 @@
+# Hivemind engine
+
+The C++ engine: build instructions, backends, UCI options, and engine tools.
 For ready-to-run downloads, start with the [download guide](../README.md#download-and-run).
 The [distribution guide](../docs/distribution.md) lists exact release requirements,
 first-launch behavior, checksums, and hardware validation commands.
@@ -48,9 +51,8 @@ The engine builds against either of two backends, selected with
 | Precision            | FP16                                  | CPU: FP32 recommended; Core ML: FP16 network   |
 | Redistributable size | ~2 GB                                 | ~85 MB uncompressed                            |
 
-The TensorRT path is the default and is unchanged — existing build commands
-behave exactly as before. The ONNX Runtime path is opt-in and exists so the
-engine can be built and shipped without CUDA at all.
+TensorRT is the default backend on Linux and Windows. ONNX Runtime lets the
+engine be built and shipped without CUDA.
 
 ### Building the portable backend
 
@@ -157,16 +159,40 @@ On Linux:
 cmake --preset ninja-fast \
     -DTensorRT_DIR=/path/to/TensorRT -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
 cmake --build --preset ninja-fast -j "$(nproc)"
-./build-ninja/hivemind \
-	--network "$(realpath ../artifacts/training/weights/rl/model-rl-final-v3.0.onnx)"
+./build-ninja/hivemind --model models/twin-s-clock.onnx
 ```
+
+Use the `ninja-release` preset instead for an optimized build. Both presets
+write to `build-ninja` and optimize for the local CPU.
+
+On Windows, use a Developer PowerShell for Visual Studio and point CMake at
+the extracted TensorRT SDK and CUDA Runtime redistributable:
+
+```powershell
+cmake -S engine -B engine/build-tensorrt -A x64 `
+  -DHIVEMIND_BACKEND=tensorrt `
+  -DTensorRT_DIR=C:\path\to\TensorRT-11.1.0.106 `
+  -DCUDA_TOOLKIT_ROOT_DIR=C:\path\to\cuda-runtime
+cmake --build engine/build-tensorrt --config Release --parallel
+```
+
+The Windows backend loads TensorRT builder-resource DLLs from the executable
+directory. FP32-to-FP16 conversion uses `.venv\\Scripts\\python.exe` or
+`python` and can be overridden with `HIVEMIND_PYTHON`.
+
+When a TensorRT plan is missing or stale, Hivemind accepts an FP32 ONNX model
+and converts it to a temporary all-FP16 graph before building the plan. Plan
+generation requires `onnx` and `onnxruntime` in `../.venv` or `python3`; set
+`HIVEMIND_PYTHON` to select another Python interpreter. The cached TensorRT
+plan uses FP16 inputs, outputs, weights, and floating-point activations.
+
+### Self-play
 
 Self-play allocates a fixed Fairy-Stockfish mate-search budget per searched
 position. The default 10,000,000 nodes are split across the active boards:
 
 ```bash
-./build-ninja/hivemind selfplay \
-  --network "$(realpath ../artifacts/training/weights/rl/model-rl-final-v3.0.onnx)" \
+./build-ninja/hivemind selfplay --model models/twin-s-clock.onnx \
   --games 1000 --nodes 400 --fairy-stockfish-mate-nodes 10000000
 ```
 
@@ -308,27 +334,6 @@ the threatened board and no single-board line is forced. Verbose output
 reports both stages: `info string concurrent verifier: ...` and
 `info string selected move certification: ...`.
 
-On Windows, use a Developer PowerShell for Visual Studio and point CMake at
-the extracted TensorRT SDK and CUDA Runtime redistributable:
-
-```powershell
-cmake -S engine -B engine/build-tensorrt -A x64 `
-  -DHIVEMIND_BACKEND=tensorrt `
-  -DTensorRT_DIR=C:\path\to\TensorRT-11.1.0.106 `
-  -DCUDA_TOOLKIT_ROOT_DIR=C:\path\to\cuda-runtime
-cmake --build engine/build-tensorrt --config Release --parallel
-```
-
-The Windows backend loads TensorRT builder-resource DLLs from the executable
-directory. FP32-to-FP16 conversion uses `.venv\\Scripts\\python.exe` or
-`python` and can be overridden with `HIVEMIND_PYTHON`.
-
-When a TensorRT plan is missing or stale, Hivemind accepts an FP32 ONNX model
-and converts it to a temporary all-FP16 graph before building the plan. Plan
-generation requires `onnx` and `onnxruntime` in `../.venv` or `python3`; set
-`HIVEMIND_PYTHON` to select another Python interpreter. The cached TensorRT
-plan uses FP16 inputs, outputs, weights, and floating-point activations.
-
 ## Progressive-widening tournament
 
 Use the same network on both sides to isolate different progressive-widening
@@ -392,9 +397,6 @@ With `--time-model clock` and the self-play clock options, each pair draws one
 clock and both of its games use it, so the contender plays each team's side of
 the lead once. The positions file's time-advantage flags are then unused, and
 the breakdown splits games by the contender's starting lead: up, down or level.
-
-cmake --preset ninja-release -DTensorRT_DIR=$HOME/opt/TensorRT-11.1.0.106 -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
-cmake --build --preset ninja-release -j "$(nproc)"
 
 ## Alpha-beta NNUE engine
 

@@ -38,7 +38,7 @@ Keep the token outside the repository in a file readable only by its owner
 or passed as a command-line argument. `--move-time-ms` sets the maximum time
 per move (500 ms by default); `--run-seconds` bounds a listening test.
 
-For continuous operation on this Linux workspace, the template
+For continuous operation on Linux, the systemd user unit template
 [`tools/hivemind-lichess-bot.service`](../tools/hivemind-lichess-bot.service)
 uses the TensorRT executable and `%h/.config/hivemind/lichess.token`. It assumes
 the checkout is at `%h/hivemind`; adjust the paths or choose the CPU executable

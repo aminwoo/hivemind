@@ -1,6 +1,13 @@
-If the opponent has an unblockable mate-in-one, Hivemind always loses the race, even when Hivemind also has an unblockable mate-in-one.
-A blockable mate is terminal only when the defending partner cannot capture a piece that enables a legal block.
-Hivemind’s unblockable mate correctly beats an opponent’s pending blockable mate-in-one.
-Blockable races respect side-to-move and time advantage.
-Fixed stalemate handling so a time-behind team cannot escape through an irrelevant quiet partner move. The partner must capture a piece that actually creates a legal drop on the stalemated board. A time-ahead team may still sit.
-Hivemind always loses when the opponent already has an unblockable mate-in-one, even if Hivemind also has an unblockable mate-in-one.
+# Mate-race rules
+
+How Hivemind scores positions where both teams threaten mate:
+
+- If the opponents already have an unblockable mate in one, Hivemind loses the
+  race, even when it has an unblockable mate in one of its own.
+- Hivemind's unblockable mate beats the opponents' pending blockable mate in one.
+- A blockable mate is terminal only when the defending partner cannot capture
+  a piece that would allow a legal blocking drop.
+- Races between blockable mates respect side to move and time advantage.
+- A stalemated team that is behind on time cannot escape with an irrelevant
+  quiet move by the partner: the partner must capture a piece that creates a
+  legal drop on the stalemated board. A team ahead on time may still sit.
