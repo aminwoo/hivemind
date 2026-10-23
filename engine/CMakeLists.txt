@@ -7,7 +7,7 @@ if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
 
-project(hivemind VERSION 3.0.2 LANGUAGES CXX)
+project(hivemind VERSION 3.0.3 LANGUAGES CXX)
 
 # Defaults to tensorrt so existing build commands are unaffected; the
 # onnxruntime backend is opt-in and needs no CUDA.
