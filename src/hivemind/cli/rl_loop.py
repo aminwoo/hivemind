@@ -17,8 +17,7 @@ train`. With --time-model clock, self-play and matches run on a simulated clock
 (the engine's --time-model clock) and networks read the clock input planes; run
 such a lineage with its own --generator, --generator-checkpoint and --runs. Every finished stage leaves a marker in RUNS/rl-itN/stages, so a rerun
 resumes at the first unfinished one (an interrupted segment or match is moved
-to rl-itN/aborted and redone); the layout is that of data/distill/rl_loop.sh,
-whose runs this continues. Training and matches wait while a game is running
+to rl-itN/aborted and redone). Training and matches wait while a game is running
 (see --pause-for), and a match restarts if one starts mid-way.
 
 With --distributed, other machines share step 1: the loop publishes a work
