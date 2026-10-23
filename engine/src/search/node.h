@@ -126,11 +126,20 @@ private:
     // store landing on top of a second visit's add. That is the usual
     // relaxation for lock-free MCTS backup: the error is bounded by one
     // evaluation and the next visit overwrites it.
-    static void accumulate_edge_value(EdgeStats& edge, float value) {
+    static void accumulate_edge_value(EdgeStats& edge, float value,
+                                      bool exactFirstBackup = false) {
         const int visits =
             edge.visits.fetch_add(1, std::memory_order_relaxed) + 1;
         float sum;
-        if (visits == 1) {
+        if (visits == 1 && exactFirstBackup) {
+            // A new edge's sum holds the Q_INIT seed (a transposition's edge
+            // starts at one visit and never takes this branch). Adding the
+            // difference removes the seed without overwriting a concurrent
+            // second backup's add.
+            const float delta = value - SearchParams::Q_INIT;
+            sum = edge.valueSum.fetch_add(delta, std::memory_order_relaxed)
+                + delta;
+        } else if (visits == 1) {
             // The first real visit replaces the FPU seed instead of adding to it.
             edge.valueSum.store(value, std::memory_order_relaxed);
             sum = value;
@@ -138,7 +147,13 @@ private:
             sum = add_value(edge.valueSum, value)
                 + value;
         }
-        edge.q.store(sum / static_cast<float>(visits),
+        // With exact backups, divide by the visits now counted rather than
+        // this backup's own count: a concurrent backup's add may already be in
+        // the sum. (Q is republished by every backup either way.)
+        const int divisor = exactFirstBackup
+            ? std::max(visits, edge.visits.load(std::memory_order_relaxed))
+            : visits;
+        edge.q.store(sum / static_cast<float>(divisor),
                      std::memory_order_relaxed);
     }
 
@@ -390,13 +405,13 @@ public:
         return std::unique_lock<std::shared_mutex>(nodeMutex);
     }
 
-    void update(size_t childIdx, float value) {
+    void update(size_t childIdx, float value, bool exactFirstBackup = false) {
         {
             std::shared_lock<std::shared_mutex> guard(nodeMutex);
             EdgeStats& edge = edges[childIdx];
             if (edge.visits.load(std::memory_order_relaxed)
                     + edge.virtualLoss.load(std::memory_order_relaxed) != 0) {
-                accumulate_edge_value(edge, value);
+                accumulate_edge_value(edge, value, exactFirstBackup);
                 add_value(valueSum, value);
                 m_visits.fetch_add(1, std::memory_order_relaxed);
                 return;
@@ -411,19 +426,20 @@ public:
                 + edge.virtualLoss.load(std::memory_order_relaxed) == 0) {
             mark_edge_visited_locked(childIdx);
         }
-        accumulate_edge_value(edge, value);
+        accumulate_edge_value(edge, value, exactFirstBackup);
         add_value(valueSum, value);
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }
 
     // The edge already carries this thread's virtual loss, so it is already in
     // the visited set and no container changes here.
-    void update_and_remove_virtual_loss(size_t childIdx, float value) {
+    void update_and_remove_virtual_loss(size_t childIdx, float value,
+                                        bool exactFirstBackup = false) {
         std::shared_lock<std::shared_mutex> guard(nodeMutex);
         EdgeStats& edge = edges[childIdx];
         edge.virtualLoss.fetch_sub(1, std::memory_order_relaxed);
         virtualVisitSum.fetch_sub(1, std::memory_order_relaxed);
-        accumulate_edge_value(edge, value);
+        accumulate_edge_value(edge, value, exactFirstBackup);
         add_value(valueSum, value);
         m_visits.fetch_add(1, std::memory_order_relaxed);
     }

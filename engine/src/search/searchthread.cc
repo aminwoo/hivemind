@@ -529,7 +529,8 @@ void SearchThread::backup(vector<TrajectoryEntry>& trajectory,
 
         if (childIdx >= 0) {
             // Internal node - use the stored child index
-            node->update_and_remove_virtual_loss(childIdx, valueToBackup);
+            node->update_and_remove_virtual_loss(
+                childIdx, valueToBackup, runtimeConfig.exactEdgeBackup);
             
             // MCTS Solver: propagate terminal states
             if (SearchParams::ENABLE_MCTS_SOLVER && childType != NodeType::UNSOLVED) {
