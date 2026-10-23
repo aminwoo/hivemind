@@ -37,6 +37,7 @@ if [[ ! -d "$tensorrt_dir/lib" ]]; then
 fi
 command -v cmake >/dev/null
 command -v zip >/dev/null
+command -v python3 >/dev/null
 
 build_dir="$engine_dir/build-ubuntu-release"
 cmake -S "$engine_dir" -B "$build_dir" -G Ninja \
@@ -55,7 +56,7 @@ bundle_dir="$staging_root/$bundle_name"
 mkdir -p "$bundle_dir/bin" "$bundle_dir/lib" "$bundle_dir/models"
 
 cp "$build_dir/hivemind.bin" "$bundle_dir/bin/"
-cp "$model" "$bundle_dir/models/hivemind.onnx"
+python3 "$script_dir/prepare_tensorrt_model.py" "$model" "$bundle_dir/models/hivemind.onnx"
 cp "$workspace_dir/LICENSE" "$bundle_dir/LICENSE.txt"
 cp "$engine_dir/LICENSE" "$bundle_dir/FAIRY-STOCKFISH-LICENSE.txt"
 cp "$workspace_dir/docs/distribution.md" "$bundle_dir/DISTRIBUTION.md"

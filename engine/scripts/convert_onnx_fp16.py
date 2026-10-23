@@ -13,17 +13,20 @@ import onnx
 from onnxruntime.transformers.float16 import convert_float_to_float16
 
 
+def convert(input_path: str, output_path: str) -> None:
+    model = onnx.load(input_path)
+    model_fp16 = convert_float_to_float16(model, keep_io_types=False)
+    topologically_sort_graph(model_fp16)
+    onnx.checker.check_model(model_fp16)
+    onnx.save(model_fp16, output_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
     parser.add_argument("output")
     args = parser.parse_args()
-
-    model = onnx.load(args.input)
-    model_fp16 = convert_float_to_float16(model, keep_io_types=False)
-    topologically_sort_graph(model_fp16)
-    onnx.checker.check_model(model_fp16)
-    onnx.save(model_fp16, args.output)
+    convert(args.input, args.output)
 
 
 if __name__ == "__main__":

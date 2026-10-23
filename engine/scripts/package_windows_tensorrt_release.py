@@ -70,7 +70,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path,
-                        help="FP16 ONNX model to include")
+                        help="ONNX model to include, converted to FP16 if needed")
     parser.add_argument("--tensorrt-root", required=True, type=Path,
                         help="Extracted NVIDIA TensorRT SDK root")
     parser.add_argument("--cuda-root", required=True, type=Path,
@@ -130,7 +130,16 @@ def main() -> int:
         for runtime in required_runtime + builder_resources:
             shutil.copy2(runtime, bin_dir / runtime.name)
         shutil.copy2(ENGINE_DIR / "scripts" / "convert_onnx_fp16.py", bin_dir)
-        shutil.copy2(model, models_dir / "hivemind.onnx")
+        # Ship the converter's shared helper without requiring the training package.
+        helper_dir = bin_dir / "hivemind" / "inference"
+        helper_dir.mkdir(parents=True)
+        shutil.copy2(WORKSPACE_DIR / "src" / "hivemind" / "__init__.py",
+                     bin_dir / "hivemind")
+        for name in ("__init__.py", "onnx_graph.py"):
+            shutil.copy2(WORKSPACE_DIR / "src" / "hivemind" / "inference" / name,
+                         helper_dir)
+        run([sys.executable, str(ENGINE_DIR / "scripts" / "prepare_tensorrt_model.py"),
+             str(model), str(models_dir / "hivemind.onnx")])
         shutil.copy2(WORKSPACE_DIR / "LICENSE", bundle / "LICENSE.txt")
         shutil.copy2(ENGINE_DIR / "LICENSE", bundle / "FAIRY-STOCKFISH-LICENSE.txt")
         shutil.copy2(WORKSPACE_DIR / "docs" / "distribution.md", bundle / "DISTRIBUTION.md")
