@@ -146,3 +146,124 @@ def test_selfplay_runs_on_a_one_worker_copy(tmp_path):
     model.write_bytes(b"it6")
     refresh_copy(model, copy)
     assert copy.read_bytes() == b"it6"
+
+
+def test_engine_backend_reads_the_cmake_cache(tmp_path):
+    from hivemind.cli import engine
+
+    binary = tmp_path / "hivemind"
+    assert engine.engine_backend(binary) is None
+    (tmp_path / "CMakeCache.txt").write_text(
+        "CMAKE_BUILD_TYPE:STRING=Release\nHIVEMIND_BACKEND:STRING=onnxruntime\n")
+    assert engine.engine_backend(binary) == "onnxruntime"
+
+
+def test_onnxruntime_engine_gets_the_fp32_network_off_macos(tmp_path, monkeypatch):
+    from hivemind import network as networks
+    from hivemind.cli import engine
+
+    network = tmp_path / "net.onnx"
+    network.touch()
+    monkeypatch.setattr(engine, "DEFAULT_ONNX_PATH", network)
+    monkeypatch.setattr(engine.sys, "platform", "linux")
+    conversions = []
+
+    def convert(command, check):
+        conversions.append(command)
+        Path(command[-1]).touch()
+
+    monkeypatch.setattr(networks.subprocess, "run", convert)
+    assert engine.default_model("tensorrt") == network
+    assert engine.default_model("onnxruntime") == tmp_path / "net-fp32.onnx"
+    assert engine.default_model("onnxruntime") == tmp_path / "net-fp32.onnx"
+    assert conversions == [[networks.sys.executable, str(networks.FP32_CONVERTER),
+                            str(network), str(tmp_path / "net-fp32.onnx")]]
+
+
+def _missing_engine(tmp_path, monkeypatch):
+    from hivemind.cli import engine
+
+    monkeypatch.setattr(engine, "ENGINE_CANDIDATES", (tmp_path / "build-ninja" / "hivemind",))
+    monkeypatch.setattr(engine, "ONNXRUNTIME_DIR", tmp_path / "third_party" / "onnxruntime")
+    network = tmp_path / "net.onnx"
+    network.touch()
+    monkeypatch.setattr(engine, "DEFAULT_ONNX_PATH", network)
+    monkeypatch.setattr(engine, "default_model", lambda backend=None: network)
+    calls = []
+    built = tmp_path / "build-ninja" / "hivemind"
+
+    def build(preset, backend, **kwargs):
+        calls.append(("build", preset, backend, kwargs))
+        return built
+
+    monkeypatch.setattr(engine.build_engine, "build", build)
+    monkeypatch.setattr(engine.subprocess, "run",
+                        lambda command, check: calls.append(("run", command)))
+    monkeypatch.setattr(engine.os, "execv", lambda path, command: calls.append(("exec", command)))
+    return engine, calls, built, network
+
+
+def test_engine_command_builds_tensorrt_when_it_is_installed(tmp_path, monkeypatch):
+    engine, calls, built, network = _missing_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine.build_engine, "tensorrt_available", lambda: True)
+    monkeypatch.setenv("TENSORRT_DIR", str(tmp_path / "trt"))
+    monkeypatch.setenv("CUDA_HOME", str(tmp_path / "cuda"))
+    monkeypatch.setattr(sys, "argv", ["hivemind engine"])
+    engine.main()
+    assert calls == [
+        ("build", "ninja-release", "tensorrt",
+         {"tensorrt_dir": tmp_path / "trt", "cuda_root": tmp_path / "cuda"}),
+        ("exec", [str(built), "--model", str(network.resolve())]),
+    ]
+
+
+def test_engine_command_builds_onnxruntime_without_tensorrt(tmp_path, monkeypatch):
+    engine, calls, built, network = _missing_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine.build_engine, "tensorrt_available", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["hivemind engine"])
+    engine.main()
+    assert calls == [
+        ("run", [sys.executable, str(engine.ONNXRUNTIME_FETCHER)]),
+        ("build", "ninja-release", "onnxruntime", {"tensorrt_dir": None, "cuda_root": None}),
+        ("exec", [str(built), "--model", str(network.resolve())]),
+    ]
+
+
+def test_engine_command_does_not_build_on_a_dry_run(tmp_path, monkeypatch):
+    engine, calls, _, _ = _missing_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["hivemind engine", "--dry-run"])
+    with pytest.raises(SystemExit):
+        engine.main()
+    assert calls == []
+
+
+def test_engine_command_explains_a_missing_toolchain(tmp_path, monkeypatch):
+    engine, _, _, _ = _missing_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine.build_engine, "tensorrt_available", lambda: True)
+
+    def no_cmake(*args, **kwargs):
+        raise FileNotFoundError("cmake")
+
+    monkeypatch.setattr(engine.build_engine, "build", no_cmake)
+    monkeypatch.setattr(sys, "argv", ["hivemind engine"])
+    with pytest.raises(SystemExit, match="Install CMake"):
+        engine.main()
+
+
+def test_tensorrt_is_available_with_its_headers_and_cuda(tmp_path, monkeypatch):
+    from hivemind.cli import build_engine
+
+    monkeypatch.setattr(build_engine.sys, "platform", "linux")
+    monkeypatch.setattr(build_engine, "TENSORRT_HEADER_DIRS", ())
+    monkeypatch.delenv("TensorRT_DIR", raising=False)
+    monkeypatch.setenv("TENSORRT_DIR", str(tmp_path / "trt"))
+    monkeypatch.setenv("CUDA_HOME", str(tmp_path / "cuda"))
+    assert not build_engine.tensorrt_available()
+    (tmp_path / "trt" / "include").mkdir(parents=True)
+    (tmp_path / "trt" / "include" / "NvInfer.h").touch()
+    assert not build_engine.tensorrt_available()
+    (tmp_path / "cuda" / "include").mkdir(parents=True)
+    (tmp_path / "cuda" / "include" / "cuda_runtime.h").touch()
+    assert build_engine.tensorrt_available()
+    monkeypatch.setattr(build_engine.sys, "platform", "darwin")
+    assert not build_engine.tensorrt_available()

@@ -63,10 +63,14 @@ Release notes record which hardware paths were validated.
 
 ## Build from a clone
 
-**A clone contains source code, not a ready-to-run engine.** Build the C++
-engine before running it or generating self-play games. `uv sync` installs the
-Python package and dependencies; it does not install CMake, a compiler, CUDA,
-or TensorRT, and it does not build or automatically download an engine.
+**A clone contains source code, not a ready-to-run engine.** `uv sync`
+installs the Python package and dependencies; it does not install CMake, a
+compiler, CUDA, or TensorRT. Once the prerequisites below are installed,
+`uv run hivemind` builds the engine on first use (with TensorRT when
+`TensorRT_DIR` or `TENSORRT_DIR` points at an installation, or TensorRT's
+headers are in a system include directory, and with ONNX Runtime
+otherwise), downloads the default network, and starts it. The sections
+below build each backend explicitly.
 
 ### Prerequisites
 
@@ -110,7 +114,7 @@ hivemind --help
 
 On Windows PowerShell, activation is `.\.venv\Scripts\Activate.ps1`.
 `python -m hivemind` provides the same CLI. With no subcommand, `hivemind`
-starts the engine; it requires an existing build.
+starts the engine, building it and downloading the network first if needed.
 
 ### CPU build on Linux
 

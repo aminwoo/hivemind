@@ -7,6 +7,7 @@ from typing import NamedTuple
 from hivemind.paths import MODEL_DIRECTORY, PROJECT_ROOT
 
 COREML_CONVERTER = PROJECT_ROOT / "engine" / "scripts" / "convert_onnx_coreml.py"
+FP32_CONVERTER = PROJECT_ROOT / "engine" / "scripts" / "convert_onnx_fp32.py"
 
 
 class Artifact(NamedTuple):
@@ -57,4 +58,13 @@ def for_this_machine(model):
     converted = model.with_name(f"{model.stem}-coreml{model.suffix}")
     if not converted.is_file():
         subprocess.run([sys.executable, str(COREML_CONVERTER), str(model), str(converted)], check=True)
+    return converted
+
+
+def for_cpu(model):
+    """The network converted to FP32 for ONNX Runtime's CPU provider, which
+    has no FP16 kernels, converted next to it on first use."""
+    converted = model.with_name(f"{model.stem}-fp32{model.suffix}")
+    if not converted.is_file():
+        subprocess.run([sys.executable, str(FP32_CONVERTER), str(model), str(converted)], check=True)
     return converted
