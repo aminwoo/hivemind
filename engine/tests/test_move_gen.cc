@@ -3022,7 +3022,7 @@ TEST_F(EngineTest, TreeReuseNeedsTheClockTheTreeWasSearchedUnder) {
 TEST_F(EngineTest, CaptureFeedMateMustSurviveTheRecaptureThatSuppliesABlocker) {
     // Rxa4 feeds a rook for a first-rank drop mate on board B, but Black,
     // then on turn on board A, can take back with Qxa4 and hand White on B
-    // a rook to block with: no mate. (Position from the Codex review.)
+    // a rook to block with: no mate.
     Board board;
     board.set(
         "5r1k/6pp/8/4p3/r2q4/8/8/R6K[] w - - 0 1"
@@ -4784,7 +4784,7 @@ TEST_F(EngineTest, RootLossScanRetainsLosingActionWhenAnotherIsUnproven) {
     EXPECT_EQ(proofs[0].action.moveB, Stockfish::MOVE_NONE);
 }
 
-// Regression for nachos game 183149301015. With both boards live, this root
+// Regression for game 183149301015. With both boards live, this root
 // has 7,606 legal joint actions. Dividing the reverse-mate budget across all of
 // them gave the MCTS favourite only a few hundred probes, so 21...Nxd1 paired
 // with 15.Nxg7+ survived the safety scan despite allowing the forced mating
@@ -4838,7 +4838,7 @@ TEST_F(EngineTest, RootLossScanConcentratesBudgetOnWideRootFavourite) {
     EXPECT_EQ(Agent::board_signature(board), signatureBefore);
 }
 
-// Regression for nachos game 183185901749/183185901751. N@g5/P@e2 lets the
+// Regression for game 183185901749/183185901751. N@g5/P@e2 lets the
 // time-ahead opponent sit on Board A and play B@c6+ on Board B. Every check
 // evasion loses the queen on d5; its transfer enables Q@f2# on Board A.
 TEST_F(EngineTest, RootLossScanRejectsWaitingBishopSkewerQueenFeed) {
@@ -4905,7 +4905,7 @@ TEST_F(EngineTest, RootLossScanRespectsImmediateCaptureFeedMateRace) {
     }
 }
 
-// Regression for nachos position 1. After Black plays B@c6 on Board B,
+// Regression for mate benchmark position 1. After Black plays B@c6 on Board B,
 // White can capture either knight with the queen. That capture supplies a
 // knight to Black on Board A, where N@f3 is immediately decisive.
 TEST_F(EngineTest, DetectsKnightCaptureFeedAfterBc6) {
@@ -4959,7 +4959,7 @@ TEST_F(EngineTest, DetectsKnightCaptureFeedAfterBc6) {
     }
 }
 
-// Regression for nachos position 2. Black is in check on board B and has only
+// Regression for mate benchmark position 2. Black is in check on board B and has only
 // two king moves; both lose, one to a mate in 3 and one to a 12-ply proof that
 // runs through a capture feed. The scan proved this feed-first in 1586ms - past
 // any window a 1000ms move can give it - and reaches it inside the live budget

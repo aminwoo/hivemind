@@ -15,7 +15,7 @@
 
 // The root probe accepts mates beyond the exact check-only scan's horizon.
 // Those answers must not be held until movetime expires by a second, smaller
-// early-exit limit (notably mate in 7 and mate in 13 in the Nachos suite).
+// early-exit limit (notably mate in 7 and mate in 13 in the mate benchmark suite).
 TEST(MateProbeEarlyExitTest, AcceptsEverySupportedMateDistance) {
     ASSERT_TRUE(SearchParams::ENABLE_MATE_EARLY_EXIT);
     for (int moves = 1; moves <= SearchParams::MATE_PROBE_MAX_MATE_MOVES;
