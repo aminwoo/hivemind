@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <cuda_fp16.h>
 #include <iostream>
@@ -312,8 +313,10 @@ Engine::Engine(int deviceId, int batchSize)
 
 Engine::ExecutionState::~ExecutionState() {
     if (stream) cudaStreamSynchronize(stream);
-    if (graphInstance) cudaGraphExecDestroy(graphInstance);
-    if (graph) cudaGraphDestroy(graph);
+    for (int set = 0; set < 2; ++set) {
+        if (graphInstances[set]) cudaGraphExecDestroy(graphInstances[set]);
+        if (graphs[set]) cudaGraphDestroy(graphs[set]);
+    }
     context.reset();
     if (deviceObsBuffer) cudaFree(deviceObsBuffer);
     if (deviceValueBuffer) cudaFree(deviceValueBuffer);
@@ -337,6 +340,16 @@ Engine::ExecutionState::~ExecutionState() {
         if (spare) cudaFreeHost(spare);
     }
     if (stream) cudaStreamDestroy(stream);
+}
+
+void Engine::ExecutionState::swapOutputSets() {
+    std::swap(hostValueHalf, spareValueHalf);
+    std::swap(hostPolicyAHalf, sparePolicyAHalf);
+    std::swap(hostPolicyBHalf, sparePolicyBHalf);
+    std::swap(hostWdlHalf, spareWdlHalf);
+    std::swap(hostMovesLeftHalf, spareMovesLeftHalf);
+    std::swap(hostJointFactorsAHalf, spareJointFactorsAHalf);
+    std::swap(hostJointFactorsBHalf, spareJointFactorsBHalf);
 }
 
 Engine::~Engine() {
@@ -822,15 +835,13 @@ bool Engine::initializeResources() {
             !state->context->enqueueV3(state->stream) ||
             !checkCuda(cudaStreamSynchronize(state->stream),
                        "TensorRT warmup") ||
-            !checkCuda(cudaStreamBeginCapture(
-                           state->stream, cudaStreamCaptureModeGlobal),
-                       "cudaStreamBeginCapture") ||
-            !state->context->enqueueV3(state->stream) ||
-            !checkCuda(cudaStreamEndCapture(state->stream, &state->graph),
-                       "cudaStreamEndCapture") ||
-            !checkCuda(cudaGraphInstantiate(
-                           &state->graphInstance, state->graph, 0),
-                       "cudaGraphInstantiate")) {
+            !captureInferenceGraph(*state, 0)) {
+            return false;
+        }
+        state->swapOutputSets();
+        const bool capturedSpare = captureInferenceGraph(*state, 1);
+        state->swapOutputSets();
+        if (!capturedSpare) {
             return false;
         }
         state->graphCreated = true;
@@ -858,7 +869,7 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
     HalfInferenceOutputs outputs;
     if (!runInferenceHalfImpl(
             static_cast<const __half*>(state.hostObsHalf), outputs,
-            workerIndex, true)) {
+            workerIndex)) {
         return false;
     }
 
@@ -873,15 +884,123 @@ bool Engine::runInference(float* obs, float* value, float* piA, float* piB,
 
 bool Engine::runInferenceHalf(const __half* obs, HalfInferenceOutputs& outputs,
                               size_t workerIndex) {
-    return runInferenceHalfImpl(obs, outputs, workerIndex, true);
+    return runInferenceHalfImpl(obs, outputs, workerIndex);
+}
+
+namespace {
+// Under the Windows display driver model (WDDM) a stream that alternates
+// between copies and kernels serializes every stream of the process: with
+// input and output copies, four worker streams run no faster than one (about
+// 4k batches/s at batch 8 on an RTX 4070, against 11k without copies). On
+// Windows the network therefore reads its input from and writes its outputs
+// to the pinned host buffers directly, and a batch issues no copies at all.
+#if defined(_WIN32)
+constexpr bool ZERO_COPY_IO = true;
+#else
+constexpr bool ZERO_COPY_IO = false;
+#endif
+}  // namespace
+
+bool Engine::captureInferenceGraph(ExecutionState& state, int outputSet) {
+    const size_t inputSize = m_batchSize * m_inputChannels * BOARD_HEIGHT
+        * BOARD_WIDTH * sizeof(__half);
+    const size_t valSize = m_batchSize * sizeof(__half);
+    const size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT
+        * BOARD_WIDTH * sizeof(__half);
+    const size_t wdlSize = m_batchSize * 3 * sizeof(__half);
+    const size_t movesLeftSize = m_batchSize * sizeof(__half);
+    const size_t jointFactorsSize = m_batchSize * m_jointFactorRank
+        * (NB_POLICY_VALUES() + 1) * sizeof(__half);
+    // The graph reads the worker's own staging buffer. With copies, another
+    // caller's input is patched into the copy node before each launch; with
+    // zero-copy I/O it is copied into the staging buffer on the CPU.
+    const void* input = m_inputChannels != NB_INPUT_CHANNELS
+        ? state.hostLegacyObsHalf : state.hostObsHalf;
+
+    if constexpr (ZERO_COPY_IO) {
+        const auto bindHost = [&](const std::string& name, const void* host) {
+            void* mapped = nullptr;
+            return checkCuda(cudaHostGetDevicePointer(&mapped, const_cast<void*>(host), 0),
+                             "cudaHostGetDevicePointer") &&
+                state.context->setTensorAddress(name.c_str(), mapped);
+        };
+        if (!bindHost(m_inputName, input) ||
+            !bindHost(m_valueName, state.hostValueHalf) ||
+            !bindHost(m_policyAName, state.hostPolicyAHalf) ||
+            !bindHost(m_policyBName, state.hostPolicyBHalf) ||
+            !bindHost(m_wdlName, state.hostWdlHalf) ||
+            !bindHost(m_movesLeftName, state.hostMovesLeftHalf) ||
+            (m_jointFactorRank > 0 &&
+             (!bindHost(m_jointFactorsAName, state.hostJointFactorsAHalf) ||
+              !bindHost(m_jointFactorsBName, state.hostJointFactorsBHalf)))) {
+            std::cerr << "Failed to bind host-mapped TensorRT tensors" << std::endl;
+            return false;
+        }
+    }
+
+    if (!checkCuda(cudaStreamBeginCapture(state.stream, cudaStreamCaptureModeGlobal),
+                   "cudaStreamBeginCapture")) {
+        return false;
+    }
+    const auto copyOut = [&](void* host, const void* device, size_t size) {
+        return ZERO_COPY_IO ||
+            checkCuda(cudaMemcpyAsync(host, device, size, cudaMemcpyDeviceToHost,
+                                      state.stream), "cudaMemcpyAsync(output)");
+    };
+    bool recorded =
+        (ZERO_COPY_IO ||
+         checkCuda(cudaMemcpyAsync(state.deviceObsBuffer, input, inputSize,
+                                   cudaMemcpyHostToDevice, state.stream),
+                   "cudaMemcpyAsync(input)")) &&
+        state.context->enqueueV3(state.stream) &&
+        copyOut(state.hostValueHalf, state.deviceValueBuffer, valSize) &&
+        copyOut(state.hostPolicyAHalf, state.devicePolicyABuffer, polSize) &&
+        copyOut(state.hostPolicyBHalf, state.devicePolicyBBuffer, polSize) &&
+        copyOut(state.hostWdlHalf, state.deviceWdlBuffer, wdlSize) &&
+        copyOut(state.hostMovesLeftHalf, state.deviceMovesLeftBuffer, movesLeftSize);
+    if (recorded && m_jointFactorRank > 0) {
+        recorded =
+            copyOut(state.hostJointFactorsAHalf, state.deviceJointFactorsABuffer, jointFactorsSize) &&
+            copyOut(state.hostJointFactorsBHalf, state.deviceJointFactorsBBuffer, jointFactorsSize);
+    }
+    // End the capture even after a failure so the stream leaves capture mode.
+    cudaGraph_t& graph = state.graphs[outputSet];
+    if (!checkCuda(cudaStreamEndCapture(state.stream, &graph), "cudaStreamEndCapture") ||
+        !recorded) {
+        return false;
+    }
+
+    if constexpr (!ZERO_COPY_IO) {
+        size_t nodeCount = 0;
+        if (!checkCuda(cudaGraphGetNodes(graph, nullptr, &nodeCount), "cudaGraphGetNodes")) {
+            return false;
+        }
+        std::vector<cudaGraphNode_t> nodes(nodeCount);
+        if (!checkCuda(cudaGraphGetNodes(graph, nodes.data(), &nodeCount),
+                       "cudaGraphGetNodes")) {
+            return false;
+        }
+        for (cudaGraphNode_t node : nodes) {
+            cudaGraphNodeType type{};
+            cudaMemcpy3DParms params{};
+            if (cudaGraphNodeGetType(node, &type) == cudaSuccess &&
+                type == cudaGraphNodeTypeMemcpy &&
+                cudaGraphMemcpyNodeGetParams(node, &params) == cudaSuccess &&
+                params.dstPtr.ptr == state.deviceObsBuffer) {
+                state.inputCopyNodes[outputSet] = node;
+            }
+        }
+        if (!state.inputCopyNodes[outputSet]) {
+            std::cerr << "Captured inference graph has no input copy" << std::endl;
+            return false;
+        }
+    }
+    state.graphInputs[outputSet] = input;
+    return checkCuda(cudaGraphInstantiate(&state.graphInstances[outputSet], graph, 0),
+                     "cudaGraphInstantiate");
 }
 
 bool Engine::enqueueInferenceHalf(const __half* obs, size_t workerIndex) {
-    return enqueueInferenceHalfImpl(obs, workerIndex, true);
-}
-
-bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
-                                      bool copyAuxiliaryOutputs) {
     if (!obs || workerIndex >= m_executionStates.size() ||
         !checkCuda(cudaSetDevice(m_deviceId), "cudaSetDevice")) {
         return false;
@@ -893,70 +1012,50 @@ bool Engine::enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
         return false;
     }
 
-    const size_t inputSize = m_batchSize * m_inputChannels * BOARD_HEIGHT
-        * BOARD_WIDTH * sizeof(__half);
-    const size_t valSize = m_batchSize * sizeof(__half);
-    const size_t polSize = m_batchSize * NB_POLICY_CHANNELS * BOARD_HEIGHT
-        * BOARD_WIDTH * sizeof(__half);
-    const size_t wdlSize = m_batchSize * 3 * sizeof(__half);
-    const size_t movesLeftSize = m_batchSize * sizeof(__half);
-    const size_t jointFactorsSize = m_batchSize * m_jointFactorRank
-        * (NB_POLICY_VALUES() + 1) * sizeof(__half);
-
-    // A legacy network gets the planes without the clock planes. The staging
-    // buffer is this worker's own and is not touched again until the
-    // inference it feeds has been synchronized.
-    const __half* input = obs;
-    if (m_inputChannels != NB_INPUT_CHANNELS) {
-        drop_clock_planes(obs, static_cast<__half*>(state.hostLegacyObsHalf),
-                          static_cast<size_t>(m_batchSize));
-        input = static_cast<const __half*>(state.hostLegacyObsHalf);
-    }
-    if (!checkCuda(cudaMemcpyAsync(
-            state.deviceObsBuffer, input, inputSize, cudaMemcpyHostToDevice,
-            state.stream), "cudaMemcpyAsync(input)")) {
-        return false;
-    }
-
-    if (!state.graphCreated || !state.graphInstance) {
+    if (!state.graphCreated) {
         std::cerr << "TensorRT worker context " << workerIndex
                   << " has no CUDA graph" << std::endl;
         return false;
     }
-    if (!checkCuda(cudaGraphLaunch(state.graphInstance, state.stream), "cudaGraphLaunch")) {
+
+    // A legacy network gets the planes without the clock planes. The staging
+    // buffer is this worker's own and is not touched again until the
+    // inference it feeds has been synchronized.
+    const void* input = obs;
+    if (m_inputChannels != NB_INPUT_CHANNELS) {
+        drop_clock_planes(obs, static_cast<__half*>(state.hostLegacyObsHalf),
+                          static_cast<size_t>(m_batchSize));
+        input = state.hostLegacyObsHalf;
+    }
+
+    const int set = state.outputSet;
+    const size_t inputSize = m_batchSize * m_inputChannels * BOARD_HEIGHT
+        * BOARD_WIDTH * sizeof(__half);
+    if constexpr (ZERO_COPY_IO) {
+        // The network reads the staging buffer in place. The worker's last
+        // inference has been synchronized, so nothing is reading it now.
+        if (input != state.graphInputs[set]) {
+            std::memcpy(const_cast<void*>(state.graphInputs[set]), input, inputSize);
+        }
+    } else if (input != state.graphInputs[set]) {
+        // Repointing the input copy is a host-side update of the instantiated
+        // graph; it applies to the next launch and costs no GPU submission.
+        // The graph's previous launch was synchronized before this set came
+        // round.
+        if (!checkCuda(cudaGraphExecMemcpyNodeSetParams1D(
+                           state.graphInstances[set], state.inputCopyNodes[set],
+                           state.deviceObsBuffer, input, inputSize,
+                           cudaMemcpyHostToDevice),
+                       "cudaGraphExecMemcpyNodeSetParams1D(input)")) {
+            return false;
+        }
+        state.graphInputs[set] = input;
+    }
+    if (!checkCuda(cudaGraphLaunch(state.graphInstances[set], state.stream),
+                   "cudaGraphLaunch")) {
         return false;
     }
     state.inferencePending = true;
-
-    if (!checkCuda(cudaMemcpyAsync(state.hostValueHalf, state.deviceValueBuffer, valSize, cudaMemcpyDeviceToHost, state.stream),
-                   "cudaMemcpyAsync(value)") ||
-        !checkCuda(cudaMemcpyAsync(state.hostPolicyAHalf, state.devicePolicyABuffer, polSize, cudaMemcpyDeviceToHost, state.stream),
-                   "cudaMemcpyAsync(policy A)") ||
-        !checkCuda(cudaMemcpyAsync(state.hostPolicyBHalf, state.devicePolicyBBuffer, polSize, cudaMemcpyDeviceToHost, state.stream),
-                   "cudaMemcpyAsync(policy B)")) {
-        cudaStreamSynchronize(state.stream);
-        state.inferencePending = false;
-        return false;
-    }
-    if (copyAuxiliaryOutputs &&
-        (!checkCuda(cudaMemcpyAsync(state.hostWdlHalf, state.deviceWdlBuffer, wdlSize, cudaMemcpyDeviceToHost, state.stream),
-                    "cudaMemcpyAsync(WDL)") ||
-         !checkCuda(cudaMemcpyAsync(state.hostMovesLeftHalf, state.deviceMovesLeftBuffer, movesLeftSize, cudaMemcpyDeviceToHost, state.stream),
-                    "cudaMemcpyAsync(moves left)"))) {
-        cudaStreamSynchronize(state.stream);
-        state.inferencePending = false;
-        return false;
-    }
-    if (m_jointFactorRank > 0 &&
-        (!checkCuda(cudaMemcpyAsync(state.hostJointFactorsAHalf, state.deviceJointFactorsABuffer, jointFactorsSize, cudaMemcpyDeviceToHost, state.stream),
-                    "cudaMemcpyAsync(joint factors A)") ||
-         !checkCuda(cudaMemcpyAsync(state.hostJointFactorsBHalf, state.deviceJointFactorsBBuffer, jointFactorsSize, cudaMemcpyDeviceToHost, state.stream),
-                    "cudaMemcpyAsync(joint factors B)"))) {
-        cudaStreamSynchronize(state.stream);
-        state.inferencePending = false;
-        return false;
-    }
-
     return true;
 }
 
@@ -989,21 +1088,16 @@ bool Engine::synchronizeInferenceHalf(HalfInferenceOutputs& outputs,
     outputs.jointFactorsB = static_cast<const __half*>(state.hostJointFactorsBHalf);
     outputs.jointFactorRank = m_jointFactorRank;
     // The caller reads these until its next synchronize; the next enqueue
-    // writes the other set.
-    std::swap(state.hostValueHalf, state.spareValueHalf);
-    std::swap(state.hostPolicyAHalf, state.sparePolicyAHalf);
-    std::swap(state.hostPolicyBHalf, state.sparePolicyBHalf);
-    std::swap(state.hostWdlHalf, state.spareWdlHalf);
-    std::swap(state.hostMovesLeftHalf, state.spareMovesLeftHalf);
-    std::swap(state.hostJointFactorsAHalf, state.spareJointFactorsAHalf);
-    std::swap(state.hostJointFactorsBHalf, state.spareJointFactorsBHalf);
+    // launches the other set's graph.
+    state.swapOutputSets();
+    state.outputSet ^= 1;
 
     return true;
 }
 
 bool Engine::runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outputs,
-                                  size_t workerIndex, bool copyAuxiliaryOutputs) {
+                                  size_t workerIndex) {
     outputs = {};
-    return enqueueInferenceHalfImpl(obs, workerIndex, copyAuxiliaryOutputs)
+    return enqueueInferenceHalf(obs, workerIndex)
         && synchronizeInferenceHalf(outputs, workerIndex);
 }

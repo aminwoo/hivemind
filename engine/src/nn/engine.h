@@ -115,11 +115,21 @@ private:
 #if defined(HIVEMIND_BACKEND_TENSORRT)
     struct ExecutionState {
         ~ExecutionState();
+        // Exchanges the host* and spare* output pointers.
+        void swapOutputSets();
 
         std::unique_ptr<nvinfer1::IExecutionContext> context;
         cudaStream_t stream = nullptr;
-        cudaGraph_t graph = nullptr;
-        cudaGraphExec_t graphInstance = nullptr;
+        // One graph per host output set, so a batch is a single launch:
+        // input copy, network and output copies, or on Windows the network
+        // alone reading and writing host memory (see ZERO_COPY_IO).
+        // graphs[outputSet] writes the set the host* pointers currently name.
+        cudaGraph_t graphs[2] = {};
+        cudaGraphExec_t graphInstances[2] = {};
+        // The input copy node (copies only) and the host input it reads.
+        cudaGraphNode_t inputCopyNodes[2] = {};
+        const void* graphInputs[2] = {};
+        int outputSet = 0;
         bool graphCreated = false;
         bool inferencePending = false;
         void* deviceObsBuffer = nullptr;
@@ -188,9 +198,8 @@ private:
     bool loadEngineFromFile(const std::string& engineFile);
     bool saveEngineToFile(const std::string& engineFile);
     bool initializeResources();
-    bool enqueueInferenceHalfImpl(const __half* obs, size_t workerIndex,
-                                  bool copyAuxiliaryOutputs);
+    bool captureInferenceGraph(ExecutionState& state, int outputSet);
     bool runInferenceHalfImpl(const __half* obs, HalfInferenceOutputs& outputs,
-                              size_t workerIndex, bool copyAuxiliaryOutputs);
+                              size_t workerIndex);
 #endif
 };
