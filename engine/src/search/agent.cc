@@ -6356,13 +6356,19 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         scanBoard = std::make_unique<Board>(board);
     }
 
-    // Reserve one worker's CPU share for the independent root mate thread.
-    // A tiny mate-in-one preflight is the exception: once a neural batch has
-    // started it cannot be cancelled, so dispatching it first would make an
-    // immediate mate wait for inference to finish.
-    const size_t scanWorkerCount = runRootScan && workerCount > 1
-        ? workerCount - 1
-        : workerCount;
+    // Reserve one worker's CPU share for the root scans when the machine has
+    // too few hardware threads to run them beside every worker: the mate
+    // scan, the loss scan's threads and the probe. Each worker keeps its own
+    // inference stream fed, so idling one costs a share of GPU throughput
+    // (on a 12-thread RTX 4070 box the fourth worker adds about 15% nodes per
+    // second). A tiny mate-in-one preflight is the exception: once a neural
+    // batch has started it cannot be cancelled, so dispatching it first would
+    // make an immediate mate wait for inference to finish.
+    constexpr size_t rootScanThreads = 1 + SearchParams::ROOT_LOSS_SCAN_THREADS + 1;
+    const size_t hardwareThreads = std::thread::hardware_concurrency();
+    const bool reserveScanWorker = runRootScan && workerCount > 1
+        && hardwareThreads < workerCount + rootScanThreads;
+    const size_t scanWorkerCount = reserveScanWorker ? workerCount - 1 : workerCount;
     bool workersDispatched = false;
 
     // The probe answers a question the checking-move scans cannot ask - a mate
