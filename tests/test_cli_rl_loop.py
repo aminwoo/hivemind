@@ -23,6 +23,15 @@ def test_next_iteration_resumes_after_the_last_finished_one(tmp_path):
     assert rl_loop.next_iteration(tmp_path) == 3
 
 
+def test_promotes_unless_significantly_worse():
+    # it11 vs it10: 48.8%, but the interval reaches above zero.
+    assert rl_loop.promotes({"score": 0.488, "ci": [-19.8, 3.1]})
+    # it11 vs the it10 anchor: significantly worse.
+    assert not rl_loop.promotes({"score": 0.4735, "ci": [-30.0, -6.9]})
+    assert rl_loop.promotes({"score": 1.0, "ci": None})
+    assert not rl_loop.promotes({"score": 0.0, "ci": [None, None]})
+
+
 def test_train_dirs_cover_both_layouts_and_only_finished_segments(tmp_path):
     pilot = tmp_path / "rl-it1" / "search" / "train"
     pilot.mkdir(parents=True)

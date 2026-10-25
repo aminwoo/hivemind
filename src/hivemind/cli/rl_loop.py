@@ -127,6 +127,16 @@ def match_summary(path, games):
                 nps=[d["performance"]["contender"]["nps"], d["performance"]["baseline"]["nps"]])
 
 
+def promotes(summary):
+    """A new network replaces the generator unless it is significantly worse:
+    the upper end of its 95% Elo interval is below zero. A 50% score threshold
+    would reject an equally strong network half the time."""
+    ci = summary.get("ci")
+    if not ci or ci[1] is None:
+        return summary["score"] >= 0.5
+    return ci[1] >= 0
+
+
 def archive_iteration(path):
     return int(path.stem.rsplit("-it", 1)[1])
 
@@ -526,15 +536,16 @@ class Loop:
     def promote(self):
         if self.done("promote"):
             return
-        score = json.loads((self.it / "stages" / "match_generator.done").read_text())["score"]
-        if score >= 0.5:
+        summary = json.loads((self.it / "stages" / "match_generator.done").read_text())
+        score, promoted = summary["score"], promotes(summary)
+        if promoted:
             install(self.it / "models" / "C.onnx", self.generator)
             install(self.it / "models" / "C.onnx", self.generator_sp1)
             install(self.arms / "C" / "last.pt", self.checkpoint)
             self.log(f"it{self.n} promoted (score {score}): it is the generator for it{self.n + 1}")
         else:
             self.log(f"it{self.n} not promoted (score {score}): the generator stays")
-        self.mark("promote", {"promoted": score >= 0.5, "score": score})
+        self.mark("promote", {"promoted": promoted, "score": score})
 
     def upload(self):
         """Not fatal: the next iteration's upload retries whatever is missing."""

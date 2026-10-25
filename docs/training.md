@@ -30,7 +30,8 @@ Each iteration plays 100,000 self-play games and 1,000 validation games with
 the current generator, trains on them plus a replay of the previous three
 iterations' games, and plays 1,000 games at 100 ms per move against the
 generator, and as many against the fixed first network (it0). The new network
-replaces the generator unless it scores below 50% against it.
+replaces the generator unless it is significantly worse: the upper end of
+its 95% Elo interval against it is below zero.
 When uploads are enabled and access is available, each iteration's network
 and training checkpoint are uploaded to Hugging Face
 as `twin-s-noattn-itN.onnx` and `twin-s-noattn-itN.pt`, and a promoted one as
