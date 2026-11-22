@@ -313,7 +313,8 @@ team behind on time is never credited with a single-board line.
 
 Independently of the experiment above, `CertifySelectedMove` (default `true`)
 holds the moves MCTS is likely to play to a proof when this team is behind on
-time. While the tree grows, the probe thread takes the leading root actions
+time. While the tree grows, a verifier thread of its own, started with the
+search, takes the leading root actions
 by visits, plays each on a private board, asks Fairy-Stockfish for the
 opponents' single-board mate from there (certified exactly before it counts)
 and, failing that, the exact joint solver for a cross-board one - checks on
@@ -322,14 +323,18 @@ leading stops being searched. A proof marks the child a solved loss at once,
 which takes the action out of selection; an exhaustive refutation within
 the six-attacker-move bound is final for the search; anything cut short
 stays eligible for another slice. Each action keeps its proof cache between
-slices. The thread is bounded by the move time and a node ceiling.
+slices. The thread is bounded by the move time and a node ceiling. It does not
+share the probe thread: ahead on time the root probe searches sat-partner
+lines for the whole move, and a verifier queued behind it would start only as
+the tree stopped.
 
 If the action finally chosen has no conclusive verdict - it took the lead
 too late, or its search was cut short - a small serial tail (3% of the move,
 at most 100ms, reserved off the front) asks the same question once more
 and falls back through the next-most-visited alternatives on a proof.
-Nothing runs when this team has the time advantage, since it may then sit
-the threatened board and no single-board line is forced. Verbose output
+Nothing runs when this team's lead covers the whole opponent-proof horizon,
+since it may then sit the threatened board and no single-board line is
+forced; a smaller lead still runs both stages. Verbose output
 reports both stages: `info string concurrent verifier: ...` and
 `info string selected move certification: ...`.
 
