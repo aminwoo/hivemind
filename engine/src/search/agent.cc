@@ -6460,6 +6460,13 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
              << " verifier_start_ms=" << t.verifierStartMs.load() << endl;
     }};
     thread rootProbeThread;
+    // The concurrent verifier has a thread of its own. Behind the root
+    // probe it waited out the probe's sat-partner lines, which ahead on time
+    // fill the whole move, and started only once the tree had stopped.
+    thread verifierThread;
+    // Set once the root probe has a mate of ours: the verifier's question
+    // is moot then, as it was when it ran after the probe.
+    atomic<bool> rootProbeMateFound{false};
 
     // The concurrent verifier's verdict on each root action, by action. A
     // proof or an exhaustive refutation within the bound is final for this
@@ -6700,9 +6707,12 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             },
                             &stopRootProbe, frozenRaceStats);
                     }
+                    if (rootFound) {
+                        rootProbeMateFound.store(true, memory_order_release);
+                    }
                     const bool runInternal = runInternalProbe && !rootFound
                         && internalProbeNodeBudget > 0;
-                    if (!runInternal && !(runConcurrentVerifier && !rootFound)) {
+                    if (!runInternal) {
                         return;
                     }
 
@@ -6917,9 +6927,30 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
 
-                    if (!runConcurrentVerifier || rootFound) {
-                        return;
-                    }
+                } catch (const std::exception& error) {
+                    cout << "info string mate probe failed: " << error.what()
+                         << endl;
+                } catch (...) {
+                    cout << "info string mate probe failed" << endl;
+                }
+            });
+        if (!runConcurrentVerifier) {
+            return;
+        }
+        auto verifierBoard = std::make_unique<Board>(board);
+        verifierThread = thread(
+            [&, probeRoot, verifierBoard = std::move(verifierBoard)]() mutable {
+                try {
+                    const auto verifierSettled = [&] {
+                        return stopRootProbe.load(memory_order_acquire)
+                            || (!options.completeMateProbe
+                                && !running.load(memory_order_acquire))
+                            || stopRequested_.load(memory_order_relaxed)
+                            || rootProbeMateFound.load(memory_order_acquire)
+                            || (probeRoot
+                                && probeRoot->get_node_type()
+                                    != NodeType::UNSOLVED);
+                    };
                     mateTelemetry.verifierStartMs.store(search_ms());
                     // The verifier: the leading root actions, each played
                     // on the private board and asked whether the opponents
@@ -6973,7 +7004,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                     };
 
                     uint64_t nodesSpent = 0;
-                    while (!internalSettled()
+                    while (!verifierSettled()
                            && nodesSpent
                                < SearchParams::CONCURRENT_VERIFIER_NODE_CEILING
                            && remaining_move_ms() > 0) {
@@ -6992,7 +7023,7 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                             ++verifierStats.actions;
                         }
                         verify_root_action_slice(
-                            *probeBoard, action, teamSide, searchTime_, verdict,
+                            *verifierBoard, action, teamSide, searchTime_, verdict,
                             std::min(
                                 SearchParams::CONCURRENT_VERIFIER_SLICE_NODES,
                                 SearchParams::CONCURRENT_VERIFIER_NODE_CEILING
@@ -7010,10 +7041,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
                         }
                     }
                 } catch (const std::exception& error) {
-                    cout << "info string mate probe failed: " << error.what()
-                         << endl;
+                    cout << "info string concurrent verifier failed: "
+                         << error.what() << endl;
                 } catch (...) {
-                    cout << "info string mate probe failed" << endl;
+                    cout << "info string concurrent verifier failed" << endl;
                 }
             });
     };
@@ -7022,6 +7053,9 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
         stopRootProbe.store(true, memory_order_release);
         if (rootProbeThread.joinable()) {
             rootProbeThread.join();
+        }
+        if (verifierThread.joinable()) {
+            verifierThread.join();
         }
         if (!internalProbeStatsStored) {
             internalProbeStatsStored = true;
@@ -8264,6 +8298,10 @@ JointActionCandidate Agent::run_search(Board& board, const vector<Engine*>& engi
             return return_proven_mate(probedAction, probedPly, probedPv);
         }
     }
+    // The verifier writes verifierVerdicts and verifierStats from a thread
+    // of its own, which joining the probe thread above does not wait for.
+    // Both are read below, so it is stopped and joined here on every path.
+    stop_root_probe();
 
     if (avoidSolvedDraw) {
         mark_immediate_root_repetitions(rootNode, board);
